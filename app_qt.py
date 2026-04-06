@@ -92,7 +92,7 @@ from quant_hunter.ui_cards import (
     LeaderboardCard,
     StrategyWorkbenchCard,
 )
-from quant_hunter.ui_controllers import refresh_daily_pool_controller, refresh_remote_market_controller, run_background_job_controller, run_parameter_optimization_controller
+from quant_hunter.ui_controllers import refresh_daily_pool_controller, refresh_remote_market_controller, run_background_job_controller, run_parameter_optimization_controller, save_strategy_preferences_controller
 from quant_hunter.ui_config import (
     DISPLAY_TEXT,
     OVERVIEW_QUICK_ROUTE_SPECS,
@@ -112,7 +112,7 @@ from quant_hunter.ui_helpers import (
     style_terminal_console,
     style_terminal_panel,
 )
-from quant_hunter.ui_binders import apply_daily_pool_rows, apply_market_screen_result, apply_scan_universe_result, handle_daily_pool_error, handle_market_refresh_error, handle_scan_error
+from quant_hunter.ui_binders import apply_daily_pool_rows, apply_market_screen_result, apply_scan_universe_result, handle_daily_pool_error, handle_market_refresh_error, handle_scan_error, refresh_license_status_view
 from quant_hunter.ui_refresh import (
     apply_market_filters,
     fill_backtest_summaries,
@@ -1026,78 +1026,10 @@ class QuantHunterWindow(QMainWindow):
         return [item.strip() for item in self.focus_themes_input.text().replace("，", ",").split(",") if item.strip()]
 
     def save_strategy_preferences(self) -> None:
-        top_theme_limit, max_total_exposure, theme_drop_reduce = self._current_strategy_runtime_config()
-        self.state.strategy_top_theme_limit = top_theme_limit
-        self.state.strategy_max_total_exposure = max_total_exposure
-        self.state.strategy_theme_drop_reduce = theme_drop_reduce
-        self.state.focus_themes = (
-            [item.strip() for item in self.focus_themes_input.text().replace("，", ",").split(",") if item.strip()]
-            if hasattr(self, "focus_themes_input")
-            else list(self.state.focus_themes)
-        )
-        self.state.auto_daily_plan_export = (
-            self.auto_daily_plan_export_checkbox.isChecked() if hasattr(self, "auto_daily_plan_export_checkbox") else False
-        )
-        template_name, focus_only, candidate_limit = self._current_report_template_config()
-        self.state.daily_plan_template = template_name
-        self.state.daily_plan_focus_only = focus_only
-        self.state.daily_plan_candidate_limit = candidate_limit
-        self.save_state()
-        self._refresh_license_status_view()
-        self.refresh_daily_pool()
-        self._refresh_intraday_monitor()
-        QMessageBox.information(self, "保存完成", "策略配置已保存并应用。")
+        save_strategy_preferences_controller(self, info_dialog_fn=QMessageBox.information)
 
     def _refresh_license_status_view(self) -> None:
-        if not hasattr(self, "license_status_text"):
-            return
-        started = self.state.trial_started_at or datetime.now().date().isoformat()
-        try:
-            start_date = datetime.strptime(started, "%Y-%m-%d").date()
-        except ValueError:
-            start_date = datetime.now().date()
-        days_used = max((datetime.now().date() - start_date).days, 0)
-        trial_days = 14
-        remaining = max(trial_days - days_used, 0)
-        capabilities = self._license_capabilities()
-        plan = capabilities["plan"]
-        lines = [
-            f"当前方案：{plan}",
-            f"试用开始：{start_date.isoformat()}",
-            f"试用剩余：{remaining} 天",
-            "",
-        ]
-        if plan == "ENTERPRISE":
-            lines.append("企业版已启用：自动盘前报告、增强题材加权和扩展题材面板已开放。")
-        elif plan == "PRO":
-            lines.append("专业版已启用：自动盘前报告和题材优先加权已开放。")
-        else:
-            lines.append("试用版保留手动研究流程，自动盘前报告保持关闭。")
-        lines.append(f"关注题材：{', '.join(self.state.focus_themes) if self.state.focus_themes else '未设置'}")
-        lines.append(f"主线题材阈值：前 {self.state.strategy_top_theme_limit}")
-        lines.append(f"题材加权：+{float(capabilities['focus_theme_boost']):.0f}")
-        lines.append(f"盘前模板：{self.state.daily_plan_template}")
-        lines.append(f"模板仅关注题材：{'是' if self.state.daily_plan_focus_only else '否'}")
-        lines.append(f"盘前股票池上限：{min(self.state.daily_plan_candidate_limit, int(capabilities['daily_plan_export_limit']))}")
-        lines.append(f"市场历史回看深度：{int(capabilities['market_history_limit'])}")
-        lines.append(f"监控摘要容量：{int(capabilities['monitor_summary_limit'])}")
-        lines.append(
-            "自动盘前报告："
-            + (
-                "已开启"
-                if self.state.auto_daily_plan_export and bool(capabilities["auto_daily_plan_export"])
-                else "未开启"
-            )
-        )
-        if hasattr(self, "auto_daily_plan_export_checkbox"):
-            enabled = bool(capabilities["auto_daily_plan_export"])
-            self.auto_daily_plan_export_checkbox.setEnabled(enabled)
-            if not enabled:
-                self.auto_daily_plan_export_checkbox.setChecked(False)
-                self.state.auto_daily_plan_export = False
-        if hasattr(self, "config_inputs") and "daily_plan_candidate_limit" in self.config_inputs:
-            self.config_inputs["daily_plan_candidate_limit"].setPlaceholderText(str(capabilities["daily_plan_export_limit"]))
-        self.license_status_text.setPlainText("\n".join(lines))
+        refresh_license_status_view(self, datetime_cls=datetime)
 
     def activate_professional_plan(self) -> None:
         self.state.license_plan = "PRO"
