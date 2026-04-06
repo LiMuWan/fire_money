@@ -86,3 +86,5 @@
 - [?? 48 - ??? Workspace Builder ??](C:\Users\18335\Documents\New%20project\docs\product\iteration-48-config-workspace-extraction.md)
 
 - [?? 49 - ?????????](C:\Users\18335\Documents\New%20project\docs\product\iteration-49-config-state-chain-extraction.md)
+
+- [?? 50 - ???? Controller ??](C:\Users\18335\Documents\New%20project\docs\product\iteration-50-license-switch-controller.md)

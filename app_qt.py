@@ -92,7 +92,7 @@ from quant_hunter.ui_cards import (
     LeaderboardCard,
     StrategyWorkbenchCard,
 )
-from quant_hunter.ui_controllers import refresh_daily_pool_controller, refresh_remote_market_controller, run_background_job_controller, run_parameter_optimization_controller, save_strategy_preferences_controller
+from quant_hunter.ui_controllers import refresh_daily_pool_controller, refresh_remote_market_controller, run_background_job_controller, run_parameter_optimization_controller, save_strategy_preferences_controller, switch_license_plan_controller
 from quant_hunter.ui_config import (
     DISPLAY_TEXT,
     OVERVIEW_QUICK_ROUTE_SPECS,
@@ -1032,20 +1032,13 @@ class QuantHunterWindow(QMainWindow):
         refresh_license_status_view(self, datetime_cls=datetime)
 
     def activate_professional_plan(self) -> None:
-        self.state.license_plan = "PRO"
-        self.save_state()
-        self._refresh_license_status_view()
+        switch_license_plan_controller(self, "PRO", datetime_cls=datetime)
 
     def reset_trial_plan(self) -> None:
-        self.state.license_plan = "TRIAL"
-        self.state.trial_started_at = datetime.now().date().isoformat()
-        self.save_state()
-        self._refresh_license_status_view()
+        switch_license_plan_controller(self, "TRIAL", datetime_cls=datetime)
 
     def activate_enterprise_plan(self) -> None:
-        self.state.license_plan = "ENTERPRISE"
-        self.save_state()
-        self._refresh_license_status_view()
+        switch_license_plan_controller(self, "ENTERPRISE", datetime_cls=datetime)
 
     def _license_capabilities(self) -> dict[str, object]:
         plan = (self.state.license_plan or "TRIAL").upper()

@@ -669,6 +669,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertTrue(hasattr(ui_controllers, "run_background_job_controller"))
         self.assertTrue(hasattr(ui_controllers, "run_parameter_optimization_controller"))
         self.assertTrue(hasattr(ui_controllers, "save_strategy_preferences_controller"))
+        self.assertTrue(hasattr(ui_controllers, "switch_license_plan_controller"))
         self.assertTrue(hasattr(ui_runtime, "build_runtime_overview_text"))
         self.assertTrue(hasattr(ui_runtime, "append_runtime_log"))
         self.assertTrue(hasattr(ui_runtime, "clear_market_cache"))

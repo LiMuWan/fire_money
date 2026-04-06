@@ -224,3 +224,13 @@ def save_strategy_preferences_controller(window, *, info_dialog_fn) -> None:
     window.refresh_daily_pool()
     window._refresh_intraday_monitor()
     info_dialog_fn(window, "????", "???????????")
+
+
+
+def switch_license_plan_controller(window, plan: str, *, datetime_cls) -> None:
+    normalized = (plan or "TRIAL").upper()
+    window.state.license_plan = normalized
+    if normalized == "TRIAL":
+        window.state.trial_started_at = datetime_cls.now().date().isoformat()
+    window.save_state()
+    window._refresh_license_status_view()
