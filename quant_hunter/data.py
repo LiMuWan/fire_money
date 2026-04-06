@@ -1,0 +1,261 @@
+from __future__ import annotations
+
+import csv
+from datetime import datetime
+from pathlib import Path
+
+from .models import CashSnapshot, HoldingRecord, NewsCatalyst, PriceBar, StockProfile
+
+
+REQUIRED_COLUMNS = {
+    "date": {"date", "datetime", "trade_date"},
+    "open": {"open", "o"},
+    "high": {"high", "h"},
+    "low": {"low", "l"},
+    "close": {"close", "c"},
+    "volume": {"volume", "vol", "amount"},
+    "symbol": {"symbol", "code", "ticker"},
+}
+
+PROFILE_SYMBOL_COLUMNS = ("symbol", "code", "ticker", "stock_id")
+PROFILE_NAME_COLUMNS = ("name", "stock_name", "display_name")
+PROFILE_INDUSTRY_COLUMNS = ("industry", "sector", "theme")
+PROFILE_LEADER_COLUMNS = ("is_leader", "leader", "leader_flag")
+PROFILE_NOTES_COLUMNS = ("notes", "comment", "memo")
+NEWS_TITLE_COLUMNS = ("title", "headline")
+NEWS_SUMMARY_COLUMNS = ("summary", "content", "brief")
+NEWS_TIME_COLUMNS = ("published_at", "date", "datetime")
+NEWS_SENTIMENT_COLUMNS = ("sentiment_score", "sentiment", "score")
+NEWS_HEAT_COLUMNS = ("heat", "hotness", "importance")
+THEME_NAME_COLUMNS = ("theme_name", "theme", "name")
+THEME_KEYWORD_COLUMNS = ("keywords", "keyword", "aliases")
+
+
+def normalize_symbol(raw: str) -> str:
+    value = raw.strip().upper()
+    if not value:
+        return ""
+    if "." in value:
+        left, right = value.split(".", 1)
+        if left in {"SHSE", "SZSE"}:
+            return f"{left}.{right}"
+        if right in {"SH", "SS"}:
+            return f"SHSE.{left}"
+        if right == "SZ":
+            return f"SZSE.{left}"
+    digits = "".join(ch for ch in value if ch.isdigit())
+    if len(digits) == 6:
+        exchange = "SHSE" if digits.startswith(("5", "6", "9")) else "SZSE"
+        return f"{exchange}.{digits}"
+    return value
+
+
+def extract_stock_id(symbol: str) -> str:
+    normalized = normalize_symbol(symbol)
+    return normalized.split(".", 1)[1] if "." in normalized else normalized
+
+
+def _find_optional_column(fieldnames: list[str], aliases: tuple[str, ...]) -> str:
+    lowered = {name.strip().lower(): name for name in fieldnames}
+    for alias in aliases:
+        if alias in lowered:
+            return lowered[alias]
+    return ""
+
+
+def _parse_bool(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "y", "是"}
+
+
+def _parse_float(value: str, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def load_stock_profiles_from_csv(path: str | Path) -> dict[str, StockProfile]:
+    file_path = Path(path)
+    with file_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if not reader.fieldnames:
+            raise ValueError("股票资料 CSV 没有表头。")
+        symbol_column = _find_optional_column(reader.fieldnames, PROFILE_SYMBOL_COLUMNS)
+        name_column = _find_optional_column(reader.fieldnames, PROFILE_NAME_COLUMNS)
+        if not symbol_column or not name_column:
+            raise ValueError("股票资料 CSV 需要至少包含 symbol/code 和 name 两列。")
+        industry_column = _find_optional_column(reader.fieldnames, PROFILE_INDUSTRY_COLUMNS)
+        leader_column = _find_optional_column(reader.fieldnames, PROFILE_LEADER_COLUMNS)
+        notes_column = _find_optional_column(reader.fieldnames, PROFILE_NOTES_COLUMNS)
+
+        profiles: dict[str, StockProfile] = {}
+        for row in reader:
+            symbol = normalize_symbol(row.get(symbol_column, ""))
+            if not symbol:
+                continue
+            profiles[symbol] = StockProfile(
+                symbol=symbol,
+                stock_id=extract_stock_id(symbol),
+                name=row.get(name_column, "").strip() or extract_stock_id(symbol),
+                industry=row.get(industry_column, "").strip() if industry_column else "",
+                is_leader=_parse_bool(row.get(leader_column, "")) if leader_column else False,
+                notes=row.get(notes_column, "").strip() if notes_column else "",
+            )
+    return profiles
+
+
+def load_news_catalysts_from_csv(path: str | Path) -> dict[str, list[NewsCatalyst]]:
+    file_path = Path(path)
+    with file_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if not reader.fieldnames:
+            raise ValueError("消息面 CSV 没有表头。")
+        symbol_column = _find_optional_column(reader.fieldnames, PROFILE_SYMBOL_COLUMNS)
+        title_column = _find_optional_column(reader.fieldnames, NEWS_TITLE_COLUMNS)
+        if not symbol_column or not title_column:
+            raise ValueError("消息面 CSV 需要至少包含 symbol/code 和 title 两列。")
+        summary_column = _find_optional_column(reader.fieldnames, NEWS_SUMMARY_COLUMNS)
+        time_column = _find_optional_column(reader.fieldnames, NEWS_TIME_COLUMNS)
+        sentiment_column = _find_optional_column(reader.fieldnames, NEWS_SENTIMENT_COLUMNS)
+        heat_column = _find_optional_column(reader.fieldnames, NEWS_HEAT_COLUMNS)
+
+        news_map: dict[str, list[NewsCatalyst]] = {}
+        for row in reader:
+            symbol = normalize_symbol(row.get(symbol_column, ""))
+            if not symbol:
+                continue
+            news = NewsCatalyst(
+                symbol=symbol,
+                title=row.get(title_column, "").strip(),
+                summary=row.get(summary_column, "").strip() if summary_column else "",
+                published_at=row.get(time_column, "").strip() if time_column else "",
+                sentiment_score=_parse_float(row.get(sentiment_column, "")) if sentiment_column else 0.0,
+                heat=_parse_float(row.get(heat_column, "")) if heat_column else 0.0,
+            )
+            news_map.setdefault(symbol, []).append(news)
+
+    for items in news_map.values():
+        items.sort(key=lambda item: item.published_at or datetime.min.isoformat(), reverse=True)
+    return news_map
+
+
+def load_theme_aliases_from_csv(path: str | Path) -> dict[str, tuple[str, ...]]:
+    file_path = Path(path)
+    with file_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if not reader.fieldnames:
+            raise ValueError("题材词典 CSV 没有表头。")
+        name_column = _find_optional_column(reader.fieldnames, THEME_NAME_COLUMNS)
+        keyword_column = _find_optional_column(reader.fieldnames, THEME_KEYWORD_COLUMNS)
+        if not name_column or not keyword_column:
+            raise ValueError("题材词典 CSV 需要至少包含 theme_name 和 keywords 两列。")
+
+        mapping: dict[str, tuple[str, ...]] = {}
+        for row in reader:
+            theme_name = (row.get(name_column, "") or "").strip()
+            raw_keywords = (row.get(keyword_column, "") or "").strip()
+            if not theme_name or not raw_keywords:
+                continue
+            keywords = tuple(item.strip() for item in raw_keywords.replace("，", ",").split(",") if item.strip())
+            if keywords:
+                mapping[theme_name] = keywords
+    return mapping
+
+
+def _normalize_header_map(fieldnames: list[str]) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    lowered = {name.strip().lower(): name for name in fieldnames}
+    for canonical, aliases in REQUIRED_COLUMNS.items():
+        for alias in aliases:
+            if alias in lowered:
+                mapping[canonical] = lowered[alias]
+                break
+    missing = {"date", "open", "high", "low", "close", "volume"} - mapping.keys()
+    if missing:
+        raise ValueError(f"CSV 缺少必要字段: {', '.join(sorted(missing))}")
+    return mapping
+
+
+def load_bars_from_csv(path: str | Path, default_symbol: str = "UNKNOWN") -> list[PriceBar]:
+    file_path = Path(path)
+    with file_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if not reader.fieldnames:
+            raise ValueError("CSV 没有表头。")
+        header_map = _normalize_header_map(reader.fieldnames)
+        bars: list[PriceBar] = []
+        for row in reader:
+            symbol_key = header_map.get("symbol")
+            symbol = normalize_symbol((row.get(symbol_key, "") if symbol_key else "").strip() or default_symbol)
+            bars.append(
+                PriceBar(
+                    date=row[header_map["date"]].strip(),
+                    symbol=symbol,
+                    open=float(row[header_map["open"]]),
+                    high=float(row[header_map["high"]]),
+                    low=float(row[header_map["low"]]),
+                    close=float(row[header_map["close"]]),
+                    volume=float(row[header_map["volume"]]),
+                )
+            )
+    return sorted(bars, key=lambda bar: bar.date)
+
+
+def discover_csv_files(folder: str | Path) -> list[Path]:
+    root = Path(folder)
+    if not root.exists():
+        raise ValueError(f"目录不存在: {root}")
+    return sorted(path for path in root.glob("*.csv") if path.is_file())
+
+
+def load_universe_from_folder(folder: str | Path) -> dict[str, tuple[Path, list[PriceBar]]]:
+    universe: dict[str, tuple[Path, list[PriceBar]]] = {}
+    for path in discover_csv_files(folder):
+        bars = load_bars_from_csv(path, default_symbol=path.stem)
+        if bars:
+            universe[bars[-1].symbol] = (path, bars)
+    return universe
+
+
+def load_holdings_from_csv(path: str | Path) -> list[HoldingRecord]:
+    file_path = Path(path)
+    with file_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if not reader.fieldnames:
+            raise ValueError("持仓 CSV 没有表头。")
+        lowered = {name.strip().lower(): name for name in reader.fieldnames}
+        required = {"symbol", "quantity", "available", "cost_price", "market_value"}
+        if not required.issubset(lowered):
+            missing = ", ".join(sorted(required - lowered.keys()))
+            raise ValueError(f"持仓 CSV 缺少字段: {missing}")
+        records: list[HoldingRecord] = []
+        for row in reader:
+            records.append(
+                HoldingRecord(
+                    symbol=row[lowered["symbol"]].strip(),
+                    quantity=int(float(row[lowered["quantity"]])),
+                    available=int(float(row[lowered["available"]])),
+                    cost_price=float(row[lowered["cost_price"]]),
+                    market_value=float(row[lowered["market_value"]]),
+                )
+            )
+    return records
+
+
+def load_cash_snapshot_from_csv(path: str | Path) -> CashSnapshot:
+    file_path = Path(path)
+    with file_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        rows = list(reader)
+        if not rows:
+            raise ValueError("资金 CSV 没有数据。")
+        lowered = {name.strip().lower(): name for name in reader.fieldnames or []}
+        required = {"available_cash", "total_assets"}
+        if not required.issubset(lowered):
+            missing = ", ".join(sorted(required - lowered.keys()))
+            raise ValueError(f"资金 CSV 缺少字段: {missing}")
+        row = rows[0]
+        return CashSnapshot(
+            available_cash=float(row[lowered["available_cash"]]),
+            total_assets=float(row[lowered["total_assets"]]),
+        )
