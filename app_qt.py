@@ -505,6 +505,30 @@ THEME_STYLES = {
 }
 
 TERMINAL_DASHBOARD_STYLE = """
+    QWidget#shellRoot {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #121823, stop:0.42 #0d1219, stop:1 #101722);
+    }
+    QWidget#shellRoot[pageTone="recommend"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #171927, stop:0.42 #131620, stop:1 #101722);
+    }
+    QWidget#shellRoot[pageTone="broker"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #141c1a, stop:0.42 #101615, stop:1 #101722);
+    }
+    QWidget#shellRoot[pageTone="auth"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1b1812, stop:0.42 #141410, stop:1 #101722);
+    }
+    QWidget#shellRoot[pageTone="detail"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #141d24, stop:0.42 #10161c, stop:1 #101722);
+    }
+    QWidget#shellRoot[pageTone="scanner"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #141c22, stop:0.42 #10161a, stop:1 #101722);
+    }
+    QWidget#shellRoot[pageTone="board"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1b1713, stop:0.42 #141411, stop:1 #101722);
+    }
+    QWidget#shellRoot[pageTone="config"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #171a1f, stop:0.42 #121519, stop:1 #101722);
+    }
     QWidget#overviewRoot {
         background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #121823, stop:0.42 #0d1219, stop:1 #101722);
     }
@@ -814,6 +838,18 @@ TERMINAL_WORKSPACE_STYLE = """
     QFrame#shellChip[pageTone="config"] {
         border-color: rgba(167, 183, 202, 0.18);
         background: rgba(24, 29, 34, 0.92);
+    }
+    QFrame#shellChip:hover {
+        border-color: rgba(156, 201, 255, 0.24);
+    }
+    QFrame#shellChip[pageTone="recommend"]:hover {
+        border-color: rgba(182, 154, 255, 0.26);
+    }
+    QFrame#shellChip[pageTone="broker"]:hover {
+        border-color: rgba(102, 224, 163, 0.26);
+    }
+    QFrame#shellChip[pageTone="auth"]:hover {
+        border-color: rgba(255, 209, 102, 0.26);
     }
     QLabel#shellChipLabel {
         color: #7d90a7;
@@ -1483,6 +1519,34 @@ GRAPHITE_COMMERCIAL_STYLE = """
         background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(16, 23, 31, 0.98), stop:0.55 rgba(13, 19, 27, 0.96), stop:1 rgba(10, 14, 20, 0.98));
         top: -2px;
     }
+    QTabWidget#workspaceTabs[pageTone="recommend"]::pane {
+        border-color: rgba(182, 154, 255, 0.18);
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(21, 18, 33, 0.98), stop:0.55 rgba(15, 18, 27, 0.96), stop:1 rgba(10, 14, 20, 0.98));
+    }
+    QTabWidget#workspaceTabs[pageTone="broker"]::pane {
+        border-color: rgba(102, 224, 163, 0.18);
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(16, 26, 22, 0.98), stop:0.55 rgba(14, 19, 22, 0.96), stop:1 rgba(10, 14, 20, 0.98));
+    }
+    QTabWidget#workspaceTabs[pageTone="auth"]::pane {
+        border-color: rgba(255, 209, 102, 0.18);
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(31, 24, 16, 0.98), stop:0.55 rgba(18, 19, 21, 0.96), stop:1 rgba(10, 14, 20, 0.98));
+    }
+    QTabWidget#workspaceTabs[pageTone="detail"]::pane {
+        border-color: rgba(126, 210, 255, 0.18);
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(17, 26, 32, 0.98), stop:0.55 rgba(14, 19, 23, 0.96), stop:1 rgba(10, 14, 20, 0.98));
+    }
+    QTabWidget#workspaceTabs[pageTone="scanner"]::pane {
+        border-color: rgba(110, 214, 255, 0.18);
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(17, 25, 30, 0.98), stop:0.55 rgba(14, 19, 22, 0.96), stop:1 rgba(10, 14, 20, 0.98));
+    }
+    QTabWidget#workspaceTabs[pageTone="board"]::pane {
+        border-color: rgba(255, 164, 122, 0.18);
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(31, 22, 17, 0.98), stop:0.55 rgba(18, 18, 21, 0.96), stop:1 rgba(10, 14, 20, 0.98));
+    }
+    QTabWidget#workspaceTabs[pageTone="config"]::pane {
+        border-color: rgba(167, 183, 202, 0.18);
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(20, 23, 28, 0.98), stop:0.55 rgba(15, 18, 23, 0.96), stop:1 rgba(10, 14, 20, 0.98));
+    }
     QTabBar::tab {
         min-width: 112px;
         padding: 11px 18px;
@@ -1648,30 +1712,37 @@ GRAPHITE_COMMERCIAL_STYLE = """
     }
     QFrame#workspaceBadgeRail[heroTone="recommend"] {
         background: rgba(24, 21, 38, 0.38);
+        border: 1px solid rgba(182, 154, 255, 0.12);
         border-radius: 18px;
     }
     QFrame#workspaceBadgeRail[heroTone="broker"] {
         background: rgba(18, 30, 26, 0.38);
+        border: 1px solid rgba(102, 224, 163, 0.12);
         border-radius: 18px;
     }
     QFrame#workspaceBadgeRail[heroTone="auth"] {
         background: rgba(37, 28, 17, 0.34);
+        border: 1px solid rgba(255, 209, 102, 0.12);
         border-radius: 18px;
     }
     QFrame#workspaceBadgeRail[heroTone="detail"] {
         background: rgba(18, 30, 37, 0.34);
+        border: 1px solid rgba(126, 210, 255, 0.12);
         border-radius: 18px;
     }
     QFrame#workspaceBadgeRail[heroTone="scanner"] {
         background: rgba(18, 30, 35, 0.34);
+        border: 1px solid rgba(110, 214, 255, 0.12);
         border-radius: 18px;
     }
     QFrame#workspaceBadgeRail[heroTone="board"] {
         background: rgba(38, 26, 21, 0.34);
+        border: 1px solid rgba(255, 164, 122, 0.12);
         border-radius: 18px;
     }
     QFrame#workspaceBadgeRail[heroTone="config"] {
         background: rgba(24, 29, 34, 0.34);
+        border: 1px solid rgba(167, 183, 202, 0.12);
         border-radius: 18px;
     }
     QFrame#workspaceBadge,

@@ -295,6 +295,33 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(len(paths_by_symbol), file_count)
         self.assertGreaterEqual(len(rows), file_count)
 
+    def test_universe_scanner_resets_last_scan_warnings_between_runs(self) -> None:
+        scanner = UniverseScanner(StrategyParams())
+        bad_dir = self._temp_dir() / "universe_warning_reset_bad"
+        bad_dir.mkdir(exist_ok=True)
+        bad_path = bad_dir / "BROKEN_demo.csv"
+        with bad_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["date", "symbol", "open", "high", "low", "close", "volume"])
+            writer.writerow(["2026-04-01", "BROKEN", "10", "10.5", "9.8", "oops", "1000"])
+        self.addCleanup(lambda: bad_path.unlink(missing_ok=True))
+
+        scanner.scan_folder(bad_dir)
+        self.assertEqual(len(scanner.last_scan_warnings), 1)
+
+        good_dir = self._temp_dir() / "universe_warning_reset_good"
+        good_dir.mkdir(exist_ok=True)
+        good_path = good_dir / "SHSE.600000_demo.csv"
+        with good_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["date", "symbol", "open", "high", "low", "close", "volume"])
+            writer.writerows(generate_rows("SHSE.600000", "reclaim"))
+        self.addCleanup(lambda: good_path.unlink(missing_ok=True))
+
+        scanner.scan_folder(good_dir)
+
+        self.assertEqual(scanner.last_scan_warnings, [])
+
     def test_broker_export_creates_csv(self) -> None:
         row_path = self._write_demo_csv("order_demo.csv")
         bars = load_bars_from_csv(row_path)
@@ -2508,6 +2535,45 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(history[0].generated_at, "2026-04-15T09:14:00")
         self.assertEqual(history[-1].generated_at, "2026-04-15T09:03:00")
 
+    def test_local_market_cache_skips_broken_screen_history_entries(self) -> None:
+        cache_dir = self._temp_dir() / "market_cache_history_broken"
+        cache = LocalMarketCache(root=cache_dir, snapshot_ttl_seconds=60, bars_ttl_seconds=60)
+        history_path = cache_dir / "screen_history.json"
+        history_path.write_text(
+            json.dumps(
+                {
+                    "saved_at": 1.0,
+                    "payload": [
+                        {
+                            "market_name": "A股",
+                            "generated_at": "2026-04-15T09:30:00",
+                            "algorithmic_pool": [],
+                            "scan_rows": [],
+                            "recommendations": [],
+                            "bars_by_symbol": {},
+                            "analyses_by_symbol": {},
+                            "summaries": [],
+                            "snapshots": {},
+                            "chart_series_by_symbol": {},
+                        },
+                        {
+                            "market_name": "A股",
+                            "generated_at": "2026-04-15T09:29:00",
+                            "algorithmic_pool": [{"broken": True}],
+                        },
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        self.addCleanup(lambda: history_path.unlink(missing_ok=True))
+
+        history = cache.get_screen_history(limit=10)
+
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0].generated_at, "2026-04-15T09:30:00")
+
     def test_qt_entry_module_imports(self) -> None:
         if importlib.util.find_spec("PySide6") is None:
             self.skipTest("PySide6 is not installed in the current interpreter")
@@ -2690,6 +2756,40 @@ class StrategyWorkflowTests(unittest.TestCase):
                 finally:
                     window.close()
                     app.processEvents()
+
+    def test_perf_smoke_pipeline_returns_metrics(self) -> None:
+        from tools import perf_smoke
+
+        sample = perf_smoke._measure_pipeline(5)
+
+        self.assertEqual(sample.files, 5)
+        self.assertGreaterEqual(sample.scan_ms, 0.0)
+        self.assertGreaterEqual(sample.backtest_ms, 0.0)
+        self.assertGreaterEqual(sample.recommend_ms, 0.0)
+        self.assertGreaterEqual(sample.plan_ms, 0.0)
+        self.assertGreaterEqual(sample.board_ms, 0.0)
+        self.assertGreaterEqual(sample.export_ms, 0.0)
+        self.assertGreaterEqual(sample.paper_ms, 0.0)
+        self.assertGreaterEqual(sample.rows, 0)
+        self.assertGreaterEqual(sample.pool, 0)
+        self.assertGreaterEqual(sample.decisions, 0)
+
+    def test_perf_smoke_qt_boot_returns_expected_shape(self) -> None:
+        from tools import perf_smoke
+
+        result = perf_smoke._measure_qt_boot(1)
+
+        self.assertIn("available", result)
+        self.assertIn("iterations", result)
+        self.assertIn("boot_ms", result)
+        if importlib.util.find_spec("PySide6") is None:
+            self.assertFalse(result["available"])
+            self.assertEqual(result["boot_ms"], [])
+        else:
+            self.assertTrue(result["available"])
+            self.assertEqual(result["iterations"], 1)
+            self.assertEqual(len(result["boot_ms"]), 1)
+            self.assertGreater(result["boot_ms"][0], 0.0)
 
     def test_emit_action_feedback_updates_workspace_labels_and_story(self) -> None:
         module = importlib.import_module("app_qt")
