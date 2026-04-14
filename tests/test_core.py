@@ -4746,6 +4746,70 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(failed, "execution_table")
         self.assertEqual(reviewing, "orders_table")
 
+    def test_broker_execution_summary_distinguishes_pending_filled_and_failure(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        pending = module._qh_broker_execution_summary_v41(
+            stock_name="招商银行",
+            stock_id="600036",
+            symbol="SHSE.600036",
+            order_status_text="已提交",
+            fill_status_text="待成交",
+            failure_reason="",
+            message="等待柜台回执",
+        )
+        filled = module._qh_broker_execution_summary_v41(
+            stock_name="宁德时代",
+            stock_id="300750",
+            symbol="SZSE.300750",
+            order_status_text="已提交",
+            fill_status_text="已成交",
+            failure_reason="",
+            message="成交完成",
+        )
+        failed = module._qh_broker_execution_summary_v41(
+            stock_name="比亚迪",
+            stock_id="002594",
+            symbol="SZSE.002594",
+            order_status_text="提交失败",
+            fill_status_text="已拒绝",
+            failure_reason="可用资金不足",
+            message="柜台拒绝",
+        )
+
+        self.assertEqual(pending["stage"], "待成交跟踪")
+        self.assertIn("回执", pending["next_step"])
+        self.assertEqual(filled["stage"], "已成交待复盘")
+        self.assertIn("持仓", filled["judgement"])
+        self.assertEqual(failed["stage"], "阻塞待处理")
+        self.assertIn("可用资金不足", failed["tooltip"])
+
+    def test_broker_execution_followup_routes_by_stage(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        blocked = module._qh_broker_execution_followup_v42(
+            stage="阻塞待处理",
+            has_recommendation=True,
+            has_intent=True,
+        )
+        pending = module._qh_broker_execution_followup_v42(
+            stage="待成交跟踪",
+            has_recommendation=True,
+            has_intent=True,
+        )
+        filled = module._qh_broker_execution_followup_v42(
+            stage="已成交待复盘",
+            has_recommendation=True,
+            has_intent=False,
+        )
+
+        self.assertEqual(blocked["headline"], "回推荐页复核")
+        self.assertIn("主线", blocked["detail"])
+        self.assertEqual(pending["route"], "交易页")
+        self.assertIn("盯回执", pending["headline"])
+        self.assertEqual(filled["route"], "复盘页")
+        self.assertIn("执行偏差", filled["detail"])
+
     def test_set_aux_stage_visibility_updates_toggle_and_status(self) -> None:
         module = importlib.import_module("app_qt")
         app = module.QApplication.instance() or module.QApplication([])
@@ -4915,6 +4979,89 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(active, "市场已同步 -> 推荐已生成 -> 交易待确认 -> 实验跑样本")
         self.assertEqual(review, "市场已同步 -> 推荐已生成 -> 交易跟踪中 -> 实验可复盘")
 
+    def test_refresh_action_button_states_updates_workspace_routes(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+
+        scanner_tab = module.QWidget()
+        scanner_layout = module.QVBoxLayout(scanner_tab)
+        review_button = module.QPushButton("查看复盘")
+        scanner_layout.addWidget(review_button)
+
+        overview_tab = module.QWidget()
+        overview_layout = module.QVBoxLayout(overview_tab)
+        fund_button = module.QPushButton("资金看推荐")
+        overview_layout.addWidget(fund_button)
+
+        window = SimpleNamespace(
+            recommend_to_broker_button=module.QPushButton(),
+            plan_to_broker_button=module.QPushButton(),
+            focus_pending_button=module.QPushButton(),
+            retry_failed_button=module.QPushButton(),
+            push_priority_button=module.QPushButton(),
+            broker_focus_blocker_button=module.QPushButton(),
+            broker_focus_priority_button=module.QPushButton(),
+            paper_to_recommend_button=module.QPushButton(),
+            paper_to_detail_button=module.QPushButton(),
+            paper_to_broker_button=module.QPushButton(),
+            scanner_tab=scanner_tab,
+            board_tab=module.QWidget(),
+            recommend_tab=module.QWidget(),
+            broker_tab=module.QWidget(),
+            detail_tab=module.QWidget(),
+            overview_tab=overview_tab,
+            current_trade_plan=SimpleNamespace(decisions=[]),
+            order_intents=[],
+            daily_pool_rows=[],
+            active_symbol="",
+            last_broker_execution_summary={},
+            _selected_daily_pool_recommendation=lambda: None,
+            _has_pending_recommendations_v30=lambda: False,
+            _has_failed_recommendations_v30=lambda: False,
+            _selected_paper_symbol=lambda: "",
+            _selected_symbol_from_watchlist=lambda: "",
+            _selected_board_symbol=lambda: "",
+        )
+
+        module.QuantHunterWindow._refresh_action_button_states_v30(window)
+        self.assertFalse(window.recommend_to_broker_button.isEnabled())
+        self.assertFalse(window.focus_pending_button.isEnabled())
+        self.assertFalse(window.push_priority_button.isEnabled())
+        self.assertFalse(review_button.isEnabled())
+        self.assertFalse(fund_button.isEnabled())
+
+        window.active_symbol = "SZSE.300001"
+        window.order_intents = [object()]
+        window.daily_pool_rows = [SimpleNamespace(execution_status="待复核")]
+        window._selected_daily_pool_recommendation = lambda: object()
+        window._has_pending_recommendations_v30 = lambda: True
+        window._selected_paper_symbol = lambda: "SZSE.300001"
+
+        module.QuantHunterWindow._refresh_action_button_states_v30(window)
+        self.assertTrue(window.recommend_to_broker_button.isEnabled())
+        self.assertTrue(window.focus_pending_button.isEnabled())
+        self.assertTrue(window.push_priority_button.isEnabled())
+        self.assertTrue(window.broker_focus_priority_button.isEnabled())
+        self.assertTrue(window.paper_to_recommend_button.isEnabled())
+        self.assertTrue(review_button.isEnabled())
+        self.assertTrue(fund_button.isEnabled())
+
+    def test_hydrate_runtime_empty_states_populates_default_copy(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        window = SimpleNamespace(
+            runtime_log_text=module.QTextEdit(),
+            paper_experiment_text=module.QTextEdit(),
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text) if widget.toPlainText() != text else None,
+        )
+
+        module.QuantHunterWindow._hydrate_runtime_empty_states_v33(window)
+
+        self.assertIn("运行日志", window.runtime_log_text.toPlainText())
+        self.assertIn("实验记录", window.paper_experiment_text.toPlainText())
+
     def test_shell_workflow_stage_specs_switch_targets_and_statuses(self) -> None:
         module = importlib.import_module("app_qt")
 
@@ -5049,6 +5196,34 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn("对照战法：价值低吸 | 倾向 观察 x0.92", text)
         self.assertIn("最近实验：本轮实验：龙头模型继续领先，先看第二轮复现。", text)
         self.assertIn("下一轮建议：继续以 龙头模型 为主测", text)
+
+    def test_paper_experiment_role_specs_builds_lead_compare_and_watch_slots(self) -> None:
+        module = importlib.import_module("app_qt")
+        state = PaperTradingState(enabled=True)
+        analytics = {
+            "closed_trade_count": 6,
+            "win_rate": 0.6,
+            "strategy_rows": [
+                {"strategy_name": "龙头模型", "win_rate": 0.6},
+                {"strategy_name": "价值低吸", "win_rate": 0.5},
+                {"strategy_name": "尾盘买入法", "win_rate": 0.25},
+            ],
+        }
+        rotation_rows = [
+            {"strategy_name": "龙头模型", "bias_label": "加权", "budget_multiplier": 1.18, "sample_count": 6, "realized_pnl": 3200.0},
+            {"strategy_name": "价值低吸", "bias_label": "观察", "budget_multiplier": 0.92, "sample_count": 4, "realized_pnl": 800.0},
+            {"strategy_name": "尾盘买入法", "bias_label": "降权", "budget_multiplier": 0.68, "sample_count": 3, "realized_pnl": -1200.0},
+        ]
+
+        specs = module._qh_paper_experiment_role_specs_v43(state, analytics, rotation_rows)
+
+        self.assertEqual(specs[0]["headline"], "主测战法：龙头模型")
+        self.assertIn("样本 6", specs[0]["detail"])
+        self.assertIn("胜率 60.0%", specs[0]["detail"])
+        self.assertEqual(specs[1]["headline"], "对照战法：价值低吸")
+        self.assertIn("保留对照", specs[1]["detail"])
+        self.assertEqual(specs[2]["headline"], "降权观察：尾盘买入法")
+        self.assertIn("降权或暂停", specs[2]["detail"])
 
     def test_filtered_daily_pool_rows_supports_tail_buy_priority_view(self) -> None:
         module = importlib.import_module("app_qt")
@@ -6326,6 +6501,11 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn("适合资金：分批低吸 / 修复博弈", text)
         self.assertIn("仓位建议：优先分批吸，不要一次性打满。", text)
         self.assertIn("禁做情形：修复逻辑不成立、承接不足、跌破防守位时不做。", text)
+        self.assertIn("商品说明", text)
+        self.assertIn("适用行情：适合主线分歧后的回踩修复、承接重新回流、追高性价比偏低的行情。", text)
+        self.assertIn("容量上限：更适合中等容量分批布局，不适合在无承接时一次性打满。", text)
+        self.assertIn("标准动作：先等回踩企稳，再分批低吸；修复到 13.40 一线分批兑现", text)
+        self.assertIn("失败样本：最容易失败在修复预期落空、承接不足、跌破 12.00 防守线后停止低吸。后还继续摊低成本。", text)
 
     def test_refresh_trade_plan_focus_label_surfaces_one_day_hold_grade(self) -> None:
         module = importlib.import_module("app_qt")

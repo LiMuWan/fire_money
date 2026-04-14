@@ -486,6 +486,84 @@ def _strategy_no_go_text(strategy_name: str, focus_row) -> str:
     return f"{base} 当前失效线：{invalidation}"
 
 
+def _strategy_applicable_market(strategy_name: str, focus_row) -> str:
+    custom = str(
+        getattr(focus_row, "applicable_market", "")
+        or getattr(focus_row, "market_condition", "")
+        or ""
+    ).strip()
+    if custom:
+        return custom
+    return {
+        "龙头模型": "适合主线最强仍在加速、龙头位次明确、板块仍有持续性的行情。",
+        "主力雷达": "适合资金承接持续增强、量价匹配清晰、机构痕迹明显的行情。",
+        "擒龙打板": "适合情绪回暖、回封质量高、前排封板溢价仍在的进攻型行情。",
+        "价值低吸": "适合主线分歧后的回踩修复、承接重新回流、追高性价比偏低的行情。",
+        "尾盘买入法": "适合尾盘回流确认、隔夜博弈仍有溢价、次日兑现窗口较明确的行情。",
+        "一日持股法": "适合隔日强弱切换快、竞价与开盘承接决定盈亏的短节奏行情。",
+        "掘龙决策": "适合主线、资金、位置与节奏需要统一判断的综合型行情。",
+    }.get(strategy_name, "等待样本和机会池同步后再确认适用行情。")
+
+
+def _strategy_capacity_limit(strategy_name: str, focus_row) -> str:
+    custom = str(getattr(focus_row, "capacity_limit", "") or "").strip()
+    if custom:
+        return custom
+    action = str(getattr(focus_row, "action", "") or "").upper()
+    if action in {"SELL", "REDUCE"}:
+        return "当前以收缩和处理持仓为主，不适合继续扩大战法容量。"
+    return {
+        "龙头模型": "更适合核心仓位逐步放大，但前提是龙头和主线都没有掉队。",
+        "主力雷达": "更适合中等容量跟随，不适合在承接未确认前瞬间打满。",
+        "擒龙打板": "只适合小样本快节奏试错，不适合重仓持续摊大单票风险。",
+        "价值低吸": "更适合中等容量分批布局，不适合在无承接时一次性打满。",
+        "尾盘买入法": "更适合小到中等容量尾盘试仓，不适合全天追高后被动隔夜。",
+        "一日持股法": "更适合轻仓滚动试错，不适合在次日兑现逻辑不清时大仓位隔夜。",
+        "掘龙决策": "容量跟随总分与执行闸门动态调整，不适合脱离主线单独重仓。",
+    }.get(strategy_name, "先小样本运行，确认稳定后再逐步扩大战法容量。")
+
+
+def _strategy_standard_action(strategy_name: str, focus_row) -> str:
+    custom = str(getattr(focus_row, "standard_action", "") or "").strip()
+    if custom:
+        return custom
+    buy_point = str(getattr(focus_row, "buy_point", "") or "").strip()
+    sell_point = str(getattr(focus_row, "sell_point", "") or "").strip()
+    if strategy_name == "价值低吸":
+        return f"先等回踩企稳，再分批低吸；{sell_point or '修复到计划目标位后分批兑现。'}"
+    if strategy_name == "擒龙打板":
+        return f"先等强势确认和回封质量，再小仓试错；{sell_point or '炸板或次日弱转强失败时快速处理。'}"
+    if strategy_name == "尾盘买入法":
+        return f"先看 14:30 后回流和承接，再尾盘试仓；{sell_point or '次日冲高优先兑现，不恋战。'}"
+    if strategy_name == "一日持股法":
+        return f"先看竞价转强和开盘承接，再做隔日试错；{sell_point or '次日不及预期就快速退出。'}"
+    if strategy_name == "龙头模型":
+        return f"{buy_point or '先确认龙头位次和主线延续，再试仓。'}；{sell_point or '主线掉队或龙头失速时分批处理。'}"
+    if strategy_name == "主力雷达":
+        return f"{buy_point or '先确认承接和量能，再做跟随。'}；{sell_point or '承接转弱或量价失配时及时收缩。'}"
+    return f"{buy_point or '先按综合结论试仓。'}；{sell_point or '失去优势后按计划退出。'}"
+
+
+def _strategy_failure_sample_text(strategy_name: str, focus_row) -> str:
+    custom = str(
+        getattr(focus_row, "failure_example", "")
+        or getattr(focus_row, "failure_sample", "")
+        or ""
+    ).strip()
+    if custom:
+        return custom
+    invalidation = _strategy_invalidation_signal_text(focus_row)
+    return {
+        "龙头模型": f"最容易失败在主线切换后还把后排当龙头，或位次下降后仍试图硬抗。当前失效线：{invalidation}",
+        "主力雷达": f"最容易失败在资金假承接、放量滞涨、催化兑现后还继续追随。当前失效线：{invalidation}",
+        "擒龙打板": f"最容易失败在情绪退潮、炸板承接差、非主线硬板时继续进攻。当前失效线：{invalidation}",
+        "价值低吸": f"最容易失败在修复预期落空、承接不足、{invalidation}后还继续摊低成本。",
+        "尾盘买入法": f"最容易失败在尾盘抢拉无承接、隔夜消息走弱、次日竞价不及预期却没有先撤。当前失效线：{invalidation}",
+        "一日持股法": f"最容易失败在竞价不转强、开盘承接弱、次日兑现失败却没有及时认错。当前失效线：{invalidation}",
+        "掘龙决策": f"最容易失败在主线、位置和资金信号互相冲突时仍强行下结论。当前失效线：{invalidation}",
+    }.get(strategy_name, f"最容易失败在信号不一致却强行执行。当前失效线：{invalidation}")
+
+
 def _compact_daily_pool_date(value: str) -> str:
     raw = str(value or "").strip()
     if len(raw) == 10 and raw[4] == "-" and raw[7] == "-":
@@ -1602,6 +1680,12 @@ def refresh_strategy_focus_detail(window, strategy_score_fields) -> None:
         f"- 适合资金：{_strategy_capital_style(canonical_strategy_name)}",
         f"- 仓位建议：{_strategy_position_hint(canonical_strategy_name, focus_row)}",
         f"- 禁做情形：{_strategy_no_go_text(canonical_strategy_name, focus_row)}",
+        "",
+        "商品说明",
+        f"- 适用行情：{_strategy_applicable_market(canonical_strategy_name, focus_row)}",
+        f"- 容量上限：{_strategy_capacity_limit(canonical_strategy_name, focus_row)}",
+        f"- 标准动作：{_strategy_standard_action(canonical_strategy_name, focus_row)}",
+        f"- 失败样本：{_strategy_failure_sample_text(canonical_strategy_name, focus_row)}",
         "",
         "今天怎么用",
         f"- 适配场景：{_strategy_scene_copy(canonical_strategy_name)}",
