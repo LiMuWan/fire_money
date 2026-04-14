@@ -4688,6 +4688,64 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(blocked["push"], "暂不送审")
         self.assertEqual(blocked["broker"], "暂不进交易")
 
+    def test_broker_link_copy_distinguishes_review_submit_and_failure(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        reviewing = module._qh_broker_link_copy_v39(
+            stock_name="宁德时代",
+            stock_id="300750",
+            symbol="SZSE.300750",
+            execution_status="已送审",
+            has_scan_rows=True,
+            has_linked_records=True,
+        )
+        submitted = module._qh_broker_link_copy_v39(
+            stock_name="招商银行",
+            stock_id="600036",
+            symbol="SHSE.600036",
+            execution_status="已提交",
+            has_scan_rows=True,
+            has_linked_records=True,
+        )
+        failed = module._qh_broker_link_copy_v39(
+            stock_name="比亚迪",
+            stock_id="002594",
+            symbol="SZSE.002594",
+            execution_status="提交失败",
+            has_scan_rows=True,
+            has_linked_records=True,
+        )
+
+        self.assertIn("已送审", reviewing[0])
+        self.assertIn("交易链路", reviewing[1])
+        self.assertIn("已提交", submitted[0])
+        self.assertIn("交易回执", submitted[1])
+        self.assertIn("提交失败", failed[0])
+        self.assertIn("阻塞项", failed[1])
+
+    def test_broker_link_target_prefers_execution_for_submitted_and_failed(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        submitted = module._qh_broker_link_target_v40(
+            execution_status="已提交",
+            order_selected=True,
+            execution_selected=True,
+        )
+        failed = module._qh_broker_link_target_v40(
+            execution_status="提交失败",
+            order_selected=False,
+            execution_selected=True,
+        )
+        reviewing = module._qh_broker_link_target_v40(
+            execution_status="已送审",
+            order_selected=True,
+            execution_selected=True,
+        )
+
+        self.assertEqual(submitted, "execution_table")
+        self.assertEqual(failed, "execution_table")
+        self.assertEqual(reviewing, "orders_table")
+
     def test_set_aux_stage_visibility_updates_toggle_and_status(self) -> None:
         module = importlib.import_module("app_qt")
         app = module.QApplication.instance() or module.QApplication([])
@@ -4856,6 +4914,71 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(cold, "市场待刷新 -> 推荐待生成 -> 交易未启动 -> 实验待初始化")
         self.assertEqual(active, "市场已同步 -> 推荐已生成 -> 交易待确认 -> 实验跑样本")
         self.assertEqual(review, "市场已同步 -> 推荐已生成 -> 交易跟踪中 -> 实验可复盘")
+
+    def test_shell_workflow_stage_specs_switch_targets_and_statuses(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        cold_specs, cold_next = module._qh_shell_workflow_stage_specs_v42(
+            current_workspace_key="overview",
+            pool_count=0,
+            trade_decisions_count=0,
+            pending_orders=0,
+            submitted_orders=0,
+            paper_enabled=False,
+            paper_closed_trades=0,
+            paper_position_count=0,
+        )
+        review_specs, review_next = module._qh_shell_workflow_stage_specs_v42(
+            current_workspace_key="broker",
+            pool_count=18,
+            trade_decisions_count=5,
+            pending_orders=0,
+            submitted_orders=3,
+            paper_enabled=True,
+            paper_closed_trades=6,
+            paper_position_count=2,
+        )
+
+        self.assertEqual(cold_next, "market")
+        self.assertEqual(cold_specs[0]["button_text"], "市场 待刷新")
+        self.assertEqual(cold_specs[0]["role"], "accent")
+        self.assertEqual(cold_specs[1]["widget"], "daily_pool_table")
+        self.assertEqual(cold_specs[3]["widget"], "paper_initialize_button")
+        self.assertEqual(cold_specs[3]["button_text"], "实验 待初始化")
+
+        self.assertEqual(review_next, "experiment")
+        self.assertEqual(review_specs[1]["widget"], "trade_plan_table")
+        self.assertEqual(review_specs[2]["button_text"], "交易 跟踪中")
+        self.assertEqual(review_specs[2]["role"], "accent")
+        self.assertEqual(review_specs[3]["widget"], "paper_positions_table")
+        self.assertEqual(review_specs[3]["button_text"], "实验 可复盘")
+
+    def test_open_shell_workflow_stage_uses_dynamic_routes(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        class DummyTabs:
+            def currentIndex(self) -> int:
+                return 2
+
+        calls: list[tuple[str, str | None, str | None]] = []
+        window = SimpleNamespace(
+            tabs=DummyTabs(),
+            daily_pool_rows=[object()],
+            current_trade_plan=SimpleNamespace(decisions=[object()]),
+            order_intents=[],
+            order_submission_records=[object()],
+            paper_trading_state=PaperTradingState(
+                enabled=True,
+                positions=[PaperPosition(symbol="300001", stock_name="样本股", stock_id="300001", strategy_name="龙头模型")],
+            ),
+            _navigate_to_workspace=lambda workspace, widget=None, select_row=None: calls.append((workspace, widget, select_row)),
+        )
+
+        module.QuantHunterWindow._open_shell_workflow_stage(window, "recommend")
+        module.QuantHunterWindow._open_shell_workflow_stage(window, "experiment")
+
+        self.assertEqual(calls[0], ("recommend", "trade_plan_table", None))
+        self.assertEqual(calls[1], ("broker", "paper_positions_table", None))
 
     def test_set_broker_execution_detail_visibility_updates_controls(self) -> None:
         module = importlib.import_module("app_qt")
