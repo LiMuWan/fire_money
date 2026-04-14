@@ -194,6 +194,15 @@ from quant_hunter.ui_window_broker_patches import (
     shell_pipeline_story_v41 as _qh_shell_pipeline_story_v41,
 )
 from quant_hunter.ui_window_workbench_patches import apply_workspace_workbench_patches
+from quant_hunter.ui_window_shell_patches import (
+    apply_shell_workflow_patches,
+    shell_stage_for_workspace_v42 as _qh_shell_stage_for_workspace_v42,
+    shell_workflow_stage_specs_v42 as _qh_shell_workflow_stage_specs_v42,
+)
+from quant_hunter.ui_window_paper_experiment_patches import (
+    apply_paper_experiment_patches,
+    paper_experiment_role_specs_v43 as _qh_paper_experiment_role_specs_v43,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -13060,6 +13069,17 @@ def _qh_broker_repair_hint_v43(
     }
 
 
+def _qh_broker_execution_tone_v44(stage: str) -> str:
+    stage = str(stage or "")
+    if stage == "阻塞待处理":
+        return "risk"
+    if stage == "已成交待复盘":
+        return "buy"
+    if stage in {"待成交跟踪", "执行状态跟踪"}:
+        return "watch"
+    return "idle"
+
+
 def _qh_focus_symbol_in_broker_workspace(self: QuantHunterWindow, symbol: str) -> None:
     if not symbol:
         return
@@ -17852,6 +17872,18 @@ QLabel#statusBanner[spotlight="risk"],
 QLabel#workspaceFocusBanner[spotlight="risk"] {
     border-color: rgba(255, 123, 114, 0.44);
 }
+QLabel#focusStateLabel[spotlight="buy"] {
+    border: 1px solid rgba(77, 226, 154, 0.34);
+    background: rgba(12, 30, 20, 0.96);
+}
+QLabel#focusStateLabel[spotlight="watch"] {
+    border: 1px solid rgba(255, 209, 102, 0.30);
+    background: rgba(34, 29, 15, 0.96);
+}
+QLabel#focusStateLabel[spotlight="risk"] {
+    border: 1px solid rgba(255, 123, 114, 0.34);
+    background: rgba(42, 18, 20, 0.96);
+}
 QTableWidget[spotlight="buy"] {
     border: 1px solid rgba(77, 226, 154, 0.34);
     background: rgba(12, 20, 18, 0.98);
@@ -18395,6 +18427,7 @@ def _qh_refresh_submission_focus_v26(self: QuantHunterWindow) -> None:
         message=message,
         has_recommendation=recommendation is not None,
     )
+    execution_tone = _qh_broker_execution_tone_v44(summary["stage"])
 
     if hasattr(self, "order_result_text"):
         lines = [
@@ -18470,6 +18503,22 @@ def _qh_refresh_submission_focus_v26(self: QuantHunterWindow) -> None:
         ]
         self._set_plain_text_if_changed(self.broker_execution_text, "\n".join(lines))
 
+    if hasattr(self, "broker_stage_label"):
+        stage_text = f"执行阶段：{summary['stage']} | {followup['headline']} | {repair_hint['headline']}"
+        stage_tooltip = "\n".join(
+            [
+                f"焦点：{stock_name} ({stock_id} / {symbol or '--'})",
+                f"阶段判断：{summary['judgement']}",
+                f"链路建议：{followup['headline']} | {followup['detail']}",
+                f"处理建议：{repair_hint['headline']} | {repair_hint['checkpoint']}",
+            ]
+        )
+        self._set_label_text_if_changed(
+            self.broker_stage_label,
+            stage_text,
+            tooltip=stage_tooltip,
+        )
+
     if hasattr(self, "orders_focus_label"):
         focus_text = f"委托动作面板 / 执行焦点：{summary['stage']} | {followup['headline']} | 处理 {repair_hint['headline']}"
         focus_tooltip = "\n".join(
@@ -18486,6 +18535,20 @@ def _qh_refresh_submission_focus_v26(self: QuantHunterWindow) -> None:
             focus_text,
             tooltip=focus_tooltip,
         )
+
+    if hasattr(self, "_set_widget_spotlight_v23"):
+        for attr_name in [
+            "broker_status_banner",
+            "broker_workbench_banner",
+            "broker_stage_label",
+            "orders_focus_label",
+            "execution_table",
+            "order_result_text",
+            "broker_recap_text",
+            "broker_execution_text",
+            "broker_mainline_review_text",
+        ]:
+            self._set_widget_spotlight_v23(getattr(self, attr_name, None), execution_tone)
 
     if hasattr(self, "broker_status_banner"):
         self._set_label_text_if_changed(
@@ -18529,232 +18592,7 @@ QuantHunterWindow.confirm_and_submit_orders = _qh_confirm_and_submit_orders_v26
 
 
 apply_workspace_workbench_patches(QuantHunterWindow)
-
-
-def _qh_shell_stage_for_workspace_v42(workspace_key: str) -> str:
-    if workspace_key in {"overview", "scanner", "board"}:
-        return "market"
-    if workspace_key == "recommend":
-        return "recommend"
-    if workspace_key == "detail":
-        return "experiment"
-    if workspace_key in {"broker", "auth", "config"}:
-        return "trade"
-    return ""
-
-
-def _qh_shell_workflow_stage_specs_v42(
-    *,
-    current_workspace_key: str,
-    pool_count: int,
-    trade_decisions_count: int,
-    pending_orders: int,
-    submitted_orders: int,
-    paper_enabled: bool,
-    paper_closed_trades: int,
-    paper_position_count: int,
-) -> tuple[list[dict[str, str]], str]:
-    market_status = "已同步" if pool_count else "待刷新"
-    recommend_status = "已生成" if pool_count else "待生成"
-    trade_status = "跟踪中" if submitted_orders else ("待确认" if pending_orders or trade_decisions_count else "未启动")
-    experiment_status = "可复盘" if paper_closed_trades else ("跑样本" if paper_enabled else "待初始化")
-    experiment_widget = "paper_positions_table" if (paper_enabled and (paper_closed_trades or paper_position_count)) else ("paper_run_button" if paper_enabled else "paper_initialize_button")
-
-    specs: list[dict[str, str]] = [
-        {
-            "key": "market",
-            "title": "市场",
-            "status": market_status,
-            "workspace": "overview",
-            "widget": "market_pool_table",
-            "hint": "回到市场总览，先确认主线、资金和题材快照。",
-        },
-        {
-            "key": "recommend",
-            "title": "推荐",
-            "status": recommend_status,
-            "workspace": "recommend",
-            "widget": "trade_plan_table" if trade_decisions_count else "daily_pool_table",
-            "hint": "进入推荐成交台，压缩候选判断并生成执行计划。",
-        },
-        {
-            "key": "trade",
-            "title": "交易",
-            "status": trade_status,
-            "workspace": "broker",
-            "widget": "execution_table" if submitted_orders else "orders_table",
-            "hint": "进入交易执行台，复核委托、风控和成交回执。",
-        },
-        {
-            "key": "experiment",
-            "title": "实验",
-            "status": experiment_status,
-            "workspace": "broker",
-            "widget": experiment_widget,
-            "hint": "进入 AI 策略实验室，跟踪模拟盘样本与复盘结论。",
-        },
-    ]
-
-    next_stage_key = "market"
-    if pool_count:
-        next_stage_key = "recommend"
-    if trade_decisions_count or pending_orders or submitted_orders:
-        next_stage_key = "trade"
-    if paper_enabled and (paper_closed_trades or paper_position_count) and not pending_orders:
-        next_stage_key = "experiment"
-
-    stage_index = {spec["key"]: index for index, spec in enumerate(specs)}
-    current_stage_key = _qh_shell_stage_for_workspace_v42(current_workspace_key)
-    current_stage_index = stage_index.get(current_stage_key, -1)
-    next_stage_index = stage_index.get(next_stage_key, 0)
-
-    for index, spec in enumerate(specs):
-        role = "ghost"
-        if current_stage_index >= 0:
-            if index < current_stage_index:
-                role = "tonal"
-            if spec["key"] == current_stage_key:
-                role = "accent"
-        else:
-            if index < next_stage_index:
-                role = "tonal"
-            if spec["key"] == next_stage_key:
-                role = "accent"
-        spec["role"] = role
-        spec["button_text"] = f"{spec['title']} {spec['status']}"
-    return specs, next_stage_key
-
-
-def _qh_current_workspace_key_v42(self: QuantHunterWindow) -> str:
-    if not hasattr(self, "tabs"):
-        return "overview"
-    index = self.tabs.currentIndex()
-    if 0 <= index < len(WORKSPACE_TAB_ORDER):
-        return WORKSPACE_TAB_ORDER[index]
-    return "overview"
-
-
-def _qh_install_shell_workflow_bar_v42(self: QuantHunterWindow) -> None:
-    if hasattr(self, "shell_workflow_bar"):
-        return
-    root = self.centralWidget()
-    root_layout = root.layout() if isinstance(root, QWidget) else None
-    if not isinstance(root_layout, QVBoxLayout):
-        return
-
-    bar = QFrame()
-    bar.setObjectName("shellPulseBar")
-    layout = QHBoxLayout(bar)
-    layout.setContentsMargins(16, 10, 16, 10)
-    layout.setSpacing(10)
-
-    label = QLabel("流程直达")
-    label.setObjectName("shellPulseMeta")
-    layout.addWidget(label)
-
-    self.shell_workflow_buttons: dict[str, QPushButton] = {}
-    specs, next_stage_key = _qh_shell_workflow_stage_specs_v42(
-        current_workspace_key="overview",
-        pool_count=0,
-        trade_decisions_count=0,
-        pending_orders=0,
-        submitted_orders=0,
-        paper_enabled=False,
-        paper_closed_trades=0,
-        paper_position_count=0,
-    )
-    for spec in specs:
-        button = QPushButton(spec["button_text"])
-        button.setMinimumWidth(128)
-        button.setToolTip(spec["hint"])
-        self._set_button_role(button, spec["role"])
-        button.clicked.connect(lambda checked=False, target=spec["key"]: self._open_shell_workflow_stage(target))
-        self.shell_workflow_buttons[spec["key"]] = button
-        layout.addWidget(button)
-
-    note_label = QLabel(f"建议动作：{next((item['hint'] for item in specs if item['key'] == next_stage_key), '先刷新市场快照。')}")
-    note_label.setObjectName("shellPulseMeta")
-    note_label.setWordWrap(True)
-    self.shell_workflow_note_label = note_label
-    layout.addStretch(1)
-    layout.addWidget(note_label, stretch=2)
-
-    pulse_index = root_layout.indexOf(self.shell_pulse_bar) if hasattr(self, "shell_pulse_bar") else -1
-    root_layout.insertWidget(pulse_index + 1 if pulse_index >= 0 else 1, bar)
-    self.shell_workflow_bar = bar
-
-
-def _qh_build_ui_v42(self: QuantHunterWindow) -> None:
-    _ORIGINAL_QH_BUILD_UI_V42(self)
-    self._install_shell_workflow_bar_v42()
-
-
-def _qh_open_shell_workflow_stage_v42(self: QuantHunterWindow, stage_key: str) -> None:
-    trade_plan = getattr(self, "current_trade_plan", None)
-    trade_decisions = list(getattr(trade_plan, "decisions", []) or [])
-    paper_state = getattr(self, "paper_trading_state", getattr(getattr(self, "state", None), "paper_trading_state", PaperTradingState()))
-    paper_analytics = summarize_paper_trading_performance(paper_state)
-    specs, _ = _qh_shell_workflow_stage_specs_v42(
-        current_workspace_key=_qh_current_workspace_key_v42(self),
-        pool_count=len(getattr(self, "daily_pool_rows", []) or []),
-        trade_decisions_count=len(trade_decisions),
-        pending_orders=len(getattr(self, "order_intents", []) or []),
-        submitted_orders=len(getattr(self, "order_submission_records", []) or []),
-        paper_enabled=bool(getattr(paper_state, "enabled", False)),
-        paper_closed_trades=int(paper_analytics.get("closed_trade_count", 0) or 0),
-        paper_position_count=len(getattr(paper_state, "positions", []) or []),
-    )
-    route = next((item for item in specs if item["key"] == stage_key), None)
-    if route is None:
-        return
-    self._navigate_to_workspace(route["workspace"], route["widget"])
-
-
-def _qh_refresh_shell_header_v42(self: QuantHunterWindow) -> None:
-    _ORIGINAL_QH_REFRESH_SHELL_HEADER_V42(self)
-    buttons = getattr(self, "shell_workflow_buttons", {})
-    if not isinstance(buttons, dict) or not buttons:
-        return
-
-    trade_plan = getattr(self, "current_trade_plan", None)
-    trade_decisions = list(getattr(trade_plan, "decisions", []) or [])
-    paper_state = getattr(self, "paper_trading_state", getattr(getattr(self, "state", None), "paper_trading_state", PaperTradingState()))
-    paper_analytics = summarize_paper_trading_performance(paper_state)
-    specs, next_stage_key = _qh_shell_workflow_stage_specs_v42(
-        current_workspace_key=_qh_current_workspace_key_v42(self),
-        pool_count=len(getattr(self, "daily_pool_rows", []) or []),
-        trade_decisions_count=len(trade_decisions),
-        pending_orders=len(getattr(self, "order_intents", []) or []),
-        submitted_orders=len(getattr(self, "order_submission_records", []) or []),
-        paper_enabled=bool(getattr(paper_state, "enabled", False)),
-        paper_closed_trades=int(paper_analytics.get("closed_trade_count", 0) or 0),
-        paper_position_count=len(getattr(paper_state, "positions", []) or []),
-    )
-    for spec in specs:
-        button = buttons.get(spec["key"])
-        if not isinstance(button, QPushButton):
-            continue
-        if button.text() != spec["button_text"]:
-            button.setText(spec["button_text"])
-        if button.toolTip() != spec["hint"]:
-            button.setToolTip(spec["hint"])
-        self._set_button_role(button, spec["role"])
-
-    note_label = getattr(self, "shell_workflow_note_label", None)
-    if isinstance(note_label, QLabel):
-        next_hint = next((item["hint"] for item in specs if item["key"] == next_stage_key), "先刷新市场快照。")
-        note_text = f"建议动作：{next_hint}"
-        if note_label.text() != note_text:
-            note_label.setText(note_text)
-
-
-_ORIGINAL_QH_BUILD_UI_V42 = QuantHunterWindow._build_ui
-_ORIGINAL_QH_REFRESH_SHELL_HEADER_V42 = QuantHunterWindow._refresh_shell_header
-
-QuantHunterWindow._install_shell_workflow_bar_v42 = _qh_install_shell_workflow_bar_v42
-QuantHunterWindow._open_shell_workflow_stage = _qh_open_shell_workflow_stage_v42
-QuantHunterWindow._build_ui = _qh_build_ui_v42
-QuantHunterWindow._refresh_shell_header = _qh_refresh_shell_header_v42
+apply_shell_workflow_patches(QuantHunterWindow)
 
 
 apply_commercial_chrome_patches(
@@ -18781,142 +18619,10 @@ apply_workspace_visibility_patches(
     recommend_execution_summary_fn=_qh_recommend_execution_summary_v24,
 )
 apply_broker_workspace_patches(QuantHunterWindow)
-
-
-def _qh_paper_experiment_role_specs_v43(
-    state: PaperTradingState,
-    analytics: dict[str, object],
-    rotation_rows: list[dict[str, object]],
-) -> list[dict[str, str]]:
-    strategy_rows = {
-        str(item.get("strategy_name", "") or ""): dict(item)
-        for item in list(analytics.get("strategy_rows", []) or [])
-    }
-    stage_title, _ = _qh_paper_lab_stage_v39(state, analytics)
-    slots: list[tuple[str, str, dict[str, object] | None]] = []
-    lead_row = rotation_rows[0] if rotation_rows else None
-    compare_row = rotation_rows[1] if len(rotation_rows) > 1 else None
-    trailing_row = None
-    if len(rotation_rows) > 2:
-        trailing_row = rotation_rows[-1]
-        if trailing_row is lead_row or trailing_row is compare_row:
-            trailing_row = None
-    slots.extend(
-        [
-            ("lead", "主测战法", lead_row),
-            ("compare", "对照战法", compare_row),
-            ("watch", "降权观察", trailing_row),
-        ]
-    )
-
-    specs: list[dict[str, str]] = []
-    for slot_key, title, rotation in slots:
-        if rotation:
-            strategy_name = str(rotation.get("strategy_name", "") or "待确认")
-            realized = float(rotation.get("realized_pnl", 0.0) or 0.0)
-            multiplier = float(rotation.get("budget_multiplier", 1.0) or 1.0)
-            bias_label = str(rotation.get("bias_label", "") or "中性")
-            sample_count = int(rotation.get("sample_count", 0) or 0)
-            metrics = strategy_rows.get(strategy_name, {})
-            win_rate = float(metrics.get("win_rate", rotation.get("win_rate", 0.0)) or 0.0)
-            if slot_key == "lead":
-                next_step = "继续加样本，优先看同类标的复现。"
-            elif slot_key == "compare":
-                next_step = "保留对照，避免只看单一胜样本。"
-            else:
-                next_step = "若继续掉队，下轮先降权或暂停。"
-            detail = (
-                f"{bias_label} x{multiplier:.2f} | 样本 {sample_count} | 胜率 {win_rate:.1%} | "
-                f"已实现 {realized:,.0f} | {next_step}"
-            )
-        else:
-            strategy_name = "待补样本"
-            if slot_key == "lead":
-                detail = f"{stage_title} | 先跑出第一套可闭环样本。"
-            elif slot_key == "compare":
-                detail = "主测尚未稳定，先不要急着扩大战法对照。"
-            else:
-                detail = "当前没有明确掉队战法，继续跟踪样本分化。"
-        specs.append(
-            {
-                "key": slot_key,
-                "title": title,
-                "headline": f"{title}：{strategy_name}",
-                "detail": detail,
-            }
-        )
-    return specs
-
-
-_ORIGINAL_QH_INSTALL_PAPER_TRADING_WORKSPACE_V43 = QuantHunterWindow._install_paper_trading_workspace
-_ORIGINAL_QH_REFRESH_PAPER_TRADING_PANELS_V43 = QuantHunterWindow._refresh_paper_trading_panels
-
-
-def _qh_install_paper_trading_workspace_v43(self: QuantHunterWindow) -> None:
-    _ORIGINAL_QH_INSTALL_PAPER_TRADING_WORKSPACE_V43(self)
-    widget = getattr(self, "paper_experiment_text", None)
-    if not isinstance(widget, QTextEdit) or hasattr(self, "paper_experiment_role_labels"):
-        return
-    parent = widget.parentWidget()
-    layout = parent.layout() if isinstance(parent, QWidget) else None
-    if not isinstance(layout, QVBoxLayout):
-        return
-
-    summary_label = QLabel("实验编排：先确定主测、保留对照，再识别需要降权或暂停的战法。")
-    summary_label.setObjectName("inlineHint")
-    summary_label.setWordWrap(True)
-    self.paper_experiment_summary_label = summary_label
-    layout.insertWidget(0, summary_label)
-
-    rail = QWidget()
-    rail_layout = QHBoxLayout(rail)
-    rail_layout.setContentsMargins(0, 0, 0, 0)
-    rail_layout.setSpacing(8)
-    self.paper_experiment_role_labels: dict[str, QLabel] = {}
-    for key in ("lead", "compare", "watch"):
-        label = QLabel("等待实验样本")
-        label.setObjectName("focusStateLabel")
-        label.setWordWrap(True)
-        label.setMinimumHeight(72)
-        self.paper_experiment_role_labels[key] = label
-        rail_layout.addWidget(label, stretch=1)
-    layout.insertWidget(1, rail)
-    self.paper_experiment_role_rail = rail
-
-
-def _qh_refresh_paper_trading_panels_v43(self: QuantHunterWindow) -> None:
-    _ORIGINAL_QH_REFRESH_PAPER_TRADING_PANELS_V43(self)
-    role_labels = getattr(self, "paper_experiment_role_labels", {})
-    if not isinstance(role_labels, dict) or not role_labels:
-        return
-    state = getattr(self, "paper_trading_state", getattr(self.state, "paper_trading_state", PaperTradingState()))
-    analytics = summarize_paper_trading_performance(state)
-    rotation_rows = build_strategy_rotation_snapshot(state)
-    specs = _qh_paper_experiment_role_specs_v43(state, analytics, rotation_rows)
-    for spec in specs:
-        label = role_labels.get(spec["key"])
-        if isinstance(label, QLabel):
-            text = f"{spec['headline']}\n{spec['detail']}"
-            self._set_label_text_if_changed(label, text, tooltip=text)
-
-    stage_title, stage_detail = _qh_paper_lab_stage_v39(state, analytics)
-    summary_label = getattr(self, "paper_experiment_summary_label", None)
-    if isinstance(summary_label, QLabel):
-        lead_name = specs[0]["headline"].split("：", 1)[-1] if specs else "待补样本"
-        compare_name = specs[1]["headline"].split("：", 1)[-1] if len(specs) > 1 else "待补样本"
-        summary_text = f"实验编排：{stage_title} | 主测 {lead_name} | 对照 {compare_name} | {stage_detail}"
-        self._set_label_text_if_changed(summary_label, summary_text, tooltip=summary_text)
-
-    status_label = getattr(self, "paper_lab_toggle_status_label", None)
-    if isinstance(status_label, QLabel) and not getattr(self, "_qh_paper_lab_detail_visible_v39", False):
-        lead_name = specs[0]["headline"].split("：", 1)[-1] if specs else "待补样本"
-        compare_name = specs[1]["headline"].split("：", 1)[-1] if len(specs) > 1 else "待补样本"
-        status_text = f"原始流水已折叠，先看实验编排。主测 {lead_name}；对照 {compare_name}；当前阶段 {stage_title}。"
-        self._set_label_text_if_changed(status_label, status_text, tooltip=status_text)
-
-
-QuantHunterWindow._install_paper_trading_workspace = _qh_install_paper_trading_workspace_v43
-QuantHunterWindow._refresh_paper_trading_panels = _qh_refresh_paper_trading_panels_v43
+apply_paper_experiment_patches(
+    QuantHunterWindow,
+    paper_lab_stage_fn=_qh_paper_lab_stage_v39,
+)
 
 
 def main() -> int:

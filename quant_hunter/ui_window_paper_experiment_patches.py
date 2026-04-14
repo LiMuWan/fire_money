@@ -1,0 +1,159 @@
+from __future__ import annotations
+
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QTextEdit, QVBoxLayout, QWidget
+
+from quant_hunter.models import PaperTradingState
+from quant_hunter.paper_trading import build_strategy_rotation_snapshot, summarize_paper_trading_performance
+
+
+def paper_experiment_role_specs_v43(
+    state: PaperTradingState,
+    analytics: dict[str, object],
+    rotation_rows: list[dict[str, object]],
+    *,
+    paper_lab_stage_fn=None,
+) -> list[dict[str, str]]:
+    if paper_lab_stage_fn is None:
+        from quant_hunter.ui_window_visibility_patches import paper_lab_stage_v39
+
+        paper_lab_stage_fn = paper_lab_stage_v39
+    strategy_rows = {
+        str(item.get("strategy_name", "") or ""): dict(item)
+        for item in list(analytics.get("strategy_rows", []) or [])
+    }
+    stage_title, _ = paper_lab_stage_fn(state, analytics)
+    slots: list[tuple[str, str, dict[str, object] | None]] = []
+    lead_row = rotation_rows[0] if rotation_rows else None
+    compare_row = rotation_rows[1] if len(rotation_rows) > 1 else None
+    trailing_row = None
+    if len(rotation_rows) > 2:
+        trailing_row = rotation_rows[-1]
+        if trailing_row is lead_row or trailing_row is compare_row:
+            trailing_row = None
+    slots.extend(
+        [
+            ("lead", "主测战法", lead_row),
+            ("compare", "对照战法", compare_row),
+            ("watch", "降权观察", trailing_row),
+        ]
+    )
+
+    specs: list[dict[str, str]] = []
+    for slot_key, title, rotation in slots:
+        if rotation:
+            strategy_name = str(rotation.get("strategy_name", "") or "待确认")
+            realized = float(rotation.get("realized_pnl", 0.0) or 0.0)
+            multiplier = float(rotation.get("budget_multiplier", 1.0) or 1.0)
+            bias_label = str(rotation.get("bias_label", "") or "中性")
+            sample_count = int(rotation.get("sample_count", 0) or 0)
+            metrics = strategy_rows.get(strategy_name, {})
+            win_rate = float(metrics.get("win_rate", rotation.get("win_rate", 0.0)) or 0.0)
+            if slot_key == "lead":
+                next_step = "继续加样本，优先看同类标的复现。"
+            elif slot_key == "compare":
+                next_step = "保留对照，避免只看单一胜样本。"
+            else:
+                next_step = "若继续掉队，下轮先降权或暂停。"
+            detail = (
+                f"{bias_label} x{multiplier:.2f} | 样本 {sample_count} | 胜率 {win_rate:.1%} | "
+                f"已实现 {realized:,.0f} | {next_step}"
+            )
+        else:
+            strategy_name = "待补样本"
+            if slot_key == "lead":
+                detail = f"{stage_title} | 先跑出第一套可闭环样本。"
+            elif slot_key == "compare":
+                detail = "主测尚未稳定，先不要急着扩大战法对照。"
+            else:
+                detail = "当前没有明确掉队战法，继续跟踪样本分化。"
+        specs.append(
+            {
+                "key": slot_key,
+                "title": title,
+                "headline": f"{title}：{strategy_name}",
+                "detail": detail,
+            }
+        )
+    return specs
+
+
+def apply_paper_experiment_patches(
+    window_cls: type,
+    *,
+    paper_lab_stage_fn,
+) -> None:
+    if getattr(window_cls, "_qh_paper_experiment_patches_applied_v43", False):
+        return
+
+    original_install_paper_trading_workspace_v43 = window_cls._install_paper_trading_workspace
+    original_refresh_paper_trading_panels_v43 = window_cls._refresh_paper_trading_panels
+
+    def _install_paper_trading_workspace_v43(self) -> None:
+        original_install_paper_trading_workspace_v43(self)
+        widget = getattr(self, "paper_experiment_text", None)
+        if not isinstance(widget, QTextEdit) or hasattr(self, "paper_experiment_role_labels"):
+            return
+        parent = widget.parentWidget()
+        layout = parent.layout() if isinstance(parent, QWidget) else None
+        if not isinstance(layout, QVBoxLayout):
+            return
+
+        summary_label = QLabel("实验编排：先确定主测、保留对照，再识别需要降权或暂停的战法。")
+        summary_label.setObjectName("inlineHint")
+        summary_label.setWordWrap(True)
+        self.paper_experiment_summary_label = summary_label
+        layout.insertWidget(0, summary_label)
+
+        rail = QWidget()
+        rail_layout = QHBoxLayout(rail)
+        rail_layout.setContentsMargins(0, 0, 0, 0)
+        rail_layout.setSpacing(8)
+        self.paper_experiment_role_labels = {}
+        for key in ("lead", "compare", "watch"):
+            label = QLabel("等待实验样本")
+            label.setObjectName("focusStateLabel")
+            label.setWordWrap(True)
+            label.setMinimumHeight(72)
+            self.paper_experiment_role_labels[key] = label
+            rail_layout.addWidget(label, stretch=1)
+        layout.insertWidget(1, rail)
+        self.paper_experiment_role_rail = rail
+
+    def _refresh_paper_trading_panels_v43(self) -> None:
+        original_refresh_paper_trading_panels_v43(self)
+        role_labels = getattr(self, "paper_experiment_role_labels", {})
+        if not isinstance(role_labels, dict) or not role_labels:
+            return
+        state = getattr(self, "paper_trading_state", getattr(self.state, "paper_trading_state", PaperTradingState()))
+        analytics = summarize_paper_trading_performance(state)
+        rotation_rows = build_strategy_rotation_snapshot(state)
+        specs = paper_experiment_role_specs_v43(
+            state,
+            analytics,
+            rotation_rows,
+            paper_lab_stage_fn=paper_lab_stage_fn,
+        )
+        for spec in specs:
+            label = role_labels.get(spec["key"])
+            if isinstance(label, QLabel):
+                text = f"{spec['headline']}\n{spec['detail']}"
+                self._set_label_text_if_changed(label, text, tooltip=text)
+
+        stage_title, stage_detail = paper_lab_stage_fn(state, analytics)
+        summary_label = getattr(self, "paper_experiment_summary_label", None)
+        if isinstance(summary_label, QLabel):
+            lead_name = specs[0]["headline"].split("：", 1)[-1] if specs else "待补样本"
+            compare_name = specs[1]["headline"].split("：", 1)[-1] if len(specs) > 1 else "待补样本"
+            summary_text = f"实验编排：{stage_title} | 主测 {lead_name} | 对照 {compare_name} | {stage_detail}"
+            self._set_label_text_if_changed(summary_label, summary_text, tooltip=summary_text)
+
+        status_label = getattr(self, "paper_lab_toggle_status_label", None)
+        if isinstance(status_label, QLabel) and not getattr(self, "_qh_paper_lab_detail_visible_v39", False):
+            lead_name = specs[0]["headline"].split("：", 1)[-1] if specs else "待补样本"
+            compare_name = specs[1]["headline"].split("：", 1)[-1] if len(specs) > 1 else "待补样本"
+            status_text = f"原始流水已折叠，先看实验编排。主测 {lead_name}；对照 {compare_name}；当前阶段 {stage_title}。"
+            self._set_label_text_if_changed(status_label, status_text, tooltip=status_text)
+
+    window_cls._install_paper_trading_workspace = _install_paper_trading_workspace_v43
+    window_cls._refresh_paper_trading_panels = _refresh_paper_trading_panels_v43
+    window_cls._qh_paper_experiment_patches_applied_v43 = True
