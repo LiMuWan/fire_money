@@ -246,6 +246,12 @@ QToolTip {
                 self.style().unpolish(widget)
                 self.style().polish(widget)
                 widget.update()
+        shell_root = self.centralWidget() if hasattr(self, "centralWidget") else None
+        if isinstance(shell_root, QWidget) and shell_root.property("pageTone") != page_key:
+            shell_root.setProperty("pageTone", page_key)
+            self.style().unpolish(shell_root)
+            self.style().polish(shell_root)
+            shell_root.update()
         if hasattr(self, "tabs"):
             bar = self.tabs.tabBar()
             if isinstance(bar, QWidget) and bar.property("pageTone") != page_key:
