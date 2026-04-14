@@ -1,0 +1,400 @@
+diff --git "a/.codex_stage\\app_qt_head_base.py" "b/.codex_stage\\app_qt_head.py"
+index 36b5d61..ff136ae 100644
+--- "a/.codex_stage\\app_qt_head_base.py"
++++ "b/.codex_stage\\app_qt_head.py"
+@@ -205,6 +205,7 @@ from quant_hunter.ui_window_paper_experiment_patches import (
+     paper_experiment_table_context_v44 as _qh_paper_experiment_table_context_v44,
+     paper_strategy_experiment_bridge_v45 as _qh_paper_strategy_experiment_bridge_v45,
+ )
++from quant_hunter.ui_window_cross_workspace_focus_patches import apply_cross_workspace_focus_patches
+ from quant_hunter.ui_window_focus_bridge_patches import apply_focus_bridge_patches
+ from quant_hunter.ui_window_runtime_feedback_patches import apply_runtime_feedback_patches
+ 
+@@ -16325,374 +16326,19 @@ apply_focus_bridge_patches(
+     next_review_target_fn=_qh_next_review_target,
+ )
+ 
+-
+-_ORIGINAL_QH_REFRESH_RECOMMENDATION_FOCUS_PANELS_V25 = QuantHunterWindow._refresh_recommendation_focus_panels
+-
+-
+-def _qh_refresh_recommendation_focus_panels_v25(self: QuantHunterWindow, row: RecommendationRow | None = None) -> None:
+-    _ORIGINAL_QH_REFRESH_RECOMMENDATION_FOCUS_PANELS_V25(self, row)
+-    current = row or (self._current_recommend_focus() if hasattr(self, "_current_recommend_focus") else None)
+-    if current is None:
+-        if hasattr(self, "recommend_dispatch_text"):
+-            self._set_plain_text_if_changed(
+-                self.recommend_dispatch_text,
+-                "执行速览\n结论：等待焦点票\n下一步：先在主线看板里选中一只股票。",
+-            )
+-        if hasattr(self, "recommend_focus_review_text"):
+-            self._set_plain_text_if_changed(
+-                self.recommend_focus_review_text,
+-                "复核要点\n价位：等待同步\n风险：等待同步\n下一步：看单票决策摘要。",
+-            )
+-        if hasattr(self, "recommend_queue_text"):
+-            self._set_plain_text_if_changed(
+-                self.recommend_queue_text,
+-                "送审队列\n暂无待复核票\n下一步：先生成交易计划。",
+-            )
+-        return
+-
+-    signal = _qh_mainline_signal_brief_v4(current)
+-    verdict, execution_summary, _, _ = _qh_recommend_execution_summary_v24(self, current)
+-    focus_reason = _qh_recommend_focus_reason_v24(self, current)
+-    queue_snapshot = _qh_recommend_queue_snapshot_v25(self)
+-    queue_summary = _qh_queue_sequence_summary(queue_snapshot)
+-    next_review_target = _qh_next_review_target(queue_snapshot)
+-    pending_review = list(queue_snapshot["pending_review"])
+-    reviewing = list(queue_snapshot["reviewing"])
+-    submitted = list(queue_snapshot["submitted"])
+-    failed = list(queue_snapshot["failed"])
+-    execution_state = getattr(current, "execution_status", "") or "待观察"
+-    risk_flag = getattr(current, "mainline_risk_flag", "") or "待评估"
+-    invalidation = getattr(current, "invalidation_reason", "") or getattr(current, "risk_line", "") or "跌破防守位或主线切换时重新评估"
+-    next_focus = getattr(current, "next_focus", "") or "继续盯量能、承接和主线延续。"
+-    planned_entry = float(getattr(current, "entry_price", 0.0) or getattr(current, "close", 0.0) or 0.0)
+-    planned_stop = float(getattr(current, "stop_price", 0.0) or (planned_entry * 0.95 if planned_entry > 0 else 0.0))
+-    next_item = (
+-        pending_review[0].stock_name if pending_review else (reviewing[0].stock_name if reviewing else (failed[0].stock_name if failed else "暂无"))
+-    )
+-
+-    if hasattr(self, "recommend_dispatch_text"):
+-        dispatch_lines = [
+-            "执行速览",
+-            f"结论：{current.stock_name} | {verdict}",
+-            f"链路：{signal} | {execution_state}",
+-            f"风险线：{risk_flag} | 失效 {invalidation[:20]}",
+-            f"执行提示：{execution_summary}",
+-            f"等待复核：{next_review_target}",
+-        ]
+-        self._set_plain_text_if_changed(self.recommend_dispatch_text, "\n".join(dispatch_lines))
+-
+-    if hasattr(self, "recommend_focus_review_text"):
+-        review_lines = [
+-            "复核要点",
+-            f"价位：买点 {planned_entry:.2f} | 止损 {planned_stop:.2f}",
+-            f"确认信号：{focus_reason}",
+-            f"复核顺序：{queue_summary}",
+-            f"下一步：{next_focus}",
+-        ]
+-        self._set_plain_text_if_changed(self.recommend_focus_review_text, "\n".join(review_lines))
+-
+-    if hasattr(self, "recommend_queue_text"):
+-        queue_lines = [
+-            "送审队列",
+-            queue_summary,
+-            f"当前优先：{next_item}",
+-        ]
+-        self._set_plain_text_if_changed(self.recommend_queue_text, "\n".join(queue_lines))
+-
+-
+-QuantHunterWindow._refresh_recommendation_focus_panels = _qh_refresh_recommendation_focus_panels_v25
+-
+-
+-def _qh_explicit_recommendation_focus_v18(self: QuantHunterWindow):
+-    table = getattr(self, "daily_pool_table", None)
+-    if table is not None:
+-        row_index = table.currentRow()
+-        if row_index >= 0:
+-            filtered = self._filtered_daily_pool_rows() if hasattr(self, "_filtered_daily_pool_rows") else list(getattr(self, "daily_pool_rows", []) or [])
+-            if row_index < len(filtered):
+-                return filtered[row_index]
+-    active_symbol = getattr(self, "active_symbol", "") or ""
+-    if active_symbol:
+-        return next((row for row in getattr(self, "daily_pool_rows", []) if getattr(row, "symbol", "") == active_symbol), None)
+-    return None
+-
+-
+-def _qh_latest_signal_for_symbol_v18(self: QuantHunterWindow, symbol: str):
+-    if not symbol:
+-        return None
+-    analyses = []
+-    if getattr(self, "active_symbol", "") == symbol:
+-        analyses = list(getattr(self, "analyses", []) or [])
+-    if not analyses:
+-        analyses = list(getattr(self, "universe_analyses", {}).get(symbol, []) or [])
+-    return next((item for item in reversed(analyses) if getattr(item, "label", "") != "NONE"), None)
+-
+-
+-_ORIGINAL_QH_ON_DAILY_POOL_SELECTION_CHANGED_V18 = QuantHunterWindow._on_daily_pool_selection_changed
+-_ORIGINAL_QH_REFRESH_RECOMMEND_FOCUS_CARDS_V8 = QuantHunterWindow._refresh_recommend_focus_cards
+-_ORIGINAL_QH_REFRESH_BROKER_ORDER_FOCUS_V8 = QuantHunterWindow._refresh_broker_order_focus
+-_ORIGINAL_QH_REFRESH_DETAIL_WORKSPACE_PANELS_V18 = QuantHunterWindow._refresh_detail_workspace_panels
+-_ORIGINAL_QH_REFRESH_LIVE_WORKSPACE_SUMMARY_PANELS_V18 = QuantHunterWindow._refresh_live_workspace_summary_panels
+-
+-
+-def _qh_refresh_live_workspace_summary_panels_v18(self: QuantHunterWindow) -> None:
+-    _ORIGINAL_QH_REFRESH_LIVE_WORKSPACE_SUMMARY_PANELS_V18(self)
+-
+-    focus_recommend = self._explicit_recommendation_focus() if hasattr(self, "_explicit_recommendation_focus") else None
+-    if focus_recommend is None:
+-        return
+-
+-    focus_symbol = getattr(focus_recommend, "symbol", "") or ""
+-    if not focus_symbol:
+-        return
+-
+-    stock_name = getattr(focus_recommend, "stock_name", "") or self._stock_name_for_symbol(focus_symbol)
+-    stock_id = getattr(focus_recommend, "stock_id", "") or self._stock_id_for_symbol(focus_symbol)
+-    signal = _qh_mainline_signal_brief_v4(focus_recommend)
+-    action_text = _qh_signal_action_text_v4(focus_recommend)
+-    theme_name = getattr(focus_recommend, "mainline_tag", "") or getattr(focus_recommend, "theme_name", "") or "待确认"
+-    hype_logic = self._hype_logic_for_symbol(focus_symbol, recommendation=focus_recommend)
+-    news_badge = self._compact_news_badge(focus_symbol)
+-    risk_flag = getattr(focus_recommend, "mainline_risk_flag", "") or "待评估"
+-    next_focus = getattr(focus_recommend, "next_focus", "") or "继续核对主线、位置、催化与承接。"
+-    readiness = float(getattr(focus_recommend, "execution_readiness", 0.0) or 0.0)
+-    confidence = float(getattr(focus_recommend, "confidence_score", 0.0) or 0.0)
+-    price_brief = self._recommend_price_brief(focus_recommend) if hasattr(self, "_recommend_price_brief") else ""
+-    matching_intent = next((item for item in getattr(self, "order_intents", []) if getattr(item, "symbol", "") == focus_symbol), None)
+-    matching_record = next(
+-        (item for item in reversed(list(getattr(self, "order_submission_records", []) or [])) if str(item.get("symbol", "") or "") == focus_symbol),
+-        None,
+-    )
+-    latest_signal = self._latest_signal_for_symbol(focus_symbol) if hasattr(self, "_latest_signal_for_symbol") else None
+-
+-    if hasattr(self, "recommend_live_summary_detail"):
+-        self._set_label_text_if_changed(
+-            self.recommend_live_summary_detail,
+-            f"焦点：{stock_name} ({stock_id} / {focus_symbol}) | {theme_name} | {action_text} / {signal}",
+-        )
+-    if hasattr(self, "recommend_live_summary_meta"):
+-        self._set_label_text_if_changed(
+-            self.recommend_live_summary_meta,
+-            f"计划：{price_brief} | 准备度 {readiness:.1f} | 置信 {confidence:.1f} | 风险 {risk_flag} | {next_focus[:16]} | {news_badge}",
+-        )
+-
+-    if matching_intent is not None:
+-        risk_lamp = self._broker_risk_lamp_for_intent(matching_intent, recommendation=focus_recommend) if hasattr(self, "_broker_risk_lamp_for_intent") else "黄灯"
+-        if hasattr(self, "broker_live_summary_detail"):
+-            self._set_label_text_if_changed(
+-                self.broker_live_summary_detail,
+-                f"焦点委托：{stock_name} ({stock_id} / {focus_symbol}) | {self._display_action(getattr(matching_intent, 'side', ''))} | 主线 {signal}",
+-            )
+-        if hasattr(self, "broker_live_summary_meta"):
+-            self._set_label_text_if_changed(
+-                self.broker_live_summary_meta,
+-                f"下一步：风险灯 {risk_lamp} | 价格 {float(getattr(matching_intent, 'price', 0.0) or 0.0):.2f} | 数量 {int(getattr(matching_intent, 'quantity', 0) or 0)}",
+-            )
+-    elif matching_record is not None:
+-        if hasattr(self, "broker_live_summary_detail"):
+-            self._set_label_text_if_changed(
+-                self.broker_live_summary_detail,
+-                f"焦点回执：{stock_name} ({stock_id} / {focus_symbol}) | {self._display_order_status(matching_record.get('order_status', ''))} / {self._display_fill_status(matching_record.get('fill_status', ''))}",
+-            )
+-        if hasattr(self, "broker_live_summary_meta"):
+-            self._set_label_text_if_changed(
+-                self.broker_live_summary_meta,
+-                f"下一步：{str(matching_record.get('message', '') or '继续跟踪成交回执与偏差')[:34]}",
+-            )
+-    else:
+-        if hasattr(self, "broker_live_summary_detail"):
+-            self._set_label_text_if_changed(
+-                self.broker_live_summary_detail,
+-                f"待生成委托：{stock_name} ({stock_id} / {focus_symbol}) | 推荐动作 {action_text} | 主线 {theme_name}",
+-            )
+-        if hasattr(self, "broker_live_summary_meta"):
+-            self._set_label_text_if_changed(
+-                self.broker_live_summary_meta,
+-                f"下一步：先基于当前推荐生成委托，再复核仓位、价格与风险灯 {risk_flag}。",
+-            )
+-
+-    if hasattr(self, "detail_live_summary_headline"):
+-        self._set_label_text_if_changed(self.detail_live_summary_headline, f"复盘焦点：{stock_name} ({stock_id})")
+-    if hasattr(self, "detail_live_summary_detail"):
+-        latest_label = self._display_label(getattr(latest_signal, "label", "")) if latest_signal is not None else "等待信号同步"
+-        self._set_label_text_if_changed(
+-            self.detail_live_summary_detail,
+-            f"主线 {theme_name} | 动作 {action_text} | 最新信号 {latest_label}",
+-        )
+-    if hasattr(self, "detail_live_summary_meta"):
+-        self._set_label_text_if_changed(
+-            self.detail_live_summary_meta,
+-            f"下一步：围绕 {stock_name} 回看位置、成交节奏与 {next_focus[:18]} | {news_badge}",
+-        )
+-
+-
+-def _qh_refresh_recommend_focus_cards_v8(self: QuantHunterWindow, row: RecommendationRow | None = None) -> None:
+-    _ORIGINAL_QH_REFRESH_RECOMMEND_FOCUS_CARDS_V8(self, row)
+-    current = row or (self._current_recommend_focus() if hasattr(self, "_current_recommend_focus") else None)
+-    if current is not None and hasattr(self, "recommend_summary_cards"):
+-        runtime_phase, runtime_hint = tail_buy_runtime_status(current)
+-        runtime_panel = tail_buy_runtime_panel_lines(current)
+-        if runtime_phase:
+-            self.recommend_summary_cards["plan"].set_data("尾盘执行阶段", f"{runtime_phase} | {runtime_hint[:18]}")
+-            self.recommend_summary_cards["pulse"].set_data("尾盘盯盘重点", runtime_panel[2] if len(runtime_panel) >= 3 else runtime_hint)
+-            self.recommend_summary_cards["holding"].set_data("次日兑现纪律", runtime_panel[-1] if runtime_panel else "次日开盘优先兑现")
+-    if hasattr(self, "_refresh_live_workspace_summary_panels"):
+-        self._refresh_live_workspace_summary_panels()
+-
+-
+-def _qh_refresh_broker_order_focus_v8(self: QuantHunterWindow) -> None:
+-    _ORIGINAL_QH_REFRESH_BROKER_ORDER_FOCUS_V8(self)
+-    intent = self._selected_order_intent() if hasattr(self, "_selected_order_intent") else None
+-    focus_recommend = self._explicit_recommendation_focus() if hasattr(self, "_explicit_recommendation_focus") else None
+-    if intent is None and focus_recommend is not None:
+-        stock_name = getattr(focus_recommend, "stock_name", "") or self._stock_name_for_symbol(getattr(focus_recommend, "symbol", "") or "")
+-        stock_id = getattr(focus_recommend, "stock_id", "") or self._stock_id_for_symbol(getattr(focus_recommend, "symbol", "") or "")
+-        signal = _qh_mainline_signal_brief_v4(focus_recommend)
+-        action_text = _qh_signal_action_text_v4(focus_recommend)
+-        risk_flag = getattr(focus_recommend, "mainline_risk_flag", "") or "待评估"
+-        next_focus = getattr(focus_recommend, "next_focus", "") or "先生成委托链路，再复核交易条件。"
+-        if hasattr(self, "orders_focus_label"):
+-            _qh_set_label_text_v7(
+-                self,
+-                self.orders_focus_label,
+-                f"委托焦点：{stock_name} | 待生成委托 | 推荐 {action_text} | 主线 {signal}",
+-            )
+-        if hasattr(self, "broker_order_focus_text"):
+-            QuantHunterWindow._set_plain_text_if_changed(
+-                self,
+-                self.broker_order_focus_text,
+-                "\n".join(
+-                    [
+-                        "当前委托动作面板",
+-                        "",
+-                        f"股票：{stock_name} ({stock_id} / {getattr(focus_recommend, 'symbol', '')})",
+-                        f"推荐动作：{action_text}",
+-                        f"主线状态：{theme_name if (theme_name := getattr(focus_recommend, 'mainline_tag', '') or getattr(focus_recommend, 'theme_name', '') or '待确认') else '待确认'} / {signal}",
+-                        f"风险灯：{risk_flag}",
+-                        f"下一步：{next_focus}",
+-                        "当前还没有委托建议，可直接点击生成委托链路继续推进。",
+-                    ]
+-                ),
+-            )
+-        if hasattr(self, "broker_order_metric_labels"):
+-            _qh_set_label_text_v7(self, self.broker_order_metric_labels["symbol"], stock_name)
+-            _qh_set_label_text_v7(self, self.broker_order_metric_accents["symbol"], f"{stock_id} / {getattr(focus_recommend, 'symbol', '')}")
+-            _qh_set_label_text_v7(self, self.broker_order_metric_labels["gate"], signal)
+-            _qh_set_label_text_v7(
+-                self,
+-                self.broker_order_metric_accents["gate"],
+-                getattr(focus_recommend, "mainline_tag", "") or getattr(focus_recommend, "theme_name", "") or "待确认",
+-            )
+-            _qh_set_label_text_v7(self, self.broker_order_metric_labels["risk"], risk_flag)
+-            _qh_set_label_text_v7(self, self.broker_order_metric_accents["risk"], "等待生成委托")
+-            _qh_set_label_text_v7(self, self.broker_order_metric_labels["position"], "待测算")
+-            _qh_set_label_text_v7(self, self.broker_order_metric_accents["position"], "先生成委托链路")
+-    if hasattr(self, "_refresh_live_workspace_summary_panels"):
+-        self._refresh_live_workspace_summary_panels()
+-
+-
+-def _qh_refresh_detail_workspace_panels_v18(self: QuantHunterWindow) -> None:
+-    _ORIGINAL_QH_REFRESH_DETAIL_WORKSPACE_PANELS_V18(self)
+-
+-    focus_recommend = self._explicit_recommendation_focus() if hasattr(self, "_explicit_recommendation_focus") else None
+-    if focus_recommend is None:
+-        return
+-
+-    focus_symbol = getattr(focus_recommend, "symbol", "") or ""
+-    active_symbol = getattr(self, "active_symbol", "") or ""
+-    if not focus_symbol or focus_symbol == active_symbol:
+-        return
+-
+-    stock_name = getattr(focus_recommend, "stock_name", "") or self._stock_name_for_symbol(focus_symbol)
+-    stock_id = getattr(focus_recommend, "stock_id", "") or self._stock_id_for_symbol(focus_symbol)
+-    latest_signal = self._latest_signal_for_symbol(focus_symbol) if hasattr(self, "_latest_signal_for_symbol") else None
+-    order_intent = next((item for item in getattr(self, "order_intents", []) if getattr(item, "symbol", "") == focus_symbol), None)
+-    execution_row = next(
+-        (item for item in reversed(list(getattr(self, "order_submission_records", []) or [])) if str(item.get("symbol", "") or "") == focus_symbol),
+-        None,
+-    )
+-    theme_name = getattr(focus_recommend, "mainline_tag", "") or getattr(focus_recommend, "theme_name", "") or "待确认"
+-    action_text = self._display_action(getattr(focus_recommend, "action", "WATCH"))
+-    hype_logic = self._hype_logic_for_symbol(focus_symbol, recommendation=focus_recommend, scan_row=latest_signal) if hasattr(self, "_hype_logic_for_symbol") else (getattr(focus_recommend, "rationale", "") or "等待逻辑生成")
+-    news_lines = self._news_digest_lines_for_symbol(focus_symbol, limit=2) if hasattr(self, "_news_digest_lines_for_symbol") else []
+-    price_snapshot = self._recommend_price_snapshot(focus_recommend) if hasattr(self, "_recommend_price_snapshot") else {}
+-    price_brief = self._recommend_price_brief(focus_recommend) if hasattr(self, "_recommend_price_brief") else ""
+-
+-    if hasattr(self, "detail_decision_text"):
+-        lines = [
+-            f"单票决策：{stock_name} ({stock_id} / {focus_symbol})",
+-            f"主线：{theme_name} | 动作：{action_text}",
+-            f"主策略：{getattr(focus_recommend, 'primary_strategy', '') or '擒龙决策'} | 分层：{getattr(focus_recommend, 'opportunity_tier', '') or '待确认'}",
+-            f"题材 / 逻辑：{theme_name} | {hype_logic}",
+-            f"计划价带：{price_brief}",
+-        ]
+-        if price_snapshot:
+-            upside_pct = price_snapshot.get("upside_pct")
+-            downside_pct = price_snapshot.get("downside_pct")
+-            rr_ratio = price_snapshot.get("rr_ratio")
+-            if upside_pct is not None and downside_pct is not None:
+-                lines.append(
+-                    f"空间评估：上行 {float(upside_pct):.1f}% | 防守 {float(downside_pct):.1f}% | 收益/风险比 {float(rr_ratio):.2f}" if rr_ratio is not None else f"空间评估：上行 {float(upside_pct):.1f}% | 防守 {float(downside_pct):.1f}%"
+-                )
+-        if latest_signal is not None:
+-            lines.extend(
+-                [
+-                    "",
+-                    f"最近信号：{getattr(latest_signal, 'date', '--')} | {self._display_label(getattr(latest_signal, 'label', ''))} | 评分 {getattr(latest_signal, 'score', '--')}",
+-                    f"触发原因：{getattr(latest_signal, 'reason', '') or '待补充'}",
+-                ]
+-            )
+-        if news_lines:
+-            lines.extend(["", "近期消息：", *news_lines])
+-        self._set_plain_text_if_changed(self.detail_decision_text, "\n".join(lines))
+-
+-    if hasattr(self, "detail_execution_text"):
+-        lines = [f"执行联动：{stock_name}"]
+-        if order_intent is not None:
+-            lines.append(
+-                f"委托建议：{self._display_action(getattr(order_intent, 'side', ''))} {getattr(order_intent, 'quantity', 0)} 股 @ {float(getattr(order_intent, 'price', 0.0) or 0.0):.2f}"
+-            )
+-        else:
+-            lines.append("委托建议：当前还没有生成，可直接去交易页生成。")
+-        if execution_row is not None:
+-            lines.append(
+-                f"最近执行：{self._display_order_status(execution_row.get('order_status', ''))} / {self._display_fill_status(execution_row.get('fill_status', ''))}"
+-            )
+-            lines.append(f"反馈：{execution_row.get('message', '--')}")
+-        else:
+-            lines.append("执行记录：暂无回执，先完成委托链路。")
+-        self._set_plain_text_if_changed(self.detail_execution_text, "\n".join(lines))
+-
+-    if hasattr(self, "detail_conclusion_text"):
+-        lines = [
+-            f"复盘结论：{stock_name}",
+-            f"推荐动作：{action_text} | 下一步：{getattr(focus_recommend, 'next_focus', '') or '继续观察主线、位置和量能承接'}",
+-            f"风险提示：{getattr(focus_recommend, 'mainline_risk_flag', '') or '待评估'} | 置信 {float(getattr(focus_recommend, 'confidence_score', 0.0) or 0.0):.1f}",
+-            f"交易计划：{price_brief}",
+-            "后续动作：可继续回推荐页比较同主线候选，或去交易页生成并确认委托。",
+-        ]
+-        if latest_signal is not None:
+-            lines.insert(1, f"最近信号：{getattr(latest_signal, 'date', '--')} | {self._display_label(getattr(latest_signal, 'label', ''))}")
+-        self._set_plain_text_if_changed(self.detail_conclusion_text, "\n".join(lines))
+-
+-
+-def _qh_on_daily_pool_selection_changed_v18(self: QuantHunterWindow) -> None:
+-    _ORIGINAL_QH_ON_DAILY_POOL_SELECTION_CHANGED_V18(self)
+-    if hasattr(self, "_refresh_live_workspace_summary_panels"):
+-        self._refresh_live_workspace_summary_panels()
+-    if hasattr(self, "_refresh_broker_order_focus"):
+-        self._refresh_broker_order_focus()
+-    if hasattr(self, "_refresh_detail_workspace_panels"):
+-        self._refresh_detail_workspace_panels()
+-
+-
+-QuantHunterWindow._explicit_recommendation_focus = _qh_explicit_recommendation_focus_v18
+-QuantHunterWindow._latest_signal_for_symbol = _qh_latest_signal_for_symbol_v18
+-QuantHunterWindow._refresh_live_workspace_summary_panels = _qh_refresh_live_workspace_summary_panels_v18
+-QuantHunterWindow._refresh_recommend_focus_cards = _qh_refresh_recommend_focus_cards_v8
+-QuantHunterWindow._refresh_broker_order_focus = _qh_refresh_broker_order_focus_v8
+-QuantHunterWindow._refresh_detail_workspace_panels = _qh_refresh_detail_workspace_panels_v18
+-QuantHunterWindow._on_daily_pool_selection_changed = _qh_on_daily_pool_selection_changed_v18
++apply_cross_workspace_focus_patches(
++    QuantHunterWindow,
++    mainline_signal_brief_fn=_qh_mainline_signal_brief_v4,
++    signal_action_text_fn=_qh_signal_action_text_v4,
++    recommend_execution_summary_fn=_qh_recommend_execution_summary_v24,
++    recommend_focus_reason_fn=_qh_recommend_focus_reason_v24,
++    recommend_queue_snapshot_fn=_qh_recommend_queue_snapshot_v25,
++    queue_sequence_summary_fn=_qh_queue_sequence_summary,
++    next_review_target_fn=_qh_next_review_target,
++    tail_buy_runtime_status_fn=tail_buy_runtime_status,
++    tail_buy_runtime_panel_lines_fn=tail_buy_runtime_panel_lines,
++    set_label_text_fn=_qh_set_label_text_v7,
++)
+ 
+ 
+ _ORIGINAL_QH_POST_BUILD_UI_TWEAKS_V19 = QuantHunterWindow._post_build_ui_tweaks

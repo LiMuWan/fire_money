@@ -133,6 +133,28 @@ class LocalMarketCache:
     def put_market_snapshots(self, limit: int, snapshots: list[MarketSnapshot]) -> None:
         self._write_payload(self.root / f"snapshots_{limit}.json", [asdict(item) for item in snapshots])
 
+    def get_screen_history(self, limit: int = 12) -> list[MarketScreenResult]:
+        payload = self._read_payload(self.root / "screen_history.json", ttl_seconds=365 * 24 * 3600, allow_stale=True)
+        if payload is None:
+            return []
+        results: list[MarketScreenResult] = []
+        for item in payload[:limit]:
+            try:
+                results.append(self._screen_result_from_dict(item))
+            except Exception:
+                continue
+        return results
+
+    def put_screen_result(self, result: MarketScreenResult, max_entries: int = 12) -> None:
+        if not result.generated_at:
+            return
+        history = [self._screen_result_to_dict(item) for item in self.get_screen_history(limit=max_entries * 2)]
+        current = self._screen_result_to_dict(result)
+        history = [item for item in history if item.get("generated_at") != result.generated_at]
+        history.insert(0, current)
+        history.sort(key=lambda item: item.get("generated_at", ""), reverse=True)
+        self._write_payload(self.root / "screen_history.json", history[:max_entries])
+
     def get_daily_bars(self, symbol: str, allow_stale: bool = False) -> list[PriceBar]:
         stock_id = extract_stock_id(symbol)
         payload = self._read_payload(self.root / f"bars_{stock_id}.json", self.bars_ttl_seconds, allow_stale)
@@ -189,6 +211,60 @@ class LocalMarketCache:
             )
         except Exception:
             pass
+
+    @staticmethod
+    def _screen_result_to_dict(result: MarketScreenResult) -> dict:
+        return {
+            "market_name": result.market_name,
+            "generated_at": result.generated_at,
+            "algorithmic_pool": [asdict(item) for item in result.algorithmic_pool],
+            "scan_rows": [asdict(item) for item in result.scan_rows],
+            "recommendations": [asdict(item) for item in result.recommendations],
+            "bars_by_symbol": {
+                symbol: [asdict(bar) for bar in bars]
+                for symbol, bars in result.bars_by_symbol.items()
+            },
+            "analyses_by_symbol": {
+                symbol: [asdict(analysis) for analysis in analyses]
+                for symbol, analyses in result.analyses_by_symbol.items()
+            },
+            "summaries": [asdict(item) for item in result.summaries],
+            "snapshots": {symbol: asdict(snapshot) for symbol, snapshot in result.snapshots.items()},
+            "chart_series_by_symbol": {symbol: asdict(series) for symbol, series in result.chart_series_by_symbol.items()},
+        }
+
+    @staticmethod
+    def _screen_result_from_dict(payload: dict) -> MarketScreenResult:
+        return MarketScreenResult(
+            market_name=str(payload.get("market_name", "") or ""),
+            generated_at=str(payload.get("generated_at", "") or ""),
+            algorithmic_pool=[AlgorithmicPoolRow(**item) for item in payload.get("algorithmic_pool", []) or []],
+            scan_rows=[ScanRow(**item) for item in payload.get("scan_rows", []) or []],
+            recommendations=[RecommendationRow(**item) for item in payload.get("recommendations", []) or []],
+            bars_by_symbol={
+                symbol: [PriceBar(**bar) for bar in bars]
+                for symbol, bars in (payload.get("bars_by_symbol", {}) or {}).items()
+            },
+            analyses_by_symbol={
+                symbol: [DailyAnalysis(**analysis) for analysis in analyses]
+                for symbol, analyses in (payload.get("analyses_by_symbol", {}) or {}).items()
+            },
+            summaries=[SymbolBacktestSummary(**item) for item in payload.get("summaries", []) or []],
+            snapshots={
+                symbol: MarketSnapshot(**snapshot)
+                for symbol, snapshot in (payload.get("snapshots", {}) or {}).items()
+            },
+            chart_series_by_symbol={
+                symbol: SymbolChartSeries(
+                    symbol=item.get("symbol", symbol),
+                    intraday_price=[SeriesPoint(**point) for point in item.get("intraday_price", []) or []],
+                    intraday_trend=[SeriesPoint(**point) for point in item.get("intraday_trend", []) or []],
+                    capital_flow=[SeriesPoint(**point) for point in item.get("capital_flow", []) or []],
+                    heat_momentum=[SeriesPoint(**point) for point in item.get("heat_momentum", []) or []],
+                )
+                for symbol, item in (payload.get("chart_series_by_symbol", {}) or {}).items()
+            },
+        )
 
 
 class EastmoneyMarketFeed:

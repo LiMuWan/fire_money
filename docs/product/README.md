@@ -1,90 +1,99 @@
-# é‡åŒ–æ™ºæŠ•äº§å“æ–‡æ¡£
+# ????????
 
-æœ¬ç›®å½•ç”¨äºæ²‰æ·€é¢å‘å•†ä¸šåŒ–çš„äº§å“éœ€æ±‚ã€æŒ‡æ ‡ä½“ç³»ã€ç‰ˆæœ¬è¿­ä»£ä¸äº¤ä»˜è¾¹ç•Œã€‚
+???????????????????????????????????
 
-å»ºè®®çº¦å®šï¼š
-- æ¯æ¬¡äº§å“è¿­ä»£æ–°å¢æˆ–æ›´æ–°ä¸€ä¸ª Markdown æ–‡æ¡£ã€‚
-- æ–‡æ¡£æ–‡ä»¶åç»Ÿä¸€ä½¿ç”¨ `iteration-XX-ä¸»é¢˜.md`ã€‚
-- æ¯æ¬¡è¿­ä»£è‡³å°‘åŒ…å«ï¼šç›®æ ‡ã€ç”¨æˆ·ä»·å€¼ã€èŒƒå›´ã€æŒ‡æ ‡ã€å®ç°æ–¹æ¡ˆã€éªŒæ”¶æ ‡å‡†ã€é£é™©ã€‚
+?????
+- ????????????? Markdown ???
+- ????????? `iteration-XX-??.md`?
+- ????????????????????????????????????
 
-å½“å‰æ–‡æ¡£ï¼š
-- [æŒ‡æ ‡ä½“ç³»](C:\Users\18335\Documents\New%20project\docs\product\indicator-system.md)
-- [ç‰ˆæœ¬è·¯çº¿å›¾](C:\Users\18335\Documents\New%20project\docs\product\product-roadmap.md)
-- [è¿­ä»£ 01 - æœ€å°åŸå‹](C:\Users\18335\Documents\New%20project\docs\product\iteration-01-mvp.md)
-- [è¿­ä»£ 02 - é¢˜æçƒ­åº¦ä¸é¾™å¤´è¯†åˆ«](C:\Users\18335\Documents\New%20project\docs\product\iteration-02-theme-heat-and-leaders.md)
-- [è¿­ä»£ 03 - ç­–ç•¥é…ç½®ã€å…³æ³¨é¢˜æä¸å•†ä¸šåŒ–éª¨æ¶](C:\Users\18335\Documents\New%20project\docs\product\iteration-03-strategy-config-and-commercialization.md)
-- [è¿­ä»£ 04 - æˆæƒçŸ©é˜µã€å…³æ³¨é¢˜æåŠ æƒä¸è‡ªåŠ¨ç›˜å‰æŠ¥å‘Š](C:\Users\18335\Documents\New%20project\docs\product\iteration-04-license-matrix-and-auto-plan.md)
-- [è¿­ä»£ 05 - æŠ¥å‘Šæ¨¡æ¿ä¸å•†ä¸šåŒ–èƒ½åŠ›è¾¹ç•Œ](C:\Users\18335\Documents\New%20project\docs\product\iteration-05-report-templates-and-commercial-guards.md)
-- [è¿­ä»£ 06 - æ€§èƒ½ã€ç¨³å®šæ€§ä¸å¯è¿ç»´æ€§](C:\Users\18335\Documents\New%20project\docs\product\iteration-06-performance-and-operability.md)
-- [è¿­ä»£ 07 - äº”ç­–ç•¥äº§å“åŒ–ä¸é¦–é¡µä¸»æ§å°é‡æ„](C:\Users\18335\Documents\New%20project\docs\product\iteration-07-strategy-pack-and-overview-refactor.md)
-- [è¿­ä»£ 08 - äº”å¤§æˆ˜æ³•å·¥ä½œå°ä¸æ¨èé¡µå±•å¼€](C:\Users\18335\Documents\New%20project\docs\product\iteration-08-strategy-workbench.md)
-- [è¿­ä»£ 09 - æˆ˜æ³•æ˜ç»†è”åŠ¨ä¸æ·±è‰²ç»ˆç«¯ç»Ÿä¸€](C:\Users\18335\Documents\New%20project\docs\product\iteration-09-strategy-detail-and-dark-terminal.md)
-- [è¿­ä»£ 10 - å¡ç‰‡ç³»ç»Ÿç»Ÿä¸€ä¸äº¤æ˜“è®¡åˆ’è”åŠ¨](C:\Users\18335\Documents\New%20project\docs\product\iteration-10-card-system-and-plan-linkage.md)
-- [è¿­ä»£ 11 - æŒä»“å»ºè®®è”åŠ¨ä¸å¡ç‰‡åŸºç±»æ”¶æ•›](C:\Users\18335\Documents\New%20project\docs\product\iteration-11-closed-loop-linkage.md)
-- [è¿­ä»£ 12 - åŠ¨ä½œæµç¨‹å¡ä¸æ¨èé¡µåº•éƒ¨æ”¶å£](C:\Users\18335\Documents\New%20project\docs\product\iteration-12-action-flow-cards.md)
-- [è¿­ä»£ 13 - ä¼˜å…ˆçº§æ’åºé¢æ¿](C:\Users\18335\Documents\New%20project\docs\product\iteration-13-priority-ranking-panel.md)
-- [è¿­ä»£ 14 - é¦–é¡µä¼˜å…ˆçº§ä¸ä¸»çº¿æ¨æ¼”è·¯å¾„](C:\Users\18335\Documents\New%20project\docs\product\iteration-14-home-priority-and-theme-path.md)
-- [è¿­ä»£ 15 - é¢˜æåˆ°ä¸ªè‚¡çš„äº¤äº’è·¯å¾„](C:\Users\18335\Documents\New%20project\docs\product\iteration-15-theme-to-stock-interaction.md)
-- [è¿­ä»£ 16 - æ‘˜è¦å¡ä¸ç›˜ä¸­æç¤ºé“¾](C:\Users\18335\Documents\New%20project\docs\product\iteration-16-summary-cards-and-alert-chain.md)
-- [è¿­ä»£ 17 - æŒ‰é’®è·¯ç”±ä¸é¡µé¢æ˜ å°„](C:\Users\18335\Documents\New%20project\docs\product\iteration-17-button-routing-and-page-map.md)
-- [è¿­ä»£ 18 - ç›˜ä¸­æé†’é¢æ¿ä¸æ–‡æœ¬å‹ç¼©](C:\Users\18335\Documents\New%20project\docs\product\iteration-18-alert-panel-and-text-compression.md)
-- [è¿­ä»£ 19 - é¦–é¡µä¸»æ§æ‘˜è¦å¡](C:\Users\18335\Documents\New%20project\docs\product\iteration-19-overview-summary-cards.md)
-- [è¿­ä»£ 20 - æ¶æ„å®¡è®¡ä¸å¯æ‰©å±•æ€§é‡æ„](C:\Users\18335\Documents\New%20project\docs\product\iteration-20-architecture-audit-and-refactor.md)
-- [è¿­ä»£ 21 - UI è·¯ç”±æŠ½è±¡ä¸é‡å¤å®šä¹‰æ¸…ç†](C:\Users\18335\Documents\New%20project\docs\product\iteration-21-ui-routing-and-dedup.md)
-- [è¿­ä»£ 22 - UI ç»„ä»¶ä¸é…ç½®æŠ½ç¦»](C:\Users\18335\Documents\New%20project\docs\product\iteration-22-ui-components-and-config-extraction.md)
-- [äº”å¤§æˆ˜æ³•äº§å“éœ€æ±‚è¯´æ˜](C:\Users\18335\Documents\New%20project\docs\product\strategy-features-spec.md)
-- [?? 23 - UI Helper ??](C:\Users\18335\Documents\New%20project\docs\product\iteration-23-ui-helper-extraction.md)
+?????
+- [????](C:/Users/18335/Documents/New%20project/docs/product/indicator-system.md)
+- [??????](C:/Users/18335/Documents/New%20project/docs/product/product-roadmap.md)
+- [??????????](C:/Users/18335/Documents/New%20project/docs/product/strategy-features-spec.md)
 
-- [µü´ú 24 - Workspace Builder ÊÔµã²ğ·Ö](C:\Users\18335\Documents\New%20project\docs\product\iteration-24-workspace-builder-pilot.md)
-
-- [µü´ú 25 - ½»Ò×Ö´ĞĞ Workspace Builder ²ğ·Ö](C:\Users\18335\Documents\New%20project\docs\product\iteration-25-broker-workspace-extraction.md)
-
-- [µü´ú 26 - Ê×Ò³×ÜÀÀ Workspace Builder ²ğ·Ö](C:\Users\18335\Documents\New%20project\docs\product\iteration-26-overview-workspace-extraction.md)
-
-- [µü´ú 27 - Ã¿ÈÕÍÆ¼ö Workspace Builder ²ğ·Ö](C:\Users\18335\Documents\New%20project\docs\product\iteration-27-recommend-workspace-extraction.md)
-
-- [µü´ú 28 - ´ò°å¼à¿Ø Workspace Builder ²ğ·Ö](C:\Users\18335\Documents\New%20project\docs\product\iteration-28-board-workspace-extraction.md)
-
-- [µü´ú 29 - UI Ë¢ĞÂÁ´µÚÒ»Åú³éÀë](C:\Users\18335\Documents\New%20project\docs\product\iteration-29-ui-refresh-extraction.md)
-
-- [µü´ú 30 - Ë¢ĞÂÃæ°åÓë°ñµ¥äÖÈ¾³éÀë](C:\Users\18335\Documents\New%20project\docs\product\iteration-30-refresh-panels-and-leaderboard.md)
-
-- [µü´ú 31 - ÍÆ¼öÒ³Ãæ°åË¢ĞÂ³éÀë](C:\Users\18335\Documents\New%20project\docs\product\iteration-31-recommend-panels-refresh-extraction.md)
-
-- [µü´ú 32 - ºËĞÄ±í¸ñË¢ĞÂ³éÀë](C:\Users\18335\Documents\New%20project\docs\product\iteration-32-table-refresh-extraction.md)
-
-- [µü´ú 33 - É¨ÃèÒ³±í¸ñË¢ĞÂ³éÀë](C:\Users\18335\Documents\New%20project\docs\product\iteration-33-scanner-table-refresh-extraction.md)
-
-- [µü´ú 34 - É¨ÃèÒ³¼à¿ØË¢ĞÂ³éÀë](C:\Users\18335\Documents\New%20project\docs\product\iteration-34-scanner-monitor-refresh-extraction.md)
-
-- [µü´ú 35 - Ó¦ÓÃÆô¶¯Ã°ÑÌÑéÖ¤Óë´ò°åÒ³ÃæĞŞ¸´](C:\Users\18335\Documents\New%20project\docs\product\iteration-35-app-smoke-and-board-repair.md)
-
-- [?? 36 - ???? Binder ????](C:\Users\18335\Documents\New%20project\docs\product\iteration-36-daily-pool-binder-extraction.md)
-
-- [?? 37 - ???? Binder ????](C:\Users\18335\Documents\New%20project\docs\product\iteration-37-scan-binder-extraction.md)
-
-- [?? 38 - ???? Binder ????](C:\Users\18335\Documents\New%20project\docs\product\iteration-38-market-binder-extraction.md)
-
-- [?? 39 - ?????? Binder ??](C:\Users\18335\Documents\New%20project\docs\product\iteration-39-market-error-binder-extraction.md)
-
-- [?? 40 - ????????](C:\Users\18335\Documents\New%20project\docs\product\iteration-40-pipeline-error-handler-unification.md)
-
-- [?? 41 - Controller ?????](C:\Users\18335\Documents\New%20project\docs\product\iteration-41-controller-layer-pilot.md)
-
-- [?? 42 - ?????? Controller ??](C:\Users\18335\Documents\New%20project\docs\product\iteration-42-background-job-controller.md)
-
-- [?? 43 - ???? Controller ??](C:\Users\18335\Documents\New%20project\docs\product\iteration-43-optimization-controller-extraction.md)
-
-- [?? 44 - ???????](C:\Users\18335\Documents\New%20project\docs\product\iteration-44-runtime-module-extraction.md)
-
-- [?? 45 - ??????????](C:\Users\18335\Documents\New%20project\docs\product\iteration-45-runtime-maintenance-extraction.md)
-
-- [?? 46 - ????????](C:\Users\18335\Documents\New%20project\docs\product\iteration-46-runtime-log-extraction.md)
-
-- [?? 47 - ???????](C:\Users\18335\Documents\New%20project\docs\product\iteration-47-config-workspace-repair.md)
-
-- [?? 48 - ??? Workspace Builder ??](C:\Users\18335\Documents\New%20project\docs\product\iteration-48-config-workspace-extraction.md)
-
-- [?? 49 - ?????????](C:\Users\18335\Documents\New%20project\docs\product\iteration-49-config-state-chain-extraction.md)
-
-- [?? 50 - ???? Controller ??](C:\Users\18335\Documents\New%20project\docs\product\iteration-50-license-switch-controller.md)
+?????
+- [?? 01 - ????](C:/Users/18335/Documents/New%20project/docs/product/iteration-01-mvp.md)
+- [?? 02 - ?????????](C:/Users/18335/Documents/New%20project/docs/product/iteration-02-theme-heat-and-leaders.md)
+- [?? 03 - ???????????????](C:/Users/18335/Documents/New%20project/docs/product/iteration-03-strategy-config-and-commercialization.md)
+- [?? 04 - ??????????????????](C:/Users/18335/Documents/New%20project/docs/product/iteration-04-license-matrix-and-auto-plan.md)
+- [?? 05 - ????????????](C:/Users/18335/Documents/New%20project/docs/product/iteration-05-report-templates-and-commercial-guards.md)
+- [?? 06 - ???????????](C:/Users/18335/Documents/New%20project/docs/product/iteration-06-performance-and-operability.md)
+- [?? 07 - ?????????](C:/Users/18335/Documents/New%20project/docs/product/iteration-07-runtime-controls-and-diagnostics.md)
+- [?? 07B - ???????????????](C:/Users/18335/Documents/New%20project/docs/product/iteration-07-strategy-pack-and-overview-refactor.md)
+- [?? 08 - ?????](C:/Users/18335/Documents/New%20project/docs/product/iteration-08-strategy-workbench.md)
+- [?? 09 - ?????????????](C:/Users/18335/Documents/New%20project/docs/product/iteration-09-strategy-detail-and-dark-terminal.md)
+- [?? 10 - ???????????](C:/Users/18335/Documents/New%20project/docs/product/iteration-10-card-system-and-plan-linkage.md)
+- [?? 11 - ????](C:/Users/18335/Documents/New%20project/docs/product/iteration-11-closed-loop-linkage.md)
+- [?? 12 - ?????](C:/Users/18335/Documents/New%20project/docs/product/iteration-12-action-flow-cards.md)
+- [?? 13 - ???????](C:/Users/18335/Documents/New%20project/docs/product/iteration-13-priority-ranking-panel.md)
+- [?? 14 - ??????????](C:/Users/18335/Documents/New%20project/docs/product/iteration-14-home-priority-and-theme-path.md)
+- [?? 15 - ???????](C:/Users/18335/Documents/New%20project/docs/product/iteration-15-theme-to-stock-interaction.md)
+- [?? 16 - ???????](C:/Users/18335/Documents/New%20project/docs/product/iteration-16-summary-cards-and-alert-chain.md)
+- [?? 17 - ?????????](C:/Users/18335/Documents/New%20project/docs/product/iteration-17-button-routing-and-page-map.md)
+- [?? 18 - ?????????](C:/Users/18335/Documents/New%20project/docs/product/iteration-18-alert-panel-and-text-compression.md)
+- [?? 19 - ???????](C:/Users/18335/Documents/New%20project/docs/product/iteration-19-overview-summary-cards.md)
+- [?? 20 - ???????](C:/Users/18335/Documents/New%20project/docs/product/iteration-20-architecture-audit-and-refactor.md)
+- [?? 21 - UI ?????](C:/Users/18335/Documents/New%20project/docs/product/iteration-21-ui-routing-and-dedup.md)
+- [?? 22 - UI ???????](C:/Users/18335/Documents/New%20project/docs/product/iteration-22-ui-components-and-config-extraction.md)
+- [?? 23 - UI Helper ??](C:/Users/18335/Documents/New%20project/docs/product/iteration-23-ui-helper-extraction.md)
+- [?? 24 - Workspace Builder ??](C:/Users/18335/Documents/New%20project/docs/product/iteration-24-workspace-builder-pilot.md)
+- [?? 25 - ???? Workspace Builder ??](C:/Users/18335/Documents/New%20project/docs/product/iteration-25-broker-workspace-extraction.md)
+- [?? 26 - ???? Workspace Builder ??](C:/Users/18335/Documents/New%20project/docs/product/iteration-26-overview-workspace-extraction.md)
+- [?? 27 - ???? Workspace Builder ??](C:/Users/18335/Documents/New%20project/docs/product/iteration-27-recommend-workspace-extraction.md)
+- [?? 28 - ???? Workspace Builder ??](C:/Users/18335/Documents/New%20project/docs/product/iteration-28-board-workspace-extraction.md)
+- [?? 29 - UI ????](C:/Users/18335/Documents/New%20project/docs/product/iteration-29-ui-refresh-extraction.md)
+- [?? 30 - ???????????](C:/Users/18335/Documents/New%20project/docs/product/iteration-30-refresh-panels-and-leaderboard.md)
+- [?? 31 - ?????????](C:/Users/18335/Documents/New%20project/docs/product/iteration-31-recommend-panels-refresh-extraction.md)
+- [?? 32 - ????????](C:/Users/18335/Documents/New%20project/docs/product/iteration-32-table-refresh-extraction.md)
+- [?? 33 - ?????????](C:/Users/18335/Documents/New%20project/docs/product/iteration-33-scanner-table-refresh-extraction.md)
+- [?? 34 - ?????????](C:/Users/18335/Documents/New%20project/docs/product/iteration-34-scanner-monitor-refresh-extraction.md)
+- [?? 35 - ???????????](C:/Users/18335/Documents/New%20project/docs/product/iteration-35-app-smoke-and-board-repair.md)
+- [?? 36 - ???? Binder ??](C:/Users/18335/Documents/New%20project/docs/product/iteration-36-daily-pool-binder-extraction.md)
+- [?? 37 - ???? Binder ??](C:/Users/18335/Documents/New%20project/docs/product/iteration-37-scan-binder-extraction.md)
+- [?? 38 - ???? Binder ??](C:/Users/18335/Documents/New%20project/docs/product/iteration-38-market-binder-extraction.md)
+- [?? 39 - ???? Binder ??](C:/Users/18335/Documents/New%20project/docs/product/iteration-39-market-error-binder-extraction.md)
+- [?? 40 - ????????](C:/Users/18335/Documents/New%20project/docs/product/iteration-40-pipeline-error-handler-unification.md)
+- [?? 41 - Controller ???](C:/Users/18335/Documents/New%20project/docs/product/iteration-41-controller-layer-pilot.md)
+- [?? 42 - ?????? Controller ??](C:/Users/18335/Documents/New%20project/docs/product/iteration-42-background-job-controller.md)
+- [?? 43 - ???? Controller ??](C:/Users/18335/Documents/New%20project/docs/product/iteration-43-optimization-controller-extraction.md)
+- [?? 44 - ??????](C:/Users/18335/Documents/New%20project/docs/product/iteration-44-runtime-module-extraction.md)
+- [?? 45 - ???????](C:/Users/18335/Documents/New%20project/docs/product/iteration-45-runtime-maintenance-extraction.md)
+- [?? 46 - ??????](C:/Users/18335/Documents/New%20project/docs/product/iteration-46-runtime-log-extraction.md)
+- [?? 47 - ?????](C:/Users/18335/Documents/New%20project/docs/product/iteration-47-config-workspace-repair.md)
+- [?? 48 - ??? Workspace Builder ??](C:/Users/18335/Documents/New%20project/docs/product/iteration-48-config-workspace-extraction.md)
+- [?? 49 - ???????](C:/Users/18335/Documents/New%20project/docs/product/iteration-49-config-state-chain-extraction.md)
+- [?? 50 - ???? Controller ??](C:/Users/18335/Documents/New%20project/docs/product/iteration-50-license-switch-controller.md)
+- [?? 51 - UI ??????????](C:/Users/18335/Documents/New%20project/docs/product/iteration-51-ui-copy-repair-and-stability.md)
+- [?? 52?????????](C:/Users/18335/Documents/New%20project/docs/product/iteration-52-license-policy-extraction.md)
+- [?? 53????? Controller ?????](C:/Users/18335/Documents/New%20project/docs/product/iteration-53-broker-controller-first-pass.md)
+- [?? 54????? Controller ?????](C:/Users/18335/Documents/New%20project/docs/product/iteration-54-broker-controller-second-pass.md)
+- [?? 55??????????](C:/Users/18335/Documents/New%20project/docs/product/iteration-55-order-submission-shell-extraction.md)
+- [?? 56?????? Controller ?](C:/Users/18335/Documents/New%20project/docs/product/iteration-56-order-submission-controller.md)
+- [?? 57????????????](C:/Users/18335/Documents/New%20project/docs/product/iteration-57-broker-status-refresh-extraction.md)
+- [?? 58????????????](C:/Users/18335/Documents/New%20project/docs/product/iteration-58-broker-table-refresh-extraction.md)
+- [?? 59??????? Binder ??](C:/Users/18335/Documents/New%20project/docs/product/iteration-59-broker-writeback-binder-extraction.md)
+- [?? 60???????????](C:/Users/18335/Documents/New%20project/docs/product/iteration-60-ui-status-module-extraction.md)
+- [?? 61??????? Service ??](C:/Users/18335/Documents/New%20project/docs/product/iteration-61-broker-summary-service-extraction.md)
+- [?? 62??? Helper ????](C:/Users/18335/Documents/New%20project/docs/product/iteration-62-display-helper-unification.md)
+- [?? 63??????? Helper ??](C:/Users/18335/Documents/New%20project/docs/product/iteration-63-recommend-status-helper-extraction.md)
+- [?? 64??????? Snapshot ??](C:/Users/18335/Documents/New%20project/docs/product/iteration-64-overview-command-snapshot-extraction.md)
+- [?? 65?????? Snapshot ??](C:/Users/18335/Documents/New%20project/docs/product/iteration-65-dashboard-metrics-snapshot.md)
+- [è¿­ä»£ 66 - å¸‚åœºä¸»æ§å°å¿«ç…§æŠ½ç¦»ä¸äº¤æ˜“é¡µå¯åŠ¨ä¿®å¤](C:/Users/18335/Documents/New%20project/docs/product/iteration-66-market-dashboard-snapshot-and-broker-boot-fix.md)
+- [è¿­ä»£ 67 - äº¤æ˜“æ‰§è¡Œé¡µæ–‡æ¡ˆä¿®å¤ä¸ Builder å›å½’ä¿®å¤](C:/Users/18335/Documents/New%20project/docs/product/iteration-67-broker-workspace-copy-repair.md)
+- [è¿­ä»£ 68 - æ¨èé¡µæ‘˜è¦å¡æ–‡æ¡ˆä¿®å¤](C:/Users/18335/Documents/New%20project/docs/product/iteration-68-recommend-summary-copy-repair.md)
+- [è¿­ä»£ 69 - å¸‚åœºä»£ç†èµ°åŠ¿ Helper æŠ½ç¦»](C:/Users/18335/Documents/New%20project/docs/product/iteration-69-market-proxy-helper-extraction.md)
+- [è¿­ä»£ 70 - å¸‚åœºç®—æ³•æ± é¢œè‰²è§„åˆ™æŠ½ç¦»](C:/Users/18335/Documents/New%20project/docs/product/iteration-70-market-pool-color-rule-extraction.md)
+- [µü´ú 71 - Ê×Ò³°´Å¥ÑùÊ½ Helper ³éÀë](C:/Users/18335/Documents/New%20project/docs/product/iteration-71-overview-button-style-helper-extraction.md)
+- [µü´ú 72 - »ÕÕÂÅäÉ«¹æÔò×´Ì¬Ä£¿é³éÀë](C:/Users/18335/Documents/New%20project/docs/product/iteration-72-badge-palette-status-extraction.md)
+- [µü´ú 73 - Ê×Ò³×é¼ş Helper ³éÀë](C:/Users/18335/Documents/New%20project/docs/product/iteration-73-overview-widget-helper-extraction.md)
+- [µü´ú 74 - ¾ö²ßÒıÇæÕ½·¨È±Ê¡Ó³ÉäĞŞ¸´](C:/Users/18335/Documents/New%20project/docs/product/iteration-74-decision-strategy-fallback-fix.md)
+- [µü´ú 75 - ¶¥²¿×´Ì¬ Chip Helper ³éÀë](C:/Users/18335/Documents/New%20project/docs/product/iteration-75-shell-chip-helper-extraction.md)
+- [µü´ú 76 - ´ò°å¼à¿ØÑÕÉ«¹æÔò×´Ì¬Ä£¿é³éÀë](C:/Users/18335/Documents/New%20project/docs/product/iteration-76-board-status-color-extraction.md)
+- [µü´ú 77 - ÉîÉ«Í¼±íÑùÊ½ Helper ³éÀë](C:/Users/18335/Documents/New%20project/docs/product/iteration-77-dark-chart-helper-extraction.md)
+- [µü´ú 78 - ÊĞ³¡Ä£Ê½ÎÄ°¸ÓëÀúÊ·´°¿Ú Helper ³éÀë](C:/Users/18335/Documents/New%20project/docs/product/iteration-78-market-labels-and-history-window-helper-extraction.md)
+- [µü´ú 79 - Splitter Óë¹ö¶¯ Helper ³éÀë](C:/Users/18335/Documents/New%20project/docs/product/iteration-79-splitter-and-scroll-helper-extraction.md)
+- [µü´ú 80 - µ¼º½Óë½¹µã Helper ³éÀë](C:/Users/18335/Documents/New%20project/docs/product/iteration-80-navigation-focus-helper-extraction.md)
+- [µü´ú 81 - µ¼³öÄ¿Â¼ Runtime Helper ³éÀë](C:/Users/18335/Documents/New%20project/docs/product/iteration-81-export-output-dir-runtime-extraction.md)
+- [µü´ú 82 - ¹ÉÆ±×ÊÁÏ²éÑ¯ Helper ³éÀë](C:/Users/18335/Documents/New%20project/docs/product/iteration-82-symbol-profile-helper-extraction.md)
+- [µü´ú 83 - ÔËĞĞÅäÖÃ¶ÁÈ¡ Helper ³éÀë](C:/Users/18335/Documents/New%20project/docs/product/iteration-83-runtime-config-helper-extraction.md)

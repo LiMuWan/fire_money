@@ -8,7 +8,170 @@ from pathlib import Path
 from typing import Any
 
 from .models import HoldingRecord, OptimizationRun, RecommendationRow, ReportArtifacts, ScanRow, SymbolBacktestSummary
-from .theme import summarize_themes
+from .theme import infer_mainline_flow_signal, infer_mainline_stage, summarize_themes
+
+
+def _report_role_score(value: str) -> int:
+    return {
+        "CORE": 6,
+        "FRONT": 5,
+        "ASSIST": 4,
+        "FOLLOW": 3,
+        "NOISE": 1,
+        "ELIMINATED": 0,
+    }.get((value or "").upper(), 2)
+
+
+def _report_mainline_rank_score(item: RecommendationRow) -> int:
+    rank = int(getattr(item, "mainline_rank", getattr(item, "theme_rank", 0)) or 0)
+    if rank <= 0:
+        return 0
+    return max(0, 100 - min(rank, 99))
+
+
+def _report_focus_boost(item: RecommendationRow, focus_set: set[str]) -> int:
+    if not focus_set:
+        return 0
+    names = {
+        getattr(item, "theme_name", "") or "",
+        getattr(item, "mainline_tag", "") or "",
+    }
+    return 1 if any(name in focus_set for name in names if name) else 0
+
+
+def _report_mainline_flow_signal(item: RecommendationRow) -> str:
+    signal = str(getattr(item, "mainline_flow_signal", "") or "").strip()
+    if signal:
+        return signal
+    return infer_mainline_flow_signal(
+        int(getattr(item, "mainline_rank", getattr(item, "theme_rank", 0)) or 0),
+        float(getattr(item, "mainline_strength_score", 0.0) or getattr(item, "theme_score", 0.0) or 0.0),
+        float(getattr(item, "mainline_continuation_score", 0.0) or 0.0),
+        float(getattr(item, "theme_divergence_score", 0.0) or 0.0),
+        float(getattr(item, "theme_failure_risk", 0.0) or 0.0),
+        float(getattr(item, "mainline_window_score", 0.0) or 0.0),
+        str(getattr(item, "mainline_role", "") or ""),
+    )
+
+
+def _report_mainline_stage(item: RecommendationRow) -> str:
+    stage = str(getattr(item, "mainline_stage", "") or "").strip()
+    if stage:
+        return stage
+    return infer_mainline_stage(
+        int(getattr(item, "mainline_rank", getattr(item, "theme_rank", 0)) or 0),
+        float(getattr(item, "mainline_strength_score", 0.0) or getattr(item, "theme_score", 0.0) or 0.0),
+        float(getattr(item, "mainline_continuation_score", 0.0) or 0.0),
+        float(getattr(item, "theme_divergence_score", 0.0) or 0.0),
+        float(getattr(item, "theme_failure_risk", 0.0) or 0.0),
+        float(getattr(item, "mainline_window_score", 0.0) or 0.0),
+        str(getattr(item, "mainline_role", "") or ""),
+    )
+
+
+def _report_mainline_followup_label(signal: str) -> str:
+    if signal in {"延续偏强", "延续待确认"}:
+        return "继续跟"
+    if signal in {"延续可跟踪", "延续观察"}:
+        return "只观察"
+    return "防切换"
+
+
+def _report_mainline_followup_text(item: RecommendationRow) -> str:
+    signal = _report_mainline_flow_signal(item)
+    stance = _report_mainline_followup_label(signal)
+    tag = getattr(item, "mainline_tag", "") or getattr(item, "theme_name", "") or "未分类"
+    role = getattr(item, "mainline_role", "") or "--"
+    rank = int(getattr(item, "mainline_rank", getattr(item, "theme_rank", 0)) or 0) or "--"
+    window_score = float(getattr(item, "mainline_window_score", 0.0) or 0.0)
+    risk_flag = getattr(item, "mainline_risk_flag", "") or "--"
+    stage = _report_mainline_stage(item)
+    if stance == "继续跟":
+        reason = "主线仍在延续，优先跟前排，不追杂毛"
+    elif stance == "只观察":
+        reason = "主线可跟踪，但位次或窗口还不够硬，先等确认"
+    else:
+        reason = "主线出现切换/退潮迹象，优先减仓和回避"
+    next_focus = getattr(item, "next_focus", "") or ""
+    if next_focus:
+        reason = f"{reason}。执行观察：{next_focus}"
+    return f"{stance}：{tag} | {signal} | {stage} | 第{rank}位 | {role} | 窗口 {window_score:.1f} | 风险 {risk_flag} | {reason}"
+
+
+def _report_mainline_preference_rows(recommendations: list[RecommendationRow]) -> tuple[RecommendationRow | None, RecommendationRow | None, RecommendationRow | None]:
+    continue_row = None
+    watch_row = None
+    switch_row = None
+    for item in recommendations:
+        signal = _report_mainline_flow_signal(item)
+        if continue_row is None and signal in {"延续偏强", "延续待确认"}:
+            continue_row = item
+        if watch_row is None and signal == "延续可跟踪":
+            watch_row = item
+        if switch_row is None and signal in {"切换预警", "切换/退潮"}:
+            switch_row = item
+        if continue_row and watch_row and switch_row:
+            break
+    if watch_row is None:
+        for item in recommendations:
+            if getattr(item, "action", "") in {"WATCH", "HOLD"}:
+                watch_row = item
+                break
+    return continue_row, watch_row, switch_row
+
+
+def _report_recommendation_sort_key(
+    item: RecommendationRow,
+    *,
+    template_name: str,
+    focus_set: set[str],
+) -> tuple[float, ...]:
+    focus_boost = _report_focus_boost(item, focus_set)
+    primary_boost = 1 if int(getattr(item, "mainline_rank", getattr(item, "theme_rank", 0)) or 0) == 1 else 0
+    role_score = _report_role_score(getattr(item, "mainline_role", ""))
+    window_score = float(getattr(item, "mainline_window_score", 0.0) or 0.0)
+    risk_score = 100.0 - float(getattr(item, "theme_failure_risk", 0.0) or 0.0)
+    mainline_strength = float(getattr(item, "mainline_strength_score", 0.0) or getattr(item, "theme_score", 0.0) or 0.0)
+    leader_score = float(getattr(item, "leader_score", 0.0) or 0.0)
+    total_score = float(getattr(item, "total_score", 0.0) or 0.0)
+    persistence_score = float(getattr(item, "persistence_score", 0.0) or 0.0)
+    position_score = float(getattr(item, "position_score", 0.0) or 0.0)
+    news_score = float(getattr(item, "news_score", 0.0) or 0.0)
+    rank_score = _report_mainline_rank_score(item)
+
+    if template_name == "aggressive":
+        return (
+            focus_boost,
+            primary_boost,
+            role_score,
+            window_score,
+            leader_score,
+            rank_score,
+            total_score,
+            news_score,
+        )
+    if template_name == "defensive":
+        return (
+            focus_boost,
+            primary_boost,
+            risk_score,
+            window_score,
+            rank_score,
+            persistence_score,
+            position_score,
+            total_score,
+        )
+    return (
+        focus_boost,
+        primary_boost,
+        role_score,
+        window_score,
+        risk_score,
+        rank_score,
+        mainline_strength,
+        total_score,
+        leader_score,
+    )
 
 
 def _filter_recommendations_for_plan(
@@ -26,32 +189,13 @@ def _filter_recommendations_for_plan(
         if focused_rows:
             selected = focused_rows
 
-    if template_name == "focus":
-        selected.sort(
-            key=lambda item: (
-                item.theme_name in focus_set,
-                item.theme_rank == 1,
-                item.total_score,
-                item.theme_score,
-                item.stock_id,
-            ),
-            reverse=True,
-        )
-    elif template_name == "aggressive":
-        selected.sort(
-            key=lambda item: (item.leader_score, item.news_score, item.total_score, item.stock_id),
-            reverse=True,
-        )
-    elif template_name == "defensive":
-        selected.sort(
-            key=lambda item: (item.position_score, item.persistence_score, item.total_score, item.stock_id),
-            reverse=True,
-        )
-    else:
-        selected.sort(
-            key=lambda item: (item.total_score, item.theme_score, item.technical_score, item.stock_id),
-            reverse=True,
-        )
+    selected.sort(
+        key=lambda item: (
+            *_report_recommendation_sort_key(item, template_name=template_name, focus_set=focus_set),
+            item.stock_id,
+        ),
+        reverse=True,
+    )
 
     return selected[: max(candidate_limit, 1)]
 
@@ -173,6 +317,17 @@ def export_workspace_report(
             f"- {item.symbol}: return {item.total_return:.2%}, drawdown {item.max_drawdown:.2%}, "
             f"win rate {item.win_rate:.2%}, trades {item.trades}"
         )
+    continue_row, watch_row, switch_row = _report_mainline_preference_rows(recommendations)
+    lines.extend(["", "## 次日预案", ""])
+    if continue_row:
+        lines.append(f"- {_report_mainline_followup_text(continue_row)}")
+    if watch_row:
+        lines.append(f"- {_report_mainline_followup_text(watch_row)}")
+    if switch_row:
+        lines.append(f"- {_report_mainline_followup_text(switch_row)}")
+    if not any((continue_row, watch_row, switch_row)):
+        lines.append("- 当前没有清晰的延续/切换信号，次日先观察盘面确认。")
+
     markdown_path.write_text("\n".join(lines), encoding="utf-8")
 
     return ReportArtifacts(str(markdown_path), str(csv_path), str(json_path))
@@ -349,6 +504,17 @@ def export_daily_trade_plan(
         lines.append("- 当前没有明显的龙头候选。")
 
     lines.extend(["", "## 每日股票池", ""])
+    continue_row, watch_row, switch_row = _report_mainline_preference_rows(plan_recommendations)
+    lines.extend(["", "## 主线预案", ""])
+    if continue_row:
+        lines.append(f"- {_report_mainline_followup_text(continue_row)}")
+    if watch_row:
+        lines.append(f"- {_report_mainline_followup_text(watch_row)}")
+    if switch_row:
+        lines.append(f"- {_report_mainline_followup_text(switch_row)}")
+    if not any((continue_row, watch_row, switch_row)):
+        lines.append("- 当前没有足够清晰的延续/切换信号，按观察模式处理。")
+
     if plan_recommendations:
         for index, item in enumerate(plan_recommendations, start=1):
             lines.append(
@@ -360,7 +526,7 @@ def export_daily_trade_plan(
     else:
         lines.append("- 今日未生成股票池结果。")
 
-    lines.extend(["", "## 今日建仓计划", ""])
+    lines.extend(["", "## 今日交易计划", ""])
     if decisions:
         for item in decisions:
             lines.append(
@@ -370,7 +536,7 @@ def export_daily_trade_plan(
             )
             lines.append(f"  说明: {item.rationale}")
     else:
-        lines.append("- 当前没有新的建仓计划。")
+        lines.append("- 当前没有新的交易计划。")
 
     lines.extend(["", "## 持仓处理建议", ""])
     if position_advice:
@@ -402,7 +568,7 @@ def export_end_of_day_review(
     scan_rows: list[ScanRow] | None = None,
     focus_themes: list[str] | None = None,
     license_plan: str = "TRIAL",
-    title: str = "收盘复盘日报",
+    title: str = "收盘复盘",
 ) -> ReportArtifacts:
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
@@ -583,7 +749,7 @@ def export_end_of_day_review(
     else:
         lines.append("- 今日无股票池结果。")
 
-    lines.extend(["", "## 今日 5 只交易计划", ""])
+    lines.extend(["", "## 今日交易计划", ""])
     if decisions:
         for item in decisions:
             lines.append(

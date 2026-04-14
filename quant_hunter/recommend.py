@@ -1,10 +1,86 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime
 
 from .data import extract_stock_id
 from .models import DailyAnalysis, NewsCatalyst, RecommendationRow, ScanRow, StockProfile, SymbolBacktestSummary
-from .theme import ThemeHeatEngine, infer_theme_name
+from .theme import ThemeHeatEngine, infer_mainline_flow_signal, infer_mainline_stage, infer_theme_name
+
+
+def _mainline_stage_priority(stage: str) -> int:
+    return {
+        "加速": 0,
+        "启动": 1,
+        "分歧": 2,
+        "观察": 3,
+        "退潮": 4,
+    }.get(stage, 9)
+
+
+def _mainline_flow_priority(signal: str) -> int:
+    return {
+        "延续偏强": 0,
+        "延续待确认": 1,
+        "延续可跟踪": 2,
+        "延续观察": 3,
+        "切换预警": 4,
+        "切换/退潮": 5,
+    }.get(signal, 9)
+
+
+def _one_day_hold_sort_priority(item: RecommendationRow) -> tuple[float, float, float, float]:
+    strategy_name = (getattr(item, "primary_strategy", "") or "")
+    if strategy_name not in {"一日持股法", "尾盘买入法"}:
+        return (1.0, 0.0, 0.0, 0.0)
+    one_day_score = float(
+        getattr(item, "tail_buy_score", 0.0) or 0.0
+        if strategy_name == "尾盘买入法"
+        else getattr(item, "one_day_hold_score", 0.0) or 0.0
+    )
+    readiness = float(getattr(item, "execution_readiness", 0.0) or 0.0)
+    window_score = float(getattr(item, "mainline_window_score", 0.0) or 0.0)
+    continuation = float(getattr(item, "mainline_continuation_score", 0.0) or window_score or 0.0)
+    risk_flag = str(getattr(item, "mainline_risk_flag", "") or "")
+    risk_adjust = {"低": 2.0, "中": -4.0, "高": -12.0}.get(risk_flag, 0.0)
+
+    auction_score = round(one_day_score * 0.52 + readiness * 0.28 + window_score * 0.20 + risk_adjust, 2)
+    open_score = round(one_day_score * 0.30 + readiness * 0.46 + continuation * 0.24 + risk_adjust, 2)
+    afternoon_score = round(one_day_score * 0.24 + readiness * 0.24 + window_score * 0.28 + continuation * 0.24 + risk_adjust - 3.0, 2)
+    tripwire_score = round(auction_score * 0.45 + open_score * 0.35 + afternoon_score * 0.20, 2)
+    return (0.0, -tripwire_score, -auction_score, -open_score)
+
+
+def _recommendation_sort_key(item: RecommendationRow) -> tuple[object, ...]:
+    stage_label = infer_mainline_stage(
+        theme_rank=item.mainline_rank or item.theme_rank or 0,
+        strength_score=item.mainline_strength_score or item.theme_score or item.total_score,
+        continuation_score=item.mainline_continuation_score,
+        divergence_score=item.theme_divergence_score,
+        failure_risk=item.theme_failure_risk,
+        window_score=item.mainline_window_score,
+        mainline_role=item.mainline_role,
+    )
+    flow_signal = infer_mainline_flow_signal(
+        theme_rank=item.mainline_rank or item.theme_rank or 0,
+        strength_score=item.mainline_strength_score or item.theme_score or item.total_score,
+        continuation_score=item.mainline_continuation_score,
+        divergence_score=item.theme_divergence_score,
+        failure_risk=item.theme_failure_risk,
+        window_score=item.mainline_window_score,
+        mainline_role=item.mainline_role,
+    )
+    return (
+        item.mainline_rank == 0,
+        item.mainline_rank or 99,
+        _mainline_stage_priority(stage_label),
+        _mainline_flow_priority(flow_signal),
+        *_one_day_hold_sort_priority(item),
+        -item.mainline_window_score,
+        -item.leader_position_score,
+        -item.total_score,
+        item.stock_id,
+    )
 
 
 def _parse_date(value: str) -> date | None:
@@ -61,7 +137,6 @@ class DailyPoolBuilder:
                 profile.industry if profile else "",
                 profile.notes if profile else "",
                 catalyst,
-                row.reason,
                 theme_aliases=self.theme_aliases,
             )
             focus_boost = self.focus_theme_boost if theme_name and theme_name in self.focus_themes else 0.0
@@ -74,6 +149,16 @@ class DailyPoolBuilder:
                 news_score=news_score,
                 leader_score=leader_score,
                 catalyst=catalyst,
+            )
+            pool_profile = self._stock_pool_profile(
+                row=row,
+                profile=profile,
+                technical_score=technical_score,
+                position_score=position_score,
+                persistence_score=persistence_score,
+                news_score=news_score,
+                leader_score=leader_score,
+                strategy_scores=strategy_scores,
             )
             total_score = round(
                 technical_score * 0.34
@@ -101,10 +186,13 @@ class DailyPoolBuilder:
                 reasons.append(f"关注题材加权 +{focus_boost:.0f}")
 
             reasons.append(
-                f"绛栫暐 {strategy_scores['primary_strategy']} "
-                f"(榫欏ご {strategy_scores['leader_model_score']:.0f} / 涓诲姏 {strategy_scores['main_force_score']:.0f} / "
-                f"鎵撴澘 {strategy_scores['board_attack_score']:.0f} / 浣庡惛 {strategy_scores['value_recovery_score']:.0f} / "
-                f"鍐崇瓥 {strategy_scores['dragon_decision_score']:.0f})"
+                f"策略 {strategy_scores['primary_strategy']} "
+                f"(龙头 {strategy_scores['leader_model_score']:.0f} / 主力 {strategy_scores['main_force_score']:.0f} / "
+                f"打板 {strategy_scores['board_attack_score']:.0f} / 低吸 {strategy_scores['value_recovery_score']:.0f} / "
+                f"尾盘 {strategy_scores['tail_buy_score']:.0f} / 一日 {strategy_scores['one_day_hold_score']:.0f} / 决策 {strategy_scores['dragon_decision_score']:.0f})"
+            )
+            reasons.append(
+                f"股票池 {pool_profile['stock_pool']} | 买点 {pool_profile['buy_point']} | 卖点 {pool_profile['sell_point']}"
             )
             candidates.append(
                 RecommendationRow(
@@ -126,10 +214,18 @@ class DailyPoolBuilder:
                     total_score=total_score,
                     theme_name=theme_name,
                     primary_strategy=strategy_scores["primary_strategy"],
+                    stock_pool=pool_profile["stock_pool"],
+                    pool_score=pool_profile["pool_score"],
+                    buy_point=pool_profile["buy_point"],
+                    add_point=pool_profile["add_point"],
+                    sell_point=pool_profile["sell_point"],
+                    risk_line=pool_profile["risk_line"],
                     leader_model_score=strategy_scores["leader_model_score"],
                     main_force_score=strategy_scores["main_force_score"],
                     board_attack_score=strategy_scores["board_attack_score"],
                     value_recovery_score=strategy_scores["value_recovery_score"],
+                    tail_buy_score=strategy_scores["tail_buy_score"],
+                    one_day_hold_score=strategy_scores["one_day_hold_score"],
                     dragon_decision_score=strategy_scores["dragon_decision_score"],
                     catalyst=catalyst,
                     rationale=" | ".join(reasons),
@@ -137,13 +233,169 @@ class DailyPoolBuilder:
             )
 
         themed_candidates, theme_rows, leader_rows = ThemeHeatEngine(theme_aliases=self.theme_aliases).analyze(candidates)
-        themed_candidates.sort(
-            key=lambda item: (item.total_score, item.theme_score, item.technical_score, item.persistence_score, item.stock_id),
-            reverse=True,
-        )
+        themed_candidates = [self._enrich_user_focus(item) for item in themed_candidates]
+        themed_candidates.sort(key=_recommendation_sort_key)
         self.last_theme_rows = theme_rows
         self.last_leader_rows = leader_rows
         return themed_candidates[:top_n]
+
+    def _enrich_user_focus(self, row: RecommendationRow) -> RecommendationRow:
+        confidence_score = round(
+            self._bounded_score(
+                row.dragon_decision_score * 0.38
+                + row.total_score * 0.22
+                + row.mainline_window_score * 0.22
+                + (100.0 - row.theme_failure_risk) * 0.18
+            ),
+            2,
+        )
+        execution_readiness = round(
+            self._bounded_score(
+                row.position_score * 0.28
+                + row.mainline_window_score * 0.24
+                + row.technical_score * 0.18
+                + row.persistence_score * 0.14
+                + (100.0 - row.theme_failure_risk) * 0.16
+            ),
+            2,
+        )
+        timeliness_score = round(
+            self._bounded_score(
+                row.position_score * 0.52
+                + row.news_score * 0.18
+                + row.mainline_window_score * 0.18
+                + max(0.0, 100.0 - row.theme_rotation_score) * 0.12
+            ),
+            2,
+        )
+        reject_reason = self._reject_reason(row)
+        opportunity_tier = self._opportunity_tier(
+            row,
+            confidence_score=confidence_score,
+            execution_readiness=execution_readiness,
+            timeliness_score=timeliness_score,
+            reject_reason=reject_reason,
+        )
+        next_focus = self._next_focus(row, reject_reason)
+        invalidation_reason = (row.risk_line or "").strip() or "跌破计划防守线或主线窗口继续收缩时放弃。"
+        return replace(
+            row,
+            confidence_score=confidence_score,
+            execution_readiness=execution_readiness,
+            timeliness_score=timeliness_score,
+            opportunity_tier=opportunity_tier,
+            reject_reason=reject_reason,
+            next_focus=next_focus,
+            invalidation_reason=invalidation_reason,
+        )
+
+    def _stock_pool_profile(
+        self,
+        row: ScanRow,
+        profile: StockProfile | None,
+        technical_score: float,
+        position_score: float,
+        persistence_score: float,
+        news_score: float,
+        leader_score: float,
+        strategy_scores: dict[str, float | str],
+    ) -> dict[str, float | str]:
+        primary_strategy = str(strategy_scores.get("primary_strategy", "") or "")
+        if primary_strategy == "尾盘买入法":
+            entry = row.entry_price or row.close
+            stop_price = row.stop_price or entry * 0.976
+            target_price = row.target_price or entry * 1.032
+            return {
+                "stock_pool": "趋势股",
+                "pool_score": round(min(float(strategy_scores.get("tail_buy_score", 0.0)), 99.0), 2),
+                "buy_point": f"仅在 14:30 之后确认尾盘回流和承接后，围绕 {entry:.2f} 小仓试单，不提前埋伏",
+                "add_point": f"尾盘最后半小时若持续站稳 {max(entry * 1.002, stop_price * 1.01):.2f} 且量能不乱，再考虑轻微加码",
+                "sell_point": f"次日开盘优先看 {target_price:.2f} 附近兑现，平开也先走一半，弱开直接离场",
+                "risk_line": f"若尾盘回流失败或跌破 {stop_price:.2f}，取消隔夜；次日低开低走不恋战",
+            }
+        if primary_strategy == "一日持股法":
+            entry = row.entry_price or row.close
+            stop_price = row.stop_price or entry * 0.972
+            target_price = row.target_price or entry * 1.055
+            return {
+                "stock_pool": "趋势股",
+                "pool_score": round(min(float(strategy_scores.get("one_day_hold_score", 0.0)), 99.0), 2),
+                "buy_point": f"围绕 {entry:.2f} 强势确认介入，原则上只博弈隔日溢价，不追尾盘扩张",
+                "add_point": f"次日仅在高开承接强于预期且不破 {max(entry * 0.995, stop_price * 1.01):.2f} 时小幅加码",
+                "sell_point": f"次日冲高靠近 {target_price:.2f} 优先兑现，午后仍未转强就收缩战线",
+                "risk_line": f"若次日弱开弱走或跌破 {stop_price:.2f}，直接离场，不做恋战",
+            }
+        leader_pool_score = (
+            float(strategy_scores["leader_model_score"]) * 0.54
+            + float(strategy_scores["board_attack_score"]) * 0.24
+            + leader_score * 0.14
+            + news_score * 0.08
+        )
+        trend_pool_score = (
+            float(strategy_scores["main_force_score"]) * 0.44
+            + persistence_score * 0.28
+            + technical_score * 0.18
+            + position_score * 0.10
+        )
+        value_pool_score = (
+            float(strategy_scores["value_recovery_score"]) * 0.50
+            + position_score * 0.24
+            + technical_score * 0.14
+            + persistence_score * 0.12
+        )
+        ranked = [
+            ("龙头股", leader_pool_score),
+            ("趋势股", trend_pool_score),
+            ("价值股", value_pool_score),
+        ]
+        if profile and profile.is_leader:
+            ranked[0] = (ranked[0][0], ranked[0][1] + 4.0)
+        ranked.sort(key=lambda item: item[1], reverse=True)
+        stock_pool = ranked[0][0]
+        return {
+            "stock_pool": stock_pool,
+            "pool_score": round(min(ranked[0][1], 99.0), 2),
+            "buy_point": self._pool_buy_point(stock_pool, row),
+            "add_point": self._pool_add_point(stock_pool, row),
+            "sell_point": self._pool_sell_point(stock_pool, row),
+            "risk_line": self._pool_risk_line(stock_pool, row),
+        }
+
+    def _pool_buy_point(self, stock_pool: str, row: ScanRow) -> str:
+        entry = row.entry_price or row.close
+        if stock_pool == "龙头股":
+            return f"放量突破或回封确认后在 {entry:.2f} 附近分批介入"
+        if stock_pool == "趋势股":
+            return f"回踩均线企稳或平台突破时在 {entry:.2f} 附近低吸"
+        return f"超跌修复确认后在 {entry:.2f} 附近试仓，避免追高"
+
+    def _pool_add_point(self, stock_pool: str, row: ScanRow) -> str:
+        entry = row.entry_price or row.close
+        stop_price = row.stop_price or entry * 0.95
+        if stock_pool == "龙头股":
+            return f"分时承接不破 {max(entry * 0.99, stop_price * 1.03):.2f} 可小幅加仓"
+        if stock_pool == "趋势股":
+            return f"沿 5 日或 10 日均线抬升，站稳 {max(entry * 1.01, stop_price * 1.05):.2f} 再加仓"
+        return f"修复后二次回踩不破 {max(entry * 0.98, stop_price * 1.02):.2f} 再考虑补仓"
+
+    def _pool_sell_point(self, stock_pool: str, row: ScanRow) -> str:
+        entry = row.entry_price or row.close
+        stop_price = row.stop_price or entry * 0.95
+        target_price = row.target_price or (entry * 1.12 if stock_pool != "价值股" else entry * 1.08)
+        if stock_pool == "龙头股":
+            return f"冲高到 {target_price:.2f} 附近分批止盈，炸板或转弱先减仓"
+        if stock_pool == "趋势股":
+            return f"接近 {target_price:.2f} 分批兑现，跌破趋势支撑 {stop_price:.2f} 先撤"
+        return f"修复到 {target_price:.2f} 附近落袋，若再度跌破 {stop_price:.2f} 放弃博弈"
+
+    def _pool_risk_line(self, stock_pool: str, row: ScanRow) -> str:
+        entry = row.entry_price or row.close
+        stop_price = row.stop_price or (entry * 0.965 if stock_pool == "龙头股" else entry * 0.95)
+        if stock_pool == "龙头股":
+            return f"跌破 {stop_price:.2f} 或高位爆量转弱立即退守"
+        if stock_pool == "趋势股":
+            return f"跌破 {stop_price:.2f} 或均线系统走坏时离场"
+        return f"跌破 {stop_price:.2f} 或修复失败时止损离场"
 
     def _position_score(self, row: ScanRow, analyses: list[DailyAnalysis]) -> float:
         if not analyses:
@@ -233,6 +485,11 @@ class DailyPoolBuilder:
         board_bias = 8.0 if any(keyword in context for keyword in ("打板", "回封", "连板", "涨停")) else 0.0
         value_bias = 8.0 if any(keyword in context for keyword in ("低吸", "回踩", "低位", "修复")) else 0.0
 
+        one_day_bias = 10.0 if any(keyword in context for keyword in ("一日持股", "隔日", "次日", "隔夜", "高开", "竞价", "首板", "转强")) else 0.0
+        tail_buy_bias = 12.0 if any(keyword in context for keyword in ("尾盘", "收盘前", "14:30", "两点半", "尾盘买入", "开盘卖", "次日开盘", "尾盘回流")) else 0.0
+        next_day_window_score = max(0.0, 92.0 - abs(position_score - 76.0))
+        tail_buy_window_score = max(0.0, 94.0 - abs(position_score - 72.0))
+
         leader_model_score = min(
             98.0,
             technical_score * 0.32
@@ -269,24 +526,53 @@ class DailyPoolBuilder:
             + leader_score * 0.10
             + value_bias,
         )
+        one_day_hold_score = min(
+            98.0,
+            technical_score * 0.22
+            + position_score * 0.18
+            + persistence_score * 0.14
+            + news_score * 0.16
+            + leader_score * 0.08
+            + board_attack_score * 0.12
+            + main_force_score * 0.08
+            + next_day_window_score * 0.10
+            + one_day_bias,
+        )
+        tail_buy_score = min(
+            98.0,
+            technical_score * 0.18
+            + position_score * 0.12
+            + persistence_score * 0.16
+            + news_score * 0.12
+            + leader_score * 0.05
+            + main_force_score * 0.14
+            + board_attack_score * 0.05
+            + one_day_hold_score * 0.18
+            + tail_buy_window_score * 0.10
+            + tail_buy_bias,
+        )
         dragon_decision_score = min(
             99.0,
-            leader_model_score * 0.24
-            + main_force_score * 0.18
-            + board_attack_score * 0.16
-            + value_recovery_score * 0.16
-            + technical_score * 0.08
-            + position_score * 0.07
-            + persistence_score * 0.06
-            + news_score * 0.05,
+            leader_model_score * 0.22
+            + main_force_score * 0.16
+            + board_attack_score * 0.14
+            + value_recovery_score * 0.15
+            + tail_buy_score * 0.08
+            + one_day_hold_score * 0.09
+            + technical_score * 0.07
+            + position_score * 0.04
+            + persistence_score * 0.03
+            + news_score * 0.02,
         )
         ranked = [
             ("龙头模型", leader_model_score),
             ("主力雷达", main_force_score),
-            ("擒龙打板", board_attack_score),
+            ("强势接力", board_attack_score),
             ("价值低吸", value_recovery_score),
             ("掘龙决策", dragon_decision_score),
         ]
+        ranked.append(("尾盘买入法", tail_buy_score))
+        ranked.append(("一日持股法", one_day_hold_score))
         ranked.sort(key=lambda item: item[1], reverse=True)
         return {
             "primary_strategy": ranked[0][0],
@@ -294,5 +580,63 @@ class DailyPoolBuilder:
             "main_force_score": round(main_force_score, 2),
             "board_attack_score": round(board_attack_score, 2),
             "value_recovery_score": round(value_recovery_score, 2),
+            "tail_buy_score": round(tail_buy_score, 2),
+            "one_day_hold_score": round(one_day_hold_score, 2),
             "dragon_decision_score": round(dragon_decision_score, 2),
         }
+
+    @staticmethod
+    def _bounded_score(value: float) -> float:
+        return max(0.0, min(value, 99.0))
+
+    def _reject_reason(self, row: RecommendationRow) -> str:
+        role = (row.mainline_role or "").strip()
+        risk_flag = (row.mainline_risk_flag or "").strip()
+        if role in {"NOISE", "ELIMINATED"}:
+            return "不在主线核心参与区，先不新开仓。"
+        if row.mainline_rank and row.mainline_rank > 3:
+            return "主线位次偏后，胜率和性价比都在下降。"
+        if risk_flag == "高" or row.theme_failure_risk >= 72.0:
+            return "题材退潮风险偏高，先回避。"
+        if row.mainline_window_score and row.mainline_window_score < 50.0:
+            return "窗口还没打开，容易追高后被动。"
+        if row.position_score < 60.0:
+            return "位置不够舒服，先等回踩或确认。"
+        return ""
+
+    def _opportunity_tier(
+        self,
+        row: RecommendationRow,
+        *,
+        confidence_score: float,
+        execution_readiness: float,
+        timeliness_score: float,
+        reject_reason: str,
+    ) -> str:
+        if getattr(row, "action", "") == "BUY" and not reject_reason:
+            if confidence_score >= 78.0 and execution_readiness >= 74.0 and timeliness_score >= 70.0:
+                return "优先处理"
+            return "跟踪确认"
+        if getattr(row, "action", "") in {"WATCH", "HOLD"}:
+            return "观察名单"
+        return "风险回避"
+
+    def _next_focus(self, row: RecommendationRow, reject_reason: str) -> str:
+        strategy_name = getattr(row, "primary_strategy", "") or ""
+        if reject_reason:
+            if strategy_name == "尾盘买入法":
+                return "先等 14:30 之后尾盘回流、承接和量能缩放确认，再看是否值得隔夜，次日只做开盘兑现。"
+            if strategy_name == "一日持股法":
+                return "先看次日竞价是否高开转强，再看开盘 5 分钟量能与承接，弱于预期就放弃。"
+            if row.mainline_window_score < 50.0:
+                return "等放量突破或回踩承接确认后再看。"
+            if row.theme_failure_risk >= 72.0 or row.mainline_risk_flag == "高":
+                return "等题材分歧收敛、风险标签回落后再看。"
+            return "先保留观察，不急着出手。"
+        if strategy_name == "尾盘买入法":
+            return "重点看 14:30 后尾盘回流、承接是否稳定，以及次日开盘能否先兑现，不做拖仓。"
+        if row.stock_pool == "龙头股":
+            return "盯回封强度、量能放大和主线前排站位。"
+        if row.stock_pool == "价值股":
+            return "盯修复确认和二次回踩是否站稳。"
+        return "盯量价延续、均线承接和主线窗口是否继续扩张。"

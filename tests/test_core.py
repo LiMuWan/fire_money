@@ -5050,6 +5050,163 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(deck["position_accent"], "买入 2400 @ 182.50")
         self.assertEqual(deck["headline"], "执行动作面板：宁德时代 | 待成交跟踪 | 去推荐页")
 
+    def test_broker_focus_shortcuts_sync_blocker_and_priority_tooltips(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        blocked = module._qh_broker_focus_shortcuts_v51(
+            stock_name="比亚迪",
+            stage="阻塞待处理",
+            blocker_present=True,
+            blocker_hint="先检查通道",
+            parameter_headline="参数待复核",
+            resolution_target="账户配置",
+        )
+        tracking = module._qh_broker_focus_shortcuts_v51(
+            stock_name="宁德时代",
+            stage="待成交跟踪",
+            blocker_present=False,
+            blocker_hint="先复核参数",
+            parameter_headline="买点偏高",
+            resolution_target="推荐页",
+        )
+
+        self.assertIn("阻塞优先", blocked["blocker_tooltip"])
+        self.assertIn("先检查通道", blocked["blocker_tooltip"])
+        self.assertIn("前排暂缓", blocked["priority_tooltip"])
+        self.assertIn("待成交跟踪", tracking["blocker_tooltip"])
+        self.assertIn("买点偏高", tracking["priority_tooltip"])
+        self.assertIn("推荐页", tracking["priority_tooltip"])
+
+    def test_broker_action_strip_labels_follow_execution_stage(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        blocked = module._qh_broker_action_strip_labels_v52(
+            stage="阻塞待处理",
+            blocker_present=True,
+            has_priority_target=True,
+        )
+        pending = module._qh_broker_action_strip_labels_v52(
+            stage="待成交跟踪",
+            blocker_present=False,
+            has_priority_target=True,
+        )
+        review = module._qh_broker_action_strip_labels_v52(
+            stage="已成交待复盘",
+            blocker_present=False,
+            has_priority_target=True,
+        )
+        empty = module._qh_broker_action_strip_labels_v52(
+            stage="待成交跟踪",
+            blocker_present=False,
+            has_priority_target=False,
+        )
+
+        self.assertEqual(blocked["blocker_text"], "处理阻塞")
+        self.assertEqual(blocked["priority_text"], "前排暂缓")
+        self.assertEqual(pending["priority_text"], "跟前排单")
+        self.assertEqual(review["blocker_text"], "看偏差项")
+        self.assertEqual(review["priority_text"], "看前排复盘")
+        self.assertEqual(empty["priority_text"], "暂无前排")
+
+    def test_broker_primary_cta_labels_follow_stage_and_order_counts(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        cold = module._qh_broker_primary_cta_labels_v53(
+            stage="",
+            order_count=0,
+            submit_count=0,
+            has_focus_symbol=False,
+        )
+        ready = module._qh_broker_primary_cta_labels_v53(
+            stage="",
+            order_count=3,
+            submit_count=0,
+            has_focus_symbol=True,
+        )
+        blocked = module._qh_broker_primary_cta_labels_v53(
+            stage="阻塞待处理",
+            order_count=2,
+            submit_count=1,
+            has_focus_symbol=True,
+        )
+        in_flight = module._qh_broker_primary_cta_labels_v53(
+            stage="待成交跟踪",
+            order_count=1,
+            submit_count=1,
+            has_focus_symbol=True,
+        )
+
+        self.assertEqual(cold["generate_text"], "生成委托链路")
+        self.assertEqual(cold["confirm_text"], "确认并提交委托")
+        self.assertEqual(ready["generate_text"], "重算委托链路")
+        self.assertEqual(ready["confirm_text"], "核对后提交 (3)")
+        self.assertEqual(blocked["generate_text"], "按阻塞重生成")
+        self.assertEqual(blocked["confirm_text"], "修正后提交 (2)")
+        self.assertEqual(in_flight["generate_text"], "围绕焦点重生成")
+        self.assertEqual(in_flight["confirm_text"], "核对后提交 (1)")
+
+    def test_broker_primary_cta_tooltips_follow_stage_and_focus(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        cold = module._qh_broker_primary_cta_tooltips_v54(
+            stage="",
+            order_count=0,
+            submit_count=0,
+            stock_name="当前焦点",
+        )
+        blocked = module._qh_broker_primary_cta_tooltips_v54(
+            stage="阻塞待处理",
+            order_count=2,
+            submit_count=1,
+            stock_name="比亚迪",
+        )
+        in_flight = module._qh_broker_primary_cta_tooltips_v54(
+            stage="待成交跟踪",
+            order_count=1,
+            submit_count=1,
+            stock_name="宁德时代",
+        )
+
+        self.assertIn("自动生成委托建议", cold["generate_tooltip"])
+        self.assertIn("请先从推荐池生成委托建议", cold["confirm_tooltip"])
+        self.assertIn("按最新阻塞项重生成", blocked["generate_tooltip"])
+        self.assertIn("请先修正阻塞项", blocked["confirm_tooltip"])
+        self.assertIn("宁德时代", in_flight["generate_tooltip"])
+        self.assertIn("再次核对后提交", in_flight["confirm_tooltip"])
+
+    def test_update_broker_action_flow_resets_shortcut_labels_when_no_execution_focus(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        window = SimpleNamespace(
+            order_intents=[],
+            order_submission_records=[],
+            active_symbol="",
+            broker_focus_blocker_button=module.QPushButton("处理阻塞"),
+            broker_focus_priority_button=module.QPushButton("前排暂缓"),
+            confirm_submit_orders_button=module.QPushButton(),
+            generate_order_suggestions_button=module.QPushButton(),
+            broker_status_banner=module.QLabel(),
+            broker_execution_text=module.QTextEdit(),
+            _stock_name_for_symbol=lambda symbol: "宁德时代" if symbol else "--",
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text) if widget.text() != text else None,
+                widget.setToolTip(tooltip) if tooltip is not None and hasattr(widget, "setToolTip") and widget.toolTip() != tooltip else None,
+            ),
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text) if widget.toPlainText() != text else None,
+        )
+
+        module._qh_update_broker_action_flow_v26(window)
+
+        self.assertEqual(window.broker_focus_blocker_button.text(), "定位阻塞")
+        self.assertEqual(window.broker_focus_priority_button.text(), "定位高优先")
+        self.assertEqual(window.generate_order_suggestions_button.text(), "生成委托链路")
+        self.assertEqual(window.confirm_submit_orders_button.text(), "确认并提交委托")
+        self.assertIn("当前没有阻塞项", window.broker_focus_blocker_button.toolTip())
+        self.assertIn("当前没有高优先委托", window.broker_focus_priority_button.toolTip())
+        self.assertIn("自动生成委托建议", window.generate_order_suggestions_button.toolTip())
+        self.assertIn("请先从推荐池生成委托建议", window.confirm_submit_orders_button.toolTip())
+
     def test_set_aux_stage_visibility_updates_toggle_and_status(self) -> None:
         module = importlib.import_module("app_qt")
         app = module.QApplication.instance() or module.QApplication([])
@@ -5125,7 +5282,7 @@ class StrategyWorkflowTests(unittest.TestCase):
 
     def test_open_selected_recommend_in_broker_syncs_symbol_and_routes(self) -> None:
         module = importlib.import_module("app_qt")
-        row = RecommendationRow(
+        base_row = RecommendationRow(
             symbol="SZSE.300001",
             stock_id="300001",
             stock_name="龙头样本",
@@ -5147,7 +5304,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         focus_calls: list[tuple[str, str]] = []
         window = SimpleNamespace(
             active_symbol="",
-            _current_recommend_focus=lambda: row,
+            _current_recommend_focus=lambda: base_row,
             _focus_symbol_in_broker_workspace=lambda symbol: broker_calls.append(symbol),
             _focus_symbol_everywhere=lambda symbol, origin="": focus_calls.append((symbol, origin)),
         )
@@ -7424,9 +7581,10 @@ class StrategyWorkflowTests(unittest.TestCase):
 
     def test_prepare_order_submission_controller_uses_keyword_arguments_for_confirmation(self) -> None:
         from quant_hunter import ui_controllers
-        from quant_hunter.models import OrderIntent
+        from quant_hunter.models import OrderIntent, PaperTradingState
 
         captured = {}
+        status = {"extra": ""}
 
         class DummyAdapter:
             def diagnose_environment(self, _profile):
@@ -7458,7 +7616,7 @@ class StrategyWorkflowTests(unittest.TestCase):
                 )
             ],
             generate_order_suggestions=lambda: None,
-            _refresh_broker_status=lambda extra="": None,
+            _refresh_broker_status=lambda extra="": status.__setitem__("extra", extra),
             current_broker_profile=lambda: SimpleNamespace(
                 export_dir="exports",
                 token="demo-token",
@@ -7477,20 +7635,86 @@ class StrategyWorkflowTests(unittest.TestCase):
                 )
             ],
             cash_snapshot=None,
-            daily_pool_rows=[SimpleNamespace(symbol="SHSE.600000")],
+            daily_pool_rows=[SimpleNamespace(symbol="SHSE.600000", primary_strategy="龙头模型")],
+            paper_trading_state=PaperTradingState(enabled=True),
         )
 
-        prepared = ui_controllers.prepare_order_submission_controller(
-            window,
-            adapter_cls=DummyAdapter,
-            confirmation_dialog_cls=SimpleNamespace(confirm=confirm),
-        )
+        with patch.object(
+            ui_controllers,
+            "paper_strategy_experiment_bridge_v45",
+            return_value={
+                "badge": "主测",
+                "title": "主测 | 龙头模型 | 继续主测",
+                "detail": "样本 7 | 胜率 62.0% | 平均持有 1.8 天 | 预算 x1.18",
+                "cta": "推荐页优先筛同战法前排，交易页按主测纪律推进。",
+            },
+        ):
+            prepared = ui_controllers.prepare_order_submission_controller(
+                window,
+                adapter_cls=DummyAdapter,
+                confirmation_dialog_cls=SimpleNamespace(confirm=confirm),
+            )
 
         self.assertIsNone(prepared)
         self.assertIs(captured["parent"], window)
         self.assertEqual(captured["recommendations"], window.daily_pool_rows)
         self.assertEqual(captured["intents"], window.order_intents)
+        self.assertEqual(captured["strategy_name"], "龙头模型")
+        self.assertEqual(captured["experiment_bridge"]["badge"], "主测")
+        self.assertIn("本次提交已取消", status["extra"])
         self.assertTrue(hasattr(window, "last_broker_execution_summary"))
+
+    def test_order_confirmation_dialog_surfaces_experiment_guardrails(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+
+        class DummyAdapter:
+            def diagnose_environment(self, _profile):
+                return {
+                    "bridge_python": "",
+                    "direct_ready": True,
+                    "bridge_ready": False,
+                }
+
+        dialog = module.OrderConfirmationDialog(
+            SimpleNamespace(
+                account_name="演示账户",
+                account_id="demo-account",
+                strategy_id="demo-strategy",
+                mode="export",
+                sdk_module="gm.api",
+            ),
+            [
+                OrderIntent(
+                    symbol="SHSE.600000",
+                    side="BUY",
+                    price=10.0,
+                    quantity=1000,
+                    stop_price=9.5,
+                    target_price=11.2,
+                    signal_date="计划股",
+                    reason="主测推进",
+                )
+            ],
+            DummyAdapter(),
+            strategy_name="龙头模型",
+            experiment_bridge={
+                "badge": "主测",
+                "title": "主测 | 龙头模型 | 继续主测",
+                "detail": "样本 7 | 胜率 62.0% | 平均持有 1.8 天 | 预算 x1.18",
+                "cta": "推荐页优先筛同战法前排，交易页按主测纪律推进。",
+            },
+        )
+        try:
+            self.assertIn("当前战法：龙头模型", dialog.summary_text.toPlainText())
+            self.assertIn("实验结论：主测 | 龙头模型 | 继续主测", dialog.experiment_text.toPlainText())
+            self.assertIn("真实交易建议：可以继续推进", dialog.experiment_text.toPlainText())
+            self.assertIn("下一步：推荐页优先筛同战法前排", dialog.experiment_text.toPlainText())
+            self.assertIn("模拟盘结论与风险", dialog.confirm_checkbox.text())
+        finally:
+            dialog.close()
+            app.processEvents()
 
     def test_report_recommendation_sorting_prefers_mainline_over_raw_total_score(self) -> None:
         from quant_hunter import reports

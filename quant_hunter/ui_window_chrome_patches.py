@@ -239,10 +239,11 @@ QToolTip {
         for widget_name in ["shell_header", "shell_pulse_bar"]:
             widget = getattr(self, widget_name, None)
             if isinstance(widget, QWidget):
-                widget.setProperty("stateTone", risk_tone)
-                self.style().unpolish(widget)
-                self.style().polish(widget)
-                widget.update()
+                if widget.property("stateTone") != risk_tone:
+                    widget.setProperty("stateTone", risk_tone)
+                    self.style().unpolish(widget)
+                    self.style().polish(widget)
+                    widget.update()
         self.setWindowTitle(f"量化猎手 Pro - {badge}")
 
     def _post_build_ui_tweaks_v34(self) -> None:

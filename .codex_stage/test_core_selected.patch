@@ -1,0 +1,145 @@
+diff --git "a/.codex_stage\\test_core_head_base.py" "b/.codex_stage\\test_core_head.py"
+index ba151b9..70ca7ff 100644
+--- "a/.codex_stage\\test_core_head_base.py"
++++ "b/.codex_stage\\test_core_head.py"
+@@ -1838,6 +1838,7 @@ class StrategyWorkflowTests(unittest.TestCase):
+         ui_binders = importlib.import_module("quant_hunter.ui_binders")
+         ui_controllers = importlib.import_module("quant_hunter.ui_controllers")
+         ui_helpers = importlib.import_module("quant_hunter.ui_helpers")
++        cross_focus_patches = importlib.import_module("quant_hunter.ui_window_cross_workspace_focus_patches")
+         focus_bridge_patches = importlib.import_module("quant_hunter.ui_window_focus_bridge_patches")
+         broker_status = importlib.import_module("quant_hunter.broker_status")
+         license_policy = importlib.import_module("quant_hunter.license_policy")
+@@ -1926,6 +1927,7 @@ class StrategyWorkflowTests(unittest.TestCase):
+         self.assertTrue(hasattr(ui_helpers, "stock_profile_for_symbol"))
+         self.assertTrue(hasattr(ui_helpers, "stock_name_for_symbol"))
+         self.assertTrue(hasattr(ui_helpers, "stock_id_for_symbol"))
++        self.assertTrue(hasattr(cross_focus_patches, "apply_cross_workspace_focus_patches"))
+         self.assertTrue(hasattr(focus_bridge_patches, "apply_focus_bridge_patches"))
+         self.assertTrue(hasattr(ui_refresh, "refresh_priority_cards"))
+         self.assertTrue(hasattr(ui_refresh, "render_leaderboard_cards"))
+@@ -5156,6 +5158,124 @@ class StrategyWorkflowTests(unittest.TestCase):
+         self.assertEqual(broker_calls, ["SZSE.300001"])
+         self.assertEqual(focus_calls, [("SZSE.300001", "recommend")])
+ 
++    def test_refresh_recommendation_focus_panels_renders_queue_and_review_copy(self) -> None:
++        module = importlib.import_module("app_qt")
++        app = module.QApplication.instance() or module.QApplication([])
++        _ = app
++        base_row = RecommendationRow(
++            symbol="SZSE.300001",
++            stock_id="300001",
++            stock_name="龙头样本",
++            action="BUY",
++            label="RECLAIM_LONG",
++            signal_date="2026-04-14",
++            close=10.0,
++            entry_price=10.0,
++            stop_price=9.6,
++            target_price=10.8,
++            technical_score=86.0,
++            position_score=77.0,
++            persistence_score=82.0,
++            news_score=73.0,
++            leader_score=90.0,
++            total_score=88.0,
++            mainline_tag="机器人",
++            mainline_risk_flag="低",
++            confidence_score=84.0,
++            execution_readiness=81.0,
++            opportunity_tier="优先处理",
++            primary_strategy="龙头低吸",
++            catalyst="主线强化 + 量能回流",
++            rationale="主线强度和位置都在前排",
++            next_focus="继续盯换手与承接。",
++            invalidation_reason="跌破 9.60 防守线",
++        )
++        row = SimpleNamespace(**base_row.__dict__, execution_status="待观察", mainline_flow_signal="继续跟")
++        waiting = SimpleNamespace(
++            **{
++                **base_row.__dict__,
++                "symbol": "SZSE.300002",
++                "stock_id": "300002",
++                "stock_name": "排队样本",
++                "execution_status": "待观察",
++                "mainline_flow_signal": "继续跟",
++            }
++        )
++        window = SimpleNamespace(
++            recommend_dispatch_text=module.QTextEdit(),
++            recommend_focus_review_text=module.QTextEdit(),
++            recommend_queue_text=module.QTextEdit(),
++            daily_pool_rows=[waiting, row],
++            execution_status_by_symbol={"SZSE.300001": "待观察", "SZSE.300002": "待观察"},
++            _current_recommend_focus=lambda: row,
++            _selected_daily_pool_recommendation=lambda: row,
++            _display_action=lambda value: {"BUY": "买入", "WATCH": "观察", "SELL": "卖出"}.get(value, value),
++            _display_mainline_role=lambda value: value or "主升",
++            _refresh_recommend_story_panels=lambda current=None: None,
++            _refresh_recommend_focus_status=lambda current=None: None,
++            _refresh_recommend_focus_cards=lambda current=None: None,
++            _refresh_recommend_decision_summary=lambda current=None: None,
++            _refresh_action_button_states_v30=lambda: None,
++            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text) if widget.toPlainText() != text else None,
++        )
++
++        module.QuantHunterWindow._refresh_recommendation_focus_panels(window, row)
++
++        self.assertIn("结论：龙头样本 | 条件较齐，可以执行", window.recommend_dispatch_text.toPlainText())
++        self.assertIn("确认信号：", window.recommend_focus_review_text.toPlainText())
++        self.assertIn("机器人 | 主升", window.recommend_focus_review_text.toPlainText())
++        self.assertIn("当前优先：排队样本", window.recommend_queue_text.toPlainText())
++
++    def test_refresh_broker_order_focus_uses_recommendation_when_intent_missing(self) -> None:
++        module = importlib.import_module("app_qt")
++        app = module.QApplication.instance() or module.QApplication([])
++        _ = app
++        row = RecommendationRow(
++            symbol="SZSE.300001",
++            stock_id="300001",
++            stock_name="龙头样本",
++            action="BUY",
++            label="RECLAIM_LONG",
++            signal_date="2026-04-14",
++            close=10.0,
++            entry_price=10.0,
++            stop_price=9.6,
++            target_price=10.8,
++            technical_score=86.0,
++            position_score=77.0,
++            persistence_score=82.0,
++            news_score=73.0,
++            leader_score=90.0,
++            total_score=88.0,
++            mainline_tag="机器人",
++            mainline_risk_flag="低",
++            next_focus="先生成委托链路，再复核交易条件。",
++        )
++        window = SimpleNamespace(
++            orders_focus_label=module.QLabel(),
++            broker_order_focus_text=module.QTextEdit(),
++            broker_order_metric_labels={key: module.QLabel() for key in ("symbol", "gate", "risk", "position")},
++            broker_order_metric_accents={key: module.QLabel() for key in ("symbol", "gate", "risk", "position")},
++            _selected_order_intent=lambda: None,
++            _explicit_recommendation_focus=lambda: row,
++            _stock_name_for_symbol=lambda _symbol: "龙头样本",
++            _stock_id_for_symbol=lambda _symbol: "300001",
++            _display_action=lambda value: {"BUY": "买入", "WATCH": "观察", "SELL": "卖出"}.get(value, value),
++            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text) if widget.text() != text else None,
++            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text) if widget.toPlainText() != text else None,
++            _refresh_live_workspace_summary_panels=lambda: None,
++        )
++
++        with patch.object(module, "_qh_mainline_signal_brief_v4", return_value="继续跟"), patch.object(
++            module, "_qh_signal_action_text_v4", return_value="买入"
++        ):
++            module.QuantHunterWindow._refresh_broker_order_focus(window)
++
++        self.assertIn("龙头样本 | 待生成委托", window.orders_focus_label.text())
++        self.assertIn("当前还没有委托建议", window.broker_order_focus_text.toPlainText())
++        self.assertIn(window.broker_order_metric_labels["gate"].text(), {"继续跟", "只观察"})
++        self.assertEqual(window.broker_order_metric_accents["risk"].text(), "等待生成委托")
++
+     def test_toggle_recommend_auxiliary_stage_flips_state(self) -> None:
+         module = importlib.import_module("app_qt")
+         calls: list[bool] = []

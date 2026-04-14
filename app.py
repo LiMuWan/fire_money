@@ -9,8 +9,16 @@ from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
 from quant_hunter.backtest import Backtester, format_result
-from quant_hunter.broker import EastmoneyBrokerAdapter
-from quant_hunter.data import load_bars_from_csv, load_cash_snapshot_from_csv, load_holdings_from_csv
+from quant_hunter.broker import EastmoneyBrokerAdapter, build_order_intent_from_trade_decision
+from quant_hunter.data import (
+    load_bars_from_csv,
+    load_cash_snapshot_from_csv,
+    load_holdings_from_csv,
+    load_news_catalysts_from_csv,
+    load_stock_profiles_from_csv,
+    load_theme_aliases_from_csv,
+)
+from quant_hunter.decision import DecisionEngine
 from quant_hunter.models import (
     BrokerProfile,
     CashSnapshot,
@@ -19,10 +27,12 @@ from quant_hunter.models import (
     OptimizationRun,
     OrderIntent,
     PriceBar,
+    RecommendationRow,
     ScanRow,
     SymbolBacktestSummary,
 )
 from quant_hunter.optimizer import ParameterOptimizer
+from quant_hunter.recommend import DailyPoolBuilder
 from quant_hunter.reports import export_workspace_report
 from quant_hunter.scanner import UniverseScanner
 from quant_hunter.storage import AppState, load_app_state, save_app_state
@@ -77,10 +87,15 @@ class QuantHunterApp(tk.Tk):
         self.holdings: list[HoldingRecord] = []
         self.cash_snapshot: CashSnapshot | None = None
         self.order_intents: list[OrderIntent] = []
+        self.daily_pool_rows: list[RecommendationRow] = []
+        self.current_trade_plan = None
         self.order_submission_log: list[str] = []
         self.active_symbol = ""
         self.bars: list[PriceBar] = []
         self.analyses: list[DailyAnalysis] = []
+        self.stock_profiles = self._load_sample_stock_profiles()
+        self.news_catalysts = self._load_sample_news_catalysts()
+        self.theme_aliases = self._load_sample_theme_aliases()
 
         self._build_layout()
         self._refresh_watchlist()
@@ -121,21 +136,53 @@ class QuantHunterApp(tk.Tk):
             "strategy_id": tk.StringVar(value=profile.strategy_id),
         }
 
+    @staticmethod
+    def _load_sample_stock_profiles() -> dict[str, object]:
+        path = SAMPLE_DIR / "stock_profiles.csv"
+        if not path.exists():
+            return {}
+        try:
+            return load_stock_profiles_from_csv(path)
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _load_sample_news_catalysts() -> dict[str, list[object]]:
+        path = SAMPLE_DIR / "news_catalysts.csv"
+        if not path.exists():
+            return {}
+        try:
+            return load_news_catalysts_from_csv(path)
+        except Exception:
+            return {}
+
+    def _load_sample_theme_aliases(self) -> dict[str, tuple[str, ...]]:
+        path = Path(self.state.theme_alias_path) if self.state.theme_alias_path else SAMPLE_DIR / "theme_aliases.csv"
+        if not path.exists():
+            return {}
+        try:
+            return load_theme_aliases_from_csv(path)
+        except Exception:
+            return {}
+
     def _build_layout(self) -> None:
         notebook = ttk.Notebook(self)
         notebook.pack(fill="both", expand=True, padx=12, pady=12)
 
         self.overview_tab = ttk.Frame(notebook, padding=14)
+        self.plan_tab = ttk.Frame(notebook, padding=14)
         self.scanner_tab = ttk.Frame(notebook, padding=14)
         self.detail_tab = ttk.Frame(notebook, padding=14)
         self.broker_tab = ttk.Frame(notebook, padding=14)
 
         notebook.add(self.overview_tab, text="Overview")
+        notebook.add(self.plan_tab, text="Plan")
         notebook.add(self.scanner_tab, text="Scanner")
         notebook.add(self.detail_tab, text="Detail")
         notebook.add(self.broker_tab, text="Broker")
 
         self._build_overview_tab()
+        self._build_plan_tab()
         self._build_scanner_tab()
         self._build_detail_tab()
         self._build_broker_tab()
@@ -200,6 +247,73 @@ class QuantHunterApp(tk.Tk):
         self.optimization_text = ScrolledText(self.overview_tab, height=14, wrap="word")
         self.optimization_text.pack(fill="both", expand=True)
         self.optimization_text.insert("1.0", "Optimization results will appear here.\n")
+
+    def _build_plan_tab(self) -> None:
+        header = ttk.Label(
+            self.plan_tab,
+            text="把今天能不能做、先做谁、怎么做，压缩成一屏。",
+            font=("Microsoft YaHei UI", 14, "bold"),
+        )
+        header.pack(anchor="w", pady=(0, 8))
+
+        self.plan_summary_text = ScrolledText(self.plan_tab, height=10, wrap="word")
+        self.plan_summary_text.pack(fill="x", pady=(0, 12))
+        self.plan_summary_text.insert("1.0", "完成股票池扫描后，这里会生成今日主线、第一目标和交易计划。\n")
+
+        top_frame = ttk.Frame(self.plan_tab)
+        top_frame.pack(fill="both", expand=True, pady=(0, 12))
+
+        recommendation_frame = ttk.LabelFrame(top_frame, text="今日推荐池")
+        recommendation_frame.pack(side="left", fill="both", expand=True, padx=(0, 8))
+        recommendation_columns = ("stock", "theme", "tier", "ready", "entry", "stop", "target", "focus")
+        self.recommend_tree = ttk.Treeview(
+            recommendation_frame,
+            columns=recommendation_columns,
+            show="headings",
+            height=12,
+        )
+        for key, title, width in [
+            ("stock", "股票", 180),
+            ("theme", "主线", 110),
+            ("tier", "机会层级", 90),
+            ("ready", "执行准备", 80),
+            ("entry", "买点", 80),
+            ("stop", "止损", 80),
+            ("target", "目标", 80),
+            ("focus", "下一步重点", 240),
+        ]:
+            self.recommend_tree.heading(key, text=title)
+            self.recommend_tree.column(key, width=width, anchor="center" if key != "focus" else "w")
+        self.recommend_tree.pack(fill="both", expand=True, padx=8, pady=8)
+
+        decision_frame = ttk.LabelFrame(top_frame, text="交易计划")
+        decision_frame.pack(side="left", fill="both", expand=True)
+        decision_columns = ("status", "stock", "budget", "entry", "stop", "target", "focus")
+        self.plan_tree = ttk.Treeview(
+            decision_frame,
+            columns=decision_columns,
+            show="headings",
+            height=12,
+        )
+        for key, title, width in [
+            ("status", "状态", 90),
+            ("stock", "股票", 180),
+            ("budget", "预算", 90),
+            ("entry", "买点", 80),
+            ("stop", "止损", 80),
+            ("target", "目标", 80),
+            ("focus", "执行重点", 260),
+        ]:
+            self.plan_tree.heading(key, text=title)
+            self.plan_tree.column(key, width=width, anchor="center" if key != "focus" else "w")
+        self.plan_tree.pack(fill="both", expand=True, padx=8, pady=8)
+
+        footer = ttk.Label(
+            self.plan_tab,
+            text="规则：优先主线、优先可执行、优先能定义止损的计划。",
+            foreground="#5f6368",
+        )
+        footer.pack(anchor="w")
 
     def _build_scanner_tab(self) -> None:
         controls = ttk.Frame(self.scanner_tab)

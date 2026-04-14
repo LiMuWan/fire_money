@@ -188,6 +188,21 @@ def _apply_risk_lamp_colors(item: QTableWidgetItem, risk_lamp: str) -> None:
         item.setForeground(QColor("#0F5132"))
 
 
+def _ensure_table_item(table, row_index: int, column: int, value: str = "") -> QTableWidgetItem:
+    item = table.item(row_index, column)
+    if item is None:
+        item = QTableWidgetItem(value)
+        table.setItem(row_index, column, item)
+    elif item.text() != value:
+        item.setText(value)
+    return item
+
+
+def _set_item_data_if_changed(item: QTableWidgetItem, role: int, value) -> None:
+    if item.data(role) != value:
+        item.setData(role, value)
+
+
 def _selected_table_symbol(table, rows: list, *, attr_name: str = "symbol") -> str:
     if table is None:
         return ""
@@ -204,7 +219,14 @@ def _select_row_by_symbol(table, rows: list, symbol: str, *, attr_name: str = "s
         (index for index, row in enumerate(rows) if str(getattr(row, attr_name, "") or "") == symbol),
         0,
     )
-    table.selectRow(target_row)
+    if hasattr(table, "currentRow") and table.currentRow() == target_row:
+        return target_row
+    previous_signals = table.blockSignals(True) if hasattr(table, "blockSignals") else False
+    try:
+        table.selectRow(target_row)
+    finally:
+        if hasattr(table, "blockSignals"):
+            table.blockSignals(previous_signals)
     return target_row
 
 
@@ -2063,39 +2085,31 @@ def populate_filtered_daily_pool_table(window) -> None:
             target_price = float(price_snapshot["target"] or 0.0)
             entry_text = f"{entry_price:.2f}" if entry_price else "--"
             target_text = f"{target_price:.2f}" if target_price else "--"
-            values = [
-                _compact_daily_pool_status(execution_status),
-                row.stock_name or window._stock_name_for_symbol(row.symbol),
-                row.stock_id or window._stock_id_for_symbol(row.symbol),
-                row.symbol,
-                getattr(row, "mainline_tag", "") or row.theme_name or "未分类",
-                str(getattr(row, "mainline_rank", row.theme_rank) or "--"),
-                _compact_daily_pool_role(getattr(row, "mainline_role", "")),
-                f"{getattr(row, 'mainline_window_score', 0.0):.1f}",
-                getattr(row, "mainline_risk_flag", "--"),
-                _compact_daily_pool_strategy(getattr(row, "primary_strategy", "") or "掘龙决策"),
-                f"{getattr(row, 'mainline_strength_score', row.theme_score):.1f}",
-                _shorten_daily_pool_text(window._display_leader_level(row.leader_level), 6),
-                f"{row.total_score:.1f}",
-                f"{getattr(row, 'leader_model_score', 0.0):.0f}",
-                f"{getattr(row, 'main_force_score', 0.0):.0f}",
-                f"{getattr(row, 'board_attack_score', 0.0):.0f}",
-                f"{getattr(row, 'value_recovery_score', 0.0):.0f}",
-                f"{getattr(row, 'tail_buy_score', 0.0):.0f}",
-                f"{getattr(row, 'one_day_hold_score', 0.0):.0f}",
-                f"{getattr(row, 'dragon_decision_score', row.total_score):.0f}",
-                _compact_daily_pool_action(row.action),
-                _shorten_daily_pool_text(row.catalyst, 8),
-                _compact_daily_pool_date(row.signal_date),
-                f"买 {entry_text} / 卖 {target_text}",
-            ]
-            for column, value in enumerate(values):
-                table_item = window.daily_pool_table.item(row_index, column)
-                if table_item is None:
-                    table_item = QTableWidgetItem(value)
-                    window.daily_pool_table.setItem(row_index, column, table_item)
-                elif table_item.text() != value:
-                    table_item.setText(value)
+            values = {
+                0: _compact_daily_pool_status(execution_status),
+                2: row.stock_id or window._stock_id_for_symbol(row.symbol),
+                3: row.symbol,
+                5: str(getattr(row, "mainline_rank", row.theme_rank) or "--"),
+                6: _compact_daily_pool_role(getattr(row, "mainline_role", "")),
+                7: f"{getattr(row, 'mainline_window_score', 0.0):.1f}",
+                8: getattr(row, "mainline_risk_flag", "--"),
+                9: _compact_daily_pool_strategy(getattr(row, "primary_strategy", "") or "掘龙决策"),
+                10: f"{getattr(row, 'mainline_strength_score', row.theme_score):.1f}",
+                11: _shorten_daily_pool_text(window._display_leader_level(row.leader_level), 6),
+                12: f"{row.total_score:.1f}",
+                13: f"{getattr(row, 'leader_model_score', 0.0):.0f}",
+                14: f"{getattr(row, 'main_force_score', 0.0):.0f}",
+                15: f"{getattr(row, 'board_attack_score', 0.0):.0f}",
+                16: f"{getattr(row, 'value_recovery_score', 0.0):.0f}",
+                17: f"{getattr(row, 'tail_buy_score', 0.0):.0f}",
+                18: f"{getattr(row, 'one_day_hold_score', 0.0):.0f}",
+                20: _compact_daily_pool_action(row.action),
+                21: _shorten_daily_pool_text(row.catalyst, 8),
+                22: _compact_daily_pool_date(row.signal_date),
+                23: f"买 {entry_text} / 卖 {target_text}",
+            }
+            for column, value in values.items():
+                table_item = _ensure_table_item(window.daily_pool_table, row_index, column, value)
                 if hasattr(table_item, "setToolTip") and table_item.toolTip() != row_tooltip:
                     table_item.setToolTip(row_tooltip)
                 if column == 0:
@@ -2137,20 +2151,41 @@ def populate_filtered_daily_pool_table(window) -> None:
                     action_bg, action_fg = signal_colors(row.action, row.action)
                     table_item.setBackground(action_bg)
                     table_item.setForeground(action_fg)
-                elif column == 22:
+                elif column == 23:
                     table_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            identity_item = _build_daily_pool_identity_item(window, row, execution_status)
-            window.daily_pool_table.setItem(row_index, 1, identity_item)
-            theme_item = _build_compact_badge_item(
-                [
-                    getattr(row, "mainline_tag", "") or row.theme_name or "未分类",
-                    _compact_daily_pool_role(getattr(row, "mainline_role", "")),
-                ],
-                tooltip=row_tooltip,
-                background="#24303A",
-                foreground="#FFD166",
+            stock_name = row.stock_name or window._stock_name_for_symbol(row.symbol)
+            stock_id = row.stock_id or window._stock_id_for_symbol(row.symbol)
+            badge = execution_status if execution_status != "待观察" else window._display_action(row.action)
+            heat_score = float(getattr(row, "mainline_strength_score", getattr(row, "theme_score", row.total_score)) or 0.0)
+            identity_item = _ensure_table_item(window.daily_pool_table, row_index, 1, f"{stock_name} | {stock_id} | {badge}")
+            if identity_item.toolTip() != row_tooltip:
+                identity_item.setToolTip(row_tooltip)
+            _set_item_data_if_changed(
+                identity_item,
+                QT_USER_ROLE,
+                {
+                    "symbol": row.symbol,
+                    "stock_name": stock_name,
+                    "stock_id": stock_id,
+                    "execution_status": execution_status,
+                    "badge": badge,
+                    "heat_score": heat_score,
+                },
             )
-            theme_item.setData(
+
+            theme_item = _ensure_table_item(
+                window.daily_pool_table,
+                row_index,
+                4,
+                f"{getattr(row, 'mainline_tag', '') or row.theme_name or '未分类'} / {_compact_daily_pool_role(getattr(row, 'mainline_role', ''))}",
+            )
+            theme_item.setTextAlignment(Qt.AlignCenter)
+            theme_item.setBackground(QColor("#24303A"))
+            theme_item.setForeground(QColor("#FFD166"))
+            if theme_item.toolTip() != row_tooltip:
+                theme_item.setToolTip(row_tooltip)
+            _set_item_data_if_changed(
+                theme_item,
                 QT_USER_ROLE,
                 {
                     "mainline_tag": getattr(row, "mainline_tag", "") or row.theme_name or "未分类",
@@ -2158,25 +2193,28 @@ def populate_filtered_daily_pool_table(window) -> None:
                     "symbol": row.symbol,
                 },
             )
-            window.daily_pool_table.setItem(row_index, 4, theme_item)
-            action_item = _build_compact_badge_item(
-                [
-                    _compact_daily_pool_action(row.action),
-                    _compact_daily_pool_strategy(getattr(row, "primary_strategy", "") or "掘龙决策"),
-                ],
-                tooltip=row_tooltip,
-                background="#1A2430",
-                foreground="#F4F7FB",
+
+            action_item = _ensure_table_item(
+                window.daily_pool_table,
+                row_index,
+                19,
+                f"{_compact_daily_pool_action(row.action)} / {_compact_daily_pool_strategy(getattr(row, 'primary_strategy', '') or '掘龙决策')}",
             )
-            window.daily_pool_table.setItem(row_index, 19, action_item)
-            price_item = _build_compact_badge_item(
-                [f"买 {entry_text}", f"卖 {target_text}"],
-                tooltip=row_tooltip,
-                background="#183126" if (price_snapshot["rr_ratio"] or 0.0) >= 1.8 else ("#3A2F16" if (price_snapshot["rr_ratio"] or 0.0) >= 1.0 else "#2A1F1F"),
-                foreground="#8FE3B0" if (price_snapshot["rr_ratio"] or 0.0) >= 1.8 else ("#FFD166" if (price_snapshot["rr_ratio"] or 0.0) >= 1.0 else "#FFB4AE"),
-            )
+            action_item.setTextAlignment(Qt.AlignCenter)
+            action_item.setBackground(QColor("#1A2430"))
+            action_item.setForeground(QColor("#F4F7FB"))
+            if action_item.toolTip() != row_tooltip:
+                action_item.setToolTip(row_tooltip)
+
+            price_item = _ensure_table_item(window.daily_pool_table, row_index, 22, f"买 {entry_text} / 卖 {target_text}")
             price_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            price_item.setData(
+            price_item.setBackground(QColor("#183126" if (price_snapshot["rr_ratio"] or 0.0) >= 1.8 else ("#3A2F16" if (price_snapshot["rr_ratio"] or 0.0) >= 1.0 else "#2A1F1F")))
+            price_item.setForeground(QColor("#8FE3B0" if (price_snapshot["rr_ratio"] or 0.0) >= 1.8 else ("#FFD166" if (price_snapshot["rr_ratio"] or 0.0) >= 1.0 else "#FFB4AE")))
+            if price_item.toolTip() != row_tooltip:
+                price_item.setToolTip(row_tooltip)
+            price_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            _set_item_data_if_changed(
+                price_item,
                 QT_USER_ROLE,
                 {
                     "symbol": row.symbol,
@@ -2186,14 +2224,12 @@ def populate_filtered_daily_pool_table(window) -> None:
                     "upside_pct": price_snapshot["upside_pct"],
                 },
             )
-            window.daily_pool_table.setItem(row_index, 22, price_item)
-            risk_item = _build_compact_badge_item(
-                [getattr(row, "mainline_risk_flag", "--"), f"总分 {row.total_score:.1f}"],
-                tooltip=row_tooltip,
-                background="#2A1F1F" if getattr(row, "mainline_risk_flag", "--") == "高" else ("#3A2F16" if getattr(row, "mainline_risk_flag", "--") == "中" else "#183126"),
-                foreground="#FFB4AE" if getattr(row, "mainline_risk_flag", "--") == "高" else ("#FFD166" if getattr(row, "mainline_risk_flag", "--") == "中" else "#8FE3B0"),
-            )
-            window.daily_pool_table.setItem(row_index, 8, risk_item)
+            risk_item = _ensure_table_item(window.daily_pool_table, row_index, 8, f"{getattr(row, 'mainline_risk_flag', '--')} / 总分 {row.total_score:.1f}")
+            risk_item.setTextAlignment(Qt.AlignCenter)
+            risk_item.setBackground(QColor("#2A1F1F" if getattr(row, "mainline_risk_flag", "--") == "高" else ("#3A2F16" if getattr(row, "mainline_risk_flag", "--") == "中" else "#183126")))
+            risk_item.setForeground(QColor("#FFB4AE" if getattr(row, "mainline_risk_flag", "--") == "高" else ("#FFD166" if getattr(row, "mainline_risk_flag", "--") == "中" else "#8FE3B0")))
+            if risk_item.toolTip() != row_tooltip:
+                risk_item.setToolTip(row_tooltip)
     window._daily_pool_table_signature = table_signature
     if hasattr(window, "_configure_terminal_tables"):
         window._configure_terminal_tables()
@@ -2337,52 +2373,88 @@ def apply_market_filters(window) -> None:
         if filtered_rows:
             _select_row_by_symbol(window.market_pool_table, filtered_rows, previous_selected_symbol)
         return
+    previous_signature = tuple(getattr(window, "_market_pool_table_signature", ()))
     with _batched_table_update(window.market_pool_table):
         window.market_pool_table.setRowCount(len(filtered_rows))
         for row_index, row in enumerate(filtered_rows):
+            if row_index < len(previous_signature) and previous_signature[row_index] == market_signature[3][row_index]:
+                continue
             theme_name = getattr(row, "theme_name", "") or "未分类"
             background, foreground = market_pool_colors(row)
 
-            rank_item = QTableWidgetItem(str(row_index + 1))
+            rank_item = _ensure_table_item(window.market_pool_table, row_index, 0, str(row_index + 1))
             rank_item.setData(QT_USER_ROLE, row.symbol)
             rank_item.setBackground(background)
             rank_item.setForeground(foreground)
             rank_item.setTextAlignment(Qt.AlignCenter)
-            window.market_pool_table.setItem(row_index, 0, rank_item)
-
-            identity_item = _build_market_identity_item(row, background=background, foreground=foreground)
-            window.market_pool_table.setItem(row_index, 1, identity_item)
-            fund_item = _build_compact_badge_item(
-                [row.fund_model, f"净流入 {row.main_inflow / 1e8:.2f}亿"],
-                tooltip=f"资金模型：{row.fund_model}\n主力净流入：{row.main_inflow / 1e8:.2f} 亿",
-                background="#1B2633",
-                foreground="#8FC7FF",
+            identity_item = _ensure_table_item(
+                window.market_pool_table,
+                row_index,
+                1,
+                f"{getattr(row, 'stock_name', '') or '--'} | {getattr(row, 'stock_id', '') or '--'} | 热度 {float(getattr(row, 'heat_score', 0.0) or 0.0):.1f}",
             )
-            window.market_pool_table.setItem(row_index, 2, fund_item)
-            strategy_item = _build_compact_badge_item(
-                [row.strategy_tag, theme_name, window._display_label(row.signal_label)],
-                tooltip=(
-                    f"策略：{row.strategy_tag}\n"
-                    f"题材：{theme_name}\n"
-                    f"信号：{window._display_label(row.signal_label)}"
-                ),
-                background="#24303A",
-                foreground="#FFD166",
+            identity_tooltip = (
+                "\n".join(
+                    [
+                        f"{getattr(row, 'stock_name', '') or '--'} ({getattr(row, 'stock_id', '') or '--'})",
+                        f"交易标识：{getattr(row, 'symbol', '') or '--'}",
+                        f"热度：{float(getattr(row, 'heat_score', 0.0) or 0.0):.1f}",
+                        f"涨幅：{float(getattr(row, 'pct_change', 0.0) or 0.0):.2f}%",
+                        f"决策分：{float(getattr(row, 'decision_score', 0.0) or 0.0):.1f}",
+                    ]
+                )
             )
-            window.market_pool_table.setItem(row_index, 3, strategy_item)
+            identity_item.setBackground(background)
+            identity_item.setForeground(foreground)
+            if identity_item.toolTip() != identity_tooltip:
+                identity_item.setToolTip(identity_tooltip)
+            identity_item.setData(
+                QT_USER_ROLE,
+                {
+                    "symbol": getattr(row, "symbol", "") or "",
+                    "stock_name": getattr(row, "stock_name", "") or "--",
+                    "stock_id": getattr(row, "stock_id", "") or "--",
+                    "heat_score": float(getattr(row, "heat_score", 0.0) or 0.0),
+                    "decision_score": float(getattr(row, "decision_score", 0.0) or 0.0),
+                },
+            )
 
-            pct_item = QTableWidgetItem(f"{row.pct_change:.2f}%")
+            fund_tooltip = f"资金模型：{row.fund_model}\n主力净流入：{row.main_inflow / 1e8:.2f} 亿"
+            fund_item = _ensure_table_item(window.market_pool_table, row_index, 2, f"{row.fund_model} / 净流入 {row.main_inflow / 1e8:.2f}亿")
+            fund_item.setTextAlignment(Qt.AlignCenter)
+            fund_item.setBackground(QColor("#1B2633"))
+            fund_item.setForeground(QColor("#8FC7FF"))
+            if fund_item.toolTip() != fund_tooltip:
+                fund_item.setToolTip(fund_tooltip)
+
+            strategy_tooltip = (
+                f"策略：{row.strategy_tag}\n"
+                f"题材：{theme_name}\n"
+                f"信号：{window._display_label(row.signal_label)}"
+            )
+            strategy_item = _ensure_table_item(
+                window.market_pool_table,
+                row_index,
+                3,
+                f"{row.strategy_tag} / {theme_name} / {window._display_label(row.signal_label)}",
+            )
+            strategy_item.setTextAlignment(Qt.AlignCenter)
+            strategy_item.setBackground(QColor("#24303A"))
+            strategy_item.setForeground(QColor("#FFD166"))
+            if strategy_item.toolTip() != strategy_tooltip:
+                strategy_item.setToolTip(strategy_tooltip)
+
+            pct_item = _ensure_table_item(window.market_pool_table, row_index, 4, f"{row.pct_change:.2f}%")
             pct_item.setBackground(background)
             pct_item.setForeground(foreground)
             pct_item.setTextAlignment(Qt.AlignCenter)
-            window.market_pool_table.setItem(row_index, 4, pct_item)
-
-            price_item = QTableWidgetItem(f"{row.latest_price:.2f}")
-            price_item.setToolTip(f"决策分 {getattr(row, 'decision_score', 0.0):.1f} | 题材 {theme_name}")
+            price_item = _ensure_table_item(window.market_pool_table, row_index, 5, f"{row.latest_price:.2f}")
+            price_tooltip = f"决策分 {getattr(row, 'decision_score', 0.0):.1f} | 题材 {theme_name}"
+            if price_item.toolTip() != price_tooltip:
+                price_item.setToolTip(price_tooltip)
             price_item.setBackground(background)
             price_item.setForeground(foreground)
             price_item.setTextAlignment(Qt.AlignCenter)
-            window.market_pool_table.setItem(row_index, 5, price_item)
 
     window._market_pool_table_signature = market_signature
     window.filtered_market_rows = list(filtered_rows)
@@ -2419,43 +2491,54 @@ def fill_scan_rows(window) -> None:
         for row_index, row in enumerate(window.scan_rows):
             if row_index < len(previous_signature) and previous_signature[row_index] == scan_signature[row_index]:
                 continue
-            values = [
-                window._stock_name_for_symbol(row.symbol),
-                window._stock_id_for_symbol(row.symbol),
-                row.symbol,
-                window._display_action(row.action),
-                window._display_label(row.label),
-                str(row.score),
-                row.signal_date,
-                f"{row.close:.2f}",
-                "" if row.entry_price is None else f"{row.entry_price:.2f}",
-                "" if row.stop_price is None else f"{row.stop_price:.2f}",
-                "" if row.target_price is None else f"{row.target_price:.2f}",
-            ]
             tooltip = (
                 f"{window._stock_name_for_symbol(row.symbol)} ({window._stock_id_for_symbol(row.symbol)})\n"
                 f"交易标识：{row.symbol}\n动作：{window._display_action(row.action)}\n"
                 f"信号：{window._display_label(row.label)}\n评分：{row.score}\n原因：{row.reason or '待补充'}"
             )
-            for column, value in enumerate(values):
-                item = window.scan_table.item(row_index, column)
-                if item is None:
-                    item = QTableWidgetItem(value)
-                    window.scan_table.setItem(row_index, column, item)
-                elif item.text() != value:
-                    item.setText(value)
+            identity_item = _ensure_table_item(
+                window.scan_table,
+                row_index,
+                0,
+                f"{window._stock_name_for_symbol(row.symbol)} | {window._stock_id_for_symbol(row.symbol)} | {window._display_action(row.action)}",
+            )
+            identity_item.setData(
+                QT_USER_ROLE,
+                {
+                    "symbol": row.symbol,
+                    "stock_name": window._stock_name_for_symbol(row.symbol),
+                    "stock_id": window._stock_id_for_symbol(row.symbol),
+                    "badge": window._display_action(row.action),
+                },
+            )
+            if identity_item.toolTip() != tooltip:
+                identity_item.setToolTip(tooltip)
+            action_item = _ensure_table_item(
+                window.scan_table,
+                row_index,
+                3,
+                f"{window._display_action(row.action)} / {window._display_label(row.label)}",
+            )
+            action_item.setTextAlignment(Qt.AlignCenter)
+            action_item.setBackground(QColor("#1B2633"))
+            action_item.setForeground(QColor("#8FC7FF"))
+            if action_item.toolTip() != tooltip:
+                action_item.setToolTip(tooltip)
+            values = {
+                1: window._stock_id_for_symbol(row.symbol),
+                2: row.symbol,
+                4: window._display_label(row.label),
+                5: str(row.score),
+                6: row.signal_date,
+                7: f"{row.close:.2f}",
+                8: "" if row.entry_price is None else f"{row.entry_price:.2f}",
+                9: "" if row.stop_price is None else f"{row.stop_price:.2f}",
+                10: "" if row.target_price is None else f"{row.target_price:.2f}",
+            }
+            for column, value in values.items():
+                item = _ensure_table_item(window.scan_table, row_index, column, value)
                 if item.toolTip() != tooltip:
                     item.setToolTip(tooltip)
-            identity_item = _build_identity_table_item(window, row.symbol, badge=window._display_action(row.action))
-            identity_item.setToolTip(tooltip)
-            window.scan_table.setItem(row_index, 0, identity_item)
-            action_item = _build_compact_badge_item(
-                [window._display_action(row.action), window._display_label(row.label)],
-                tooltip=tooltip,
-                background="#1B2633",
-                foreground="#8FC7FF",
-            )
-            window.scan_table.setItem(row_index, 3, action_item)
     window._scan_table_signature = scan_signature
     if window.scan_rows:
         _select_row_by_symbol(window.scan_table, window.scan_rows, selected_symbol)
@@ -2485,32 +2568,40 @@ def fill_backtest_summaries(window) -> None:
         for row_index, item in enumerate(window.backtest_summaries):
             if row_index < len(previous_signature) and previous_signature[row_index] == summary_signature[row_index]:
                 continue
-            values = [
-                window._stock_name_for_symbol(item.symbol),
-                window._stock_id_for_symbol(item.symbol),
-                item.symbol,
-                str(item.trades),
-                f"{item.total_return:.2%}",
-                f"{item.max_drawdown:.2%}",
-                f"{item.win_rate:.2%}",
-                f"{item.ending_equity:,.0f}",
-            ]
             tooltip = (
                 f"{window._stock_name_for_symbol(item.symbol)} ({window._stock_id_for_symbol(item.symbol)})\n"
                 f"交易标识：{item.symbol}\n交易笔数：{item.trades}\n收益率：{item.total_return:.2%}\n胜率：{item.win_rate:.2%}"
             )
-            for column, value in enumerate(values):
-                table_item = window.summary_table.item(row_index, column)
-                if table_item is None:
-                    table_item = QTableWidgetItem(value)
-                    window.summary_table.setItem(row_index, column, table_item)
-                elif table_item.text() != value:
-                    table_item.setText(value)
+            identity_item = _ensure_table_item(
+                window.summary_table,
+                row_index,
+                0,
+                f"{window._stock_name_for_symbol(item.symbol)} | {window._stock_id_for_symbol(item.symbol)} | {item.total_return:.2%}",
+            )
+            identity_item.setData(
+                QT_USER_ROLE,
+                {
+                    "symbol": item.symbol,
+                    "stock_name": window._stock_name_for_symbol(item.symbol),
+                    "stock_id": window._stock_id_for_symbol(item.symbol),
+                    "badge": f"{item.total_return:.2%}",
+                },
+            )
+            if identity_item.toolTip() != tooltip:
+                identity_item.setToolTip(tooltip)
+            values = {
+                1: window._stock_id_for_symbol(item.symbol),
+                2: item.symbol,
+                3: str(item.trades),
+                4: f"{item.total_return:.2%}",
+                5: f"{item.max_drawdown:.2%}",
+                6: f"{item.win_rate:.2%}",
+                7: f"{item.ending_equity:,.0f}",
+            }
+            for column, value in values.items():
+                table_item = _ensure_table_item(window.summary_table, row_index, column, value)
                 if table_item.toolTip() != tooltip:
                     table_item.setToolTip(tooltip)
-            identity_item = _build_identity_table_item(window, item.symbol, badge=f"{item.total_return:.2%}")
-            identity_item.setToolTip(tooltip)
-            window.summary_table.setItem(row_index, 0, identity_item)
     window._summary_table_signature = summary_signature
     if window.backtest_summaries:
         _select_row_by_symbol(window.summary_table, window.backtest_summaries, selected_symbol)

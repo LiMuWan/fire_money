@@ -27,6 +27,8 @@ NEWS_SUMMARY_COLUMNS = ("summary", "content", "brief")
 NEWS_TIME_COLUMNS = ("published_at", "date", "datetime")
 NEWS_SENTIMENT_COLUMNS = ("sentiment_score", "sentiment", "score")
 NEWS_HEAT_COLUMNS = ("heat", "hotness", "importance")
+NEWS_SOURCE_COLUMNS = ("source", "publisher", "media", "source_name")
+NEWS_URL_COLUMNS = ("url", "link", "source_url")
 THEME_NAME_COLUMNS = ("theme_name", "theme", "name")
 THEME_KEYWORD_COLUMNS = ("keywords", "keyword", "aliases")
 
@@ -118,6 +120,8 @@ def load_news_catalysts_from_csv(path: str | Path) -> dict[str, list[NewsCatalys
         time_column = _find_optional_column(reader.fieldnames, NEWS_TIME_COLUMNS)
         sentiment_column = _find_optional_column(reader.fieldnames, NEWS_SENTIMENT_COLUMNS)
         heat_column = _find_optional_column(reader.fieldnames, NEWS_HEAT_COLUMNS)
+        source_column = _find_optional_column(reader.fieldnames, NEWS_SOURCE_COLUMNS)
+        url_column = _find_optional_column(reader.fieldnames, NEWS_URL_COLUMNS)
 
         news_map: dict[str, list[NewsCatalyst]] = {}
         for row in reader:
@@ -129,6 +133,8 @@ def load_news_catalysts_from_csv(path: str | Path) -> dict[str, list[NewsCatalys
                 title=row.get(title_column, "").strip(),
                 summary=row.get(summary_column, "").strip() if summary_column else "",
                 published_at=row.get(time_column, "").strip() if time_column else "",
+                source=row.get(source_column, "").strip() if source_column else "",
+                url=row.get(url_column, "").strip() if url_column else "",
                 sentiment_score=_parse_float(row.get(sentiment_column, "")) if sentiment_column else 0.0,
                 heat=_parse_float(row.get(heat_column, "")) if heat_column else 0.0,
             )
@@ -199,6 +205,41 @@ def load_bars_from_csv(path: str | Path, default_symbol: str = "UNKNOWN") -> lis
                 )
             )
     return sorted(bars, key=lambda bar: bar.date)
+
+
+def aggregate_price_bars(bars: list[PriceBar], timeframe: str) -> list[PriceBar]:
+    normalized = (timeframe or "").strip().lower()
+    if normalized not in {"week", "weekly", "month", "monthly"}:
+        return list(bars)
+    if not bars:
+        return []
+
+    grouped: dict[str, list[PriceBar]] = {}
+    for bar in sorted(bars, key=lambda item: item.date):
+        dt = datetime.strptime(bar.date, "%Y-%m-%d")
+        if normalized in {"week", "weekly"}:
+            iso_year, iso_week, _ = dt.isocalendar()
+            bucket_key = f"{iso_year}-W{iso_week:02d}"
+        else:
+            bucket_key = f"{dt.year}-{dt.month:02d}"
+        grouped.setdefault(bucket_key, []).append(bar)
+
+    aggregated: list[PriceBar] = []
+    for bucket in grouped.values():
+        first = bucket[0]
+        last = bucket[-1]
+        aggregated.append(
+            PriceBar(
+                date=last.date,
+                symbol=first.symbol,
+                open=first.open,
+                high=max(item.high for item in bucket),
+                low=min(item.low for item in bucket),
+                close=last.close,
+                volume=sum(item.volume for item in bucket),
+            )
+        )
+    return aggregated
 
 
 def discover_csv_files(folder: str | Path) -> list[Path]:

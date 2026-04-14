@@ -174,7 +174,8 @@ def apply_shell_workflow_patches(window_cls: type) -> None:
         trade_decisions = list(getattr(trade_plan, "decisions", []) or [])
         paper_state = getattr(self, "paper_trading_state", getattr(getattr(self, "state", None), "paper_trading_state", PaperTradingState()))
         paper_analytics = summarize_paper_trading_performance(paper_state)
-        current_workspace_key = self._current_workspace_key_v42() if hasattr(self, "_current_workspace_key_v42") else _current_workspace_key_v42(self)
+        current_workspace_getter = getattr(self, "_current_workspace_key_v42", None)
+        current_workspace_key = current_workspace_getter() if callable(current_workspace_getter) else _current_workspace_key_v42(self)
         specs, _ = shell_workflow_stage_specs_v42(
             current_workspace_key=current_workspace_key,
             pool_count=len(getattr(self, "daily_pool_rows", []) or []),
@@ -200,7 +201,8 @@ def apply_shell_workflow_patches(window_cls: type) -> None:
         trade_decisions = list(getattr(trade_plan, "decisions", []) or [])
         paper_state = getattr(self, "paper_trading_state", getattr(getattr(self, "state", None), "paper_trading_state", PaperTradingState()))
         paper_analytics = summarize_paper_trading_performance(paper_state)
-        current_workspace_key = self._current_workspace_key_v42() if hasattr(self, "_current_workspace_key_v42") else _current_workspace_key_v42(self)
+        current_workspace_getter = getattr(self, "_current_workspace_key_v42", None)
+        current_workspace_key = current_workspace_getter() if callable(current_workspace_getter) else _current_workspace_key_v42(self)
         specs, next_stage_key = shell_workflow_stage_specs_v42(
             current_workspace_key=current_workspace_key,
             pool_count=len(getattr(self, "daily_pool_rows", []) or []),

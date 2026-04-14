@@ -133,6 +133,8 @@ class NewsCatalyst:
     title: str
     summary: str
     published_at: str
+    source: str = ""
+    url: str = ""
     sentiment_score: float = 0.0
     heat: float = 0.0
 
@@ -160,11 +162,42 @@ class RecommendationRow:
     theme_rank: int = 0
     leader_level: str = ""
     primary_strategy: str = ""
+    stock_pool: str = ""
+    pool_score: float = 0.0
+    buy_point: str = ""
+    add_point: str = ""
+    sell_point: str = ""
+    risk_line: str = ""
     leader_model_score: float = 0.0
     main_force_score: float = 0.0
     board_attack_score: float = 0.0
     value_recovery_score: float = 0.0
+    tail_buy_score: float = 0.0
+    one_day_hold_score: float = 0.0
     dragon_decision_score: float = 0.0
+    mainline_tag: str = ""
+    mainline_rank: int = 0
+    mainline_role: str = ""
+    mainline_strength_score: float = 0.0
+    mainline_continuation_score: float = 0.0
+    leader_position_score: float = 0.0
+    mainline_window_score: float = 0.0
+    theme_divergence_score: float = 0.0
+    theme_failure_risk: float = 0.0
+    theme_rotation_score: float = 0.0
+    mainline_risk_flag: str = ""
+    confidence_score: float = 0.0
+    execution_readiness: float = 0.0
+    timeliness_score: float = 0.0
+    freshness_score: float = 0.0
+    setup_quality_score: float = 0.0
+    risk_reward_ratio: float = 0.0
+    signal_age_days: int = 0
+    signal_source: str = ""
+    opportunity_tier: str = ""
+    reject_reason: str = ""
+    next_focus: str = ""
+    invalidation_reason: str = ""
     catalyst: str = ""
     rationale: str = ""
 
@@ -179,6 +212,11 @@ class ThemeHeatRow:
     stock_count: int
     theme_rank: int
     risk_flag: str
+    divergence_score: float = 0.0
+    failure_risk: float = 0.0
+    rotation_score: float = 0.0
+    window_score: float = 0.0
+    is_primary: bool = False
 
 
 @dataclass(frozen=True)
@@ -192,6 +230,9 @@ class LeaderCandidate:
     theme_rank: int
     action: str
     rationale: str
+    mainline_role: str = ""
+    mainline_window_score: float = 0.0
+    mainline_risk_flag: str = ""
 
 
 @dataclass(frozen=True)
@@ -219,6 +260,10 @@ class OrderIntent:
     target_price: float
     signal_date: str
     reason: str
+    opportunity_tier: str = ""
+    risk_flag: str = ""
+    signal_source: str = ""
+    risk_reward_ratio: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -234,6 +279,92 @@ class HoldingRecord:
 class CashSnapshot:
     available_cash: float
     total_assets: float
+
+
+@dataclass(frozen=True)
+class PaperPosition:
+    symbol: str
+    stock_id: str = ""
+    stock_name: str = ""
+    quantity: int = 0
+    available: int = 0
+    avg_cost: float = 0.0
+    current_price: float = 0.0
+    market_value: float = 0.0
+    entry_date: str = ""
+    strategy_name: str = ""
+    buy_point: str = ""
+    sell_point: str = ""
+    stop_price: float = 0.0
+    target_price: float = 0.0
+    rationale: str = ""
+    unrealized_pnl: float = 0.0
+    unrealized_pnl_pct: float = 0.0
+
+
+@dataclass(frozen=True)
+class PaperOrderRecord:
+    order_id: str
+    timestamp: str
+    symbol: str
+    stock_id: str
+    stock_name: str
+    side: str
+    price: float
+    quantity: int
+    amount: float
+    strategy_name: str = ""
+    position_pct: float = 0.0
+    signal_source: str = ""
+    buy_point: str = ""
+    sell_point: str = ""
+    status: str = "FILLED"
+    note: str = ""
+    realized_pnl: float = 0.0
+    realized_pnl_pct: float = 0.0
+    cumulative_realized_pnl: float = 0.0
+
+
+@dataclass(frozen=True)
+class PaperEquityPoint:
+    timestamp: str
+    cash: float = 0.0
+    market_value: float = 0.0
+    total_equity: float = 0.0
+    realized_pnl: float = 0.0
+    total_return: float = 0.0
+    position_count: int = 0
+
+
+@dataclass(frozen=True)
+class PaperPatrolLog:
+    timestamp: str
+    event_type: str = ""
+    summary: str = ""
+    detail: str = ""
+    equity: float = 0.0
+    total_return: float = 0.0
+    position_count: int = 0
+
+
+@dataclass(frozen=True)
+class PaperTradingState:
+    enabled: bool = False
+    auto_run: bool = False
+    auto_interval_minutes: float = 5.0
+    initial_cash: float = 100000.0
+    cash: float = 100000.0
+    max_position_pct: float = 0.25
+    positions: list[PaperPosition] = field(default_factory=list)
+    ledger: list[PaperOrderRecord] = field(default_factory=list)
+    equity_curve: list[PaperEquityPoint] = field(default_factory=list)
+    patrol_logs: list[PaperPatrolLog] = field(default_factory=list)
+    realized_pnl: float = 0.0
+    total_equity: float = 100000.0
+    total_return: float = 0.0
+    last_run_at: str = ""
+    last_strategy_note: str = ""
+    order_sequence: int = 0
 
 
 @dataclass(frozen=True)

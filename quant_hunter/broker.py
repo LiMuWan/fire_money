@@ -12,7 +12,118 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .decision import TradeDecision
 from .models import BrokerProfile, BrokerStatus, CashSnapshot, HoldingRecord, OrderIntent, ScanRow
+
+
+def _display_mainline_role(value: str) -> str:
+    return {
+        "CORE": "核心龙头",
+        "FRONT": "前排核心",
+        "ASSIST": "助攻前排",
+        "FOLLOW": "跟风观察",
+        "NOISE": "杂毛噪声",
+        "ELIMINATED": "淘汰风险",
+    }.get(value or "", value or "--")
+
+
+def _build_mainline_review(order_intents: list[OrderIntent], recommendations: list[Any] | None = None) -> dict[str, Any]:
+    recommendation_map = {
+        getattr(item, "symbol", ""): item
+        for item in (recommendations or [])
+        if getattr(item, "symbol", "")
+    }
+    blockers: list[str] = []
+    warnings: list[str] = []
+    rows: list[dict[str, Any]] = []
+    pass_count = 0
+    missing_count = 0
+
+    for intent in order_intents:
+        recommendation = recommendation_map.get(intent.symbol)
+        if recommendation is None:
+            missing_count += 1
+            rows.append(
+                {
+                    "symbol": intent.symbol,
+                    "name": intent.symbol,
+                    "theme": "未匹配",
+                    "rank": 0,
+                    "role": "--",
+                    "window_score": 0.0,
+                    "risk_flag": "待核对",
+                    "status": "待核对",
+                    "detail": "未命中当前推荐池，需人工复核后再决定是否执行。",
+                }
+            )
+            if intent.side == "BUY":
+                warnings.append(f"主线审查 / 主线闸门：{intent.symbol} 未命中当前推荐池，建议人工复核。")
+            continue
+
+        theme_name = getattr(recommendation, "mainline_tag", "") or getattr(recommendation, "theme_name", "") or "未分类"
+        rank = int(getattr(recommendation, "mainline_rank", getattr(recommendation, "theme_rank", 0)) or 0)
+        role = str(getattr(recommendation, "mainline_role", "") or "")
+        role_label = _display_mainline_role(role)
+        window_score = float(getattr(recommendation, "mainline_window_score", 0.0) or 0.0)
+        risk_flag = str(getattr(recommendation, "mainline_risk_flag", "") or "--")
+        failure_risk = float(getattr(recommendation, "theme_failure_risk", 0.0) or 0.0)
+
+        status = "通过"
+        detail = f"{theme_name} 第 {rank or '--'} 主线位 | {role_label} | 窗口 {window_score:.1f} | 风险 {risk_flag}"
+        if intent.side == "BUY":
+            if role in {"ELIMINATED", "NOISE"}:
+                status = "拦截"
+                blockers.append(f"主线审查 / 主线闸门：{getattr(recommendation, 'stock_name', intent.symbol)} 已处于{role_label}，不建议新开仓。")
+            elif rank > 3:
+                status = "拦截"
+                blockers.append(f"主线审查 / 主线闸门：{getattr(recommendation, 'stock_name', intent.symbol)} 已跌出主线前 3，暂不建议新开仓。")
+            elif risk_flag == "高" or failure_risk >= 72.0:
+                status = "拦截"
+                blockers.append(f"主线审查 / 主线闸门：{getattr(recommendation, 'stock_name', intent.symbol)} 主线风险偏高，建议暂缓执行。")
+            elif window_score < 50.0:
+                status = "拦截"
+                blockers.append(f"主线审查 / 主线闸门：{getattr(recommendation, 'stock_name', intent.symbol)} 主线窗口不足，等待更清晰买点。")
+            elif role == "FOLLOW" or window_score < 66.0 or risk_flag == "中":
+                status = "谨慎"
+                warnings.append(f"主线审查 / 主线闸门：{getattr(recommendation, 'stock_name', intent.symbol)} 更适合缩量试错或等待确认。")
+            else:
+                pass_count += 1
+        else:
+            status = "通过"
+            pass_count += 1
+            if rank > 3 or risk_flag == "高":
+                detail += " | 当前减仓/卖出动作与主线风险一致。"
+
+        rows.append(
+            {
+                "symbol": intent.symbol,
+                "name": getattr(recommendation, "stock_name", intent.symbol),
+                "theme": theme_name,
+                "rank": rank,
+                "role": role_label,
+                "window_score": round(window_score, 1),
+                "risk_flag": risk_flag,
+                "status": status,
+                "detail": detail,
+            }
+        )
+
+    overall_status = "通过"
+    if blockers:
+        overall_status = "拦截"
+    elif warnings:
+        overall_status = "谨慎"
+    elif missing_count:
+        overall_status = "待核对"
+
+    return {
+        "status": overall_status,
+        "rows": rows,
+        "blockers": blockers,
+        "warnings": warnings,
+        "pass_count": pass_count,
+        "missing_count": missing_count,
+    }
 
 
 def _runtime_root() -> Path:
@@ -138,6 +249,8 @@ class EastmoneyBrokerAdapter:
                 )
             )
         return intents
+
+
 
     def export_order_plan(self, intents: list[OrderIntent], export_dir: str | Path) -> Path:
         root = Path(export_dir)
@@ -310,22 +423,21 @@ class EastmoneyBrokerAdapter:
         order_func = getattr(gm, "order_volume", None)
         if not callable(order_func):
             raise RuntimeError("当前 SDK 中没有找到 order_volume 函数。")
-        buy_side = self._resolve_attr(gm, ["OrderSide_Buy", "ORDER_SIDE_BUY"])
-        sell_side = self._resolve_attr(gm, ["OrderSide_Sell", "ORDER_SIDE_SELL"])
         limit_type = self._resolve_attr(gm, ["OrderType_Limit", "ORDER_TYPE_LIMIT"])
-        open_effect = self._resolve_attr(gm, ["PositionEffect_Open", "POSITION_EFFECT_OPEN"])
         results: list[str] = []
         for item in intents:
+            side_value = self._resolve_order_side_value(gm, item.side)
+            position_effect = self._resolve_position_effect_value(gm, item.side)
             kwargs = {
                 "symbol": item.symbol,
                 "volume": int(item.quantity),
-                "side": buy_side if item.side == "BUY" else sell_side,
+                "side": side_value,
                 "order_type": limit_type,
                 "price": float(item.price),
                 "account": profile.account_id,
             }
-            if open_effect is not None:
-                kwargs["position_effect"] = open_effect
+            if position_effect is not None:
+                kwargs["position_effect"] = position_effect
             result = self._call_with_fallbacks(order_func, kwargs)
             results.append(f"{item.symbol} {item.side} {item.quantity} @ {item.price}: {self._compact_result(result)}")
         return results
@@ -346,17 +458,38 @@ class EastmoneyBrokerAdapter:
             f"set_token('{profile.token}')",
             f"ORDERS = {orders_literal}",
             "",
+            "def _resolve_side(side):",
+            "    if side == 'BUY':",
+            "        return OrderSide_Buy",
+            "    if side in {'SELL', 'REDUCE'}:",
+            "        return OrderSide_Sell",
+            "    raise ValueError(f'Unsupported order side: {side}')",
+            "",
+            "def _resolve_position_effect(side):",
+            "    if side == 'BUY':",
+            "        return globals().get('PositionEffect_Open')",
+            "    if side in {'SELL', 'REDUCE'}:",
+            "        return (",
+            "            globals().get('PositionEffect_Close')",
+            "            or globals().get('PositionEffect_CloseYesterday')",
+            "            or globals().get('PositionEffect_CloseToday')",
+            "        )",
+            "    raise ValueError(f'Unsupported order side: {side}')",
+            "",
             "def init(context):",
             "    for item in ORDERS:",
-            "        order_volume(",
-            "            symbol=item['symbol'],",
-            "            volume=int(item['quantity']),",
-            "            side=OrderSide_Buy if item['side'] == 'BUY' else OrderSide_Sell,",
-            "            order_type=OrderType_Limit,",
-            "            position_effect=PositionEffect_Open,",
-            "            price=float(item['price']),",
-            f"            account='{profile.account_id}',",
-            "        )",
+            "        kwargs = {",
+            "            'symbol': item['symbol'],",
+            "            'volume': int(item['quantity']),",
+            "            'side': _resolve_side(item['side']),",
+            "            'order_type': OrderType_Limit,",
+            "            'price': float(item['price']),",
+            f"            'account': '{profile.account_id}',",
+            "        }",
+            "        position_effect = _resolve_position_effect(item['side'])",
+            "        if position_effect is not None:",
+            "            kwargs['position_effect'] = position_effect",
+            "        order_volume(**kwargs)",
             "    stop()",
             "",
             "if __name__ == '__main__':",
@@ -456,6 +589,36 @@ class EastmoneyBrokerAdapter:
             raise last_error
         raise RuntimeError("下单调用失败。")
 
+    def _resolve_order_side_value(self, gm: Any, side: str):
+        mapping = {
+            "BUY": ["OrderSide_Buy", "ORDER_SIDE_BUY"],
+            "SELL": ["OrderSide_Sell", "ORDER_SIDE_SELL"],
+            "REDUCE": ["OrderSide_Sell", "ORDER_SIDE_SELL"],
+        }
+        if side not in mapping:
+            raise ValueError(f"Unsupported order side: {side}")
+        value = self._resolve_attr(gm, mapping[side])
+        if value is None:
+            raise RuntimeError(f"Missing SDK order side mapping for {side}")
+        return value
+
+    def _resolve_position_effect_value(self, gm: Any, side: str):
+        if side == "BUY":
+            return self._resolve_attr(gm, ["PositionEffect_Open", "POSITION_EFFECT_OPEN"])
+        if side in {"SELL", "REDUCE"}:
+            return self._resolve_attr(
+                gm,
+                [
+                    "PositionEffect_Close",
+                    "POSITION_EFFECT_CLOSE",
+                    "PositionEffect_CloseYesterday",
+                    "POSITION_EFFECT_CLOSE_YESTERDAY",
+                    "PositionEffect_CloseToday",
+                    "POSITION_EFFECT_CLOSE_TODAY",
+                ],
+            )
+        raise ValueError(f"Unsupported order side: {side}")
+
     def _pick_value(self, row: Any, candidates: list[str], fallback: Any = None) -> Any:
         if row is None:
             return fallback
@@ -492,3 +655,322 @@ class EastmoneyBrokerAdapter:
             return importlib.util.find_spec(module_name) is not None
         except ModuleNotFoundError:
             return False
+
+
+def summarize_broker_execution(
+    profile: BrokerProfile,
+    env: dict[str, Any],
+    order_intents: list[OrderIntent],
+    holdings: list[HoldingRecord],
+    cash_snapshot: CashSnapshot | None,
+    recommendations: list[Any] | None = None,
+) -> dict[str, Any]:
+    buy_intents = [item for item in order_intents if item.side == "BUY"]
+    estimated_capital = sum(item.price * item.quantity for item in buy_intents)
+    estimated_loss = sum(max(item.price - item.stop_price, 0.0) * item.quantity for item in buy_intents)
+    estimated_profit = sum(max(item.target_price - item.price, 0.0) * item.quantity for item in buy_intents)
+    available_cash = cash_snapshot.available_cash if cash_snapshot else 0.0
+    total_assets = cash_snapshot.total_assets if cash_snapshot else sum(item.market_value for item in holdings) + available_cash
+    holding_map = {item.symbol: item for item in holdings}
+
+    side_counts = {
+        "BUY": sum(1 for item in order_intents if item.side == "BUY"),
+        "SELL": sum(1 for item in order_intents if item.side == "SELL"),
+        "REDUCE": sum(1 for item in order_intents if item.side == "REDUCE"),
+        "WATCH": sum(1 for item in order_intents if item.side == "WATCH"),
+    }
+    symbols = [item.symbol for item in order_intents]
+    blockers: list[str] = []
+    warnings: list[str] = []
+
+    if not profile.export_dir.strip():
+        blockers.append("未设置导出目录")
+    if not order_intents:
+        blockers.append("暂无委托建议")
+    if profile.mode == "sdk":
+        if not profile.account_id.strip():
+            blockers.append("缺少账户 ID")
+        if not profile.token.strip():
+            blockers.append("缺少 SDK Token")
+        if not (env.get("direct_ready") or env.get("bridge_ready")):
+            blockers.append("SDK 环境未就绪")
+    else:
+        warnings.append("当前为导出模式，下单前仍需人工导入券商终端")
+
+    if buy_intents and available_cash <= 0:
+        warnings.append("尚未同步可用资金，资金校验仅按预算估算")
+    elif buy_intents and estimated_capital > available_cash:
+        blockers.append("预计委托金额超过可用资金")
+
+    if not holdings:
+        warnings.append("尚未同步持仓，减仓/卖出可用数量需人工复核")
+    if any(item.stop_price >= item.price for item in order_intents):
+        warnings.append("部分委托止损价不低于委托价")
+    if any(item.target_price <= item.price for item in order_intents):
+        warnings.append("部分委托目标价不高于委托价")
+
+    for item in order_intents:
+        if item.side not in {"SELL", "REDUCE"}:
+            continue
+        holding = holding_map.get(item.symbol)
+        if holding is None:
+            blockers.append(f"{item.symbol} \u7f3a\u5c11\u6301\u4ed3\uff0c\u4e0d\u53ef\u6267\u884c\u5356\u51fa/\u51cf\u4ed3")
+            continue
+        if holding.available <= 0:
+            blockers.append(f"{item.symbol} \u53ef\u5356\u6570\u91cf\u4e3a 0\uff0c\u4e0d\u53ef\u6267\u884c\u5356\u51fa/\u51cf\u4ed3")
+            continue
+        if item.quantity > holding.available:
+            blockers.append(
+                f"{item.symbol} \u53ef\u5356\u6570\u91cf\u4e0d\u8db3\uff1a\u59d4\u6258 {item.quantity} > \u53ef\u7528 {holding.available}"
+            )
+
+    mainline_review = _build_mainline_review(order_intents, recommendations=recommendations)
+    blockers.extend(item for item in mainline_review["blockers"] if item not in blockers)
+    warnings.extend(item for item in mainline_review["warnings"] if item not in warnings)
+
+    blockers = list(dict.fromkeys(blockers))
+    warnings = list(dict.fromkeys(warnings))
+
+    if profile.mode == "sdk" and not blockers:
+        readiness = "可直接提交"
+    elif not blockers:
+        readiness = "可导出执行"
+    else:
+        readiness = "待补齐"
+
+    readiness_score = max(0, 100 - len(blockers) * 22 - len(warnings) * 8)
+    risk_reward_ratio = estimated_profit / estimated_loss if estimated_loss > 0 else 0.0
+    capital_usage_ratio = estimated_capital / available_cash if available_cash > 0 else 0.0
+    asset_usage_ratio = estimated_capital / total_assets if total_assets > 0 else 0.0
+
+    return {
+        "readiness": readiness,
+        "readiness_score": readiness_score,
+        "estimated_capital": estimated_capital,
+        "estimated_loss": estimated_loss,
+        "estimated_profit": estimated_profit,
+        "risk_reward_ratio": risk_reward_ratio,
+        "capital_usage_ratio": capital_usage_ratio,
+        "asset_usage_ratio": asset_usage_ratio,
+        "available_cash": available_cash,
+        "total_assets": total_assets,
+        "intent_count": len(order_intents),
+        "holding_count": len(holdings),
+        "side_counts": side_counts,
+        "symbols": symbols,
+        "blockers": blockers,
+        "warnings": warnings,
+        "mainline_review": mainline_review,
+    }
+
+
+def describe_order_intent(item: OrderIntent, available_cash: float = 0.0) -> dict[str, Any]:
+    estimated_capital = item.price * item.quantity
+    estimated_loss = max(item.price - item.stop_price, 0.0) * item.quantity
+    estimated_profit = max(item.target_price - item.price, 0.0) * item.quantity
+    risk_reward_ratio = estimated_profit / estimated_loss if estimated_loss > 0 else 0.0
+    capital_ratio = estimated_capital / available_cash if available_cash > 0 else 0.0
+
+    checks: list[str] = []
+    if item.quantity <= 0:
+        checks.append("数量异常")
+    if item.stop_price >= item.price:
+        checks.append("止损价偏高")
+    if item.target_price <= item.price:
+        checks.append("目标价偏低")
+    if available_cash > 0 and estimated_capital > available_cash:
+        checks.append("超出可用资金")
+
+    if risk_reward_ratio >= 2.5 and not checks:
+        priority = "A"
+    elif risk_reward_ratio >= 1.5:
+        priority = "B"
+    else:
+        priority = "C"
+    if checks:
+        priority = "C"
+
+    reason_summary = item.reason.strip().replace("\n", " ")
+    if len(reason_summary) > 28:
+        reason_summary = f"{reason_summary[:28].rstrip()}..."
+
+    return {
+        "priority": priority,
+        "estimated_capital": estimated_capital,
+        "estimated_loss": estimated_loss,
+        "estimated_profit": estimated_profit,
+        "risk_reward_ratio": risk_reward_ratio,
+        "capital_ratio": capital_ratio,
+        "reason_summary": reason_summary,
+        "check_label": "通过" if not checks else " / ".join(checks[:2]),
+        "checks": checks,
+    }
+
+
+def preview_position_changes(
+    holdings: list[HoldingRecord],
+    order_intents: list[OrderIntent],
+) -> dict[str, Any]:
+    current_positions = {item.symbol: item.quantity for item in holdings}
+    available_positions = {item.symbol: item.available for item in holdings}
+    deltas: dict[str, int] = {}
+    for item in order_intents:
+        if item.side == "BUY":
+            delta = item.quantity
+        elif item.side in {"SELL", "REDUCE"}:
+            delta = -item.quantity
+        else:
+            delta = 0
+        deltas[item.symbol] = deltas.get(item.symbol, 0) + delta
+
+    rows: list[dict[str, Any]] = []
+    for symbol in sorted(set(current_positions) | set(deltas)):
+        before = current_positions.get(symbol, 0)
+        available = available_positions.get(symbol, before)
+        delta = deltas.get(symbol, 0)
+        sell_quantity = max(-delta, 0)
+        oversell = sell_quantity > available
+        after = max(before + delta, 0)
+        status = "新增"
+        if oversell:
+            status = "\u8d85\u5356"
+        elif before > 0 and after == 0:
+            status = "清仓"
+        elif before > 0 and after > before:
+            status = "加仓"
+        elif before > 0 and 0 < after < before:
+            status = "减仓"
+        elif before > 0 and after == before:
+            status = "不变"
+        rows.append(
+            {
+                "symbol": symbol,
+                "before": before,
+                "available": available,
+                "delta": delta,
+                "after": after,
+                "status": status,
+                "oversell": oversell,
+            }
+        )
+
+    high_risk_symbols = [
+        item.symbol
+        for item in order_intents
+        if describe_order_intent(item).get("checks")
+    ]
+    high_risk_symbols.extend(item["symbol"] for item in rows if item["oversell"])
+    high_risk_symbols = list(dict.fromkeys(high_risk_symbols))
+    return {
+        "rows": rows,
+        "high_risk_symbols": high_risk_symbols,
+        "new_symbol_count": sum(1 for item in rows if item["before"] == 0 and item["after"] > 0),
+        "exit_symbol_count": sum(1 for item in rows if item["before"] > 0 and item["after"] == 0),
+        "increase_count": sum(1 for item in rows if item["after"] > item["before"] and item["before"] > 0),
+        "decrease_count": sum(1 for item in rows if 0 < item["after"] < item["before"]),
+        "oversell_count": sum(1 for item in rows if item["oversell"]),
+    }
+
+
+def summarize_trade_recap(
+    submission_records: list[dict[str, str]],
+    holdings: list[HoldingRecord],
+    order_intents: list[OrderIntent],
+    order_log: list[str],
+) -> dict[str, Any]:
+    submitted_count = sum(1 for item in submission_records if item.get("order_status") == "SUBMITTED")
+    failed_count = sum(1 for item in submission_records if item.get("order_status") == "FAILED")
+    pending_count = sum(1 for item in submission_records if item.get("fill_status") == "PENDING")
+    rejected_count = sum(1 for item in submission_records if item.get("fill_status") == "REJECTED")
+    buy_count = sum(1 for item in submission_records if item.get("side") == "BUY")
+    sell_count = sum(1 for item in submission_records if item.get("side") == "SELL")
+    reduce_count = sum(1 for item in submission_records if item.get("side") == "REDUCE")
+    review_flags: list[str] = []
+
+    executed_capital = 0.0
+    for item in submission_records:
+        try:
+            executed_capital += float(item.get("price", "0") or 0.0) * float(item.get("quantity", "0") or 0.0)
+        except ValueError:
+            continue
+
+    holding_market_value = sum(item.market_value for item in holdings)
+    latest_messages = [item for item in order_log[-3:] if item.strip()]
+    focus_symbols = []
+    for item in submission_records[-5:]:
+        symbol = item.get("symbol", "").strip()
+        if symbol and symbol not in focus_symbols:
+            focus_symbols.append(symbol)
+
+    if failed_count:
+        review_flags.append(f"有 {failed_count} 笔提交失败，需要核对接口权限或参数映射。")
+    if rejected_count:
+        review_flags.append(f"有 {rejected_count} 笔委托被拒绝，建议优先复盘价格/数量/账户状态。")
+    if pending_count >= max(1, submitted_count):
+        review_flags.append("大部分委托仍处于待成交状态，需跟踪是否存在流动性或限价偏离。")
+    if order_intents and not submission_records:
+        review_flags.append("已生成委托建议但尚未提交，可先复核预算分配和执行顺序。")
+    if not review_flags:
+        review_flags.append("当前执行链路稳定，可进入盘后复盘与策略归因。")
+
+    return {
+        "submitted_count": submitted_count,
+        "failed_count": failed_count,
+        "pending_count": pending_count,
+        "rejected_count": rejected_count,
+        "buy_count": buy_count,
+        "sell_count": sell_count,
+        "reduce_count": reduce_count,
+        "executed_capital": executed_capital,
+        "holding_market_value": holding_market_value,
+        "focus_symbols": focus_symbols,
+        "latest_messages": latest_messages,
+        "review_flags": review_flags,
+    }
+
+
+def build_order_intent_from_trade_decision(
+    decision: TradeDecision,
+    lot_size: int = 100,
+) -> OrderIntent | None:
+    if decision.action != "BUY" or decision.planned_entry <= 0:
+        return None
+    quantity = int(decision.suggested_budget / decision.planned_entry)
+    quantity = (quantity // lot_size) * lot_size
+    if quantity < lot_size or decision.planned_stop <= 0 or decision.planned_target <= 0:
+        return None
+    return OrderIntent(
+        symbol=decision.symbol,
+        side="BUY",
+        price=round(decision.planned_entry, 3),
+        quantity=quantity,
+        stop_price=round(decision.planned_stop, 3),
+        target_price=round(decision.planned_target, 3),
+        signal_date="计划股",
+        reason=decision.rationale,
+    )
+
+
+def summarize_execution_statuses(
+    symbols: list[str],
+    execution_status_by_symbol: dict[str, str],
+) -> dict[str, int]:
+    counts = {
+        "total": len(symbols),
+        "reviewing": 0,
+        "submitted": 0,
+        "failed": 0,
+        "pending": 0,
+    }
+    for symbol in symbols:
+        status = execution_status_by_symbol.get(symbol, "待观察")
+        if status == "已送审":
+            counts["reviewing"] += 1
+        elif status == "已提交":
+            counts["submitted"] += 1
+        elif status == "提交失败":
+            counts["failed"] += 1
+        else:
+            counts["pending"] += 1
+    return counts
+

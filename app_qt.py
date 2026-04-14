@@ -103,7 +103,7 @@ from quant_hunter.ui_cards import (
     LeaderboardCard,
     StrategyWorkbenchCard,
 )
-from quant_hunter.ui_controllers import refresh_daily_pool_controller, refresh_remote_market_controller, run_background_job_controller, run_parameter_optimization_controller, save_strategy_preferences_controller, switch_license_plan_controller
+from quant_hunter.ui_controllers import confirm_and_submit_orders_controller, refresh_daily_pool_controller, refresh_remote_market_controller, run_background_job_controller, run_parameter_optimization_controller, save_strategy_preferences_controller, switch_license_plan_controller
 from quant_hunter.ui_config import (
     DAILY_POOL_TABLE_HEADERS,
     BROKER_DEFAULT_STATUS_TEXT,
@@ -921,10 +921,21 @@ class OrderConfirmationDialog(QDialog):
         intents: list[OrderIntent],
         adapter: EastmoneyBrokerAdapter,
         parent: QWidget | None = None,
+        *,
+        holdings=None,
+        cash_snapshot=None,
+        recommendations=None,
+        strategy_name: str = "",
+        experiment_bridge: dict[str, str] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("下单确认")
         self.resize(980, 560)
+        self.strategy_name = str(strategy_name or "")
+        self.experiment_bridge = dict(experiment_bridge or {})
+        self.confirmation_holdings = holdings
+        self.confirmation_cash_snapshot = cash_snapshot
+        self.confirmation_recommendations = list(recommendations or [])
 
         layout = QVBoxLayout(self)
 
@@ -1148,6 +1159,7 @@ class QuantHunterWindow(QMainWindow):
         self._last_rendered_symbol = ""
         self._last_rendered_symbol_revision = -1
         self._pending_market_dashboard_symbol = ""
+        self._pending_market_aux_symbol = ""
         self.last_runtime_export_path = ""
         self.last_cache_purge_summary = ""
         self.overview_focus_mode = "市场总览"
@@ -1180,6 +1192,7 @@ class QuantHunterWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         shell_root = QWidget()
+        shell_root.setObjectName("shellRoot")
         shell_layout = QVBoxLayout(shell_root)
         shell_layout.setContentsMargins(12, 10, 12, 12)
         shell_layout.setSpacing(10)
@@ -1247,6 +1260,7 @@ class QuantHunterWindow(QMainWindow):
         shell_layout.addWidget(self.shell_pulse_bar)
 
         self.tabs = QTabWidget()
+        self.tabs.setObjectName("workspaceTabs")
         shell_layout.addWidget(self.tabs, stretch=1)
 
         self.overview_tab = QWidget()
@@ -1257,6 +1271,15 @@ class QuantHunterWindow(QMainWindow):
         self.auth_tab = QWidget()
         self.detail_tab = QWidget()
         self.broker_tab = QWidget()
+
+        self.overview_tab.setObjectName("overviewRoot")
+        self.scanner_tab.setObjectName("scannerRoot")
+        self.recommend_tab.setObjectName("recommendRoot")
+        self.board_tab.setObjectName("boardRoot")
+        self.config_tab.setObjectName("configRoot")
+        self.auth_tab.setObjectName("authRoot")
+        self.detail_tab.setObjectName("detailRoot")
+        self.broker_tab.setObjectName("brokerRoot")
 
         self.tabs.addTab(self.overview_tab, "总览")
         self.tabs.addTab(self.scanner_tab, "扫描")
@@ -4153,7 +4176,7 @@ class QuantHunterWindow(QMainWindow):
         if hasattr(self, "recommend_focus_review_text"):
             review_lines = [
                 f"单票审查：{current.stock_name}",
-                f"总分 {current.total_score:.1f} | 风险 {risk_flag} | 主策略 {getattr(current, 'primary_strategy', '') or '掘龙决策'}",
+                f"总分 {float(getattr(current, 'total_score', 0.0) or 0.0):.1f} | 风险 {risk_flag} | 主策略 {getattr(current, 'primary_strategy', '') or '掘龙决策'}",
             ]
             review_lines.extend(recommendation_focus_lines(current))
             review_lines.append(f"核心理由：{rationale}")
@@ -5166,6 +5189,7 @@ class QuantHunterWindow(QMainWindow):
         chart.setPlotAreaBackgroundVisible(True)
         chart.setPlotAreaBackgroundBrush(QColor("#000000"))
         chart.setMargins(chart.margins())
+        chart.setAnimationOptions(QChart.NoAnimation)
         chart.legend().hide()
 
     def _build_stock_identity_cell(self, row) -> QWidget:
@@ -5339,6 +5363,11 @@ QPushButton#accentButton:hover {
 }
 """
         self.setStyleSheet(base_style + extra_style)
+        self._qh_visual_surface_stylesheet_applied_v1 = False
+        if hasattr(self, "_qh_visual_surface_stylesheet_timer_v1"):
+            self._qh_visual_surface_stylesheet_timer_v1.stop()
+        if hasattr(self, "_schedule_visual_surface_stylesheet_v1"):
+            self._schedule_visual_surface_stylesheet_v1()
 
     def _build_scanner_tab(self) -> None:
         layout = QVBoxLayout(self.scanner_tab)
@@ -9247,6 +9276,27 @@ QPushButton#accentButton:hover {
         self._pending_market_dashboard_symbol = ""
         self._render_market_dashboard(symbol)
 
+    def _schedule_market_auxiliary_render(self, symbol: str) -> None:
+        if not symbol:
+            return
+        self._pending_market_aux_symbol = symbol
+        if not hasattr(self, "_market_aux_render_timer"):
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._flush_pending_market_auxiliary_render)
+            self._market_aux_render_timer = timer
+        self._market_aux_render_timer.start(0)
+
+    def _flush_pending_market_auxiliary_render(self) -> None:
+        symbol = str(getattr(self, "_pending_market_aux_symbol", "") or "")
+        if not symbol or symbol != getattr(self, "active_symbol", ""):
+            return
+        chart_series = getattr(self.market_screen_result, "chart_series_by_symbol", {}).get(symbol)
+        self._pending_market_aux_symbol = ""
+        self._update_fund_chart(symbol, chart_series)
+        self._update_momentum_chart(symbol, chart_series)
+        self._update_indicator_chart(symbol)
+
     def _render_market_dashboard(self, symbol: str) -> None:
         snapshot = self.market_snapshots.get(symbol)
         recommendation = next((item for item in self.daily_pool_rows if item.symbol == symbol), None)
@@ -9268,11 +9318,9 @@ QPushButton#accentButton:hover {
                 self._set_label_text_if_changed(self.market_quote_label, f"历史窗口 {self.market_history_window} | 周期 {self.market_timeframe_mode} | 叠加 {'/'.join(sorted(self.market_overlay_modes)) or '关闭'}")
         self._update_intraday_chart(symbol, snapshot, chart_series)
         self._update_daily_chart(symbol)
-        self._update_fund_chart(symbol, chart_series)
-        self._update_momentum_chart(symbol, chart_series)
-        self._update_indicator_chart(symbol)
         self._update_market_text_panels(symbol, snapshot, recommendation)
         self._refresh_overview_focus_cards(symbol, snapshot, recommendation)
+        self._schedule_market_auxiliary_render(symbol)
 
     def _normalize_recommend_workspace_texts(self) -> None:
         title_map = {
@@ -11841,6 +11889,29 @@ def _qh_apply_runtime_font_preferences(self: QuantHunterWindow) -> None:
 
 
 def _qh_polish_visual_surfaces(self: QuantHunterWindow) -> None:
+    if getattr(self, "_qh_visual_surface_geometry_polished_v1", False):
+        return
+
+    def _mark_surface(widget: QWidget | None, *, shell_root: bool = False) -> None:
+        if not isinstance(widget, QWidget):
+            return
+        widget.setAttribute(Qt.WA_StyledBackground, True)
+        widget.setAutoFillBackground(False)
+        if shell_root:
+            widget.setProperty("workspaceShellRoot", True)
+        else:
+            widget.setProperty("workspaceSurface", True)
+
+    _mark_surface(self.centralWidget(), shell_root=True)
+    if hasattr(self, "tabs") and isinstance(self.tabs, QTabWidget):
+        stacked_widget = self.tabs.findChild(QWidget, "qt_tabwidget_stackedwidget")
+        _mark_surface(stacked_widget)
+        for index in range(self.tabs.count()):
+            _mark_surface(self.tabs.widget(index))
+    for scroll in self.findChildren(QScrollArea):
+        _mark_surface(scroll.viewport())
+        _mark_surface(scroll.widget())
+
     for attr_name in (
         "overview_focus_banner",
         "recommend_focus_banner",
@@ -11902,6 +11973,47 @@ def _qh_polish_visual_surfaces(self: QuantHunterWindow) -> None:
         tab_bar.setElideMode(Qt.ElideNone)
         tab_bar.setExpanding(False)
         tab_bar.setDocumentMode(True)
+    self._qh_visual_surface_geometry_polished_v1 = True
+
+
+def _qh_visual_surface_palette_v1(self: QuantHunterWindow) -> dict[str, str]:
+    theme_key = str(getattr(self, "current_theme", "graphite") or "graphite")
+    palettes = {
+        "sunrise": {
+            "shell_bg": "#f7f1e7",
+            "pane_bg": "#fbf7f1",
+            "panel_bg": "#fffaf3",
+            "hint_bg": "#fffdf9",
+            "hint_fg": "#6d573c",
+            "border": "#decdb6",
+            "hint_border": "#e5d8c6",
+        },
+        "ocean": {
+            "shell_bg": "#edf4f7",
+            "pane_bg": "#f7fbfd",
+            "panel_bg": "#ffffff",
+            "hint_bg": "#ffffff",
+            "hint_fg": "#4d697c",
+            "border": "#bfd2db",
+            "hint_border": "#d2e0e6",
+        },
+        "graphite": {
+            "shell_bg": "#111821",
+            "pane_bg": "#161f2a",
+            "panel_bg": "#1b2430",
+            "hint_bg": "#1e2935",
+            "hint_fg": "#93a8bc",
+            "border": "rgba(113, 143, 171, 0.16)",
+            "hint_border": "rgba(113, 143, 171, 0.22)",
+        },
+    }
+    return palettes.get(theme_key, palettes["graphite"])
+
+
+def _qh_apply_visual_surface_stylesheet_v1(self: QuantHunterWindow) -> None:
+    if getattr(self, "_qh_visual_surface_stylesheet_applied_v1", False):
+        return
+    palette = self._qh_visual_surface_palette_v1()
 
     self.setStyleSheet(
         self.styleSheet()
@@ -11909,11 +12021,31 @@ def _qh_polish_visual_surfaces(self: QuantHunterWindow) -> None:
 QWidget {
     font-family: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Source Han Sans SC", "Noto Sans CJK SC", sans-serif;
 }
-QTabWidget::pane {
-    border: 1px solid rgba(113, 143, 171, 0.16);
+QWidget[workspaceShellRoot="true"] {
+    background: """
+        + palette["shell_bg"]
+        + """;
+}
+QWidget[workspaceSurface="true"] {
+    background: """
+        + palette["pane_bg"]
+        + """;
+}
+QTabWidget#workspaceTabs::pane {
+    border: 1px solid """
+        + palette["border"]
+        + """;
     border-radius: 18px;
     top: -1px;
-    background: rgba(255, 255, 255, 0.66);
+    background: """
+        + palette["pane_bg"]
+        + """;
+}
+QTabWidget#workspaceTabs > QWidget#qt_tabwidget_stackedwidget {
+    background: """
+        + palette["pane_bg"]
+        + """;
+    border-radius: 18px;
 }
 QTabBar::tab {
     min-width: 120px;
@@ -11926,8 +12058,15 @@ QTabBar::tab {
 QLabel#inlineHint {
     padding: 8px 12px;
     border-radius: 12px;
-    background: rgba(255, 255, 255, 0.58);
-    color: #36516b;
+    background: """
+        + palette["hint_bg"]
+        + """;
+    color: """
+        + palette["hint_fg"]
+        + """;
+    border: 1px solid """
+        + palette["hint_border"]
+        + """;
 }
 QLabel[focusBanner="true"] {
     min-height: 48px;
@@ -11944,6 +12083,9 @@ QFrame#detailLiveSummaryPanel,
 QFrame#configLiveSummaryPanel {
     border-radius: 18px;
     padding: 8px;
+    background: """
+        + palette["panel_bg"]
+        + """;
 }
 QTableWidget {
     border-radius: 16px;
@@ -11953,6 +12095,18 @@ QHeaderView::section {
 }
 """
     )
+    self._qh_visual_surface_stylesheet_applied_v1 = True
+
+
+def _qh_schedule_visual_surface_stylesheet_v1(self: QuantHunterWindow) -> None:
+    if getattr(self, "_qh_visual_surface_stylesheet_applied_v1", False):
+        return
+    if not hasattr(self, "_qh_visual_surface_stylesheet_timer_v1"):
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(self._apply_visual_surface_stylesheet_v1)
+        self._qh_visual_surface_stylesheet_timer_v1 = timer
+    self._qh_visual_surface_stylesheet_timer_v1.start(0)
 
 
 def _qh_upgrade_auth_workspace(self: QuantHunterWindow) -> None:
@@ -13318,6 +13472,122 @@ def _qh_broker_execution_deck_v50(
     }
 
 
+def _qh_broker_focus_shortcuts_v51(
+    *,
+    stock_name: str,
+    stage: str,
+    blocker_present: bool,
+    blocker_hint: str,
+    parameter_headline: str,
+    resolution_target: str,
+) -> dict[str, str]:
+    stock_name = str(stock_name or "焦点票")
+    stage = str(stage or "待跟踪")
+    blocker_hint = str(blocker_hint or "先复核执行条件")
+    parameter_headline = str(parameter_headline or "参数待复核")
+    resolution_target = str(resolution_target or "交易页")
+    if blocker_present:
+        return {
+            "blocker_tooltip": f"阻塞优先：{stock_name} | {stage}。先处理 {blocker_hint}，再去{resolution_target}恢复链路。",
+            "priority_tooltip": f"前排暂缓：{stock_name} 仍在{stage}，先处理 {blocker_hint}。",
+        }
+    return {
+        "blocker_tooltip": f"当前无阻塞项。{stock_name} 处于{stage}，继续按 {parameter_headline} 跟执行。",
+        "priority_tooltip": f"前排跟踪：定位 {stock_name}，继续按 {parameter_headline} 跟执行；如需改单，先去{resolution_target}。",
+    }
+
+
+def _qh_broker_action_strip_labels_v52(
+    *,
+    stage: str,
+    blocker_present: bool,
+    has_priority_target: bool,
+) -> dict[str, str]:
+    stage = str(stage or "待跟踪")
+    if blocker_present:
+        return {
+            "blocker_text": "处理阻塞",
+            "priority_text": "前排暂缓",
+        }
+    if stage == "待成交跟踪":
+        return {
+            "blocker_text": "看阻塞项",
+            "priority_text": "跟前排单" if has_priority_target else "暂无前排",
+        }
+    if stage == "已成交待复盘":
+        return {
+            "blocker_text": "看偏差项",
+            "priority_text": "看前排复盘" if has_priority_target else "暂无前排",
+        }
+    return {
+        "blocker_text": "看阻塞项",
+        "priority_text": "看前排单" if has_priority_target else "暂无前排",
+    }
+
+
+def _qh_broker_primary_cta_labels_v53(
+    *,
+    stage: str,
+    order_count: int,
+    submit_count: int,
+    has_focus_symbol: bool,
+) -> dict[str, str]:
+    stage = str(stage or "")
+    order_count = max(int(order_count or 0), 0)
+    submit_count = max(int(submit_count or 0), 0)
+    if order_count <= 0:
+        return {
+            "generate_text": "生成委托链路" if not has_focus_symbol else "围绕焦点生成",
+            "confirm_text": "确认并提交委托",
+        }
+    if stage == "阻塞待处理":
+        return {
+            "generate_text": "按阻塞重生成",
+            "confirm_text": f"修正后提交 ({order_count})",
+        }
+    if submit_count > 0:
+        return {
+            "generate_text": "围绕焦点重生成",
+            "confirm_text": f"核对后提交 ({order_count})",
+        }
+    return {
+        "generate_text": "重算委托链路",
+        "confirm_text": f"核对后提交 ({order_count})",
+    }
+
+
+def _qh_broker_primary_cta_tooltips_v54(
+    *,
+    stage: str,
+    order_count: int,
+    submit_count: int,
+    stock_name: str,
+) -> dict[str, str]:
+    stage = str(stage or "")
+    order_count = max(int(order_count or 0), 0)
+    submit_count = max(int(submit_count or 0), 0)
+    stock_name = str(stock_name or "当前焦点")
+    if order_count <= 0:
+        return {
+            "generate_tooltip": f"围绕 {stock_name} 生成新的委托链路。" if stock_name != "当前焦点" else "从每日推荐池或交易计划自动生成委托建议。",
+            "confirm_tooltip": "请先从推荐池生成委托建议。",
+        }
+    if stage == "阻塞待处理":
+        return {
+            "generate_tooltip": f"围绕 {stock_name} 按最新阻塞项重生成委托建议。",
+            "confirm_tooltip": "请先修正阻塞项，再打开确认弹窗提交。",
+        }
+    if submit_count > 0:
+        return {
+            "generate_tooltip": f"围绕 {stock_name} 重新生成委托建议，补齐新的执行方案。",
+            "confirm_tooltip": "当前仍有待提交委托，可再次核对后提交。",
+        }
+    return {
+        "generate_tooltip": f"围绕 {stock_name} 重新计算委托链路。",
+        "confirm_tooltip": "已生成委托建议，可以打开确认弹窗并提交。",
+    }
+
+
 def _qh_focus_symbol_in_broker_workspace(self: QuantHunterWindow, symbol: str) -> None:
     if not symbol:
         return
@@ -13440,9 +13710,11 @@ def _qh_open_board_symbol_in_scanner(self: QuantHunterWindow) -> None:
 
 
 def _qh_post_build_ui_tweaks(self: QuantHunterWindow) -> None:
+    self._qh_defer_startup_refreshes_v1 = True
     _ORIGINAL_POST_BUILD_UI_TWEAKS(self)
     self._apply_runtime_font_preferences()
     self._polish_visual_surfaces()
+    self._schedule_visual_surface_stylesheet_v1()
     self._upgrade_auth_workspace()
     self._upgrade_broker_workspace()
     self._upgrade_analysis_workspaces()
@@ -13454,6 +13726,7 @@ def _qh_post_build_ui_tweaks(self: QuantHunterWindow) -> None:
     self._refresh_login_status()
     self._rebind_workspace_action_rows()
     self._refresh_broker_auxiliary_panels()
+    self._schedule_startup_refresh_flush_v1()
 
 
 def _qh_refresh_board_focus_cards(
@@ -13516,6 +13789,9 @@ def _qh_refresh_board_focus_cards(
 
 QuantHunterWindow._apply_runtime_font_preferences = _qh_apply_runtime_font_preferences
 QuantHunterWindow._polish_visual_surfaces = _qh_polish_visual_surfaces
+QuantHunterWindow._qh_visual_surface_palette_v1 = _qh_visual_surface_palette_v1
+QuantHunterWindow._apply_visual_surface_stylesheet_v1 = _qh_apply_visual_surface_stylesheet_v1
+QuantHunterWindow._schedule_visual_surface_stylesheet_v1 = _qh_schedule_visual_surface_stylesheet_v1
 QuantHunterWindow._upgrade_auth_workspace = _qh_upgrade_auth_workspace
 QuantHunterWindow._upgrade_broker_workspace = _qh_upgrade_broker_workspace
 QuantHunterWindow._upgrade_analysis_workspaces = _qh_upgrade_analysis_workspaces
@@ -14278,7 +14554,8 @@ def _qh_recommend_focus_reason_v24(self: QuantHunterWindow, recommendation) -> s
         return "等待推荐逻辑同步。"
     theme_name = getattr(recommendation, "mainline_tag", "") or getattr(recommendation, "theme_name", "") or "待确认"
     strategy_name = getattr(recommendation, "primary_strategy", "") or "掘龙决策"
-    role_name = self._display_mainline_role(getattr(recommendation, "mainline_role", "") or "") or "待确认"
+    role_formatter = getattr(self, "_display_mainline_role", lambda value: str(value or ""))
+    role_name = role_formatter(getattr(recommendation, "mainline_role", "") or "") or "待确认"
     catalyst = _qh_compact_copy_v24(getattr(recommendation, "catalyst", "") or "等待消息强化", 18)
     rationale = _qh_compact_copy_v24(getattr(recommendation, "rationale", "") or "", 20)
     parts = [catalyst, f"{theme_name} | {role_name}", strategy_name]
@@ -16939,6 +17216,27 @@ _ORIGINAL_QH_REFRESH_RECOMMEND_FOCUS_STATUS_V23 = QuantHunterWindow._refresh_rec
 _ORIGINAL_QH_REFRESH_BROKER_ORDER_FOCUS_V23 = QuantHunterWindow._refresh_broker_order_focus
 _ORIGINAL_QH_REFRESH_SUBMISSION_FOCUS_V23 = QuantHunterWindow._refresh_submission_focus
 _ORIGINAL_QH_ON_DAILY_POOL_SELECTION_CHANGED_V23 = QuantHunterWindow._on_daily_pool_selection_changed
+_ORIGINAL_QH_REFRESH_RECOMMEND_FOCUS_CARDS_V8 = QuantHunterWindow._refresh_recommend_focus_cards
+
+
+def _qh_refresh_recommend_focus_cards_v8(self: QuantHunterWindow, row: RecommendationRow | None = None) -> None:
+    _ORIGINAL_QH_REFRESH_RECOMMEND_FOCUS_CARDS_V8(self, row)
+    current = row or (self._current_recommend_focus() if hasattr(self, "_current_recommend_focus") else None)
+    if current is not None and hasattr(self, "recommend_summary_cards"):
+        runtime_phase, runtime_hint = tail_buy_runtime_status(current)
+        runtime_panel = tail_buy_runtime_panel_lines(current)
+        if runtime_phase:
+            self.recommend_summary_cards["plan"].set_data("尾盘执行阶段", f"{runtime_phase} | {runtime_hint[:18]}")
+            self.recommend_summary_cards["pulse"].set_data(
+                "尾盘盯盘重点",
+                runtime_panel[2] if len(runtime_panel) >= 3 else runtime_hint,
+            )
+            self.recommend_summary_cards["holding"].set_data(
+                "次日兑现纪律",
+                runtime_panel[-1] if runtime_panel else "次日开盘优先兑现",
+            )
+    if hasattr(self, "_refresh_live_workspace_summary_panels"):
+        self._refresh_live_workspace_summary_panels()
 
 
 def _qh_refresh_workspace_focus_banners_v23(self: QuantHunterWindow) -> None:
@@ -17231,8 +17529,24 @@ class OrderConfirmationDialog(_ORDER_CONFIRMATION_DIALOG_V25):
         intents: list[OrderIntent],
         adapter: EastmoneyBrokerAdapter,
         parent: QWidget | None = None,
+        *,
+        holdings=None,
+        cash_snapshot=None,
+        recommendations=None,
+        strategy_name: str = "",
+        experiment_bridge: dict[str, str] | None = None,
     ) -> None:
-        super().__init__(profile, intents, adapter, parent)
+        super().__init__(
+            profile,
+            intents,
+            adapter,
+            parent,
+            holdings=holdings,
+            cash_snapshot=cash_snapshot,
+            recommendations=recommendations,
+            strategy_name=strategy_name,
+            experiment_bridge=experiment_bridge,
+        )
         self.setWindowTitle("一键下单确认")
         self.resize(1080, 660)
         self.setStyleSheet(
@@ -17330,16 +17644,54 @@ QHeaderView::section {
             "3. 勾选确认后提交，提交完成后会自动定位到最新回执。",
             "",
             f"焦点标的：{' / '.join(top_symbols) if top_symbols else '暂无'}",
+            f"当前战法：{strategy_name or '擒龙决策'}",
             f"交易模式：{DISPLAY_TEXT['mode'].get(profile.mode or '', profile.mode or '-')}",
             f"SDK 状态：{'可直接调用' if adapter.diagnose_environment(profile).get('direct_ready') else ('可桥接调用' if adapter.diagnose_environment(profile).get('bridge_ready') else '当前未就绪')}",
         ]
         self.summary_text.setPlainText("\n".join(summary_lines))
         summary_layout.addWidget(self.summary_text)
+        bridge = dict(experiment_bridge or {})
+        experiment_badge = str(bridge.get("badge", "") or "待校验")
+        experiment_title = str(bridge.get("title", "") or f"待补模拟盘样本 | {strategy_name or '擒龙决策'}")
+        experiment_detail = str(bridge.get("detail", "") or "当前没有稳定的模拟盘实验结论，建议先补主测/对照样本。")
+        experiment_cta = str(bridge.get("cta", "") or "先完成模拟盘样本积累，再决定是否推进真实交易。")
+        if experiment_badge == "主测":
+            execution_guard = "可以继续推进，但仍需按主测预算、止损和持有纪律执行。"
+        elif experiment_badge == "对照":
+            execution_guard = "仅适合小仓位验证，不建议把对照样本直接放大为主仓。"
+        elif experiment_badge in {"观察", "备选"}:
+            execution_guard = "先留在观察/模拟盘，除非主线与风控同步强化，否则不宜直接推进。"
+        else:
+            execution_guard = "先把模拟盘初始化或补样本跑完整，再进入真实交易确认。"
+        experiment_box = QGroupBox("模拟盘 / 战法纪律")
+        experiment_layout = QVBoxLayout(experiment_box)
+        experiment_intro = QLabel(
+            f"本次委托默认按「{strategy_name or '擒龙决策'}」的实验结论复核，先确认它属于主测、对照还是观察，再决定是否提交。"
+        )
+        experiment_intro.setWordWrap(True)
+        experiment_layout.addWidget(experiment_intro)
+        self.experiment_text = QTextEdit()
+        self.experiment_text.setReadOnly(True)
+        self.experiment_text.setMinimumHeight(118)
+        self.experiment_text.setMaximumHeight(156)
+        self.experiment_text.setPlainText(
+            "\n".join(
+                [
+                    f"实验标签：{experiment_badge}",
+                    f"实验结论：{experiment_title}",
+                    f"实验提示：{experiment_detail}",
+                    f"真实交易建议：{execution_guard}",
+                    f"下一步：{experiment_cta}",
+                ]
+            )
+        )
+        experiment_layout.addWidget(self.experiment_text)
         layout = self.layout()
         if isinstance(layout, QVBoxLayout):
             layout.insertWidget(1, summary_box)
+            layout.insertWidget(2, experiment_box)
 
-        self.confirm_checkbox.setText("我已核对账户、委托、止损与风险后，继续提交。")
+        self.confirm_checkbox.setText("我已核对账户、委托、模拟盘结论与风险后，继续提交。")
         self.submit_button.setText("确认并提交")
         self.submit_button.setObjectName("submitAction")
 
@@ -17349,8 +17701,24 @@ QHeaderView::section {
         intents: list[OrderIntent],
         adapter: EastmoneyBrokerAdapter,
         parent: QWidget | None = None,
+        *,
+        holdings=None,
+        cash_snapshot=None,
+        recommendations=None,
+        strategy_name: str = "",
+        experiment_bridge: dict[str, str] | None = None,
     ) -> bool:
-        dialog = OrderConfirmationDialog(profile, intents, adapter, parent)
+        dialog = OrderConfirmationDialog(
+            profile,
+            intents,
+            adapter,
+            parent,
+            holdings=holdings,
+            cash_snapshot=cash_snapshot,
+            recommendations=recommendations,
+            strategy_name=strategy_name,
+            experiment_bridge=experiment_bridge,
+        )
         return dialog.exec() == QDialog.Accepted
 
 
@@ -17358,28 +17726,69 @@ def _qh_update_broker_action_flow_v26(self: QuantHunterWindow) -> None:
     order_count = len(getattr(self, "order_intents", []) or [])
     submit_count = len(getattr(self, "order_submission_records", []) or [])
     latest_symbol = ""
+    latest_stage = ""
     if submit_count:
-        latest_symbol = str(getattr(self, "order_submission_records", [])[-1].get("symbol", "") or "")
+        latest_record = getattr(self, "order_submission_records", [])[-1]
+        latest_symbol = str(latest_record.get("symbol", "") or "")
+        latest_stage = str((getattr(self, "last_broker_execution_summary", {}) or {}).get("stage", "") or "")
     elif order_count:
         latest_symbol = str(getattr(self, "order_intents", [None])[0].symbol if getattr(self, "order_intents", []) else "")
+    cta_labels = _qh_broker_primary_cta_labels_v53(
+        stage=latest_stage,
+        order_count=order_count,
+        submit_count=submit_count,
+        has_focus_symbol=bool(latest_symbol or (getattr(self, "active_symbol", "") or "")),
+    )
+    focus_symbol = latest_symbol or (getattr(self, "active_symbol", "") or "")
+    cta_tooltips = _qh_broker_primary_cta_tooltips_v54(
+        stage=latest_stage,
+        order_count=order_count,
+        submit_count=submit_count,
+        stock_name=self._stock_name_for_symbol(focus_symbol) if focus_symbol else "当前焦点",
+    )
+
+    blocker_button = getattr(self, "broker_focus_blocker_button", None)
+    if isinstance(blocker_button, QPushButton):
+        if blocker_button.text() != "定位阻塞":
+            blocker_button.setText("定位阻塞")
+        blocker_tip = (
+            "优先定位需要处理的阻塞回执。"
+            if submit_count
+            else ("优先查看当前委托链路里的阻塞项。" if order_count else "当前没有阻塞项，可先生成委托链路。")
+        )
+        if blocker_button.toolTip() != blocker_tip:
+            blocker_button.setToolTip(blocker_tip)
+
+    priority_button = getattr(self, "broker_focus_priority_button", None)
+    if isinstance(priority_button, QPushButton):
+        if priority_button.text() != "定位高优先":
+            priority_button.setText("定位高优先")
+        priority_tip = (
+            f"优先定位当前执行焦点：{self._stock_name_for_symbol(latest_symbol)}。"
+            if latest_symbol
+            else ("优先定位当前最值得继续跟进的委托。" if order_count else "当前没有高优先委托，可先生成委托链路。")
+        )
+        if priority_button.toolTip() != priority_tip:
+            priority_button.setToolTip(priority_tip)
 
     button = getattr(self, "confirm_submit_orders_button", None)
     if isinstance(button, QPushButton):
         button.setEnabled(order_count > 0)
+        button_text = cta_labels["confirm_text"] if order_count > 0 else "确认并提交委托"
+        button_tip = cta_tooltips["confirm_tooltip"]
         if order_count > 0:
-            button.setText(f"确认并提交委托 ({order_count})")
-            button.setToolTip("已生成委托建议，可以打开确认弹窗并提交。")
+            button.setText(button_text)
+            button.setToolTip(button_tip)
         else:
             button.setText("确认并提交委托")
-            button.setToolTip("请先从推荐池生成委托建议。")
+            button.setToolTip(button_tip)
 
     generate_button = getattr(self, "generate_order_suggestions_button", None)
     if isinstance(generate_button, QPushButton):
-        focus_symbol = latest_symbol or (getattr(self, "active_symbol", "") or "")
-        if focus_symbol:
-            generate_button.setToolTip(f"当前会优先围绕 {self._stock_name_for_symbol(focus_symbol)} 生成委托建议。")
-        else:
-            generate_button.setToolTip("从每日推荐池或交易计划自动生成委托建议。")
+        generate_text = cta_labels["generate_text"]
+        if generate_button.text() != generate_text:
+            generate_button.setText(generate_text)
+        generate_button.setToolTip(cta_tooltips["generate_tooltip"])
 
     if hasattr(self, "broker_status_banner"):
         if submit_count:
@@ -17508,6 +17917,19 @@ def _qh_refresh_submission_focus_v26(self: QuantHunterWindow) -> None:
         parameter_headline=parameter_alignment["headline"],
         repair_headline=repair_hint["headline"],
         resolution_target=resolution_action["target"],
+    )
+    shortcut_copy = _qh_broker_focus_shortcuts_v51(
+        stock_name=stock_name,
+        stage=summary["stage"],
+        blocker_present=summary["stage"] == "阻塞待处理",
+        blocker_hint=repair_hint["headline"],
+        parameter_headline=parameter_alignment["headline"],
+        resolution_target=resolution_action["target"],
+    )
+    action_strip = _qh_broker_action_strip_labels_v52(
+        stage=summary["stage"],
+        blocker_present=summary["stage"] == "阻塞待处理",
+        has_priority_target=bool(symbol),
     )
     execution_tone = _qh_broker_execution_tone_v44(summary["stage"])
 
@@ -17710,10 +18132,33 @@ def _qh_refresh_submission_focus_v26(self: QuantHunterWindow) -> None:
         if current_tip != base_tip:
             confirm_button.setToolTip(base_tip)
 
+    blocker_button = getattr(self, "broker_focus_blocker_button", None)
+    if isinstance(blocker_button, QPushButton):
+        if blocker_button.text() != action_strip["blocker_text"]:
+            blocker_button.setText(action_strip["blocker_text"])
+        blocker_tip = shortcut_copy["blocker_tooltip"]
+        if blocker_button.toolTip() != blocker_tip:
+            blocker_button.setToolTip(blocker_tip)
+
+    priority_button = getattr(self, "broker_focus_priority_button", None)
+    if isinstance(priority_button, QPushButton):
+        if priority_button.text() != action_strip["priority_text"]:
+            priority_button.setText(action_strip["priority_text"])
+        priority_tip = shortcut_copy["priority_tooltip"]
+        if priority_button.toolTip() != priority_tip:
+            priority_button.setToolTip(priority_tip)
+
 
 def _qh_confirm_and_submit_orders_v26(self: QuantHunterWindow) -> None:
     before_count = len(getattr(self, "order_submission_records", []) or [])
-    _ORIGINAL_QH_CONFIRM_AND_SUBMIT_ORDERS_V26(self)
+    confirm_and_submit_orders_controller(
+        self,
+        adapter_cls=EastmoneyBrokerAdapter,
+        confirmation_dialog_cls=OrderConfirmationDialog,
+        datetime_cls=datetime,
+        info_dialog_fn=QMessageBox.information,
+        warning_dialog_fn=QMessageBox.warning,
+    )
     after_count = len(getattr(self, "order_submission_records", []) or [])
     if after_count > before_count:
         if hasattr(self, "execution_table") and self.execution_table.rowCount() > 0:
@@ -17736,6 +18181,61 @@ QuantHunterWindow._update_broker_action_flow_v26 = _qh_update_broker_action_flow
 QuantHunterWindow._refresh_broker_status = _qh_refresh_broker_status_v26
 QuantHunterWindow._refresh_submission_focus = _qh_refresh_submission_focus_v26
 QuantHunterWindow.confirm_and_submit_orders = _qh_confirm_and_submit_orders_v26
+
+
+def _qh_schedule_startup_refresh_flush_v1(self: QuantHunterWindow) -> None:
+    if not hasattr(self, "_qh_startup_refresh_flush_timer_v1"):
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(self._flush_startup_refreshes_v1)
+        self._qh_startup_refresh_flush_timer_v1 = timer
+    self._qh_startup_refresh_flush_timer_v1.start(0)
+
+
+def _qh_flush_startup_refreshes_v1(self: QuantHunterWindow) -> None:
+    self._qh_defer_startup_refreshes_v1 = False
+    self._refresh_workspace_status_labels()
+    self._refresh_submission_focus()
+    self._refresh_scanner_focus_status()
+    self._refresh_recommend_focus_status()
+    self._refresh_recommend_bucket_panels()
+    self._refresh_live_workspace_summary_panels()
+    self._refresh_workspace_focus_banners()
+    if hasattr(self, "_refresh_broker_auxiliary_panels"):
+        self._refresh_broker_auxiliary_panels()
+    if hasattr(self, "_refresh_paper_trading_panels"):
+        self._refresh_paper_trading_panels()
+
+
+def _qh_wrap_startup_deferred_refresh_v1(original):
+    def wrapped(self: QuantHunterWindow, *args, **kwargs):
+        if getattr(self, "_qh_defer_startup_refreshes_v1", False):
+            return None
+        return original(self, *args, **kwargs)
+    return wrapped
+
+
+for _method_name in (
+    "_refresh_workspace_status_labels",
+    "_refresh_submission_focus",
+    "_refresh_scanner_focus_status",
+    "_refresh_recommend_focus_status",
+    "_refresh_recommend_bucket_panels",
+    "_refresh_live_workspace_summary_panels",
+    "_refresh_workspace_focus_banners",
+    "_refresh_broker_auxiliary_panels",
+    "_refresh_paper_trading_panels",
+):
+    if hasattr(QuantHunterWindow, _method_name):
+        setattr(
+            QuantHunterWindow,
+            _method_name,
+            _qh_wrap_startup_deferred_refresh_v1(getattr(QuantHunterWindow, _method_name)),
+        )
+
+
+QuantHunterWindow._schedule_startup_refresh_flush_v1 = _qh_schedule_startup_refresh_flush_v1
+QuantHunterWindow._flush_startup_refreshes_v1 = _qh_flush_startup_refreshes_v1
 
 
 apply_workspace_workbench_patches(QuantHunterWindow)
@@ -17770,6 +18270,25 @@ apply_paper_experiment_patches(
     QuantHunterWindow,
     paper_lab_stage_fn=_qh_paper_lab_stage_v39,
 )
+
+
+for _startup_deferred_method_name in (
+    "_refresh_workspace_status_labels",
+    "_refresh_submission_focus",
+    "_refresh_scanner_focus_status",
+    "_refresh_recommend_focus_status",
+    "_refresh_recommend_bucket_panels",
+    "_refresh_live_workspace_summary_panels",
+    "_refresh_workspace_focus_banners",
+    "_refresh_broker_auxiliary_panels",
+    "_refresh_paper_trading_panels",
+):
+    if hasattr(QuantHunterWindow, _startup_deferred_method_name):
+        setattr(
+            QuantHunterWindow,
+            _startup_deferred_method_name,
+            _qh_wrap_startup_deferred_refresh_v1(getattr(QuantHunterWindow, _startup_deferred_method_name)),
+        )
 
 
 def main() -> int:

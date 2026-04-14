@@ -62,6 +62,61 @@ def runtime_export_dir(window, *, project_root) -> Path:
     return root / "runtime"
 
 
+def review_output_dir(window, *, report_dir) -> Path:
+    export_dir = window.current_broker_profile().export_dir.strip()
+    if export_dir:
+        return Path(export_dir) / "review_reports"
+    return report_dir
+
+
+def daily_plan_output_dir(window, *, report_dir) -> Path:
+    export_dir = window.current_broker_profile().export_dir.strip()
+    if export_dir:
+        return Path(export_dir) / "daily_plans"
+    return report_dir / "daily_plans"
+
+
+def current_strategy_runtime_config(config_inputs: dict, state, *, theme_drop_reduce_checkbox=None) -> tuple[int, float, bool]:
+    try:
+        top_theme_limit = int(config_inputs.get("top_theme_limit").text().strip()) if config_inputs.get("top_theme_limit") else state.strategy_top_theme_limit
+    except ValueError:
+        top_theme_limit = state.strategy_top_theme_limit
+    try:
+        max_total_exposure = (
+            float(config_inputs.get("max_total_exposure").text().strip())
+            if config_inputs.get("max_total_exposure")
+            else state.strategy_max_total_exposure
+        )
+    except ValueError:
+        max_total_exposure = state.strategy_max_total_exposure
+    drop_reduce = (
+        theme_drop_reduce_checkbox.isChecked()
+        if theme_drop_reduce_checkbox is not None and hasattr(theme_drop_reduce_checkbox, "isChecked")
+        else state.strategy_theme_drop_reduce
+    )
+    return max(top_theme_limit, 1), max(min(max_total_exposure, 1.0), 0.1), bool(drop_reduce)
+
+
+def current_report_template_config(config_inputs: dict, state, *, template_combo=None, focus_only_checkbox=None) -> tuple[str, bool, int]:
+    template_name = "balanced"
+    if template_combo is not None and hasattr(template_combo, "currentData"):
+        template_name = str(template_combo.currentData() or "balanced")
+    focus_only = focus_only_checkbox.isChecked() if focus_only_checkbox is not None and hasattr(focus_only_checkbox, "isChecked") else False
+    try:
+        candidate_limit = (
+            int(config_inputs.get("daily_plan_candidate_limit").text().strip())
+            if config_inputs.get("daily_plan_candidate_limit")
+            else state.daily_plan_candidate_limit
+        )
+    except ValueError:
+        candidate_limit = state.daily_plan_candidate_limit
+    return template_name, focus_only, max(candidate_limit, 1)
+
+
+def parse_focus_themes_text(raw_text: str) -> list[str]:
+    return [item.strip() for item in raw_text.replace("，", ",").split(",") if item.strip()]
+
+
 def export_runtime_log(window, *, project_root, datetime_cls, info_dialog_fn, cache_cls) -> None:
     export_dir = runtime_export_dir(window, project_root=project_root)
     export_dir.mkdir(parents=True, exist_ok=True)
@@ -83,15 +138,13 @@ def export_runtime_log(window, *, project_root, datetime_cls, info_dialog_fn, ca
     info_dialog_fn(window, "导出完成", f"运行日志已导出到：\n{target}")
 
 
-
 def clear_market_cache(window, *, cache_cls, datetime_cls, info_dialog_fn) -> None:
     cache = cache_cls()
     result = cache.clear()
-    window.last_cache_purge_summary = f"?? {result['files']} ??? / {result['bytes'] / 1024:.1f} KB"
-    window._append_runtime_log(f"????????{window.last_cache_purge_summary}")
+    window.last_cache_purge_summary = f"已清理 {result['files']} 个文件 / {result['bytes'] / 1024:.1f} KB"
+    window._append_runtime_log(f"缓存清理完成：{window.last_cache_purge_summary}")
     refresh_runtime_panel(window, cache_cls=cache_cls, datetime_cls=datetime_cls)
-    info_dialog_fn(window, "??????", f"????????\n{window.last_cache_purge_summary}")
-
+    info_dialog_fn(window, "缓存已清理", f"本地缓存清理完成。\n{window.last_cache_purge_summary}")
 
 
 def record_job_result(window, job_name: str, status: str, duration_ms: float, *, datetime_cls, message: str = "") -> None:
