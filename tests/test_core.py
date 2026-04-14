@@ -27,6 +27,7 @@ from quant_hunter.ui_refresh import (
     build_recommend_review_snapshot,
     select_recommend_action_targets,
 )
+from quant_hunter.ui_binders import apply_daily_pool_rows
 from quant_hunter.ui_helpers import one_day_hold_grade, one_day_hold_phase_labels, one_day_hold_tripwire_metrics, position_advice_check_item, tail_buy_execution_checklist, tail_buy_runtime_panel_lines, tail_buy_runtime_status, trade_decision_focus_lines, trade_plan_execution_hint
 from quant_hunter.broker import (
     build_order_intent_from_trade_decision,
@@ -2560,6 +2561,24 @@ class StrategyWorkflowTests(unittest.TestCase):
             finally:
                 window.close()
                 app.processEvents()
+
+    def test_qt_window_can_boot_repeatedly(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            for _ in range(3):
+                window = module.QuantHunterWindow()
+                try:
+                    app.processEvents()
+                    self.assertIsNotNone(window.tabs)
+                    self.assertGreaterEqual(window.tabs.count(), 6)
+                finally:
+                    window.close()
+                    app.processEvents()
 
     def test_emit_action_feedback_updates_workspace_labels_and_story(self) -> None:
         module = importlib.import_module("app_qt")
@@ -7495,6 +7514,24 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn("核心龙头", plan.decisions[0].rationale)
         self.assertIn("窗口", plan.decisions[0].rationale)
 
+    def test_scanner_focus_status_surfaces_scan_warning_count(self) -> None:
+        module = importlib.import_module("app_qt")
+        window = SimpleNamespace(
+            scan_summary_label=module.QLabel(),
+            scan_rows=[SimpleNamespace(symbol="SHSE.600000") for _ in range(2)],
+            monitor_table=SimpleNamespace(rowCount=lambda: 1),
+            watchlist_widget=SimpleNamespace(count=lambda: 3),
+            last_scan_warnings=["BROKEN_demo.csv: bad close"],
+            _selected_symbol_from_watchlist=lambda: "",
+            active_symbol="",
+            _set_label_text_if_changed=lambda label, text, tooltip=None: label.setText(text),
+            _refresh_scanner_summary_cards=lambda symbol="": None,
+        )
+
+        module._qh_refresh_scanner_focus_status(window)
+
+        self.assertIn("异常文件 1", window.scan_summary_label.text())
+
     def test_decision_engine_prefers_continuation_signal_over_switch_warning(self) -> None:
         recommendations = [
             RecommendationRow(
@@ -8946,6 +8983,73 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(calls["license"], 1)
         self.assertEqual(calls["pool"], 1)
         self.assertEqual(calls["monitor"], 1)
+
+    def test_apply_daily_pool_rows_surfaces_risk_profile_in_status(self) -> None:
+        class DummyLabel:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def setText(self, value: str) -> None:
+                self.value = value
+
+        class DummyText:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def setPlainText(self, value: str) -> None:
+                self.value = value
+
+        rows = [
+            RecommendationRow(
+                symbol="SHSE.600000",
+                stock_id="600000",
+                stock_name="浦发银行",
+                action="BUY",
+                label="RECLAIM_LONG",
+                signal_date="2026-04-05",
+                close=10.0,
+                entry_price=10.0,
+                stop_price=9.5,
+                target_price=11.0,
+                technical_score=82.0,
+                position_score=84.0,
+                persistence_score=80.0,
+                news_score=76.0,
+                leader_score=78.0,
+                total_score=83.0,
+                theme_name="银行",
+                theme_rank=1,
+                leader_level="CORE_LEADER",
+                primary_strategy="掘龙决策",
+                rationale="主线回流",
+            )
+        ]
+
+        window = SimpleNamespace(
+            state=SimpleNamespace(strategy_risk_profile="conservative"),
+            daily_pool_rows=[],
+            theme_heat_rows=[],
+            leader_candidates=[],
+            recommend_status_label=DummyLabel(),
+            daily_pool_text=DummyText(),
+            _license_capabilities=lambda: {"theme_panel_size": 3},
+            _refresh_recommend_theme_options=lambda: None,
+            _populate_filtered_daily_pool_table=lambda: None,
+            _refresh_theme_heat_panels=lambda: None,
+            _update_recommend_empty_state=lambda: None,
+            _append_runtime_log=lambda *_args, **_kwargs: None,
+            _refresh_trade_plan=lambda: None,
+            _refresh_board_mode=lambda: None,
+            _display_leader_level=lambda value: value,
+        )
+
+        apply_daily_pool_rows(
+            window,
+            rows,
+            lambda *_args, **_kwargs: ([SimpleNamespace(theme_rank=1, theme_name="银行")], []),
+        )
+
+        self.assertIn("风险档位 保守", window.recommend_status_label.value)
 
     def test_order_confirmation_dialog_surfaces_experiment_guardrails(self) -> None:
         module = importlib.import_module("app_qt")

@@ -11686,6 +11686,7 @@ QPushButton#accentButton:hover {
         paper_state = getattr(self, "paper_trading_state", getattr(getattr(self, "state", None), "paper_trading_state", PaperTradingState()))
         paper_analytics = summarize_paper_trading_performance(paper_state)
         paper_closed_trades = int(paper_analytics.get("closed_trade_count", 0) or 0)
+        scan_warning_count = len(getattr(self, "last_scan_warnings", []) or [])
         blockers = list((getattr(self, "last_broker_execution_summary", {}) or {}).get("blockers", []))
         warnings = list((getattr(self, "last_broker_execution_summary", {}) or {}).get("warnings", []))
         risk_state = "红灯" if blockers else ("黄灯" if warnings else "绿灯")
@@ -11718,11 +11719,15 @@ QPushButton#accentButton:hover {
             pulse_headline = f"系统脉冲：已提交 {submitted_orders} 笔委托，等待成交回执与风控复核。"
         else:
             pulse_headline = "系统脉冲：终端正在等待市场快照、候选优先级与交易链路同步。"
+        if scan_warning_count and not market_running and not scan_running:
+            pulse_headline += f" 本轮另有 {scan_warning_count} 个异常文件被跳过。"
         if hasattr(self, "shell_pulse_label"):
             self._set_label_text_if_changed(self.shell_pulse_label, pulse_headline, tooltip=pulse_headline)
 
         if market_running or scan_running:
             next_step = "下一步：等待后台任务完成后自动落到主线、候选和焦点状态。"
+        elif scan_warning_count:
+            next_step = f"下一步：先检查运行日志里的 {scan_warning_count} 个异常文件，再决定是否重扫股票池。"
         elif blockers:
             next_step = f"下一步：先处理阻塞项，再推进交易确认。首条阻塞：{blockers[0]}"
         elif pending_orders:
@@ -11751,6 +11756,7 @@ QPushButton#accentButton:hover {
                 f"待审 {pending_orders}",
                 f"已提交 {submitted_orders}",
                 f"实验闭环 {paper_closed_trades}",
+                f"异常文件 {scan_warning_count}",
                 f"任务 {active_runtime}",
                 f"市场 {market_stamp[-8:] if len(market_stamp) >= 8 else market_stamp}",
                 f"完成 {job_stamp[-8:] if len(job_stamp) >= 8 else job_stamp}",
@@ -13715,10 +13721,11 @@ def _qh_refresh_scanner_focus_status(self: QuantHunterWindow, symbol: str = "") 
     total_scans = len(getattr(self, "scan_rows", []))
     monitor_count = self.monitor_table.rowCount() if hasattr(self, "monitor_table") else 0
     watch_count = self.watchlist_widget.count() if hasattr(self, "watchlist_widget") else 0
+    scan_warning_count = len(getattr(self, "last_scan_warnings", []) or [])
 
     if not target:
         text = (
-            f"扫描状态：已扫描 {total_scans} | 观察池 {watch_count} | 盘中监控 {monitor_count}"
+            f"扫描状态：已扫描 {total_scans} | 观察池 {watch_count} | 盘中监控 {monitor_count}" + (f" | 异常文件 {scan_warning_count}" if scan_warning_count else "")
             if total_scans
             else "扫描状态：等待首轮扫描，同步观察池与监控焦点。"
         )
@@ -13742,6 +13749,8 @@ def _qh_refresh_scanner_focus_status(self: QuantHunterWindow, symbol: str = "") 
         )
     else:
         text = f"扫描状态：当前联动 {stock_name} ({stock_id}) | 已同步观察池与盘中监控。"
+    if scan_warning_count:
+        text += f" | 异常文件 {scan_warning_count}"
     self._set_label_text_if_changed(self.scan_summary_label, text)
     self._refresh_scanner_summary_cards(target)
 

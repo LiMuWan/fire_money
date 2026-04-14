@@ -52,6 +52,11 @@ def apply_daily_pool_rows(window, rows, summarize_themes_fn) -> None:
         window.recommend_status_label.setText(
             f"每日推荐池已生成：{len(window.daily_pool_rows)} 只候选，当前主线题材为 {top_theme}。"
         )
+    if hasattr(window, "recommend_status_label"):
+        top_theme = window.theme_heat_rows[0].theme_name if window.theme_heat_rows else "未分类"
+        window.recommend_status_label.setText(
+            f"每日推荐池已生成：{len(window.daily_pool_rows)} 只候选，风险档位 {risk_label}，当前主线题材 {top_theme}。"
+        )
     if hasattr(window, "_update_recommend_empty_state"):
         window._update_recommend_empty_state()
 
