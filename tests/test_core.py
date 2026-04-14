@@ -4958,6 +4958,55 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(sell_zone["headline"], "接近兑现区")
         self.assertIn("兑现比例", sell_zone["checkpoint"])
 
+    def test_broker_resolution_action_routes_to_recommend_trade_config_or_review(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        channel = module._qh_broker_resolution_action_v47(
+            stage="阻塞待处理",
+            repair_headline="先检查通道",
+            parameter_headline="参数待复核",
+            has_recommendation=True,
+            channel_text="东方财富",
+        )
+        recommend = module._qh_broker_resolution_action_v47(
+            stage="待成交跟踪",
+            repair_headline="先复核参数",
+            parameter_headline="买点偏高",
+            has_recommendation=True,
+            channel_text="GM",
+        )
+        review = module._qh_broker_resolution_action_v47(
+            stage="已成交待复盘",
+            repair_headline="先复核参数",
+            parameter_headline="价格贴合计划",
+            has_recommendation=True,
+            channel_text="GM",
+        )
+
+        self.assertEqual(channel["target"], "账户配置")
+        self.assertIn("东方财富", channel["detail"])
+        self.assertEqual(recommend["target"], "推荐页")
+        self.assertIn("重生成委托", recommend["detail"])
+        self.assertEqual(review["target"], "复盘页")
+        self.assertIn("复盘", review["detail"])
+
+    def test_broker_terminal_brief_compresses_visible_status_copy(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        brief = module._qh_broker_terminal_brief_v48(
+            stock_name="宁德时代",
+            stock_id="300750",
+            stage="待成交跟踪",
+            mainline_signal="继续跟",
+            parameter_headline="买点偏高",
+            resolution_target="推荐页",
+        )
+
+        self.assertEqual(brief["status"], "交易状态：宁德时代 300750 | 待成交跟踪 | 去推荐页")
+        self.assertIn("主线 继续跟", brief["workbench"])
+        self.assertEqual(brief["stage"], "执行阶段：待成交跟踪 | 主线 继续跟 | 去推荐页")
+        self.assertEqual(brief["focus"], "执行焦点：宁德时代 | 买点偏高 | 去推荐页")
+
     def test_set_aux_stage_visibility_updates_toggle_and_status(self) -> None:
         module = importlib.import_module("app_qt")
         app = module.QApplication.instance() or module.QApplication([])
@@ -5094,6 +5143,75 @@ class StrategyWorkflowTests(unittest.TestCase):
             module._qh_broker_workspace_stage_v40(1, 0, 2),
             ("风控阻塞", "存在阻塞项，先排除风险灯和仓位问题，再进入提交。"),
         )
+
+    def test_broker_experiment_review_lines_surface_strategy_role_and_cta(self) -> None:
+        broker_patches = importlib.import_module("quant_hunter.ui_window_broker_patches")
+
+        with patch.object(
+            broker_patches,
+            "paper_strategy_experiment_bridge_v45",
+            return_value={
+                "title": "主测 | 龙头模型 | 继续主测",
+                "detail": "样本 7 | 胜率 62.0% | 平均持有 1.8 天 | 预算 x1.18",
+                "cta": "推荐页优先筛同战法前排，交易页按主测纪律推进。",
+            },
+        ):
+            lines = broker_patches.broker_experiment_review_lines_v47(
+                PaperTradingState(enabled=True),
+                "龙头模型",
+            )
+
+        self.assertEqual(lines[0], "模拟盘实验：主测 | 龙头模型 | 继续主测")
+        self.assertEqual(lines[1], "实验纪律：样本 7 | 胜率 62.0% | 平均持有 1.8 天 | 预算 x1.18")
+        self.assertEqual(lines[2], "交易约束：推荐页优先筛同战法前排，交易页按主测纪律推进。")
+
+    def test_broker_workspace_patch_appends_paper_experiment_summary_to_submission_focus(self) -> None:
+        broker_patches = importlib.import_module("quant_hunter.ui_window_broker_patches")
+        app = importlib.import_module("app_qt")
+        qt_app = app.QApplication.instance() or app.QApplication([])
+        _ = qt_app
+
+        class DummyWindow:
+            def __init__(self) -> None:
+                self.daily_pool_rows = [SimpleNamespace(symbol="SZSE.300001", primary_strategy="龙头模型")]
+                self.paper_trading_state = PaperTradingState(enabled=True)
+                self.broker_mainline_review_text = app.QTextEdit()
+                self.broker_execution_text = app.QTextEdit()
+
+            def _refresh_broker_auxiliary_panels(self) -> None:
+                return None
+
+            def _post_build_ui_tweaks(self) -> None:
+                return None
+
+            def _refresh_submission_focus(self) -> None:
+                self.broker_mainline_review_text.setPlainText("主线闸门审查：龙头样本\n执行阶段：待确认提交")
+                self.broker_execution_text.setPlainText("交易流程\n\n当前焦点：龙头样本")
+
+            def _selected_submission_record(self):
+                return {"symbol": "SZSE.300001"}
+
+            def _set_plain_text_if_changed(self, widget, text):
+                if widget.toPlainText() != text:
+                    widget.setPlainText(text)
+
+        broker_patches.apply_broker_workspace_patches(DummyWindow)
+        window = DummyWindow()
+
+        with patch.object(
+            broker_patches,
+            "broker_experiment_review_lines_v47",
+            return_value=[
+                "模拟盘实验：主测 | 龙头模型 | 继续主测",
+                "实验纪律：样本 7 | 胜率 62.0% | 平均持有 1.8 天 | 预算 x1.18",
+                "交易约束：推荐页优先筛同战法前排，交易页按主测纪律推进。",
+            ],
+        ):
+            window._refresh_submission_focus()
+
+        self.assertIn("模拟盘实验：主测 | 龙头模型 | 继续主测", window.broker_mainline_review_text.toPlainText())
+        self.assertIn("交易约束：推荐页优先筛同战法前排，交易页按主测纪律推进。", window.broker_mainline_review_text.toPlainText())
+        self.assertIn("模拟盘实验：主测 | 龙头模型 | 继续主测", window.broker_execution_text.toPlainText())
 
     def test_shell_pipeline_story_summarizes_daily_workflow(self) -> None:
         module = importlib.import_module("app_qt")

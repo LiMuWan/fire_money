@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QLabel, QPushButton, QWidget
+from PySide6.QtWidgets import QLabel, QPushButton, QTextEdit, QWidget
+
+from quant_hunter.models import PaperTradingState
+from quant_hunter.ui_window_paper_experiment_patches import paper_strategy_experiment_bridge_v45
 
 
 def broker_workspace_stage_v40(
@@ -45,12 +48,43 @@ def shell_pipeline_story_v41(
     return f"{market_stage} -> {recommend_stage} -> {trade_stage} -> {experiment_stage}"
 
 
+def broker_experiment_review_lines_v47(
+    state: PaperTradingState,
+    strategy_name: str,
+) -> list[str]:
+    bridge = paper_strategy_experiment_bridge_v45(state, strategy_name)
+    return [
+        f"模拟盘实验：{bridge['title']}",
+        f"实验纪律：{bridge['detail']}",
+        f"交易约束：{bridge['cta']}",
+    ]
+
+
+def merge_broker_experiment_lines_v47(
+    current_text: str,
+    experiment_lines: list[str],
+) -> str:
+    prefixes = ("模拟盘实验：", "实验纪律：", "交易约束：")
+    lines = [
+        line
+        for line in str(current_text or "").splitlines()
+        if not any(line.startswith(prefix) for prefix in prefixes)
+    ]
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if lines:
+        lines.append("")
+    lines.extend(experiment_lines)
+    return "\n".join(lines)
+
+
 def apply_broker_workspace_patches(window_cls: type) -> None:
     if getattr(window_cls, "_qh_broker_workspace_patches_applied_v40", False):
         return
 
     original_refresh_broker_auxiliary_panels_v40 = window_cls._refresh_broker_auxiliary_panels
     original_post_build_ui_tweaks_v40 = window_cls._post_build_ui_tweaks
+    original_refresh_submission_focus_v47 = window_cls._refresh_submission_focus
 
     def _set_broker_execution_detail_visibility_v40(self, visible: bool) -> None:
         setattr(self, "_qh_broker_detail_visible_v40", bool(visible))
@@ -105,8 +139,38 @@ def apply_broker_workspace_patches(window_cls: type) -> None:
         original_post_build_ui_tweaks_v40(self)
         self._set_broker_execution_detail_visibility_v40(False)
 
+    def _refresh_submission_focus_v47(self) -> None:
+        original_refresh_submission_focus_v47(self)
+        record = self._selected_submission_record() if hasattr(self, "_selected_submission_record") else None
+        if record is None:
+            return
+
+        symbol = str(record.get("symbol", "") or "")
+        recommendation = next(
+            (item for item in getattr(self, "daily_pool_rows", []) if getattr(item, "symbol", "") == symbol),
+            None,
+        )
+        if recommendation is None:
+            return
+
+        paper_state = getattr(
+            self,
+            "paper_trading_state",
+            getattr(getattr(self, "state", None), "paper_trading_state", PaperTradingState()),
+        )
+        experiment_lines = broker_experiment_review_lines_v47(
+            paper_state,
+            getattr(recommendation, "primary_strategy", "") or "掘龙决策",
+        )
+        for attr_name in ("broker_mainline_review_text", "broker_execution_text"):
+            widget = getattr(self, attr_name, None)
+            if isinstance(widget, QTextEdit):
+                merged_text = merge_broker_experiment_lines_v47(widget.toPlainText(), experiment_lines)
+                self._set_plain_text_if_changed(widget, merged_text)
+
     window_cls._set_broker_execution_detail_visibility_v40 = _set_broker_execution_detail_visibility_v40
     window_cls.toggle_broker_execution_detail = _toggle_broker_execution_detail_v40
     window_cls._refresh_broker_auxiliary_panels = _refresh_broker_auxiliary_panels_v40
+    window_cls._refresh_submission_focus = _refresh_submission_focus_v47
     window_cls._post_build_ui_tweaks = _post_build_ui_tweaks_v40
     window_cls._qh_broker_workspace_patches_applied_v40 = True
