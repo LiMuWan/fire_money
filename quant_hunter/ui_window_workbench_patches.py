@@ -1,7 +1,53 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QLabel, QPushButton, QSplitter, QTableWidget, QTextEdit, QVBoxLayout, QWidget
+try:
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QLabel, QPushButton, QSplitter, QTableWidget, QTextEdit, QVBoxLayout, QWidget
+except ModuleNotFoundError:  # pragma: no cover - enables pure-logic imports without Qt runtime
+    class _QtStub:
+        ScrollBarAlwaysOff = 0
+
+        def __init__(self, *args, **kwargs) -> None:
+            self._text = str(args[0]) if args else ""
+
+        def __getattr__(self, _name):
+            return lambda *args, **kwargs: None
+
+        def text(self) -> str:
+            return self._text
+
+        def setText(self, value: str) -> None:
+            self._text = str(value)
+
+        def toPlainText(self) -> str:
+            return self._text
+
+        def setPlainText(self, value: str) -> None:
+            self._text = str(value)
+
+    class Qt:  # type: ignore[override]
+        ScrollBarAlwaysOff = 0
+
+    class QWidget(_QtStub):  # type: ignore[override]
+        pass
+
+    class QLabel(QWidget):  # type: ignore[override]
+        pass
+
+    class QPushButton(QWidget):  # type: ignore[override]
+        pass
+
+    class QSplitter(QWidget):  # type: ignore[override]
+        pass
+
+    class QTableWidget(QWidget):  # type: ignore[override]
+        pass
+
+    class QTextEdit(QWidget):  # type: ignore[override]
+        pass
+
+    class QVBoxLayout(_QtStub):  # type: ignore[override]
+        pass
 
 from quant_hunter.models import PaperTradingState, RecommendationRow
 from quant_hunter.ui_window_paper_experiment_patches import paper_strategy_experiment_bridge_v45

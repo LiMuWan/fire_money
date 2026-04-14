@@ -2,22 +2,116 @@
 
 from datetime import date, datetime, time as datetime_time
 
-from PySide6.QtCore import QTimer
-from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QFrame, QGroupBox, QHBoxLayout, QLabel, QPushButton, QTextEdit, QVBoxLayout, QWidget
+
+def _workspace_hero_tone(eyebrow: str, title: str) -> str:
+    combined = f"{eyebrow} {title}"
+    if any(token in combined for token in ("市场", "总览", "驾驶舱")):
+        return "overview"
+    if any(token in combined for token in ("推荐", "机会")):
+        return "recommend"
+    if any(token in combined for token in ("交易", "执行")):
+        return "broker"
+    if any(token in combined for token in ("复盘", "明细")):
+        return "detail"
+    if any(token in combined for token in ("扫描", "观察")):
+        return "scanner"
+    if any(token in combined for token in ("登录", "账户")):
+        return "auth"
+    if any(token in combined for token in ("配置", "系统")):
+        return "config"
+    if any(token in combined for token in ("打板", "监控")):
+        return "board"
+    return "default"
+
+try:
+    from PySide6.QtCore import QTimer
+    from PySide6.QtGui import QColor
+    from PySide6.QtWidgets import QFrame, QGroupBox, QHBoxLayout, QLabel, QPushButton, QTextEdit, QVBoxLayout, QWidget
+except ModuleNotFoundError:  # pragma: no cover - enables pure-logic imports without Qt runtime
+    class _QtStub:
+        def __init__(self, *args, **kwargs) -> None:
+            self._text = str(args[0]) if args else ""
+            self._tooltip = ""
+
+        def __getattr__(self, _name):
+            return lambda *args, **kwargs: None
+
+        def style(self):
+            return self
+
+        def text(self) -> str:
+            return self._text
+
+        def setText(self, value: str) -> None:
+            self._text = str(value)
+
+        def toolTip(self) -> str:
+            return self._tooltip
+
+        def setToolTip(self, value: str) -> None:
+            self._tooltip = str(value)
+
+        def toPlainText(self) -> str:
+            return self._text
+
+        def setPlainText(self, value: str) -> None:
+            self._text = str(value)
+
+        def rowCount(self) -> int:
+            return 0
+
+        def verticalScrollBar(self):
+            return None
+
+    class QTimer:  # type: ignore[override]
+        @staticmethod
+        def singleShot(_msec: int, callback) -> None:
+            if callable(callback):
+                callback()
+
+    class QColor:  # type: ignore[override]
+        def __init__(self, value="") -> None:
+            self.value = value
+
+    class QWidget(_QtStub):  # type: ignore[override]
+        pass
+
+    class QFrame(QWidget):  # type: ignore[override]
+        pass
+
+    class QGroupBox(QWidget):  # type: ignore[override]
+        pass
+
+    class QLabel(QWidget):  # type: ignore[override]
+        pass
+
+    class QPushButton(QWidget):  # type: ignore[override]
+        pass
+
+    class QTextEdit(QWidget):  # type: ignore[override]
+        pass
+
+    class QHBoxLayout(_QtStub):  # type: ignore[override]
+        pass
+
+    class QVBoxLayout(_QtStub):  # type: ignore[override]
+        pass
 
 
-def build_workspace_badge(value: str, caption: str) -> QFrame:
+def build_workspace_badge(value: str, caption: str, hero_tone: str = "default") -> QFrame:
     frame = QFrame()
     frame.setObjectName("workspaceBadge")
+    frame.setProperty("heroTone", hero_tone)
     layout = QVBoxLayout(frame)
-    layout.setContentsMargins(14, 10, 14, 10)
-    layout.setSpacing(2)
+    layout.setContentsMargins(16, 12, 16, 12)
+    layout.setSpacing(3)
 
     value_label = QLabel(value)
     value_label.setObjectName("workspaceBadgeValue")
+    value_label.setProperty("heroTone", hero_tone)
     caption_label = QLabel(caption)
     caption_label.setObjectName("workspaceBadgeCaption")
+    caption_label.setProperty("heroTone", hero_tone)
 
     layout.addWidget(value_label)
     layout.addWidget(caption_label)
@@ -30,18 +124,37 @@ def build_workspace_hero(
     subtitle: str,
     badges: list[tuple[str, str]] | None = None,
 ) -> QFrame:
+    hero_tone = _workspace_hero_tone(eyebrow, title)
     frame = QFrame()
     frame.setObjectName("workspaceHero")
+    frame.setProperty("heroTone", hero_tone)
     layout = QHBoxLayout(frame)
-    layout.setContentsMargins(18, 14, 18, 14)
-    layout.setSpacing(16)
+    layout.setContentsMargins(22, 18, 22, 18)
+    layout.setSpacing(18)
+
+    accent_strip = QFrame()
+    accent_strip.setObjectName("workspaceHeroAccent")
+    accent_strip.setProperty("heroTone", hero_tone)
+    accent_strip.setFixedWidth(6)
+    layout.addWidget(accent_strip)
 
     text_layout = QVBoxLayout()
     text_layout.setSpacing(4)
 
+    top_row = QHBoxLayout()
+    top_row.setContentsMargins(0, 0, 0, 0)
+    top_row.setSpacing(8)
+
     eyebrow_label = QLabel(eyebrow)
     eyebrow_label.setObjectName("workspaceEyebrow")
-    text_layout.addWidget(eyebrow_label)
+    top_row.addWidget(eyebrow_label)
+
+    stamp_label = QLabel("QH PRO")
+    stamp_label.setObjectName("workspaceHeroStamp")
+    stamp_label.setProperty("heroTone", hero_tone)
+    top_row.addWidget(stamp_label)
+    top_row.addStretch(1)
+    text_layout.addLayout(top_row)
 
     title_label = QLabel(title)
     title_label.setObjectName("workspaceTitle")
@@ -57,11 +170,12 @@ def build_workspace_hero(
     if badges:
         badge_rail = QFrame()
         badge_rail.setObjectName("workspaceBadgeRail")
+        badge_rail.setProperty("heroTone", hero_tone)
         badge_row = QHBoxLayout()
         badge_row.setContentsMargins(0, 0, 0, 0)
         badge_row.setSpacing(10)
         for value, caption in badges:
-            badge_row.addWidget(build_workspace_badge(value, caption))
+            badge_row.addWidget(build_workspace_badge(value, caption, hero_tone))
         badge_row.addStretch(1)
         badge_rail.setLayout(badge_row)
         layout.addWidget(badge_rail, stretch=1)
@@ -94,20 +208,22 @@ def style_terminal_console(*widgets: QTextEdit) -> None:
 def build_overview_outline_style(accent: str) -> str:
     return (
         "QPushButton {"
-        f"border: 1px solid {accent}; color: {accent}; padding: 10px 16px; border-radius: 10px;"
-        "background: rgba(255,255,255,0.02); font-weight: 800; min-height: 20px; }"
-        "QPushButton:hover { background: rgba(255,255,255,0.06); }"
-        "QPushButton:checked { background: rgba(255,255,255,0.08); }"
+        f"border: 1px solid {accent}; color: {accent}; padding: 10px 16px; border-radius: 12px;"
+        "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(18, 24, 33, 0.96), stop:1 rgba(13, 18, 26, 0.96));"
+        "font-weight: 800; min-height: 20px; }"
+        "QPushButton:hover { background: rgba(255,255,255,0.08); border-color: #dcecff; }"
+        "QPushButton:checked { background: rgba(255,255,255,0.10); border-color: #dcecff; }"
     )
 
 
 def build_overview_filled_style(accent: str) -> str:
     return (
         "QPushButton {"
-        f"border: 1px solid {accent}; color: #f4fbff; padding: 10px 18px; border-radius: 12px;"
-        f"background: {accent}; font-weight: 800; min-height: 22px; }}"
-        f"QPushButton:hover {{ background: {accent}; border-color: #f4fbff; }}"
-        "QPushButton:checked { background: #0f7ea8; border-color: #86e1ff; }"
+        f"border: 1px solid {accent}; color: #f7fbff; padding: 10px 18px; border-radius: 12px;"
+        f"background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {accent}, stop:1 #7fc8ff);"
+        "font-weight: 800; min-height: 22px; }"
+        "QPushButton:hover { border-color: #f4fbff; }"
+        "QPushButton:checked { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #0f7ea8, stop:1 #44b9ea); border-color: #b6eeff; }"
     )
 
 

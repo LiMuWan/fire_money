@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .models import HoldingRecord, RecommendationRow
+from .risk import DEFAULT_RISK_CONTROLS, RiskControls, normalize_risk_profile, resolve_risk_controls
 from .theme import infer_mainline_flow_signal, infer_mainline_stage
 
 
@@ -37,6 +38,7 @@ class TradeDecision:
     opportunity_tier: str = ""
     execution_readiness: float = 0.0
     setup_quality_score: float = 0.0
+    backtest_quality_score: float = 0.0
     risk_reward_ratio: float = 0.0
     signal_age_days: int = 0
     next_focus: str = ""
@@ -77,8 +79,23 @@ class DailyTradePlan:
 
 
 class DecisionEngine:
-    @staticmethod
-    def _row_is_buy_allowed(row: RecommendationRow) -> bool:
+    _MIN_PLAN_RISK_REWARD_RATIO = DEFAULT_RISK_CONTROLS.plan_min_risk_reward_ratio
+    _MAX_PLAN_STOP_LOSS_PCT = DEFAULT_RISK_CONTROLS.max_plan_stop_loss_pct
+
+    def __init__(self, risk_profile: str | None = None, risk_controls: RiskControls | None = None) -> None:
+        self.risk_profile = normalize_risk_profile(risk_profile)
+        self.risk_controls = risk_controls or resolve_risk_controls(self.risk_profile)
+        self._MIN_PLAN_RISK_REWARD_RATIO = self.risk_controls.plan_min_risk_reward_ratio
+        self._MAX_PLAN_STOP_LOSS_PCT = self.risk_controls.max_plan_stop_loss_pct
+
+    def _risk_profile_budget_multiplier(self) -> float:
+        if self.risk_profile == "conservative":
+            return 0.82
+        if self.risk_profile == "aggressive":
+            return 1.12
+        return 1.0
+
+    def _row_is_buy_allowed(self, row: RecommendationRow) -> bool:
         role = str(getattr(row, "mainline_role", "") or "")
         failure_risk = float(getattr(row, "theme_failure_risk", 0.0) or 0.0)
         window_score = float(getattr(row, "mainline_window_score", 0.0) or 0.0)
@@ -86,15 +103,18 @@ class DecisionEngine:
         signal_source = str(getattr(row, "signal_source", "") or "").strip()
         signal_age_days = int(getattr(row, "signal_age_days", 0) or 0)
         risk_reward_ratio = float(getattr(row, "risk_reward_ratio", 0.0) or 0.0)
+        backtest_quality_score = float(getattr(row, "backtest_quality_score", 0.0) or 0.0)
         rank = int(getattr(row, "mainline_rank", getattr(row, "theme_rank", 0)) or 0)
         has_mainline_signal = bool(role or failure_risk or window_score or rank)
         if reject_reason:
             return False
         if signal_source.startswith("synthetic://"):
             return False
+        if backtest_quality_score and backtest_quality_score < 35.0:
+            return False
         if signal_age_days >= 4:
             return False
-        if risk_reward_ratio and risk_reward_ratio < 1.35:
+        if risk_reward_ratio and risk_reward_ratio < self.risk_controls.recommendation_min_risk_reward_ratio:
             return False
         if not has_mainline_signal:
             return True
@@ -139,6 +159,28 @@ class DecisionEngine:
             "NOISE": "噪声支线",
             "ELIMINATED": "主线淘汰",
         }.get(role, "主线观察")
+
+    @classmethod
+    def _trade_risk_reward_ratio(cls, planned_entry: float, planned_stop: float, planned_target: float) -> float:
+        estimated_loss = planned_entry - planned_stop
+        estimated_profit = planned_target - planned_entry
+        if estimated_loss <= 0 or estimated_profit <= 0:
+            return 0.0
+        return estimated_profit / estimated_loss
+
+    @classmethod
+    def _trade_stop_loss_pct(cls, planned_entry: float, planned_stop: float) -> float:
+        if planned_entry <= 0:
+            return 0.0
+        return max((planned_entry - planned_stop) / planned_entry, 0.0)
+
+    def _plan_setup_is_valid(self, planned_entry: float, planned_stop: float, planned_target: float) -> bool:
+        if planned_entry <= 0 or planned_stop <= 0 or planned_target <= 0:
+            return False
+        stop_loss_pct = self._trade_stop_loss_pct(planned_entry, planned_stop)
+        if stop_loss_pct <= 0 or stop_loss_pct > self._MAX_PLAN_STOP_LOSS_PCT:
+            return False
+        return self._trade_risk_reward_ratio(planned_entry, planned_stop, planned_target) >= self._MIN_PLAN_RISK_REWARD_RATIO
 
     def build_plan(
         self,
@@ -185,6 +227,7 @@ class DecisionEngine:
         ]
         buy_candidates.sort(
             key=lambda row: (
+                float(getattr(row, "backtest_quality_score", 0.0) or 0.0),
                 float(getattr(row, "setup_quality_score", 0.0) or 0.0),
                 float(getattr(row, "execution_readiness", 0.0) or 0.0),
                 float(getattr(row, "risk_reward_ratio", 0.0) or 0.0),
@@ -201,12 +244,16 @@ class DecisionEngine:
             for item in holdings
         )
         total_equity = holding_market_value + max(available_cash, 0.0)
-        remaining_exposure_budget = max(total_equity * pulse.max_total_exposure - holding_market_value, 0.0)
+        # Keep per-strategy budget sizing in control by default; only clamp
+        # total exposure when the caller explicitly asks for it.
+        target_exposure = 1.0 if max_total_exposure is None else max_total_exposure
+        remaining_exposure_budget = max(total_equity * target_exposure - holding_market_value, 0.0)
         deployable_budget = min(max(available_cash, 0.0), remaining_exposure_budget)
         budget_per_pick = deployable_budget / max(len(buy_candidates), 1) if deployable_budget > 0 else 0.0
 
         decisions: list[TradeDecision] = []
         remaining_budget = deployable_budget
+        filtered_for_risk_count = 0
         for row in buy_candidates:
             planned_entry = row.entry_price or row.close
             strategy_name = getattr(row, "primary_strategy", "") or "掘龙决策"
@@ -227,6 +274,11 @@ class DecisionEngine:
                 planned_stop = row.stop_price or planned_entry * 0.95
                 planned_target = row.target_price or planned_entry * 1.08
 
+            if not self._plan_setup_is_valid(planned_entry, planned_stop, planned_target):
+                filtered_for_risk_count += 1
+                continue
+            computed_risk_reward_ratio = self._trade_risk_reward_ratio(planned_entry, planned_stop, planned_target)
+
             budget_multiplier = 1.0
             if stock_pool == "龙头股":
                 budget_multiplier = 1.08
@@ -236,6 +288,8 @@ class DecisionEngine:
                 budget_multiplier = 0.82 if pulse.sentiment_score >= 72 else 0.72
             elif strategy_name == "一日持股法":
                 budget_multiplier = 0.96 if pulse.sentiment_score >= 72 else 0.86
+
+            budget_multiplier *= self._risk_profile_budget_multiplier()
 
             confidence_source = getattr(row, "dragon_decision_score", 0.0) or row.total_score
             confidence = min(max(confidence_source / 100.0, 0.0), 0.99)
@@ -285,7 +339,11 @@ class DecisionEngine:
                     opportunity_tier=getattr(row, "opportunity_tier", ""),
                     execution_readiness=float(getattr(row, "execution_readiness", 0.0) or 0.0),
                     setup_quality_score=float(getattr(row, "setup_quality_score", 0.0) or 0.0),
-                    risk_reward_ratio=float(getattr(row, "risk_reward_ratio", 0.0) or 0.0),
+                    backtest_quality_score=float(getattr(row, "backtest_quality_score", 0.0) or 0.0),
+                    risk_reward_ratio=round(
+                        float(getattr(row, "risk_reward_ratio", 0.0) or 0.0) or computed_risk_reward_ratio,
+                        4,
+                    ),
                     signal_age_days=int(getattr(row, "signal_age_days", 0) or 0),
                     next_focus=(
                         "只在 14:30 后确认尾盘回流和承接，隔夜后次日开盘优先兑现，弱开直接走。"
@@ -320,6 +378,9 @@ class DecisionEngine:
             notes.append("情绪偏弱时优先处理已有持仓的止盈止损，减少无把握的新仓试错。")
         if not decisions:
             notes.append("当前没有符合条件的新开仓候选，可优先等待或只处理现有持仓。")
+
+        if decisions and filtered_for_risk_count:
+            notes.append(f"已按计划风险结构过滤 {filtered_for_risk_count} 个新开仓候选，优先保留更可执行的机会。")
 
         strategy_mix = self._strategy_mix(recommendations)
         if strategy_mix:

@@ -76,6 +76,31 @@ def _parse_float(value: str, default: float = 0.0) -> float:
         return default
 
 
+def _row_is_blank(row: dict[str, object]) -> bool:
+    return all(not str(value or "").strip() for value in row.values())
+
+
+def _require_text(value: object, *, field_name: str, row_number: int, file_path: Path) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"{file_path.name} 第 {row_number} 行字段 {field_name} 为空。")
+    return text
+
+
+def _require_float(value: object, *, field_name: str, row_number: int, file_path: Path) -> float:
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValueError(f"{file_path.name} 第 {row_number} 行字段 {field_name} 为空。")
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{file_path.name} 第 {row_number} 行字段 {field_name} 不是有效数字: {raw!r}") from exc
+
+
+def _require_int(value: object, *, field_name: str, row_number: int, file_path: Path) -> int:
+    return int(_require_float(value, field_name=field_name, row_number=row_number, file_path=file_path))
+
+
 def load_stock_profiles_from_csv(path: str | Path) -> dict[str, StockProfile]:
     file_path = Path(path)
     with file_path.open("r", encoding="utf-8-sig", newline="") as handle:
@@ -190,18 +215,20 @@ def load_bars_from_csv(path: str | Path, default_symbol: str = "UNKNOWN") -> lis
             raise ValueError("CSV 没有表头。")
         header_map = _normalize_header_map(reader.fieldnames)
         bars: list[PriceBar] = []
-        for row in reader:
+        for row_number, row in enumerate(reader, start=2):
+            if _row_is_blank(row):
+                continue
             symbol_key = header_map.get("symbol")
             symbol = normalize_symbol((row.get(symbol_key, "") if symbol_key else "").strip() or default_symbol)
             bars.append(
                 PriceBar(
-                    date=row[header_map["date"]].strip(),
+                    date=_require_text(row.get(header_map["date"]), field_name=header_map["date"], row_number=row_number, file_path=file_path),
                     symbol=symbol,
-                    open=float(row[header_map["open"]]),
-                    high=float(row[header_map["high"]]),
-                    low=float(row[header_map["low"]]),
-                    close=float(row[header_map["close"]]),
-                    volume=float(row[header_map["volume"]]),
+                    open=_require_float(row.get(header_map["open"]), field_name=header_map["open"], row_number=row_number, file_path=file_path),
+                    high=_require_float(row.get(header_map["high"]), field_name=header_map["high"], row_number=row_number, file_path=file_path),
+                    low=_require_float(row.get(header_map["low"]), field_name=header_map["low"], row_number=row_number, file_path=file_path),
+                    close=_require_float(row.get(header_map["close"]), field_name=header_map["close"], row_number=row_number, file_path=file_path),
+                    volume=_require_float(row.get(header_map["volume"]), field_name=header_map["volume"], row_number=row_number, file_path=file_path),
                 )
             )
     return sorted(bars, key=lambda bar: bar.date)
@@ -270,14 +297,16 @@ def load_holdings_from_csv(path: str | Path) -> list[HoldingRecord]:
             missing = ", ".join(sorted(required - lowered.keys()))
             raise ValueError(f"持仓 CSV 缺少字段: {missing}")
         records: list[HoldingRecord] = []
-        for row in reader:
+        for row_number, row in enumerate(reader, start=2):
+            if _row_is_blank(row):
+                continue
             records.append(
                 HoldingRecord(
-                    symbol=row[lowered["symbol"]].strip(),
-                    quantity=int(float(row[lowered["quantity"]])),
-                    available=int(float(row[lowered["available"]])),
-                    cost_price=float(row[lowered["cost_price"]]),
-                    market_value=float(row[lowered["market_value"]]),
+                    symbol=_require_text(row.get(lowered["symbol"]), field_name=lowered["symbol"], row_number=row_number, file_path=file_path),
+                    quantity=_require_int(row.get(lowered["quantity"]), field_name=lowered["quantity"], row_number=row_number, file_path=file_path),
+                    available=_require_int(row.get(lowered["available"]), field_name=lowered["available"], row_number=row_number, file_path=file_path),
+                    cost_price=_require_float(row.get(lowered["cost_price"]), field_name=lowered["cost_price"], row_number=row_number, file_path=file_path),
+                    market_value=_require_float(row.get(lowered["market_value"]), field_name=lowered["market_value"], row_number=row_number, file_path=file_path),
                 )
             )
     return records
@@ -295,8 +324,10 @@ def load_cash_snapshot_from_csv(path: str | Path) -> CashSnapshot:
         if not required.issubset(lowered):
             missing = ", ".join(sorted(required - lowered.keys()))
             raise ValueError(f"资金 CSV 缺少字段: {missing}")
-        row = rows[0]
+        row = next((item for item in rows if not _row_is_blank(item)), None)
+        if row is None:
+            raise ValueError("资金 CSV 没有数据。")
         return CashSnapshot(
-            available_cash=float(row[lowered["available_cash"]]),
-            total_assets=float(row[lowered["total_assets"]]),
+            available_cash=_require_float(row.get(lowered["available_cash"]), field_name=lowered["available_cash"], row_number=2, file_path=file_path),
+            total_assets=_require_float(row.get(lowered["total_assets"]), field_name=lowered["total_assets"], row_number=2, file_path=file_path),
         )

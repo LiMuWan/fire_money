@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from statistics import fmean
 
 from .models import BacktestResult, DailyAnalysis, EquityPoint, PriceBar, SymbolBacktestSummary, Trade
+from .risk import DEFAULT_RISK_CONTROLS
 from .strategy import StrategyParams
 
 
@@ -32,7 +33,7 @@ class BacktestParams:
     slippage_rate: float = 0.0005
     max_hold_days: int = 8
     lot_size: int = 100
-    min_entry_risk_reward_ratio: float = 1.2
+    min_entry_risk_reward_ratio: float = DEFAULT_RISK_CONTROLS.backtest_min_entry_risk_reward_ratio
 
 
 class Backtester:
@@ -49,7 +50,19 @@ class Backtester:
         if source_signal.stop_price is None or source_signal.target_price is None:
             return None
 
-        entry_price = bar.open * (1 + params.slippage_rate)
+        planned_entry = source_signal.entry_price
+        if planned_entry is not None and planned_entry > 0:
+            # Treat strategy entry_price as a resting next-day limit order:
+            # buy at the open if price opens through the limit, otherwise
+            # only fill if the session trades back through the planned level.
+            if bar.open <= planned_entry:
+                entry_price = bar.open * (1 + params.slippage_rate)
+            elif bar.low <= planned_entry <= bar.high:
+                entry_price = planned_entry * (1 + params.slippage_rate)
+            else:
+                return None
+        else:
+            entry_price = bar.open * (1 + params.slippage_rate)
         if entry_price <= 0:
             return None
 

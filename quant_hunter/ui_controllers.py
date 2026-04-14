@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from quant_hunter.broker_status import build_broker_execution_summary
 from quant_hunter.models import OrderIntent, PaperTradingState
+from quant_hunter.paper_trading import build_strategy_rotation_snapshot
+from quant_hunter.risk import RISK_PROFILE_LABELS
 from quant_hunter.ui_window_paper_experiment_patches import paper_strategy_experiment_bridge_v45
 
 
@@ -169,6 +171,7 @@ def prepare_order_submission_controller(window, *, adapter_cls, confirmation_dia
         holdings=window.holdings,
         cash_snapshot=window.cash_snapshot,
         recommendations=getattr(window, "daily_pool_rows", []),
+        risk_profile=getattr(getattr(window, "state", None), "strategy_risk_profile", "standard"),
     )
     window.last_broker_execution_summary = summary
     blockers = list(summary.get("blockers", []))
@@ -498,6 +501,11 @@ def run_parameter_optimization_controller(
 
 def save_strategy_preferences_controller(window, *, info_dialog_fn) -> None:
     top_theme_limit, max_total_exposure, theme_drop_reduce = window._current_strategy_runtime_config()
+    window.state.strategy_risk_profile = (
+        str(window.strategy_risk_profile_combo.currentData() or "standard")
+        if hasattr(window, "strategy_risk_profile_combo")
+        else getattr(window.state, "strategy_risk_profile", "standard")
+    )
     window.state.strategy_top_theme_limit = top_theme_limit
     window.state.strategy_max_total_exposure = max_total_exposure
     window.state.strategy_theme_drop_reduce = theme_drop_reduce
@@ -638,6 +646,7 @@ def prepare_order_submission_controller(window, *, adapter_cls, confirmation_dia
         return None
     profile = window.current_broker_profile()
     adapter = adapter_cls()
+    state = getattr(window, "state", None)
     summary, _env = build_broker_execution_summary(
         profile=profile,
         adapter=adapter,
@@ -645,6 +654,7 @@ def prepare_order_submission_controller(window, *, adapter_cls, confirmation_dia
         holdings=window.holdings,
         cash_snapshot=window.cash_snapshot,
         recommendations=getattr(window, "daily_pool_rows", []),
+        risk_profile=getattr(state, "strategy_risk_profile", "standard"),
     )
     window.last_broker_execution_summary = summary
     blockers = list(summary.get("blockers", []))
@@ -833,6 +843,13 @@ def refresh_daily_pool_controller(window, async_mode: bool, *, daily_pool_builde
     news_catalysts = {symbol: list(items) for symbol, items in window.news_catalysts.items()}
     theme_aliases = dict(window.theme_aliases)
     capabilities = window._license_capabilities()
+    paper_state = getattr(window.state, "paper_trading_state", PaperTradingState())
+    rotation_rows = build_strategy_rotation_snapshot(paper_state)
+    strategy_bias_by_name = {
+        str(item.get("strategy_name", "") or ""): float(item.get("rotation_score", 0.0) or 0.0)
+        for item in rotation_rows
+        if str(item.get("strategy_name", "") or "")
+    }
 
     def build_pool():
         builder = daily_pool_builder_cls(
@@ -841,6 +858,8 @@ def refresh_daily_pool_controller(window, async_mode: bool, *, daily_pool_builde
             theme_aliases,
             focus_themes=list(window.state.focus_themes),
             focus_theme_boost=float(capabilities["focus_theme_boost"]),
+            strategy_bias_by_name=strategy_bias_by_name,
+            risk_profile=getattr(window.state, "strategy_risk_profile", "standard"),
         )
         return builder.build(scan_rows, analyses_by_symbol, backtest_summaries)
 
@@ -973,9 +992,16 @@ def run_parameter_optimization_controller(
 
 def save_strategy_preferences_controller(window, *, info_dialog_fn) -> None:
     top_theme_limit, max_total_exposure, theme_drop_reduce = window._current_strategy_runtime_config()
+    window.state.strategy_risk_profile = (
+        str(window.strategy_risk_profile_combo.currentData() or "standard")
+        if hasattr(window, "strategy_risk_profile_combo")
+        else getattr(window.state, "strategy_risk_profile", "standard")
+    )
     window.state.strategy_top_theme_limit = top_theme_limit
     window.state.strategy_max_total_exposure = max_total_exposure
     window.state.strategy_theme_drop_reduce = theme_drop_reduce
+    if hasattr(window, "strategy_risk_profile_combo"):
+        window.state.strategy_risk_profile = str(window.strategy_risk_profile_combo.currentData() or "standard")
     window.state.focus_themes = window._parse_focus_themes()
     window.state.auto_daily_plan_export = (
         window.auto_daily_plan_export_checkbox.isChecked() if hasattr(window, "auto_daily_plan_export_checkbox") else False
@@ -984,6 +1010,7 @@ def save_strategy_preferences_controller(window, *, info_dialog_fn) -> None:
     window.state.daily_plan_template = template_name
     window.state.daily_plan_focus_only = focus_only
     window.state.daily_plan_candidate_limit = candidate_limit
+    window.state.strategy_risk_profile = str(getattr(window.state, "strategy_risk_profile", "standard") or "standard")
     window.save_state()
     window._refresh_license_status_view()
     window.refresh_daily_pool()

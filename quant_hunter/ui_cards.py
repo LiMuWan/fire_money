@@ -18,8 +18,12 @@ class InsightCardBase(QFrame):
 
     def _create_accent_strip(self, accent_color: str) -> QFrame:
         strip = QFrame()
-        strip.setFixedHeight(4)
-        strip.setStyleSheet(f"background:{accent_color}; border:none; border-radius:2px;")
+        strip.setFixedHeight(5)
+        strip.setStyleSheet(
+            "QFrame {"
+            f"background:qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {accent_color}, stop:0.55 rgba(255,255,255,0.85), stop:1 {accent_color});"
+            "border:none; border-radius:2px; }"
+        )
         return strip
 
     def _apply_card_styles(
@@ -40,8 +44,8 @@ class InsightCardBase(QFrame):
         rules = [
             (
                 f"QFrame#{self.objectName()} {{ "
-                "background:qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #182230, stop:0.58 #121922, stop:1 #0f151c); "
-                f"border:1px solid {border_color}; border-radius:16px; }}"
+                "background:qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(27, 38, 52, 0.98), stop:0.52 rgba(17, 24, 33, 0.98), stop:1 rgba(12, 18, 26, 0.99)); "
+                f"border:1px solid {border_color}; border-radius:18px; }}"
             ),
             f"QFrame#{self.objectName()} QLabel {{ background: transparent; }}",
             f"QLabel#{title_selector} {{ color:{title_color}; font-size:{title_size}px; font-weight:{title_weight}; }}",
@@ -54,6 +58,9 @@ class InsightCardBase(QFrame):
             rules.append(
                 f"QLabel#{emphasis_selector} {{ color:{emphasis_color}; font-size:{emphasis_size}px; font-weight:700; }}"
             )
+        rules.append(
+            f"QFrame#{self.objectName()}:hover {{ border: 1px solid rgba(151, 203, 255, 0.32); }}"
+        )
         self._set_stylesheet_if_changed(self, "".join(rules))
 
 
@@ -62,8 +69,8 @@ class LeaderboardCard(InsightCardBase):
         super().__init__("leaderboardCard", parent)
         self.setMinimumHeight(168)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(15, 12, 15, 12)
-        layout.setSpacing(5)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(6)
 
         self.rank_label = QLabel("TOP")
         self.rank_label.setObjectName("leaderboardRank")
@@ -138,10 +145,10 @@ class LeaderboardCard(InsightCardBase):
         self._set_stylesheet_if_changed(
             self.status_label,
             f"color:{accent}; font-size:11px; font-weight:800; letter-spacing:0.8px; "
-            "background:rgba(126, 215, 255, 0.10); border:1px solid rgba(126, 215, 255, 0.22); "
-            "border-radius:10px; padding:3px 8px;"
+            "background:rgba(126, 215, 255, 0.08); border:1px solid rgba(126, 215, 255, 0.20); "
+            "border-radius:10px; padding:4px 9px;"
         )
-        self._set_stylesheet_if_changed(self.reason_label, "color:#c7d6e6; font-size:12px; font-weight:600;")
+        self._set_stylesheet_if_changed(self.reason_label, "color:#d2ddea; font-size:12px; font-weight:600;")
         self._set_label_if_changed(self.rank_label, rank_text)
         self._set_label_if_changed(self.status_label, status_text)
         self.status_label.setToolTip(
@@ -192,8 +199,8 @@ class StrategyWorkbenchCard(InsightCardBase):
         super().__init__("strategyWorkbenchCard", parent)
         self.setMinimumHeight(176)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(15, 12, 15, 12)
-        layout.setSpacing(7)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(8)
 
         self.accent_strip = self._create_accent_strip("#8fc7ff")
         self.title_label = QLabel(title)
@@ -230,8 +237,8 @@ class StrategyWorkbenchCard(InsightCardBase):
             emphasis_color="#8fc7ff",
             emphasis_size=12,
         )
-        self.summary_label.setStyleSheet("color:#e6eef7; font-size:13px; font-weight:700;")
-        self.top_list_label.setStyleSheet("color:#cdd9e5; font-size:12px;")
+        self.summary_label.setStyleSheet("color:#eef4fb; font-size:13px; font-weight:700;")
+        self.top_list_label.setStyleSheet("color:#d6e0ea; font-size:12px; line-height:1.45;")
 
     def set_strategy_summary(
         self,
@@ -262,8 +269,8 @@ class ActionFlowCard(InsightCardBase):
         self.accent = accent
         self.setMinimumHeight(122)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 12, 14, 12)
-        layout.setSpacing(5)
+        layout.setContentsMargins(15, 13, 15, 13)
+        layout.setSpacing(6)
 
         self.accent_strip = self._create_accent_strip(accent)
         self.title_label = QLabel(title)
@@ -295,8 +302,8 @@ class ActionFlowCard(InsightCardBase):
             emphasis_color=self.accent,
             emphasis_size=22,
         )
-        self.focus_label.setStyleSheet("color:#dce7f3; font-size:12px; font-weight:700;")
-        self.note_label.setStyleSheet("color:#8fa0b6; font-size:12px;")
+        self.focus_label.setStyleSheet("color:#e2ebf6; font-size:12px; font-weight:700;")
+        self.note_label.setStyleSheet("color:#98abbe; font-size:12px; line-height:1.4;")
 
     def set_data(self, count_text: str, focus_text: str, note_text: str) -> None:
         self._set_label_if_changed(self.count_label, count_text)
@@ -309,8 +316,8 @@ class CompactSummaryCard(InsightCardBase):
         super().__init__("compactSummaryCard", parent)
         self.setMinimumHeight(108)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(13, 11, 13, 11)
-        layout.setSpacing(5)
+        layout.setContentsMargins(15, 13, 15, 13)
+        layout.setSpacing(6)
 
         self.accent_strip = self._create_accent_strip(accent)
         self.title_label = QLabel(title)
@@ -336,7 +343,7 @@ class CompactSummaryCard(InsightCardBase):
             emphasis_color=accent,
             emphasis_size=18,
         )
-        self.detail_label.setStyleSheet("color:#d5e1ec; font-size:12px;")
+        self.detail_label.setStyleSheet("color:#dce6f0; font-size:12px; line-height:1.4;")
 
     def set_data(self, headline: str, detail: str) -> None:
         self._set_label_if_changed(self.headline_label, headline)
@@ -349,8 +356,8 @@ class AlertSignalCard(InsightCardBase):
         self.accent = accent
         self.setMinimumHeight(106)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(13, 11, 13, 11)
-        layout.setSpacing(5)
+        layout.setContentsMargins(15, 13, 15, 13)
+        layout.setSpacing(6)
 
         self.accent_strip = self._create_accent_strip(accent)
         self.title_label = QLabel(title)
@@ -377,7 +384,7 @@ class AlertSignalCard(InsightCardBase):
             emphasis_color=accent,
             emphasis_size=17,
         )
-        self.detail_label.setStyleSheet("color:#d5e1ec; font-size:12px;")
+        self.detail_label.setStyleSheet("color:#dce6f0; font-size:12px; line-height:1.4;")
 
     def set_data(self, status: str, detail: str) -> None:
         self._set_label_if_changed(self.status_label, status)

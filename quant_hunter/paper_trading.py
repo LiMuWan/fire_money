@@ -30,6 +30,15 @@ _STRATEGY_SCORE_FIELDS = (
 )
 
 
+def _risk_profile_position_multiplier(risk_profile: str) -> float:
+    normalized = str(risk_profile or "").strip().lower()
+    if normalized == "conservative":
+        return 0.82
+    if normalized == "aggressive":
+        return 1.12
+    return 1.0
+
+
 def _canonical_strategy_name(value: str) -> str:
     raw = str(value or "").strip()
     alias_map = {
@@ -177,102 +186,6 @@ def _build_recent_experiment_summary(state: PaperTradingState) -> dict[str, obje
         "total_return": round(float(source_log.total_return or state.total_return or 0.0), 2) if source_log else round(float(state.total_return or 0.0), 4),
         "position_count": int(source_log.position_count if source_log and source_log.position_count is not None else len(getattr(state, "positions", []) or [])),
         "is_cycle_log": bool(cycle_log),
-    }
-
-
-def describe_strategy_experiment(
-    state: PaperTradingState,
-    analytics: dict[str, object],
-    rotation_rows: list[dict[str, float | int | str]],
-) -> dict[str, object]:
-    win_rate = float(analytics.get("win_rate", 0.0) or 0.0)
-    avg_hold_days = float(analytics.get("avg_hold_days", 0.0) or 0.0)
-    sample_count = int(analytics.get("hold_cycle_sample_count", 0) or 0)
-    hold_note = str(analytics.get("hold_cycle_note", ""))
-    if win_rate >= 0.55:
-        risk_tier = "偏稳健"
-        risk_brief = "胜率领先，策略表现可持续"
-    elif win_rate >= 0.45:
-        risk_tier = "中性"
-        risk_brief = "继续验证主线与位置"
-    else:
-        risk_tier = "偏激进"
-        risk_brief = "胜率偏低，注意窗口收敛"
-    risk_summary = (
-        f"{risk_tier} | 胜率 {win_rate:.1%} | 平均持仓 {avg_hold_days:.1f} 天 | 样本 {sample_count} | {risk_brief}"
-    )
-    if hold_note:
-        risk_summary = f"{risk_summary} | {hold_note}"
-
-    top_strategies: list[dict[str, object]] = []
-    for entry in (rotation_rows or [])[:3]:
-        top_strategies.append(
-            {
-                "strategy_name": str(entry.get("strategy_name", "")) or "暂无",
-                "rotation_score": float(entry.get("rotation_score", 0.0) or 0.0),
-                "bias_label": str(entry.get("bias_label", "") or "中性"),
-                "hold_cycle_note": str(entry.get("hold_cycle_note", "")),
-                "sample_count": int(entry.get("sample_count", 0) or 0),
-                "avg_hold_days": float(entry.get("avg_hold_days", 0.0) or 0.0),
-                "realized_pnl": float(entry.get("realized_pnl", 0.0) or 0.0),
-            }
-        )
-
-    recent = _build_recent_experiment_summary(state)
-    return {
-        "risk_summary": risk_summary,
-        "risk_tier": risk_tier,
-        "top_strategies": top_strategies,
-        "recent_experiment": recent,
-        "win_rate": win_rate,
-    }
-
-
-def describe_strategy_experiment(
-    state: PaperTradingState,
-    analytics: dict[str, object],
-    rotation_rows: list[dict[str, float | int | str]],
-) -> dict[str, object]:
-    win_rate = float(analytics.get("win_rate", 0.0) or 0.0)
-    avg_hold_days = float(analytics.get("avg_hold_days", 0.0) or 0.0)
-    sample_count = int(analytics.get("hold_cycle_sample_count", 0) or 0)
-    hold_note = str(analytics.get("hold_cycle_note", ""))
-    if win_rate >= 0.55:
-        risk_tier = "偏稳健"
-        risk_brief = "胜率领先，策略表现可持续"
-    elif win_rate >= 0.45:
-        risk_tier = "中性"
-        risk_brief = "继续验证主线与位置"
-    else:
-        risk_tier = "偏激进"
-        risk_brief = "胜率偏低，注意窗口收敛"
-    risk_summary = (
-        f"{risk_tier} | 胜率 {win_rate:.1%} | 平均持仓 {avg_hold_days:.1f} 天 | 样本 {sample_count} | {risk_brief}"
-    )
-    if hold_note:
-        risk_summary = f"{risk_summary} | {hold_note}"
-
-    top_strategies: list[dict[str, object]] = []
-    for entry in (rotation_rows or [])[:3]:
-        top_strategies.append(
-            {
-                "strategy_name": str(entry.get("strategy_name", "")) or "暂无",
-                "rotation_score": float(entry.get("rotation_score", 0.0) or 0.0),
-                "bias_label": str(entry.get("bias_label", "") or "中性"),
-                "hold_cycle_note": str(entry.get("hold_cycle_note", "")),
-                "sample_count": int(entry.get("sample_count", 0) or 0),
-                "avg_hold_days": float(entry.get("avg_hold_days", 0.0) or 0.0),
-                "realized_pnl": float(entry.get("realized_pnl", 0.0) or 0.0),
-            }
-        )
-
-    recent = _build_recent_experiment_summary(state)
-    return {
-        "risk_summary": risk_summary,
-        "risk_tier": risk_tier,
-        "top_strategies": top_strategies,
-        "recent_experiment": recent,
-        "win_rate": win_rate,
     }
 
 
@@ -530,6 +443,7 @@ class PaperTradingEngine:
         recommendations: list[RecommendationRow],
         *,
         as_of: str | None = None,
+        risk_profile: str = "standard",
         top_theme_limit: int = 3,
         max_total_exposure: float | None = None,
         theme_drop_reduce: bool = True,
@@ -558,6 +472,11 @@ class PaperTradingEngine:
         sell_reason_samples: list[str] = []
         recently_sold_symbols: set[str] = set()
         blocked_rebuy_symbols: list[str] = []
+
+        def note_blocked_rebuy(symbol: str, stock_name: str = "") -> None:
+            name = stock_name or symbol
+            if name and name not in blocked_rebuy_symbols:
+                blocked_rebuy_symbols.append(name)
 
         def next_order_id() -> str:
             nonlocal order_sequence
@@ -704,7 +623,7 @@ class PaperTradingEngine:
             )
             for item in positions.values()
         ]
-        plan = DecisionEngine().build_plan(
+        plan = DecisionEngine(risk_profile=risk_profile).build_plan(
             recommendations,
             current_holdings,
             cash,
@@ -743,6 +662,11 @@ class PaperTradingEngine:
                 if note:
                     sell_reason_samples.append(note)
 
+        for symbol in recently_sold_symbols:
+            row = recommendation_map.get(symbol)
+            if row is not None and str(getattr(row, "action", "") or "").upper() == "BUY":
+                note_blocked_rebuy(symbol, getattr(row, "stock_name", "") or symbol)
+
         market_value, total_equity = mark_positions()
         refreshed_holdings = [
             HoldingRecord(
@@ -754,7 +678,7 @@ class PaperTradingEngine:
             )
             for item in positions.values()
         ]
-        refreshed_plan = DecisionEngine().build_plan(
+        refreshed_plan = DecisionEngine(risk_profile=risk_profile).build_plan(
             recommendations,
             refreshed_holdings,
             cash,
@@ -769,17 +693,20 @@ class PaperTradingEngine:
             if decision.symbol in positions:
                 continue
             if decision.symbol in recently_sold_symbols:
-                blocked_rebuy_symbols.append(decision.stock_name or decision.symbol)
+                note_blocked_rebuy(decision.symbol, decision.stock_name or decision.symbol)
                 continue
             row = recommendation_map.get(decision.symbol)
             price = float(decision.planned_entry or getattr(row, "entry_price", 0.0) or getattr(row, "close", 0.0) or 0.0)
             if price <= 0:
                 continue
             market_value, total_equity = mark_positions()
-            position_budget_cap = round(total_equity * state.max_position_pct, 2)
+            position_budget_cap = round(total_equity * state.max_position_pct * _risk_profile_position_multiplier(risk_profile), 2)
+            exposure_limit = float(max_total_exposure or 1.0)
+            remaining_exposure_budget = round(max(total_equity * exposure_limit - market_value, 0.0), 2)
             desired_budget = round(float(decision.suggested_budget or 0.0), 2)
             budget = min(
                 cash,
+                remaining_exposure_budget if remaining_exposure_budget > 0 else 0.0,
                 position_budget_cap if position_budget_cap > 0 else cash,
                 desired_budget if desired_budget > 0 else cash,
             )

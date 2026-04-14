@@ -11,6 +11,7 @@ def build_broker_execution_summary(
     holdings,
     cash_snapshot,
     recommendations=None,
+    risk_profile: str | None = None,
     env: dict[str, object] | None = None,
 ) -> tuple[dict[str, object], dict[str, object]]:
     environment = env if env is not None else adapter.diagnose_environment(profile)
@@ -21,5 +22,6 @@ def build_broker_execution_summary(
         holdings=holdings,
         cash_snapshot=cash_snapshot,
         recommendations=recommendations,
+        risk_profile=risk_profile,
     )
     return summary, environment

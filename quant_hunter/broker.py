@@ -14,8 +14,17 @@ from typing import Any
 
 from .decision import TradeDecision
 from .models import BrokerProfile, BrokerStatus, CashSnapshot, HoldingRecord, OrderIntent, ScanRow
+from .risk import DEFAULT_RISK_CONTROLS, normalize_risk_profile, resolve_risk_controls
 
-_MIN_ORDER_RISK_REWARD_RATIO = 1.2
+_MIN_ORDER_RISK_REWARD_RATIO = DEFAULT_RISK_CONTROLS.plan_min_risk_reward_ratio
+_WARN_TOTAL_LOSS_RATIO = DEFAULT_RISK_CONTROLS.warn_total_loss_ratio
+_BLOCK_TOTAL_LOSS_RATIO = DEFAULT_RISK_CONTROLS.block_total_loss_ratio
+_WARN_SINGLE_LOSS_RATIO = DEFAULT_RISK_CONTROLS.warn_single_loss_ratio
+_BLOCK_SINGLE_LOSS_RATIO = DEFAULT_RISK_CONTROLS.block_single_loss_ratio
+_WARN_SINGLE_POSITION_ASSET_RATIO = DEFAULT_RISK_CONTROLS.warn_single_position_asset_ratio
+_BLOCK_SINGLE_POSITION_ASSET_RATIO = DEFAULT_RISK_CONTROLS.block_single_position_asset_ratio
+_WARN_SINGLE_POSITION_CASH_RATIO = DEFAULT_RISK_CONTROLS.warn_single_position_cash_ratio
+_BLOCK_SINGLE_POSITION_CASH_RATIO = DEFAULT_RISK_CONTROLS.block_single_position_cash_ratio
 
 
 def _is_trade_plan_viable(price: float, stop_price: float, target_price: float, min_ratio: float = _MIN_ORDER_RISK_REWARD_RATIO) -> bool:
@@ -37,6 +46,132 @@ def _display_mainline_role(value: str) -> str:
         "NOISE": "杂毛噪声",
         "ELIMINATED": "淘汰风险",
     }.get(value or "", value or "--")
+
+
+def _apply_portfolio_risk_status_codes(
+    rows: list[dict[str, Any]],
+    *,
+    warn_single_loss_ratio: float,
+    block_single_loss_ratio: float,
+    warn_single_position_asset_ratio: float,
+    block_single_position_asset_ratio: float,
+    warn_single_position_cash_ratio: float,
+    block_single_position_cash_ratio: float,
+) -> None:
+    _apply_portfolio_risk_status_codes(
+        rows,
+        warn_single_loss_ratio=warn_single_loss_ratio,
+        block_single_loss_ratio=block_single_loss_ratio,
+        warn_single_position_asset_ratio=warn_single_position_asset_ratio,
+        block_single_position_asset_ratio=block_single_position_asset_ratio,
+        warn_single_position_cash_ratio=warn_single_position_cash_ratio,
+        block_single_position_cash_ratio=block_single_position_cash_ratio,
+    )
+
+
+def _priority_for_order(risk_reward_ratio: float, checks: list[str], risk_profile: str | None = None) -> str:
+    controls = resolve_risk_controls(risk_profile)
+    strong_threshold = max(controls.execution_low_risk_reward_ratio + 1.1, 2.2)
+    medium_threshold = controls.execution_low_risk_reward_ratio
+    if checks:
+        return "C"
+    if risk_reward_ratio >= strong_threshold:
+        return "A"
+    if risk_reward_ratio >= medium_threshold:
+        return "B"
+    return "C"
+
+
+def _build_portfolio_risk_review(
+    buy_intents: list[OrderIntent],
+    *,
+    available_cash: float,
+    total_assets: float,
+    risk_profile: str | None = None,
+) -> dict[str, Any]:
+    controls = resolve_risk_controls(risk_profile)
+    warn_total_loss_ratio = controls.warn_total_loss_ratio
+    block_total_loss_ratio = controls.block_total_loss_ratio
+    warn_single_loss_ratio = controls.warn_single_loss_ratio
+    block_single_loss_ratio = controls.block_single_loss_ratio
+    warn_single_position_asset_ratio = controls.warn_single_position_asset_ratio
+    block_single_position_asset_ratio = controls.block_single_position_asset_ratio
+    warn_single_position_cash_ratio = controls.warn_single_position_cash_ratio
+    block_single_position_cash_ratio = controls.block_single_position_cash_ratio
+    rows: list[dict[str, Any]] = []
+    blockers: list[str] = []
+    warnings: list[str] = []
+
+    total_estimated_loss = sum(max(item.price - item.stop_price, 0.0) * item.quantity for item in buy_intents)
+    total_loss_ratio = total_estimated_loss / total_assets if total_assets > 0 else 0.0
+    if total_loss_ratio >= block_total_loss_ratio:
+        blockers.append(f"组合预估止损亏损占总资产约 {total_loss_ratio:.1%}，超过执行阈值。")
+    elif total_loss_ratio >= warn_total_loss_ratio:
+        warnings.append(f"组合预估止损亏损占总资产约 {total_loss_ratio:.1%}，建议继续降杠杆。")
+
+    for item in buy_intents:
+        estimated_capital = item.price * item.quantity
+        estimated_loss = max(item.price - item.stop_price, 0.0) * item.quantity
+        loss_ratio = estimated_loss / total_assets if total_assets > 0 else 0.0
+        asset_ratio = estimated_capital / total_assets if total_assets > 0 else 0.0
+        cash_ratio = estimated_capital / available_cash if available_cash > 0 else 0.0
+        status = "通过"
+        detail_parts: list[str] = []
+
+        if loss_ratio >= block_single_loss_ratio:
+            status = "拦截"
+            detail_parts.append(f"单笔止损亏损 {loss_ratio:.1%} 超限")
+            blockers.append(f"{item.symbol} 单笔止损亏损占总资产约 {loss_ratio:.1%}，超过执行阈值。")
+        elif loss_ratio >= warn_single_loss_ratio:
+            if status != "拦截":
+                status = "谨慎"
+            detail_parts.append(f"单笔止损亏损 {loss_ratio:.1%} 偏高")
+            warnings.append(f"{item.symbol} 单笔止损亏损占总资产约 {loss_ratio:.1%}，建议缩量。")
+
+        if asset_ratio >= block_single_position_asset_ratio or (available_cash > 0 and cash_ratio >= block_single_position_cash_ratio):
+            status = "拦截"
+            detail_parts.append(f"单笔资金占用 {asset_ratio:.1%}/{cash_ratio:.1%}")
+            blockers.append(f"{item.symbol} 单笔资金占用过高，容易造成持仓过度集中。")
+        elif asset_ratio >= warn_single_position_asset_ratio or (available_cash > 0 and cash_ratio >= warn_single_position_cash_ratio):
+            if status != "拦截":
+                status = "谨慎"
+            detail_parts.append(f"单笔资金占用 {asset_ratio:.1%}/{cash_ratio:.1%}")
+            warnings.append(f"{item.symbol} 单笔资金占用偏高，建议分批或缩量执行。")
+
+        rows.append(
+            {
+                "symbol": item.symbol,
+                "estimated_capital": estimated_capital,
+                "estimated_loss": estimated_loss,
+                "loss_ratio": round(loss_ratio, 4),
+                "asset_usage_ratio": round(asset_ratio, 4),
+                "cash_usage_ratio": round(cash_ratio, 4) if available_cash > 0 else 0.0,
+                "status": status,
+                "detail": " | ".join(detail_parts) if detail_parts else "仓位风险可控",
+            }
+        )
+
+    for row in rows:
+        if row["loss_ratio"] >= block_single_loss_ratio or row["asset_usage_ratio"] >= block_single_position_asset_ratio:
+            row["status_code"] = "BLOCKED"
+        elif row["loss_ratio"] >= warn_single_loss_ratio or row["asset_usage_ratio"] >= warn_single_position_asset_ratio:
+            row["status_code"] = "CAUTION"
+        else:
+            row["status_code"] = "PASS"
+        if row["cash_usage_ratio"] >= block_single_position_cash_ratio:
+            row["status_code"] = "BLOCKED"
+        elif row["cash_usage_ratio"] >= warn_single_position_cash_ratio and row["status_code"] == "PASS":
+            row["status_code"] = "CAUTION"
+
+    return {
+        "status": "拦截" if blockers else ("谨慎" if warnings else "通过"),
+        "rows": rows,
+        "status_code": "BLOCKED" if blockers else ("CAUTION" if warnings else "PASS"),
+        "blockers": list(dict.fromkeys(blockers)),
+        "warnings": list(dict.fromkeys(warnings)),
+        "total_estimated_loss": total_estimated_loss,
+        "total_loss_ratio": round(total_loss_ratio, 4),
+    }
 
 
 def _build_mainline_review(order_intents: list[OrderIntent], recommendations: list[Any] | None = None) -> dict[str, Any]:
@@ -680,6 +815,7 @@ def summarize_broker_execution(
     holdings: list[HoldingRecord],
     cash_snapshot: CashSnapshot | None,
     recommendations: list[Any] | None = None,
+    risk_profile: str | None = None,
 ) -> dict[str, Any]:
     buy_intents = [item for item in order_intents if item.side == "BUY"]
     estimated_capital = sum(item.price * item.quantity for item in buy_intents)
@@ -688,6 +824,12 @@ def summarize_broker_execution(
     available_cash = cash_snapshot.available_cash if cash_snapshot else 0.0
     total_assets = cash_snapshot.total_assets if cash_snapshot else sum(item.market_value for item in holdings) + available_cash
     holding_map = {item.symbol: item for item in holdings}
+    portfolio_risk_review = _build_portfolio_risk_review(
+        buy_intents,
+        available_cash=available_cash,
+        total_assets=total_assets,
+        risk_profile=risk_profile,
+    )
 
     side_counts = {
         "BUY": sum(1 for item in order_intents if item.side == "BUY"),
@@ -743,9 +885,12 @@ def summarize_broker_execution(
     mainline_review = _build_mainline_review(order_intents, recommendations=recommendations)
     blockers.extend(item for item in mainline_review["blockers"] if item not in blockers)
     warnings.extend(item for item in mainline_review["warnings"] if item not in warnings)
+    blockers.extend(item for item in portfolio_risk_review["blockers"] if item not in blockers)
+    warnings.extend(item for item in portfolio_risk_review["warnings"] if item not in warnings)
 
     blockers = list(dict.fromkeys(blockers))
     warnings = list(dict.fromkeys(warnings))
+    normalized_risk_profile = normalize_risk_profile(risk_profile)
 
     if profile.mode == "sdk" and not blockers:
         readiness = "可直接提交"
@@ -777,10 +922,12 @@ def summarize_broker_execution(
         "blockers": blockers,
         "warnings": warnings,
         "mainline_review": mainline_review,
+        "portfolio_risk_review": portfolio_risk_review,
+        "risk_profile": normalized_risk_profile,
     }
 
 
-def describe_order_intent(item: OrderIntent, available_cash: float = 0.0) -> dict[str, Any]:
+def describe_order_intent(item: OrderIntent, available_cash: float = 0.0, risk_profile: str | None = None) -> dict[str, Any]:
     estimated_capital = item.price * item.quantity
     estimated_loss = max(item.price - item.stop_price, 0.0) * item.quantity
     estimated_profit = max(item.target_price - item.price, 0.0) * item.quantity
@@ -797,14 +944,7 @@ def describe_order_intent(item: OrderIntent, available_cash: float = 0.0) -> dic
     if available_cash > 0 and estimated_capital > available_cash:
         checks.append("超出可用资金")
 
-    if risk_reward_ratio >= 2.5 and not checks:
-        priority = "A"
-    elif risk_reward_ratio >= 1.5:
-        priority = "B"
-    else:
-        priority = "C"
-    if checks:
-        priority = "C"
+    priority = _priority_for_order(risk_reward_ratio, checks, risk_profile=risk_profile)
 
     reason_summary = item.reason.strip().replace("\n", " ")
     if len(reason_summary) > 28:
@@ -966,6 +1106,14 @@ def build_order_intent_from_trade_decision(
         target_price=round(decision.planned_target, 3),
         signal_date="计划股",
         reason=decision.rationale,
+        opportunity_tier=getattr(decision, "opportunity_tier", ""),
+        risk_flag=(
+            "高"
+            if float(getattr(decision, "risk_reward_ratio", 0.0) or 0.0) < DEFAULT_RISK_CONTROLS.execution_low_risk_reward_ratio
+            else "低"
+        ),
+        signal_source="trade_plan",
+        risk_reward_ratio=float(getattr(decision, "risk_reward_ratio", 0.0) or 0.0),
     )
 
 

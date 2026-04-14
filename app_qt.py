@@ -7,8 +7,8 @@ from dataclasses import replace
 from datetime import datetime, time
 from pathlib import Path
 
-from PySide6.QtCore import QDateTime, QModelIndex, QObject, QRunnable, Qt, QThreadPool, QTimer, QUrl, Signal
-from PySide6.QtGui import QCloseEvent, QColor, QDesktopServices, QFont, QFontDatabase
+from PySide6.QtCore import QDateTime, QModelIndex, QObject, QRunnable, Qt, QThreadPool, QTimer, QUrl, Signal, QMargins
+from PySide6.QtGui import QCloseEvent, QColor, QDesktopServices, QFont, QFontDatabase, QPen
 from PySide6.QtCharts import (
     QBarCategoryAxis,
     QBarSeries,
@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
+    QGraphicsDropShadowEffect,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -90,6 +91,7 @@ from quant_hunter.paper_trading import (
     summarize_paper_trading_performance,
 )
 from quant_hunter.recommend import DailyPoolBuilder
+from quant_hunter.risk import RISK_PROFILE_LABELS, risk_profile_brief
 from quant_hunter.reports import export_daily_trade_plan, export_end_of_day_review, export_workspace_report
 from quant_hunter.scanner import UniverseScanner
 from quant_hunter.storage import AppState, load_app_state, save_app_state
@@ -606,6 +608,22 @@ TERMINAL_WORKSPACE_STYLE = """
         border: 1px solid rgba(118, 140, 168, 0.22);
         border-radius: 22px;
     }
+    QFrame#shellHeader[pageTone="recommend"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1d2030, stop:0.55 #131722, stop:1 #10131b);
+        border-color: rgba(182, 154, 255, 0.18);
+    }
+    QFrame#shellHeader[pageTone="broker"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #16211d, stop:0.55 #10171a, stop:1 #0f1419);
+        border-color: rgba(102, 224, 163, 0.18);
+    }
+    QFrame#shellHeader[pageTone="auth"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #272116, stop:0.55 #171614, stop:1 #121419);
+        border-color: rgba(255, 209, 102, 0.18);
+    }
+    QFrame#shellHeader[pageTone="detail"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #16232b, stop:0.55 #11181e, stop:1 #0f1419);
+        border-color: rgba(126, 210, 255, 0.18);
+    }
     QFrame#shellBrandBlock {
         background: transparent;
     }
@@ -615,49 +633,304 @@ TERMINAL_WORKSPACE_STYLE = """
         font-weight: 800;
         letter-spacing: 1px;
     }
+    QLabel#shellProductEyebrow[pageTone="recommend"] {
+        color: #b69aff;
+    }
+    QLabel#shellProductEyebrow[pageTone="broker"] {
+        color: #7ee6b4;
+    }
+    QLabel#shellProductEyebrow[pageTone="auth"] {
+        color: #ffd37c;
+    }
+    QLabel#shellProductEyebrow[pageTone="detail"] {
+        color: #8edfff;
+    }
+    QLabel#shellProductEyebrow[pageTone="scanner"] {
+        color: #77d8ff;
+    }
+    QLabel#shellProductEyebrow[pageTone="board"] {
+        color: #ffb27f;
+    }
+    QLabel#shellBrandPill {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(42, 68, 97, 0.96), stop:1 rgba(26, 39, 54, 0.96));
+        color: #eef5ff;
+        border: 1px solid rgba(126, 183, 255, 0.24);
+        border-radius: 10px;
+        padding: 4px 8px;
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.8px;
+    }
+    QLabel#shellBrandPill[pageTone="recommend"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(79, 57, 122, 0.96), stop:1 rgba(38, 34, 72, 0.96));
+        border-color: rgba(182, 154, 255, 0.26);
+    }
+    QLabel#shellBrandPill[pageTone="broker"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(27, 73, 55, 0.96), stop:1 rgba(18, 39, 33, 0.96));
+        border-color: rgba(102, 224, 163, 0.26);
+    }
+    QLabel#shellBrandPill[pageTone="detail"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(31, 77, 96, 0.96), stop:1 rgba(18, 39, 51, 0.96));
+        border-color: rgba(126, 210, 255, 0.24);
+    }
+    QLabel#shellBrandPill[pageTone="scanner"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(28, 78, 95, 0.96), stop:1 rgba(19, 43, 49, 0.96));
+        border-color: rgba(110, 214, 255, 0.24);
+    }
+    QLabel#shellBrandPill[pageTone="auth"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(97, 72, 29, 0.96), stop:1 rgba(43, 34, 20, 0.96));
+        border-color: rgba(255, 209, 102, 0.24);
+    }
+    QLabel#shellBrandPill[pageTone="config"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(67, 79, 95, 0.96), stop:1 rgba(31, 38, 48, 0.96));
+        border-color: rgba(167, 183, 202, 0.22);
+    }
+    QLabel#shellBrandPill[pageTone="board"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(102, 59, 40, 0.96), stop:1 rgba(45, 31, 22, 0.96));
+        border-color: rgba(255, 164, 122, 0.24);
+    }
+    QLabel#topBadge[pageTone="recommend"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #a789ff, stop:1 #d2b7ff);
+    }
+    QLabel#topBadge[pageTone="broker"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #73ddae, stop:1 #bff4d8);
+    }
+    QLabel#topBadge[pageTone="auth"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #f0be67, stop:1 #ffe1a5);
+    }
+    QLabel#topBadge[pageTone="detail"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #7ed1ff, stop:1 #c2ecff);
+    }
+    QLabel#topBadge[pageTone="scanner"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #76d7ff, stop:1 #b7f0ff);
+    }
+    QLabel#topBadge[pageTone="board"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ffb17c, stop:1 #ffd8b8);
+    }
     QLabel#shellProductTitle {
         color: #f6f8fb;
         font-size: 20px;
         font-weight: 900;
     }
+    QLabel#shellProductTitle[pageTone="recommend"] {
+        color: #f4eeff;
+    }
+    QLabel#shellProductTitle[pageTone="broker"] {
+        color: #ecfff6;
+    }
+    QLabel#shellProductTitle[pageTone="auth"] {
+        color: #fff7e8;
+    }
+    QLabel#shellProductTitle[pageTone="detail"] {
+        color: #eef9ff;
+    }
+    QLabel#shellProductTitle[pageTone="scanner"] {
+        color: #eefbff;
+    }
+    QLabel#shellProductTitle[pageTone="board"] {
+        color: #fff1e8;
+    }
+    QLabel#shellProductTitle[pageTone="config"] {
+        color: #f1f5fa;
+    }
     QLabel#shellProductSubtitle {
         color: #92a3b7;
         font-size: 12px;
+    }
+    QLabel#shellProductSubtitle[pageTone="recommend"] {
+        color: #ad9fca;
+    }
+    QLabel#shellProductSubtitle[pageTone="broker"] {
+        color: #9bc6b3;
+    }
+    QLabel#shellProductSubtitle[pageTone="auth"] {
+        color: #c8b593;
+    }
+    QLabel#shellProductSubtitle[pageTone="detail"] {
+        color: #9cb7c4;
+    }
+    QLabel#shellProductSubtitle[pageTone="scanner"] {
+        color: #93b8c4;
+    }
+    QLabel#shellProductSubtitle[pageTone="board"] {
+        color: #c5a791;
+    }
+    QLabel#shellProductSubtitle[pageTone="config"] {
+        color: #9eabba;
     }
     QFrame#shellChip {
         background: rgba(11, 17, 24, 0.92);
         border: 1px solid rgba(118, 140, 168, 0.18);
         border-radius: 16px;
     }
+    QFrame#shellChip[pageTone="recommend"] {
+        border-color: rgba(182, 154, 255, 0.18);
+        background: rgba(25, 22, 39, 0.92);
+    }
+    QFrame#shellChip[pageTone="broker"] {
+        border-color: rgba(102, 224, 163, 0.18);
+        background: rgba(18, 31, 27, 0.92);
+    }
+    QFrame#shellChip[pageTone="auth"] {
+        border-color: rgba(255, 209, 102, 0.18);
+        background: rgba(37, 29, 18, 0.92);
+    }
+    QFrame#shellChip[pageTone="detail"] {
+        border-color: rgba(126, 210, 255, 0.18);
+        background: rgba(18, 31, 38, 0.92);
+    }
+    QFrame#shellChip[pageTone="scanner"] {
+        border-color: rgba(110, 214, 255, 0.18);
+        background: rgba(18, 31, 36, 0.92);
+    }
+    QFrame#shellChip[pageTone="board"] {
+        border-color: rgba(255, 164, 122, 0.18);
+        background: rgba(39, 27, 22, 0.92);
+    }
+    QFrame#shellChip[pageTone="config"] {
+        border-color: rgba(167, 183, 202, 0.18);
+        background: rgba(24, 29, 34, 0.92);
+    }
     QLabel#shellChipLabel {
         color: #7d90a7;
         font-size: 11px;
         font-weight: 700;
+    }
+    QLabel#shellChipLabel[pageTone="recommend"] {
+        color: #9f95bf;
+    }
+    QLabel#shellChipLabel[pageTone="broker"] {
+        color: #8fb6a4;
+    }
+    QLabel#shellChipLabel[pageTone="auth"] {
+        color: #bda77f;
+    }
+    QLabel#shellChipLabel[pageTone="detail"] {
+        color: #8fb8c8;
+    }
+    QLabel#shellChipLabel[pageTone="scanner"] {
+        color: #8ab9c6;
+    }
+    QLabel#shellChipLabel[pageTone="board"] {
+        color: #c2a28e;
+    }
+    QLabel#shellChipLabel[pageTone="config"] {
+        color: #9caab8;
     }
     QLabel#shellChipValue {
         color: #f4f7fb;
         font-size: 14px;
         font-weight: 900;
     }
+    QLabel#shellChipValue[pageTone="recommend"] {
+        color: #f4eeff;
+    }
+    QLabel#shellChipValue[pageTone="broker"] {
+        color: #ecfff6;
+    }
+    QLabel#shellChipValue[pageTone="auth"] {
+        color: #fff7e8;
+    }
+    QLabel#shellChipValue[pageTone="detail"] {
+        color: #eef9ff;
+    }
+    QLabel#shellChipValue[pageTone="scanner"] {
+        color: #eefbff;
+    }
+    QLabel#shellChipValue[pageTone="board"] {
+        color: #fff1e8;
+    }
+    QLabel#shellChipValue[pageTone="config"] {
+        color: #f1f5fa;
+    }
     QFrame#shellPulseBar {
         background: rgba(13, 19, 27, 0.9);
         border: 1px solid rgba(118, 140, 168, 0.14);
         border-radius: 16px;
+    }
+    QFrame#shellPulseBar[pageTone="recommend"] {
+        border-color: rgba(182, 154, 255, 0.18);
+    }
+    QFrame#shellPulseBar[pageTone="broker"] {
+        border-color: rgba(102, 224, 163, 0.18);
+    }
+    QFrame#shellPulseBar[pageTone="auth"] {
+        border-color: rgba(255, 209, 102, 0.18);
+    }
+    QFrame#shellPulseBar[pageTone="detail"] {
+        border-color: rgba(126, 210, 255, 0.18);
+    }
+    QFrame#shellPulseBar[pageTone="scanner"] {
+        border-color: rgba(110, 214, 255, 0.18);
+    }
+    QFrame#shellPulseBar[pageTone="board"] {
+        border-color: rgba(255, 164, 122, 0.18);
+    }
+    QFrame#shellPulseBar[pageTone="config"] {
+        border-color: rgba(167, 183, 202, 0.18);
     }
     QLabel#shellPulseLabel {
         color: #f4f7fb;
         font-size: 12px;
         font-weight: 700;
     }
+    QLabel#shellPulseLabel[pageTone="recommend"] {
+        color: #f5efff;
+    }
+    QLabel#shellPulseLabel[pageTone="broker"] {
+        color: #edfff6;
+    }
+    QLabel#shellPulseLabel[pageTone="detail"] {
+        color: #eef9ff;
+    }
+    QLabel#shellPulseLabel[pageTone="scanner"] {
+        color: #eefbff;
+    }
+    QLabel#shellPulseLabel[pageTone="board"] {
+        color: #fff2ea;
+    }
+    QLabel#shellPulseLabel[pageTone="config"] {
+        color: #f1f5fa;
+    }
     QLabel#shellPulseHint {
         color: #8fb5ff;
         font-size: 11px;
         font-weight: 700;
     }
+    QLabel#shellPulseHint[pageTone="recommend"] {
+        color: #b69aff;
+    }
+    QLabel#shellPulseHint[pageTone="broker"] {
+        color: #7ee6b4;
+    }
+    QLabel#shellPulseHint[pageTone="auth"] {
+        color: #ffd37c;
+    }
     QLabel#shellPulseMeta {
         color: #7d90a7;
         font-size: 11px;
         font-weight: 700;
+    }
+    QLabel#shellPulseMeta[pageTone="recommend"] {
+        color: #9f95bf;
+    }
+    QLabel#shellPulseMeta[pageTone="broker"] {
+        color: #8fb6a4;
+    }
+    QLabel#shellPulseMeta[pageTone="auth"] {
+        color: #bda77f;
+    }
+    QLabel#shellPulseMeta[pageTone="detail"] {
+        color: #8fb8c8;
+    }
+    QLabel#shellPulseMeta[pageTone="scanner"] {
+        color: #8ab9c6;
+    }
+    QLabel#shellPulseMeta[pageTone="board"] {
+        color: #c2a28e;
+    }
+    QLabel#shellPulseMeta[pageTone="config"] {
+        color: #9caab8;
     }
     QWidget#scannerRoot,
     QWidget#recommendRoot,
@@ -667,10 +940,85 @@ TERMINAL_WORKSPACE_STYLE = """
     QWidget#brokerRoot {
         background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #171c24, stop:0.5 #121820, stop:1 #151c26);
     }
+    QWidget#scannerRoot {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #172128, stop:0.52 #121a20, stop:1 #151c25);
+    }
+    QWidget#recommendRoot {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1a1d2a, stop:0.5 #141923, stop:1 #151c25);
+    }
+    QWidget#brokerRoot {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #16221d, stop:0.5 #121a1d, stop:1 #151c24);
+    }
+    QWidget#authRoot {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #241f18, stop:0.5 #18191c, stop:1 #151c24);
+    }
+    QWidget#detailRoot {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #17232a, stop:0.5 #121920, stop:1 #151c25);
+    }
+    QWidget#boardRoot {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #241d18, stop:0.5 #18191c, stop:1 #151c24);
+    }
     QFrame#workspaceHero {
         background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1b2634, stop:0.4 #141c26, stop:1 #0f151c);
         border: 1px solid rgba(121, 144, 168, 0.22);
         border-radius: 20px;
+    }
+    QFrame#workspaceHero[heroTone="recommend"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #221f35, stop:0.4 #171b27, stop:1 #10151c);
+        border-color: rgba(172, 148, 255, 0.20);
+    }
+    QFrame#workspaceHero[heroTone="broker"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #17271f, stop:0.4 #141d1e, stop:1 #10161c);
+        border-color: rgba(101, 220, 163, 0.20);
+    }
+    QFrame#workspaceHero[heroTone="auth"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2b2417, stop:0.4 #1a1b1d, stop:1 #10151c);
+        border-color: rgba(255, 209, 102, 0.20);
+    }
+    QFrame#workspaceHero[heroTone="detail"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #192a33, stop:0.4 #141d27, stop:1 #10151c);
+        border-color: rgba(126, 210, 255, 0.20);
+    }
+    QFrame#workspaceHero[heroTone="scanner"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #182830, stop:0.4 #141d24, stop:1 #10151c);
+        border-color: rgba(110, 214, 255, 0.20);
+    }
+    QFrame#workspaceHero[heroTone="board"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2a201a, stop:0.4 #1a1b1d, stop:1 #10151c);
+        border-color: rgba(255, 164, 122, 0.20);
+    }
+    QFrame#workspaceHero[heroTone="config"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1b232b, stop:0.4 #151a21, stop:1 #10151c);
+        border-color: rgba(167, 183, 202, 0.20);
+    }
+    QFrame#workspaceHeroAccent {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #7db7ff, stop:0.45 #ffd166, stop:1 #66e0a3);
+        border: none;
+        border-radius: 3px;
+    }
+    QFrame#workspaceHeroAccent[heroTone="overview"] {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #84c1ff, stop:0.45 #ffd166, stop:1 #68dfa3);
+    }
+    QFrame#workspaceHeroAccent[heroTone="recommend"] {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #9e8bff, stop:0.45 #ffb866, stop:1 #73d2ff);
+    }
+    QFrame#workspaceHeroAccent[heroTone="broker"] {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #66e0a3, stop:0.45 #ffd166, stop:1 #7db7ff);
+    }
+    QFrame#workspaceHeroAccent[heroTone="detail"] {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #7db7ff, stop:0.45 #8ee6ff, stop:1 #ffd166);
+    }
+    QFrame#workspaceHeroAccent[heroTone="scanner"] {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #6ed6ff, stop:0.45 #66e0a3, stop:1 #ffd166);
+    }
+    QFrame#workspaceHeroAccent[heroTone="auth"] {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffd166, stop:0.45 #ffb866, stop:1 #7db7ff);
+    }
+    QFrame#workspaceHeroAccent[heroTone="config"] {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #a7b7ca, stop:0.45 #7db7ff, stop:1 #66e0a3);
+    }
+    QFrame#workspaceHeroAccent[heroTone="board"] {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ff9f7a, stop:0.45 #ffd166, stop:1 #7db7ff);
     }
     QLabel#workspaceEyebrow {
         color: #76a9ff;
@@ -678,29 +1026,190 @@ TERMINAL_WORKSPACE_STYLE = """
         font-weight: 800;
         letter-spacing: 1px;
     }
+    QFrame#workspaceHero[heroTone="recommend"] QLabel#workspaceEyebrow {
+        color: #b69aff;
+    }
+    QFrame#workspaceHero[heroTone="broker"] QLabel#workspaceEyebrow {
+        color: #7ee6b4;
+    }
+    QFrame#workspaceHero[heroTone="auth"] QLabel#workspaceEyebrow {
+        color: #ffd37c;
+    }
+    QFrame#workspaceHero[heroTone="detail"] QLabel#workspaceEyebrow {
+        color: #8edfff;
+    }
+    QFrame#workspaceHero[heroTone="scanner"] QLabel#workspaceEyebrow {
+        color: #77d8ff;
+    }
+    QFrame#workspaceHero[heroTone="board"] QLabel#workspaceEyebrow {
+        color: #ffb27f;
+    }
+    QLabel#workspaceHeroStamp {
+        background: rgba(12, 18, 25, 0.92);
+        color: #f2f7ff;
+        border: 1px solid rgba(129, 185, 255, 0.18);
+        border-radius: 10px;
+        padding: 3px 8px;
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.7px;
+    }
+    QLabel#workspaceHeroStamp[heroTone="recommend"] {
+        border: 1px solid rgba(182, 154, 255, 0.22);
+    }
+    QLabel#workspaceHeroStamp[heroTone="broker"] {
+        border: 1px solid rgba(102, 224, 163, 0.22);
+    }
+    QLabel#workspaceHeroStamp[heroTone="auth"] {
+        border: 1px solid rgba(255, 209, 102, 0.22);
+    }
+    QLabel#workspaceHeroStamp[heroTone="detail"] {
+        border: 1px solid rgba(126, 210, 255, 0.22);
+    }
+    QLabel#workspaceHeroStamp[heroTone="scanner"] {
+        border: 1px solid rgba(110, 214, 255, 0.22);
+    }
+    QLabel#workspaceHeroStamp[heroTone="board"] {
+        border: 1px solid rgba(255, 164, 122, 0.22);
+    }
+    QLabel#workspaceHeroStamp[heroTone="config"] {
+        border: 1px solid rgba(167, 183, 202, 0.22);
+    }
     QLabel#workspaceTitle {
         color: #f6f8fb;
         font-size: 18px;
         font-weight: 900;
     }
+    QFrame#workspaceHero[heroTone="recommend"] QLabel#workspaceTitle {
+        color: #f4eeff;
+    }
+    QFrame#workspaceHero[heroTone="broker"] QLabel#workspaceTitle {
+        color: #ecfff6;
+    }
+    QFrame#workspaceHero[heroTone="auth"] QLabel#workspaceTitle {
+        color: #fff7e8;
+    }
+    QFrame#workspaceHero[heroTone="detail"] QLabel#workspaceTitle {
+        color: #eef9ff;
+    }
+    QFrame#workspaceHero[heroTone="scanner"] QLabel#workspaceTitle {
+        color: #eefbff;
+    }
+    QFrame#workspaceHero[heroTone="board"] QLabel#workspaceTitle {
+        color: #fff1e8;
+    }
+    QFrame#workspaceHero[heroTone="config"] QLabel#workspaceTitle {
+        color: #f1f5fa;
+    }
     QLabel#workspaceSubtitle {
         color: #93a2b4;
         font-size: 11px;
+    }
+    QFrame#workspaceHero[heroTone="recommend"] QLabel#workspaceSubtitle {
+        color: #aa9dbf;
+    }
+    QFrame#workspaceHero[heroTone="broker"] QLabel#workspaceSubtitle {
+        color: #9cc2b3;
+    }
+    QFrame#workspaceHero[heroTone="auth"] QLabel#workspaceSubtitle {
+        color: #c6b38e;
+    }
+    QFrame#workspaceHero[heroTone="detail"] QLabel#workspaceSubtitle {
+        color: #9cb7c4;
+    }
+    QFrame#workspaceHero[heroTone="scanner"] QLabel#workspaceSubtitle {
+        color: #93b8c4;
+    }
+    QFrame#workspaceHero[heroTone="board"] QLabel#workspaceSubtitle {
+        color: #c5a791;
+    }
+    QFrame#workspaceHero[heroTone="config"] QLabel#workspaceSubtitle {
+        color: #9eabba;
     }
     QFrame#workspaceBadge {
         background: rgba(13, 20, 31, 0.92);
         border: 1px solid rgba(112, 132, 156, 0.18);
         border-radius: 14px;
     }
+    QFrame#workspaceBadge[heroTone="recommend"] {
+        border-color: rgba(182, 154, 255, 0.18);
+        background: rgba(26, 22, 40, 0.92);
+    }
+    QFrame#workspaceBadge[heroTone="broker"] {
+        border-color: rgba(102, 224, 163, 0.18);
+        background: rgba(18, 31, 27, 0.92);
+    }
+    QFrame#workspaceBadge[heroTone="auth"] {
+        border-color: rgba(255, 209, 102, 0.18);
+        background: rgba(37, 29, 18, 0.92);
+    }
+    QFrame#workspaceBadge[heroTone="detail"] {
+        border-color: rgba(126, 210, 255, 0.18);
+        background: rgba(18, 31, 38, 0.92);
+    }
+    QFrame#workspaceBadge[heroTone="scanner"] {
+        border-color: rgba(110, 214, 255, 0.18);
+        background: rgba(18, 31, 36, 0.92);
+    }
+    QFrame#workspaceBadge[heroTone="board"] {
+        border-color: rgba(255, 164, 122, 0.18);
+        background: rgba(39, 27, 22, 0.92);
+    }
+    QFrame#workspaceBadge[heroTone="config"] {
+        border-color: rgba(167, 183, 202, 0.18);
+        background: rgba(24, 29, 34, 0.92);
+    }
     QLabel#workspaceBadgeValue {
         color: #ffd166;
         font-size: 14px;
         font-weight: 900;
     }
+    QLabel#workspaceBadgeValue[heroTone="recommend"] {
+        color: #d8c2ff;
+    }
+    QLabel#workspaceBadgeValue[heroTone="broker"] {
+        color: #88ebb9;
+    }
+    QLabel#workspaceBadgeValue[heroTone="auth"] {
+        color: #ffd98e;
+    }
+    QLabel#workspaceBadgeValue[heroTone="detail"] {
+        color: #bfeeff;
+    }
+    QLabel#workspaceBadgeValue[heroTone="scanner"] {
+        color: #aeeaff;
+    }
+    QLabel#workspaceBadgeValue[heroTone="board"] {
+        color: #ffc59b;
+    }
+    QLabel#workspaceBadgeValue[heroTone="config"] {
+        color: #d2dbe6;
+    }
     QLabel#workspaceBadgeCaption {
         color: #8392a6;
         font-size: 10px;
         font-weight: 600;
+    }
+    QLabel#workspaceBadgeCaption[heroTone="recommend"] {
+        color: #9f95bf;
+    }
+    QLabel#workspaceBadgeCaption[heroTone="broker"] {
+        color: #8fb6a4;
+    }
+    QLabel#workspaceBadgeCaption[heroTone="auth"] {
+        color: #bda77f;
+    }
+    QLabel#workspaceBadgeCaption[heroTone="detail"] {
+        color: #8fb8c8;
+    }
+    QLabel#workspaceBadgeCaption[heroTone="scanner"] {
+        color: #8ab9c6;
+    }
+    QLabel#workspaceBadgeCaption[heroTone="board"] {
+        color: #c2a28e;
+    }
+    QLabel#workspaceBadgeCaption[heroTone="config"] {
+        color: #9caab8;
     }
     QLabel#workspaceSummaryHeadline {
         color: #f6fbff;
@@ -910,6 +1419,280 @@ TERMINAL_WORKSPACE_STYLE = """
     QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
         background: transparent;
         border: none;
+    }
+"""
+
+GRAPHITE_COMMERCIAL_STYLE = """
+    QMainWindow, QWidget {
+        background: #11161d;
+        color: #e7edf5;
+    }
+    QTabWidget::pane,
+    QTabWidget#workspaceTabs::pane {
+        border: 1px solid rgba(118, 139, 166, 0.18);
+        border-radius: 20px;
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(16, 23, 31, 0.98), stop:0.55 rgba(13, 19, 27, 0.96), stop:1 rgba(10, 14, 20, 0.98));
+        top: -2px;
+    }
+    QTabBar::tab {
+        min-width: 112px;
+        padding: 11px 18px;
+        margin-right: 8px;
+        border-radius: 14px;
+        background: rgba(23, 32, 43, 0.92);
+        border: 1px solid rgba(111, 132, 156, 0.14);
+        color: #96aabd;
+        font-weight: 800;
+    }
+    QTabBar::tab:hover:!selected {
+        color: #eef5fe;
+        background: rgba(31, 45, 60, 0.96);
+        border-color: rgba(133, 191, 255, 0.24);
+    }
+    QTabBar::tab:selected {
+        color: #fbfdff;
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(37, 82, 127, 0.98), stop:0.55 rgba(24, 38, 54, 0.98), stop:1 rgba(18, 27, 38, 0.98));
+        border: 1px solid rgba(133, 191, 255, 0.28);
+    }
+    QGroupBox {
+        border: 1px solid rgba(111, 130, 151, 0.18);
+        border-radius: 18px;
+        margin-top: 16px;
+        padding: 18px 16px 14px 16px;
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(20, 28, 37, 0.98), stop:1 rgba(14, 20, 27, 0.98));
+        font-weight: 800;
+    }
+    QGroupBox::title {
+        subcontrol-origin: margin;
+        left: 12px;
+        padding: 0 6px;
+        color: #f0d18a;
+    }
+    QLineEdit, QComboBox, QListWidget, QTextEdit, QTableWidget {
+        background: rgba(11, 16, 22, 0.98);
+        color: #e9f1fb;
+        border: 1px solid rgba(109, 128, 151, 0.18);
+        border-radius: 14px;
+        padding: 8px 10px;
+        selection-background-color: rgba(39, 86, 130, 0.92);
+        selection-color: #ffffff;
+    }
+    QLineEdit:focus, QComboBox:focus, QTextEdit:focus {
+        border: 1px solid rgba(132, 191, 255, 0.42);
+        background: rgba(14, 20, 27, 0.99);
+    }
+    QHeaderView::section {
+        background: rgba(20, 28, 37, 0.98);
+        color: #bdd0e4;
+        border: none;
+        border-bottom: 1px solid rgba(109, 128, 151, 0.16);
+        padding: 10px 10px;
+        font-weight: 800;
+    }
+    QPushButton {
+        min-height: 38px;
+        border-radius: 12px;
+        padding: 8px 14px;
+        font-weight: 800;
+    }
+    QPushButton#ghostButton {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(25, 35, 47, 0.98), stop:1 rgba(17, 24, 33, 0.98));
+        color: #e3ecf7;
+        border: 1px solid rgba(111, 132, 156, 0.20);
+    }
+    QPushButton#ghostButton:hover {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(33, 45, 60, 0.98), stop:1 rgba(22, 31, 42, 0.98));
+        border-color: rgba(133, 191, 255, 0.28);
+    }
+    QPushButton#tonalButton {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(49, 63, 82, 0.98), stop:1 rgba(31, 43, 58, 0.98));
+        color: #edf4fc;
+        border: 1px solid rgba(130, 149, 175, 0.18);
+    }
+    QPushButton#tonalButton:hover {
+        border-color: rgba(145, 204, 255, 0.24);
+    }
+    QPushButton#accentButton {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #e3a84f, stop:0.55 #f1c46f, stop:1 #ffd98a);
+        color: #151b23;
+        border: 1px solid rgba(255, 225, 163, 0.34);
+    }
+    QPushButton#accentButton:hover {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ecb35a, stop:0.55 #f7cd79, stop:1 #ffe19a);
+    }
+    QLabel#topBadge {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #efb15a, stop:1 #ffd989);
+        color: #111720;
+        border: 1px solid rgba(255, 225, 163, 0.28);
+        border-radius: 12px;
+        padding: 8px 12px;
+        font-weight: 900;
+    }
+    QGroupBox#emptyStatePanel {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(27, 37, 49, 0.98), stop:1 rgba(15, 22, 31, 0.98));
+        border: 1px solid rgba(133, 191, 255, 0.18);
+        border-radius: 22px;
+    }
+    QLabel#emptyStateTitle {
+        color: #f5f9ff;
+        font-size: 18px;
+        font-weight: 900;
+    }
+    QLabel#emptyStateMeta {
+        color: #a6b7ca;
+        font-size: 12px;
+        line-height: 1.5;
+    }
+    QLabel#heroTitle {
+        color: #f6fbff;
+        font-size: 28px;
+        font-weight: 900;
+        letter-spacing: 0.5px;
+        padding: 4px 0 2px 0;
+    }
+    QLabel#heroSubtitle {
+        color: #98abbe;
+        font-size: 13px;
+        line-height: 1.5;
+        padding-bottom: 4px;
+    }
+    QLabel#sectionTitle {
+        color: #f3f8fd;
+        font-size: 13px;
+        font-weight: 900;
+        letter-spacing: 0.3px;
+    }
+    QFrame#workspaceHero,
+    QFrame#shellHeader {
+        border-radius: 24px;
+    }
+    QFrame#workspaceBadgeRail {
+        background: transparent;
+    }
+    QFrame#workspaceBadge,
+    QFrame#shellChip,
+    QFrame#shellPulseBar {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(18, 26, 36, 0.98), stop:1 rgba(12, 18, 26, 0.98));
+        border: 1px solid rgba(115, 135, 160, 0.18);
+        border-radius: 18px;
+    }
+    QFrame#metricCard {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(24, 34, 46, 0.98), stop:0.58 rgba(16, 23, 31, 0.98), stop:1 rgba(12, 18, 25, 0.98));
+        border: 1px solid rgba(113, 135, 160, 0.18);
+        border-radius: 20px;
+    }
+    QFrame#metricCard:hover {
+        border: 1px solid rgba(143, 196, 255, 0.28);
+    }
+    QGroupBox[surfaceRole="metric-band"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(22, 31, 42, 0.98), stop:0.58 rgba(15, 22, 30, 0.98), stop:1 rgba(11, 16, 23, 0.98));
+        border: 1px solid rgba(126, 146, 170, 0.20);
+        border-radius: 22px;
+    }
+    QGroupBox[surfaceRole="spotlight"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(25, 36, 49, 0.99), stop:0.45 rgba(16, 24, 34, 0.99), stop:1 rgba(11, 17, 24, 0.99));
+        border: 1px solid rgba(145, 188, 242, 0.20);
+        border-radius: 24px;
+    }
+    QGroupBox[surfaceRole="priority-rail"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(22, 31, 42, 0.99), stop:1 rgba(12, 18, 25, 0.99));
+        border: 1px solid rgba(129, 149, 174, 0.18);
+        border-radius: 22px;
+    }
+    QGroupBox[surfaceRole="analysis"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(20, 28, 38, 0.98), stop:1 rgba(13, 19, 27, 0.98));
+        border: 1px solid rgba(110, 129, 151, 0.18);
+        border-radius: 20px;
+    }
+    QTextEdit#marketNotePanel[panelTone="command"],
+    QTextEdit#marketNotePanel[panelTone="dispatch"] {
+        border: 1px solid rgba(126, 183, 255, 0.28);
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(21, 49, 76, 0.92), stop:1 rgba(13, 18, 24, 0.98));
+    }
+    QTextEdit#marketNotePanel[panelTone="execution"],
+    QTextEdit#marketNotePanel[panelTone="capital"] {
+        border: 1px solid rgba(97, 208, 160, 0.24);
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(18, 44, 34, 0.92), stop:1 rgba(13, 18, 24, 0.98));
+    }
+    QTextEdit#marketNotePanel[panelTone="playbook"],
+    QTextEdit#marketNotePanel[panelTone="theme"] {
+        border: 1px solid rgba(255, 209, 102, 0.24);
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(49, 37, 13, 0.92), stop:1 rgba(13, 18, 24, 0.98));
+    }
+    QTextEdit#marketNotePanel[panelTone="decision"],
+    QTextEdit#marketNotePanel[panelTone="focus-review"] {
+        border: 1px solid rgba(255, 142, 112, 0.24);
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(57, 28, 28, 0.92), stop:1 rgba(13, 18, 24, 0.98));
+    }
+    QTextEdit#marketNotePanel[panelTone="watch"],
+    QTextEdit#marketNotePanel[panelTone="queue"] {
+        border: 1px solid rgba(150, 171, 196, 0.22);
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(30, 38, 49, 0.92), stop:1 rgba(13, 18, 24, 0.98));
+    }
+    QTextEdit#marketNotePanel[panelTone="system"] {
+        border: 1px solid rgba(174, 189, 209, 0.20);
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(24, 31, 40, 0.92), stop:1 rgba(13, 18, 24, 0.98));
+    }
+    QTextEdit#terminalConsole[panelTone="decision"] {
+        border: 1px solid rgba(255, 208, 112, 0.26);
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(46, 34, 12, 0.92), stop:1 rgba(13, 18, 24, 0.98));
+    }
+    QTextEdit#terminalConsole[panelTone="buy"] {
+        border: 1px solid rgba(97, 208, 160, 0.26);
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(18, 46, 34, 0.92), stop:1 rgba(13, 18, 24, 0.98));
+    }
+    QTextEdit#terminalConsole[panelTone="watch"] {
+        border: 1px solid rgba(255, 209, 102, 0.24);
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(49, 38, 14, 0.92), stop:1 rgba(13, 18, 24, 0.98));
+    }
+    QTextEdit#terminalConsole[panelTone="risk"] {
+        border: 1px solid rgba(255, 123, 114, 0.26);
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(57, 24, 28, 0.92), stop:1 rgba(13, 18, 24, 0.98));
+    }
+    QLabel#focusStateLabel {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(23, 33, 45, 0.96), stop:1 rgba(15, 22, 31, 0.96));
+        border: 1px solid rgba(124, 145, 171, 0.18);
+        border-radius: 14px;
+        color: #eef5fd;
+        padding: 10px 14px;
+        font-size: 12px;
+        font-weight: 800;
+    }
+    QLabel#statusBanner {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(31, 44, 60, 0.98), stop:1 rgba(17, 25, 34, 0.98));
+        border: 1px solid rgba(133, 191, 255, 0.18);
+        border-left: 4px solid #8fc4ff;
+        border-radius: 15px;
+        color: #f2f7fd;
+        padding: 12px 16px;
+        font-size: 12px;
+        font-weight: 800;
+    }
+    QSplitter#workspaceControlSplit::handle {
+        background: transparent;
+        width: 12px;
+        height: 12px;
+    }
+    QSplitter#workspaceControlSplit::handle:horizontal {
+        background: qlineargradient(x1:0.5, y1:0, x2:0.5, y2:1, stop:0 transparent, stop:0.18 rgba(255,255,255,0.02), stop:0.5 rgba(141, 189, 249, 0.20), stop:0.82 rgba(255,255,255,0.02), stop:1 transparent);
+    }
+    QSplitter#workspaceControlSplit::handle:vertical {
+        background: qlineargradient(x1:0, y1:0.5, x2:1, y2:0.5, stop:0 transparent, stop:0.18 rgba(255,255,255,0.02), stop:0.5 rgba(141, 189, 249, 0.20), stop:0.82 rgba(255,255,255,0.02), stop:1 transparent);
+    }
+    QTableWidget#marketPoolTable::item:selected,
+    QTableWidget#recommendPoolTable::item:selected,
+    QTableWidget#terminalTable::item:selected {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(38, 72, 108, 0.98), stop:1 rgba(23, 36, 50, 0.98));
+        color: #f8fbff;
+    }
+    QTableWidget#marketPoolTable,
+    QTableWidget#recommendPoolTable,
+    QTableWidget#terminalTable,
+    QListWidget#watchlistPanel,
+    QTextEdit#terminalConsole,
+    QTextEdit#marketNotePanel,
+    QChartView#marketChartPanel {
+        border-radius: 18px;
     }
 """
 
@@ -1209,14 +1992,22 @@ class QuantHunterWindow(QMainWindow):
         shell_brand_layout = QVBoxLayout(shell_brand_block)
         shell_brand_layout.setContentsMargins(0, 0, 0, 0)
         shell_brand_layout.setSpacing(2)
+        shell_brand_top_row = QHBoxLayout()
+        shell_brand_top_row.setContentsMargins(0, 0, 0, 0)
+        shell_brand_top_row.setSpacing(8)
         self.shell_product_eyebrow = QLabel("INSTITUTIONAL DECISION & EXECUTION TERMINAL")
         self.shell_product_eyebrow.setObjectName("shellProductEyebrow")
+        self.shell_brand_pill = QLabel("FLAGSHIP DESK")
+        self.shell_brand_pill.setObjectName("shellBrandPill")
         self.shell_product_title = QLabel("量化猎手 Pro")
         self.shell_product_title.setObjectName("shellProductTitle")
         self.shell_product_subtitle = QLabel("把主线判断、候选推荐、风险控制、交易执行与收盘复盘收束进同一张机构级工作台。")
         self.shell_product_subtitle.setObjectName("shellProductSubtitle")
         self.shell_product_subtitle.setWordWrap(True)
-        shell_brand_layout.addWidget(self.shell_product_eyebrow)
+        shell_brand_top_row.addWidget(self.shell_product_eyebrow)
+        shell_brand_top_row.addWidget(self.shell_brand_pill)
+        shell_brand_top_row.addStretch(1)
+        shell_brand_layout.addLayout(shell_brand_top_row)
         shell_brand_layout.addWidget(self.shell_product_title)
         shell_brand_layout.addWidget(self.shell_product_subtitle)
         shell_header_layout.addWidget(shell_brand_block, stretch=3)
@@ -1430,12 +2221,17 @@ class QuantHunterWindow(QMainWindow):
             "PRO": "专业版",
             "ENTERPRISE": "企业版",
         }.get(plan, plan)
+        risk_profile_key = getattr(self.state, "strategy_risk_profile", "standard")
+        risk_profile_label = RISK_PROFILE_LABELS.get(risk_profile_key, risk_profile_key)
+        risk_profile_hint = risk_profile_brief(risk_profile_key)
         lines = [
             "授权与状态",
             f"- 当前方案：{plan_label} ({plan})",
             f"- 试用开始：{start_date.isoformat()}",
             f"- 试用剩余：{remaining} 天",
             f"- 版本能力：自动盘前报告 {'开启' if capabilities.get('auto_daily_plan_export') else '关闭'}，盘前候选上限 {int(capabilities.get('daily_plan_export_limit', 0))} 只",
+            f"- 风险档位：{risk_profile_label} ({risk_profile_key})",
+            f"- 档位说明：{risk_profile_hint}",
             f"- 关注题材：{', '.join(self.state.focus_themes) if self.state.focus_themes else '未设置'}",
             f"- 主线题材阈值：前 {self.state.strategy_top_theme_limit}",
             f"- 题材加权：{float(capabilities.get('focus_theme_boost', 0.0)):.0f}",
@@ -1693,7 +2489,7 @@ class QuantHunterWindow(QMainWindow):
         if not hasattr(self, "trade_plan_table"):
             return
         available_cash = self.cash_snapshot.available_cash if self.cash_snapshot else 0.0
-        plan = DecisionEngine().build_plan(
+        plan = DecisionEngine(risk_profile=self.state.strategy_risk_profile).build_plan(
             self.daily_pool_rows,
             self.holdings,
             available_cash,
@@ -1737,9 +2533,13 @@ class QuantHunterWindow(QMainWindow):
         self._refresh_recommend_summary_cards(plan)
         if hasattr(self, "trade_plan_text"):
             capabilities = self._license_capabilities()
+            risk_key = getattr(self.state, "strategy_risk_profile", "standard")
+            risk_label = RISK_PROFILE_LABELS.get(risk_key, risk_key)
+            risk_hint = risk_profile_brief(risk_key)
             lines = [
                 f"市场温度：{plan.market_sentiment} ({plan.sentiment_score:.1f})",
                 f"市场周期：{plan.market_pulse.market_regime} | 风险等级：{plan.market_pulse.risk_level}",
+                f"风控档位：{risk_label} | {risk_hint}",
                 f"建议总仓位上限：{plan.market_pulse.max_total_exposure:.0%}",
                 f"建议最多新开仓：{plan.max_new_positions} 只",
                 f"报告模板：{self.state.daily_plan_template} | 展示上限：{min(self.state.daily_plan_candidate_limit, int(capabilities['daily_plan_export_limit']))}",
@@ -3540,7 +4340,7 @@ class QuantHunterWindow(QMainWindow):
             return None
 
         available_cash = self.cash_snapshot.available_cash if self.cash_snapshot else 0.0
-        trade_plan = DecisionEngine().build_plan(
+        trade_plan = DecisionEngine(risk_profile=self.state.strategy_risk_profile).build_plan(
             self.daily_pool_rows,
             self.holdings,
             available_cash,
@@ -3584,7 +4384,7 @@ class QuantHunterWindow(QMainWindow):
             return None
 
         available_cash = self.cash_snapshot.available_cash if self.cash_snapshot else 0.0
-        trade_plan = DecisionEngine().build_plan(
+        trade_plan = DecisionEngine(risk_profile=self.state.strategy_risk_profile).build_plan(
             self.daily_pool_rows,
             self.holdings,
             available_cash,
@@ -4642,9 +5442,9 @@ class QuantHunterWindow(QMainWindow):
         intraday_title = "市场代理走势"
         self._style_dark_chart(chart, intraday_title)
         price_series = QLineSeries()
-        price_series.setColor(QColor("#25f3ff"))
+        price_series.setPen(QPen(QColor("#57c7ff"), 2.4))
         reference_series = QLineSeries()
-        reference_series.setColor(QColor("#f2c94c"))
+        reference_series.setPen(QPen(QColor("#f4c96a"), 1.2, Qt.DashLine))
 
         proxy_points, proxy_base = self._build_market_proxy_points()
         points = proxy_points if proxy_points else (list(getattr(chart_series, "intraday_price", [])) if chart_series else [])
@@ -4675,11 +5475,9 @@ class QuantHunterWindow(QMainWindow):
             chart.addSeries(reference_series)
 
         axis_x = QValueAxis()
-        axis_x.setLabelsVisible(False)
-        axis_x.setGridLineColor(QColor("#252a33"))
+        self._style_chart_axis(axis_x, labels_visible=False, compact=True)
         axis_y = QValueAxis()
-        axis_y.setLabelsColor(QColor("#b7c0d8"))
-        axis_y.setGridLineColor(QColor("#252a33"))
+        self._style_chart_axis(axis_y, compact=True)
         if values:
             low = min(values + [base_price])
             high = max(values + [base_price])
@@ -4704,24 +5502,24 @@ class QuantHunterWindow(QMainWindow):
         self._style_dark_chart(chart, "日线主图")
 
         candle_series = QCandlestickSeries()
-        candle_series.setIncreasingColor(QColor("#1fe3ff"))
-        candle_series.setDecreasingColor(QColor("#ff4f4f"))
+        candle_series.setIncreasingColor(QColor("#3fd59a"))
+        candle_series.setDecreasingColor(QColor("#ff6b6b"))
         candle_series.setBodyOutlineVisible(True)
 
         ma_fast_series = QLineSeries()
-        ma_fast_series.setColor(QColor("#ffe400"))
+        ma_fast_series.setPen(QPen(QColor("#ffd166"), 1.5))
         ma_fast_series.setName("MA5")
         ma_slow_series = QLineSeries()
-        ma_slow_series.setColor(QColor("#d0d0d0"))
+        ma_slow_series.setPen(QPen(QColor("#9fb0c2"), 1.4))
         ma_slow_series.setName("MA20")
         boll_mid_series = QLineSeries()
-        boll_mid_series.setColor(QColor("#7ed7ff"))
+        boll_mid_series.setPen(QPen(QColor("#7ed7ff"), 1.3))
         boll_mid_series.setName("BOLL 中轨")
         boll_upper_series = QLineSeries()
-        boll_upper_series.setColor(QColor("#ff9f43"))
+        boll_upper_series.setPen(QPen(QColor("#ffb867"), 1.1, Qt.DashLine))
         boll_upper_series.setName("BOLL 上轨")
         boll_lower_series = QLineSeries()
-        boll_lower_series.setColor(QColor("#25d07f"))
+        boll_lower_series.setPen(QPen(QColor("#59d998"), 1.1, Qt.DashLine))
         boll_lower_series.setName("BOLL 下轨")
 
         visible_bars, visible_analyses = self._windowed_market_bars(symbol, bars, analyses)
@@ -4761,13 +5559,11 @@ class QuantHunterWindow(QMainWindow):
 
         axis_x = QDateTimeAxis()
         axis_x.setFormat("MM-dd")
-        axis_x.setLabelsColor(QColor("#b7c0d8"))
         axis_x.setTickCount(6)
+        self._style_chart_axis(axis_x, compact=True)
 
         axis_y = QValueAxis()
-        axis_y.setLabelsColor(QColor("#b7c0d8"))
-        axis_y.setGridLineColor(QColor("#2d313a"))
-        axis_y.setMinorGridLineVisible(False)
+        self._style_chart_axis(axis_y, compact=True)
         if highs and lows:
             low = min(lows)
             high = max(highs)
@@ -4834,7 +5630,7 @@ class QuantHunterWindow(QMainWindow):
 
         if indicator_name == "RSI":
             series = QLineSeries()
-            series.setColor(QColor("#25f3ff"))
+            series.setPen(QPen(QColor("#57c7ff"), 2.0))
             series.setName("RSI")
             values = []
             for index in range(1, len(recent_closes)):
@@ -4853,11 +5649,10 @@ class QuantHunterWindow(QMainWindow):
                 values.append(rsi)
             chart.addSeries(series)
             axis_x = QValueAxis()
-            axis_x.setLabelsVisible(False)
+            self._style_chart_axis(axis_x, labels_visible=False, compact=True)
             axis_y = QValueAxis()
             axis_y.setRange(0, 100)
-            axis_y.setLabelsColor(QColor("#b7c0d8"))
-            axis_y.setGridLineColor(QColor("#252a33"))
+            self._style_chart_axis(axis_y, compact=True)
             chart.addAxis(axis_x, Qt.AlignBottom)
             chart.addAxis(axis_y, Qt.AlignRight)
             series.attachAxis(axis_x)
@@ -4867,9 +5662,9 @@ class QuantHunterWindow(QMainWindow):
             k_series = QLineSeries()
             d_series = QLineSeries()
             j_series = QLineSeries()
-            k_series.setColor(QColor("#25f3ff"))
-            d_series.setColor(QColor("#f7d354"))
-            j_series.setColor(QColor("#ff6b6b"))
+            k_series.setPen(QPen(QColor("#57c7ff"), 1.8))
+            d_series.setPen(QPen(QColor("#ffd166"), 1.8))
+            j_series.setPen(QPen(QColor("#ff7b72"), 1.6))
             k_value = 50.0
             d_value = 50.0
             for index in range(len(bars[-30:])):
@@ -4889,11 +5684,10 @@ class QuantHunterWindow(QMainWindow):
             for series in [k_series, d_series, j_series]:
                 chart.addSeries(series)
             axis_x = QValueAxis()
-            axis_x.setLabelsVisible(False)
+            self._style_chart_axis(axis_x, labels_visible=False, compact=True)
             axis_y = QValueAxis()
             axis_y.setRange(0, 120)
-            axis_y.setLabelsColor(QColor("#b7c0d8"))
-            axis_y.setGridLineColor(QColor("#252a33"))
+            self._style_chart_axis(axis_y, compact=True)
             chart.addAxis(axis_x, Qt.AlignBottom)
             chart.addAxis(axis_y, Qt.AlignRight)
             for series in [k_series, d_series, j_series]:
@@ -4903,12 +5697,12 @@ class QuantHunterWindow(QMainWindow):
         else:
             dif_series = QLineSeries()
             dea_series = QLineSeries()
-            dif_series.setColor(QColor("#25f3ff"))
-            dea_series.setColor(QColor("#ff9f43"))
+            dif_series.setPen(QPen(QColor("#57c7ff"), 1.8))
+            dea_series.setPen(QPen(QColor("#ffb867"), 1.8))
             positive = QBarSet("红柱")
             negative = QBarSet("绿柱")
-            positive.setColor(QColor("#ff5e57"))
-            negative.setColor(QColor("#25d07f"))
+            positive.setColor(QColor("#ff6b6b"))
+            negative.setColor(QColor("#45d795"))
             ema12 = recent_closes[0]
             ema26 = recent_closes[0]
             dea = 0.0
@@ -4932,12 +5726,11 @@ class QuantHunterWindow(QMainWindow):
             chart.addSeries(dea_series)
             axis_x = QBarCategoryAxis()
             axis_x.append(categories or ["--"])
-            axis_x.setLabelsColor(QColor("#8fa0b4"))
+            self._style_chart_axis(axis_x, compact=True)
             axis_y = QValueAxis()
             upper = max(values) * 1.3 if values else 1.0
             axis_y.setRange(-upper, upper)
-            axis_y.setLabelsColor(QColor("#b7c0d8"))
-            axis_y.setGridLineColor(QColor("#252a33"))
+            self._style_chart_axis(axis_y, compact=True)
             chart.addAxis(axis_x, Qt.AlignBottom)
             chart.addAxis(axis_y, Qt.AlignRight)
             for series in [bars_series, dif_series, dea_series]:
@@ -4976,10 +5769,9 @@ class QuantHunterWindow(QMainWindow):
 
         axis_x = QBarCategoryAxis()
         axis_x.append(categories or ["00"])
-        axis_x.setLabelsColor(QColor("#8fa0b4"))
+        self._style_chart_axis(axis_x, compact=True)
         axis_y = QValueAxis()
-        axis_y.setLabelsColor(QColor("#b7c0d8"))
-        axis_y.setGridLineColor(QColor("#252a33"))
+        self._style_chart_axis(axis_y, compact=True)
         axis_y.setRange(0, max(values) * 1.25 if values else 1.0)
         chart.addAxis(axis_x, Qt.AlignBottom)
         chart.addAxis(axis_y, Qt.AlignRight)
@@ -5018,10 +5810,9 @@ class QuantHunterWindow(QMainWindow):
 
         axis_x = QBarCategoryAxis()
         axis_x.append(categories or ["00"])
-        axis_x.setLabelsColor(QColor("#8fa0b4"))
+        self._style_chart_axis(axis_x, compact=True)
         axis_y = QValueAxis()
-        axis_y.setLabelsColor(QColor("#b7c0d8"))
-        axis_y.setGridLineColor(QColor("#252a33"))
+        self._style_chart_axis(axis_y, compact=True)
         axis_y.setRange(0, max(values) * 1.25 if values else 1.0)
         chart.addAxis(axis_x, Qt.AlignBottom)
         chart.addAxis(axis_y, Qt.AlignRight)
@@ -5183,14 +5974,38 @@ class QuantHunterWindow(QMainWindow):
         return QColor("#0f1116"), QColor("#d7dce5")
 
     def _style_dark_chart(self, chart: QChart, title: str) -> None:
+        title_font = QFont("Microsoft YaHei UI", 11)
+        title_font.setWeight(QFont.DemiBold)
         chart.setTitle(title)
-        chart.setTitleBrush(QColor("#dfe6ee"))
-        chart.setBackgroundBrush(QColor("#0a0c10"))
+        chart.setTitleFont(title_font)
+        chart.setTitleBrush(QColor("#eff5fb"))
+        chart.setBackgroundBrush(QColor("#0c1117"))
         chart.setPlotAreaBackgroundVisible(True)
-        chart.setPlotAreaBackgroundBrush(QColor("#000000"))
-        chart.setMargins(chart.margins())
+        chart.setPlotAreaBackgroundBrush(QColor("#0a0f15"))
+        chart.setBackgroundRoundness(0)
+        chart.setMargins(QMargins(14, 10, 12, 8))
         chart.setAnimationOptions(QChart.NoAnimation)
         chart.legend().hide()
+
+    def _style_chart_axis(self, axis, *, labels_visible: bool = True, compact: bool = False) -> None:
+        if hasattr(axis, "setLabelsVisible"):
+            axis.setLabelsVisible(labels_visible)
+        if hasattr(axis, "setLabelsColor"):
+            axis.setLabelsColor(QColor("#9fb2c8"))
+        if hasattr(axis, "setGridLineColor"):
+            axis.setGridLineColor(QColor("#233140"))
+        if hasattr(axis, "setMinorGridLineColor"):
+            axis.setMinorGridLineColor(QColor("#17212d"))
+        if hasattr(axis, "setMinorGridLineVisible"):
+            axis.setMinorGridLineVisible(False)
+        if hasattr(axis, "setShadesVisible"):
+            axis.setShadesVisible(False)
+        if hasattr(axis, "setLinePenColor"):
+            axis.setLinePenColor(QColor("#334355"))
+        if hasattr(axis, "setLabelsFont"):
+            font = QFont("Microsoft YaHei UI", 8 if compact else 9)
+            font.setWeight(QFont.Medium)
+            axis.setLabelsFont(font)
 
     def _build_stock_identity_cell(self, row) -> QWidget:
         wrapper = QWidget()
@@ -5283,6 +6098,7 @@ class QuantHunterWindow(QMainWindow):
         base_style = THEME_STYLES.get(theme_key, THEME_STYLES["sunrise"])
         extra_style = TERMINAL_DASHBOARD_STYLE + TERMINAL_WORKSPACE_STYLE if theme_key == "graphite" else ""
         if theme_key == "graphite":
+            extra_style += GRAPHITE_COMMERCIAL_STYLE
             extra_style += """
 QTableWidget {
     background: #0f1319;
@@ -5368,6 +6184,8 @@ QPushButton#accentButton:hover {
             self._qh_visual_surface_stylesheet_timer_v1.stop()
         if hasattr(self, "_schedule_visual_surface_stylesheet_v1"):
             self._schedule_visual_surface_stylesheet_v1()
+        if hasattr(self, "_schedule_depth_effects_v27"):
+            self._schedule_depth_effects_v27()
 
     def _build_scanner_tab(self) -> None:
         layout = QVBoxLayout(self.scanner_tab)
@@ -6670,9 +7488,14 @@ QPushButton#accentButton:hover {
             plan_text = self.state.license_plan or "TRIAL"
             top_theme_limit, max_total_exposure, _ = self._current_strategy_runtime_config()
             self.config_live_summary_headline.setText(f"方案：{plan_text} | 主线前排 {top_theme_limit}")
-            self.config_live_summary_detail.setText(f"总仓位上限 {max_total_exposure:.2f} | 模板 {self.daily_plan_template_combo.currentText() if hasattr(self, 'daily_plan_template_combo') else '--'}")
+            risk_key = getattr(self.state, "strategy_risk_profile", "standard")
+            risk_hint = risk_profile_brief(risk_key)
+            self.config_live_summary_detail.setText(
+                f"总仓位上限 {max_total_exposure:.2f} | 模板 {self.daily_plan_template_combo.currentText() if hasattr(self, 'daily_plan_template_combo') else '--'}"
+            )
             focus_theme_text = self.focus_themes_input.text().strip() if hasattr(self, "focus_themes_input") else ""
-            self.config_live_summary_meta.setText(f"关注题材：{focus_theme_text or '未设置'}")
+            risk_text = self.strategy_risk_profile_combo.currentText() if hasattr(self, "strategy_risk_profile_combo") else getattr(self.state, "strategy_risk_profile", "standard")
+            self.config_live_summary_meta.setText(f"风险档位：{risk_text} | {risk_hint} | 关注题材：{focus_theme_text or '未设置'}")
 
     def _refresh_workspace_focus_banners(self) -> None:
         target_symbol = self.active_symbol or self._selected_symbol_from_watchlist() or self._selected_board_symbol() or ""
@@ -8046,7 +8869,7 @@ QPushButton#accentButton:hover {
         if not hasattr(self, "trade_plan_table"):
             return
         available_cash = self.cash_snapshot.available_cash if self.cash_snapshot else 0.0
-        plan = DecisionEngine().build_plan(
+        plan = DecisionEngine(risk_profile=self.state.strategy_risk_profile).build_plan(
             self.daily_pool_rows,
             self.holdings,
             available_cash,
@@ -8116,9 +8939,13 @@ QPushButton#accentButton:hover {
         self._refresh_recommend_summary_cards(plan)
         self._refresh_workspace_status_labels()
         if hasattr(self, "trade_plan_text"):
+            risk_key = getattr(self.state, "strategy_risk_profile", "standard")
+            risk_label = RISK_PROFILE_LABELS.get(risk_key, risk_key)
+            risk_hint = risk_profile_brief(risk_key)
             lines = [
                 f"市场状态：{plan.market_sentiment} ({plan.sentiment_score:.1f})",
                 f"交易环境：{plan.market_pulse.market_regime} | 风险等级：{plan.market_pulse.risk_level}",
+                f"风控档位：{risk_label} | {risk_hint}",
                 f"仓位上限：{plan.market_pulse.max_total_exposure:.0%} | 最多新开仓：{plan.max_new_positions}",
                 "",
             ]
@@ -8297,7 +9124,7 @@ QPushButton#accentButton:hover {
         if not hasattr(self, "trade_plan_table"):
             return
         available_cash = self.cash_snapshot.available_cash if self.cash_snapshot else 0.0
-        plan = DecisionEngine().build_plan(
+        plan = DecisionEngine(risk_profile=self.state.strategy_risk_profile).build_plan(
             self.daily_pool_rows,
             self.holdings,
             available_cash,
@@ -8371,9 +9198,13 @@ QPushButton#accentButton:hover {
         self._refresh_priority_cards(plan)
         self._refresh_recommend_summary_cards(plan)
         if hasattr(self, "trade_plan_text"):
+            risk_key = getattr(self.state, "strategy_risk_profile", "standard")
+            risk_label = RISK_PROFILE_LABELS.get(risk_key, risk_key)
+            risk_hint = risk_profile_brief(risk_key)
             lines = [
                 f"市场状态：{plan.market_sentiment} ({plan.sentiment_score:.1f})",
                 f"交易环境：{plan.market_pulse.market_regime} | 风险等级：{plan.market_pulse.risk_level}",
+                f"风控档位：{risk_label} | {risk_hint}",
                 f"仓位上限：{plan.market_pulse.max_total_exposure:.0%} | 最多新开仓：{plan.max_new_positions}",
                 "",
             ]
@@ -9106,9 +9937,12 @@ QPushButton#accentButton:hover {
             plan_text = self.state.license_plan or "TRIAL"
             top_theme_limit, max_total_exposure, _ = self._current_strategy_runtime_config()
             self._set_label_text_if_changed(self.config_live_summary_headline, f"方案：{plan_text} | 主线前排 {top_theme_limit}")
+            risk_key = getattr(self.state, "strategy_risk_profile", "standard")
+            risk_hint = risk_profile_brief(risk_key)
             self._set_label_text_if_changed(self.config_live_summary_detail, f"总仓位上限：{max_total_exposure:.2f} | 模板：{self.daily_plan_template_combo.currentText() if hasattr(self, 'daily_plan_template_combo') else '--'}")
             focus_theme_text = self.focus_themes_input.text().strip() if hasattr(self, "focus_themes_input") else ""
-            self._set_label_text_if_changed(self.config_live_summary_meta, f"关注题材：{focus_theme_text or '未设置'}")
+            risk_text = self.strategy_risk_profile_combo.currentText() if hasattr(self, "strategy_risk_profile_combo") else getattr(self.state, "strategy_risk_profile", "standard")
+            self._set_label_text_if_changed(self.config_live_summary_meta, f"风险档位：{risk_text} | {risk_hint} | 关注题材：{focus_theme_text or '未设置'}")
 
     def _refresh_workspace_focus_banners(self) -> None:
         target_symbol = self.active_symbol or self._selected_symbol_from_watchlist() or self._selected_board_symbol() or ""
@@ -11760,9 +12594,12 @@ QPushButton#accentButton:hover {
             top_theme_limit, max_total_exposure, _ = self._current_strategy_runtime_config()
             template_text = self.daily_plan_template_combo.currentText() if hasattr(self, "daily_plan_template_combo") else "--"
             focus_theme_text = self.focus_themes_input.text().strip() if hasattr(self, "focus_themes_input") else ""
+            risk_key = getattr(self.state, "strategy_risk_profile", "standard")
+            risk_hint = risk_profile_brief(risk_key)
             self._set_label_text_if_changed(self.config_live_summary_headline, f"方案：{plan_text} | 主线前排 {top_theme_limit}")
             self._set_label_text_if_changed(self.config_live_summary_detail, f"总仓位上限：{max_total_exposure:.2f} | 模板：{template_text}")
-            self._set_label_text_if_changed(self.config_live_summary_meta, f"关注题材：{focus_theme_text or '未设置'}")
+            risk_text = self.strategy_risk_profile_combo.currentText() if hasattr(self, "strategy_risk_profile_combo") else risk_key
+            self._set_label_text_if_changed(self.config_live_summary_meta, f"风险档位：{risk_text} | {risk_hint} | 关注题材：{focus_theme_text or '未设置'}")
 
     def _refresh_workspace_focus_banners(self) -> None:
         target_symbol = self.active_symbol or self._selected_symbol_from_watchlist() or self._selected_board_symbol() or ""
@@ -11833,6 +12670,7 @@ QPushButton#accentButton:hover {
                 recommend_theme_filter=self.recommend_theme_filter,
                 market_theme_filter=self.market_theme_filter,
                 focus_themes=self.state.focus_themes,
+                strategy_risk_profile=self.state.strategy_risk_profile,
                 strategy_top_theme_limit=self.state.strategy_top_theme_limit,
                 strategy_max_total_exposure=self.state.strategy_max_total_exposure,
                 strategy_theme_drop_reduce=self.state.strategy_theme_drop_reduce,
@@ -11998,13 +12836,13 @@ def _qh_visual_surface_palette_v1(self: QuantHunterWindow) -> dict[str, str]:
             "hint_border": "#d2e0e6",
         },
         "graphite": {
-            "shell_bg": "#111821",
-            "pane_bg": "#161f2a",
-            "panel_bg": "#1b2430",
-            "hint_bg": "#1e2935",
-            "hint_fg": "#93a8bc",
-            "border": "rgba(113, 143, 171, 0.16)",
-            "hint_border": "rgba(113, 143, 171, 0.22)",
+            "shell_bg": "#0f151c",
+            "pane_bg": "#121a23",
+            "panel_bg": "#18222d",
+            "hint_bg": "#1a2531",
+            "hint_fg": "#a4b6c9",
+            "border": "rgba(122, 146, 173, 0.18)",
+            "hint_border": "rgba(122, 146, 173, 0.24)",
         },
     }
     return palettes.get(theme_key, palettes["graphite"])
@@ -12074,6 +12912,12 @@ QLabel[focusBanner="true"] {
     border-radius: 15px;
     font-weight: 700;
 }
+QFrame#workspaceBadgeRail {
+    background: transparent;
+}
+QFrame#workspaceBadge {
+    border-radius: 18px;
+}
 QFrame[actionRow="true"] {
     padding: 6px;
 }
@@ -12089,6 +12933,10 @@ QFrame#configLiveSummaryPanel {
 }
 QTableWidget {
     border-radius: 16px;
+}
+QFrame#metricCard:hover,
+QFrame#workspaceBadge:hover {
+    border: 1px solid rgba(143, 196, 255, 0.26);
 }
 QHeaderView::section {
     padding: 10px 12px;
@@ -12409,6 +13257,15 @@ def _qh_refresh_login_status(self: QuantHunterWindow) -> None:
     account_id = self.login_inputs.get("account_id").text().strip() if "account_id" in getattr(self, "login_inputs", {}) else ""
     strategy_id = self.login_inputs.get("strategy_id").text().strip() if "strategy_id" in getattr(self, "login_inputs", {}) else ""
     token_ready = "已填写" if "token" in getattr(self, "login_inputs", {}) and self.login_inputs["token"].text().strip() else "未填写"
+    missing_fields = []
+    if not username:
+        missing_fields.append("登录账号")
+    if not account_id:
+        missing_fields.append("账户 ID")
+    if not strategy_id:
+        missing_fields.append("策略 ID")
+    if token_ready != "已填写":
+        missing_fields.append("SDK Token")
     mode_text = self._display_mode(getattr(profile, "mode", "") or "manual") if hasattr(self, "_display_mode") else (getattr(profile, "mode", "") or "manual")
     lines = [
         "登录与通道说明",
@@ -12425,7 +13282,36 @@ def _qh_refresh_login_status(self: QuantHunterWindow) -> None:
         "- 程序只保存配置与工作流状态，不绕过券商侧登录校验和风控校验。",
         "- 真实下单仍保持人工确认优先，适合先做盘中决策、委托准备和执行复盘。",
     ]
+    if missing_fields:
+        lines.extend(["", f"下一步：优先补齐 {', '.join(missing_fields)}，再进入交易执行页。"])
+    else:
+        lines.extend(["", "下一步：可回到总览刷新市场，再进入推荐池和交易执行链路。"])
     self._set_plain_text_if_changed(self.login_status_text, "\n".join(lines))
+    if hasattr(self, "overview_playbook_text"):
+        if missing_fields:
+            self._set_plain_text_if_changed(
+                self.overview_playbook_text,
+                "\n".join(
+                    [
+                        "今天先做什么",
+                        f"1. 先补齐登录配置：{', '.join(missing_fields)}",
+                        "2. 再刷新市场和推荐池，确认主线与机会分层。",
+                        "3. 最后进入交易执行页复核委托、风险灯和仓位。",
+                    ]
+                ),
+            )
+        else:
+            self._set_plain_text_if_changed(
+                self.overview_playbook_text,
+                "\n".join(
+                    [
+                        "今天先做什么",
+                        "1. 先刷新市场，确认主线、风险灯和当前焦点标的。",
+                        "2. 再看推荐池的置信度、执行准备和失效条件。",
+                        "3. 最后进入交易执行页复核委托、仓位与回执。",
+                    ]
+                ),
+            )
 
 
 def _qh_prime_broker_workspace_defaults(self: QuantHunterWindow) -> None:
@@ -15328,6 +16214,9 @@ def _qh_refresh_broker_order_focus_v7(self: QuantHunterWindow) -> None:
         return
 
     recommendation = next((item for item in getattr(self, "daily_pool_rows", []) if getattr(item, "symbol", "") == intent.symbol), None)
+    risk_key = getattr(getattr(self, "state", None), "strategy_risk_profile", "standard")
+    risk_label = RISK_PROFILE_LABELS.get(risk_key, risk_key)
+    risk_hint = risk_profile_brief(risk_key)
     signal = _qh_mainline_signal_brief_v4(recommendation)
     risk_lamp = self._broker_risk_lamp_for_intent(intent, recommendation=recommendation) if hasattr(self, "_broker_risk_lamp_for_intent") else "黄灯"
     action_label = self._broker_focus_action_label(intent, risk_lamp, blockers=[], warnings=[], preview_row={}, allowed=True)
@@ -15363,13 +16252,14 @@ def _qh_refresh_broker_order_focus_v7(self: QuantHunterWindow) -> None:
         _qh_set_label_text_v7(
             self,
             self.orders_focus_label,
-            f"委托焦点：{self._stock_name_for_symbol(intent.symbol)} | {chain_state} | {submission_state} | 状态 {signal} | 下一步 {next_step}",
+            f"委托焦点：{self._stock_name_for_symbol(intent.symbol)} | {risk_label}档 | {chain_state} | {submission_state} | 状态 {signal} | 下一步 {next_step}",
         )
         _qh_set_tooltip_v7(
             self.orders_focus_label,
             "\n".join(
                 [
                     f"标的：{self._stock_name_for_symbol(intent.symbol)} ({self._stock_id_for_symbol(intent.symbol)} / {intent.symbol})",
+                    f"风险档位：{risk_label} | {risk_hint}",
                     f"委托方向：{self._display_action(side) if hasattr(self, '_display_action') else side}",
                     f"主线状态：{signal}",
                     f"风险灯：{risk_lamp}",
@@ -16226,7 +17116,7 @@ def _qh_refresh_paper_trading_panels_v17(self: QuantHunterWindow) -> None:
             )
             for item in positions
         ]
-        follow_plan = DecisionEngine().build_plan(
+        follow_plan = DecisionEngine(risk_profile=self.state.strategy_risk_profile).build_plan(
             list(getattr(self, "daily_pool_rows", []) or []),
             simulated_holdings,
             float(state.cash or 0.0),
@@ -16312,6 +17202,7 @@ def _qh_run_ai_paper_trading_cycle_v17(self: QuantHunterWindow) -> None:
         state,
         list(getattr(self, "daily_pool_rows", []) or []),
         as_of=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        risk_profile=self.state.strategy_risk_profile,
         top_theme_limit=top_theme_limit,
         max_total_exposure=max_total_exposure,
         theme_drop_reduce=theme_drop_reduce,
@@ -16538,6 +17429,7 @@ def _qh_save_state_v17(self: QuantHunterWindow) -> None:
             recommend_execution_filter=getattr(self, "recommend_execution_filter", self.state.recommend_execution_filter),
             market_theme_filter=getattr(self, "market_theme_filter", self.state.market_theme_filter),
             focus_themes=self.state.focus_themes,
+            strategy_risk_profile=self.state.strategy_risk_profile,
             strategy_top_theme_limit=self.state.strategy_top_theme_limit,
             strategy_max_total_exposure=self.state.strategy_max_total_exposure,
             strategy_theme_drop_reduce=self.state.strategy_theme_drop_reduce,
@@ -17725,6 +18617,8 @@ QHeaderView::section {
 def _qh_update_broker_action_flow_v26(self: QuantHunterWindow) -> None:
     order_count = len(getattr(self, "order_intents", []) or [])
     submit_count = len(getattr(self, "order_submission_records", []) or [])
+    risk_key = getattr(getattr(self, "state", None), "strategy_risk_profile", "standard")
+    risk_label = RISK_PROFILE_LABELS.get(risk_key, risk_key)
     latest_symbol = ""
     latest_stage = ""
     if submit_count:
@@ -17746,6 +18640,15 @@ def _qh_update_broker_action_flow_v26(self: QuantHunterWindow) -> None:
         submit_count=submit_count,
         stock_name=self._stock_name_for_symbol(focus_symbol) if focus_symbol else "当前焦点",
     )
+    profile = self.current_broker_profile() if hasattr(self, "current_broker_profile") else None
+    missing_sdk_fields = []
+    if profile is not None and getattr(profile, "mode", "export") == "sdk":
+        if not getattr(profile, "account_id", "").strip():
+            missing_sdk_fields.append("账户 ID")
+        if not getattr(profile, "strategy_id", "").strip():
+            missing_sdk_fields.append("策略 ID")
+        if not getattr(profile, "token", "").strip():
+            missing_sdk_fields.append("SDK Token")
 
     blocker_button = getattr(self, "broker_focus_blocker_button", None)
     if isinstance(blocker_button, QPushButton):
@@ -17773,10 +18676,14 @@ def _qh_update_broker_action_flow_v26(self: QuantHunterWindow) -> None:
 
     button = getattr(self, "confirm_submit_orders_button", None)
     if isinstance(button, QPushButton):
-        button.setEnabled(order_count > 0)
+        button.setEnabled(order_count > 0 and not missing_sdk_fields)
         button_text = cta_labels["confirm_text"] if order_count > 0 else "确认并提交委托"
-        button_tip = cta_tooltips["confirm_tooltip"]
-        if order_count > 0:
+        button_tip = (
+            f"当前是 SDK 模式，先补齐 {', '.join(missing_sdk_fields)} 后再提交。"
+            if missing_sdk_fields
+            else cta_tooltips["confirm_tooltip"]
+        )
+        if order_count > 0 and not missing_sdk_fields:
             button.setText(button_text)
             button.setToolTip(button_tip)
         else:
@@ -17791,22 +18698,27 @@ def _qh_update_broker_action_flow_v26(self: QuantHunterWindow) -> None:
         generate_button.setToolTip(cta_tooltips["generate_tooltip"])
 
     if hasattr(self, "broker_status_banner"):
-        if submit_count:
+        if missing_sdk_fields:
+            self._set_label_text_if_changed(
+                self.broker_status_banner,
+                f"交易状态：当前按 {risk_label}档审查，且为 SDK 模式；先去登录页补齐 {', '.join(missing_sdk_fields)}，再继续提交委托。",
+            )
+        elif submit_count:
             symbol = latest_symbol
             stock_name = self._stock_name_for_symbol(symbol) if symbol else "最新委托"
             self._set_label_text_if_changed(
                 self.broker_status_banner,
-                f"交易状态：已有 {submit_count} 条提交回执，当前聚焦 {stock_name} 的执行反馈。",
+                f"交易状态：当前按 {risk_label}档审查；已有 {submit_count} 条提交回执，当前聚焦 {stock_name} 的执行反馈。",
             )
         elif order_count:
             self._set_label_text_if_changed(
                 self.broker_status_banner,
-                f"交易状态：已生成 {order_count} 笔待提交委托，下一步打开确认弹窗并核对后提交。",
+                f"交易状态：当前按 {risk_label}档审查；已生成 {order_count} 笔待提交委托，下一步打开确认弹窗并核对后提交。",
             )
         else:
             self._set_label_text_if_changed(
                 self.broker_status_banner,
-                "交易状态：先从推荐池生成委托，再进入确认提交流程。",
+                f"交易状态：当前按 {risk_label}档审查；先从推荐池生成委托，再进入确认提交流程。",
             )
 
     status_text = (
@@ -18270,6 +19182,79 @@ apply_paper_experiment_patches(
     QuantHunterWindow,
     paper_lab_stage_fn=_qh_paper_lab_stage_v39,
 )
+
+
+def _qh_apply_depth_effect(widget: QWidget | None, *, blur: float, offset_y: float, color: QColor) -> None:
+    if not isinstance(widget, QWidget):
+        return
+    effect = widget.graphicsEffect()
+    if not isinstance(effect, QGraphicsDropShadowEffect):
+        effect = QGraphicsDropShadowEffect(widget)
+        widget.setGraphicsEffect(effect)
+    effect.setBlurRadius(blur)
+    effect.setOffset(0.0, offset_y)
+    effect.setColor(color)
+
+
+def _qh_apply_depth_effects_v27(self: QuantHunterWindow) -> None:
+    shadow_palette = {
+        "graphite": {
+            "hero": QColor(4, 10, 16, 150),
+            "panel": QColor(4, 10, 16, 122),
+            "chart": QColor(4, 10, 16, 136),
+            "metric": QColor(4, 10, 16, 112),
+        },
+        "ocean": {
+            "hero": QColor(57, 88, 110, 70),
+            "panel": QColor(57, 88, 110, 52),
+            "chart": QColor(57, 88, 110, 58),
+            "metric": QColor(57, 88, 110, 48),
+        },
+        "sunrise": {
+            "hero": QColor(96, 70, 34, 72),
+            "panel": QColor(96, 70, 34, 54),
+            "chart": QColor(96, 70, 34, 60),
+            "metric": QColor(96, 70, 34, 46),
+        },
+    }.get(str(getattr(self, "current_theme", "graphite") or "graphite"), {})
+
+    for name in ("shell_header",):
+        _qh_apply_depth_effect(getattr(self, name, None), blur=34.0, offset_y=8.0, color=shadow_palette.get("hero", QColor(4, 10, 16, 150)))
+
+    for frame in self.findChildren(QFrame, "workspaceHero"):
+        _qh_apply_depth_effect(frame, blur=32.0, offset_y=8.0, color=shadow_palette.get("hero", QColor(4, 10, 16, 150)))
+    for frame in self.findChildren(QFrame, "metricCard"):
+        _qh_apply_depth_effect(frame, blur=24.0, offset_y=6.0, color=shadow_palette.get("metric", QColor(4, 10, 16, 112)))
+    for view in self.findChildren(QChartView, "marketChartPanel"):
+        _qh_apply_depth_effect(view, blur=28.0, offset_y=7.0, color=shadow_palette.get("chart", QColor(4, 10, 16, 136)))
+    for box in self.findChildren(QGroupBox):
+        surface_role = str(box.property("surfaceRole") or "")
+        if surface_role in {"spotlight", "metric-band", "analysis", "priority-rail"}:
+            blur = 28.0 if surface_role == "spotlight" else 22.0
+            offset = 7.0 if surface_role == "spotlight" else 5.0
+            _qh_apply_depth_effect(box, blur=blur, offset_y=offset, color=shadow_palette.get("panel", QColor(4, 10, 16, 122)))
+
+
+def _qh_schedule_depth_effects_v27(self: QuantHunterWindow) -> None:
+    if not hasattr(self, "_qh_depth_effects_timer_v27"):
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(self._apply_depth_effects_v27)
+        self._qh_depth_effects_timer_v27 = timer
+    self._qh_depth_effects_timer_v27.start(0)
+
+
+_ORIGINAL_QH_POST_BUILD_UI_TWEAKS_V27 = QuantHunterWindow._post_build_ui_tweaks
+
+
+def _qh_post_build_ui_tweaks_v27(self: QuantHunterWindow) -> None:
+    _ORIGINAL_QH_POST_BUILD_UI_TWEAKS_V27(self)
+    self._schedule_depth_effects_v27()
+
+
+QuantHunterWindow._apply_depth_effects_v27 = _qh_apply_depth_effects_v27
+QuantHunterWindow._schedule_depth_effects_v27 = _qh_schedule_depth_effects_v27
+QuantHunterWindow._post_build_ui_tweaks = _qh_post_build_ui_tweaks_v27
 
 
 for _startup_deferred_method_name in (

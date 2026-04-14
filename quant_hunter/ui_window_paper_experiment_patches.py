@@ -1,6 +1,41 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QTextEdit, QVBoxLayout, QWidget
+try:
+    from PySide6.QtWidgets import QHBoxLayout, QLabel, QTextEdit, QVBoxLayout, QWidget
+except ModuleNotFoundError:  # pragma: no cover - enables pure-logic imports without Qt runtime
+    class _QtStub:
+        def __init__(self, *args, **kwargs) -> None:
+            self._text = str(args[0]) if args else ""
+
+        def __getattr__(self, _name):
+            return lambda *args, **kwargs: None
+
+        def text(self) -> str:
+            return self._text
+
+        def setText(self, value: str) -> None:
+            self._text = str(value)
+
+        def toPlainText(self) -> str:
+            return self._text
+
+        def setPlainText(self, value: str) -> None:
+            self._text = str(value)
+
+    class QWidget(_QtStub):  # type: ignore[override]
+        pass
+
+    class QLabel(QWidget):  # type: ignore[override]
+        pass
+
+    class QTextEdit(QWidget):  # type: ignore[override]
+        pass
+
+    class QHBoxLayout(_QtStub):  # type: ignore[override]
+        pass
+
+    class QVBoxLayout(_QtStub):  # type: ignore[override]
+        pass
 
 from quant_hunter.models import PaperTradingState
 from quant_hunter.paper_trading import build_strategy_rotation_snapshot, summarize_paper_trading_performance

@@ -6,6 +6,7 @@ from datetime import date
 from pathlib import Path
 
 from .models import BrokerProfile, PaperEquityPoint, PaperOrderRecord, PaperPatrolLog, PaperPosition, PaperTradingState
+from .risk import normalize_risk_profile
 from .secret_store import protect_secret, reveal_secret
 
 _ALL = "\u5168\u90e8"
@@ -14,6 +15,31 @@ _DEFAULT_MARKET_TIMEFRAME = "\u65e5\u7ebf"
 _DEFAULT_MARKET_HISTORY_WINDOW = "\u8fd11\u5e74"
 _DEFAULT_MARKET_REVIEW_DATE = "\u6700\u65b0"
 _SENSITIVE_BROKER_FIELDS = ("token", "password")
+
+
+def _as_string_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item or "") for item in value if str(item or "").strip()]
+    if isinstance(value, tuple):
+        return [str(item or "") for item in value if str(item or "").strip()]
+    return []
+
+
+def _safe_float(value: object, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value: object, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return default
 
 
 @dataclass
@@ -29,6 +55,7 @@ class AppState:
     recommend_execution_filter: str = _ALL
     market_theme_filter: str = _ALL
     focus_themes: list[str] = field(default_factory=list)
+    strategy_risk_profile: str = "standard"
     strategy_top_theme_limit: int = 3
     strategy_max_total_exposure: float = 0.85
     strategy_theme_drop_reduce: bool = True
@@ -79,20 +106,20 @@ def _decode_paper_trading_state(payload: object) -> PaperTradingState:
             symbol=str(item.get("symbol", "") or ""),
             stock_id=str(item.get("stock_id", "") or ""),
             stock_name=str(item.get("stock_name", "") or ""),
-            quantity=int(item.get("quantity", 0) or 0),
-            available=int(item.get("available", item.get("quantity", 0)) or 0),
-            avg_cost=float(item.get("avg_cost", 0.0) or 0.0),
-            current_price=float(item.get("current_price", 0.0) or 0.0),
-            market_value=float(item.get("market_value", 0.0) or 0.0),
+            quantity=_safe_int(item.get("quantity", 0) or 0, 0),
+            available=_safe_int(item.get("available", item.get("quantity", 0)) or 0, 0),
+            avg_cost=_safe_float(item.get("avg_cost", 0.0) or 0.0, 0.0),
+            current_price=_safe_float(item.get("current_price", 0.0) or 0.0, 0.0),
+            market_value=_safe_float(item.get("market_value", 0.0) or 0.0, 0.0),
             entry_date=str(item.get("entry_date", "") or ""),
             strategy_name=str(item.get("strategy_name", "") or ""),
             buy_point=str(item.get("buy_point", "") or ""),
             sell_point=str(item.get("sell_point", "") or ""),
-            stop_price=float(item.get("stop_price", 0.0) or 0.0),
-            target_price=float(item.get("target_price", 0.0) or 0.0),
+            stop_price=_safe_float(item.get("stop_price", 0.0) or 0.0, 0.0),
+            target_price=_safe_float(item.get("target_price", 0.0) or 0.0, 0.0),
             rationale=str(item.get("rationale", "") or ""),
-            unrealized_pnl=float(item.get("unrealized_pnl", 0.0) or 0.0),
-            unrealized_pnl_pct=float(item.get("unrealized_pnl_pct", 0.0) or 0.0),
+            unrealized_pnl=_safe_float(item.get("unrealized_pnl", 0.0) or 0.0, 0.0),
+            unrealized_pnl_pct=_safe_float(item.get("unrealized_pnl_pct", 0.0) or 0.0, 0.0),
         )
         for item in data.get("positions", [])
         if isinstance(item, dict)
@@ -105,19 +132,19 @@ def _decode_paper_trading_state(payload: object) -> PaperTradingState:
             stock_id=str(item.get("stock_id", "") or ""),
             stock_name=str(item.get("stock_name", "") or ""),
             side=str(item.get("side", "") or ""),
-            price=float(item.get("price", 0.0) or 0.0),
-            quantity=int(item.get("quantity", 0) or 0),
-            amount=float(item.get("amount", 0.0) or 0.0),
+            price=_safe_float(item.get("price", 0.0) or 0.0, 0.0),
+            quantity=_safe_int(item.get("quantity", 0) or 0, 0),
+            amount=_safe_float(item.get("amount", 0.0) or 0.0, 0.0),
             strategy_name=str(item.get("strategy_name", "") or ""),
-            position_pct=float(item.get("position_pct", 0.0) or 0.0),
+            position_pct=_safe_float(item.get("position_pct", 0.0) or 0.0, 0.0),
             signal_source=str(item.get("signal_source", "") or ""),
             buy_point=str(item.get("buy_point", "") or ""),
             sell_point=str(item.get("sell_point", "") or ""),
             status=str(item.get("status", "FILLED") or "FILLED"),
             note=str(item.get("note", "") or ""),
-            realized_pnl=float(item.get("realized_pnl", 0.0) or 0.0),
-            realized_pnl_pct=float(item.get("realized_pnl_pct", 0.0) or 0.0),
-            cumulative_realized_pnl=float(item.get("cumulative_realized_pnl", 0.0) or 0.0),
+            realized_pnl=_safe_float(item.get("realized_pnl", 0.0) or 0.0, 0.0),
+            realized_pnl_pct=_safe_float(item.get("realized_pnl_pct", 0.0) or 0.0, 0.0),
+            cumulative_realized_pnl=_safe_float(item.get("cumulative_realized_pnl", 0.0) or 0.0, 0.0),
         )
         for item in data.get("ledger", [])
         if isinstance(item, dict)
@@ -125,12 +152,12 @@ def _decode_paper_trading_state(payload: object) -> PaperTradingState:
     equity_curve = [
         PaperEquityPoint(
             timestamp=str(item.get("timestamp", "") or ""),
-            cash=float(item.get("cash", 0.0) or 0.0),
-            market_value=float(item.get("market_value", 0.0) or 0.0),
-            total_equity=float(item.get("total_equity", 0.0) or 0.0),
-            realized_pnl=float(item.get("realized_pnl", 0.0) or 0.0),
-            total_return=float(item.get("total_return", 0.0) or 0.0),
-            position_count=int(item.get("position_count", 0) or 0),
+            cash=_safe_float(item.get("cash", 0.0) or 0.0, 0.0),
+            market_value=_safe_float(item.get("market_value", 0.0) or 0.0, 0.0),
+            total_equity=_safe_float(item.get("total_equity", 0.0) or 0.0, 0.0),
+            realized_pnl=_safe_float(item.get("realized_pnl", 0.0) or 0.0, 0.0),
+            total_return=_safe_float(item.get("total_return", 0.0) or 0.0, 0.0),
+            position_count=_safe_int(item.get("position_count", 0) or 0, 0),
         )
         for item in data.get("equity_curve", [])
         if isinstance(item, dict)
@@ -141,33 +168,33 @@ def _decode_paper_trading_state(payload: object) -> PaperTradingState:
             event_type=str(item.get("event_type", "") or ""),
             summary=str(item.get("summary", "") or ""),
             detail=str(item.get("detail", "") or ""),
-            equity=float(item.get("equity", 0.0) or 0.0),
-            total_return=float(item.get("total_return", 0.0) or 0.0),
-            position_count=int(item.get("position_count", 0) or 0),
+            equity=_safe_float(item.get("equity", 0.0) or 0.0, 0.0),
+            total_return=_safe_float(item.get("total_return", 0.0) or 0.0, 0.0),
+            position_count=_safe_int(item.get("position_count", 0) or 0, 0),
         )
         for item in data.get("patrol_logs", [])
         if isinstance(item, dict)
     ]
-    initial_cash = float(data.get("initial_cash", 100000.0) or 100000.0)
-    cash = float(data.get("cash", initial_cash) or initial_cash)
-    total_equity = float(data.get("total_equity", cash) or cash)
+    initial_cash = _safe_float(data.get("initial_cash", 100000.0) or 100000.0, 100000.0)
+    cash = _safe_float(data.get("cash", initial_cash) or initial_cash, initial_cash)
+    total_equity = _safe_float(data.get("total_equity", cash) or cash, cash)
     return PaperTradingState(
         enabled=bool(data.get("enabled", False)),
         auto_run=bool(data.get("auto_run", False)),
-        auto_interval_minutes=float(data.get("auto_interval_minutes", 5.0) or 5.0),
+        auto_interval_minutes=_safe_float(data.get("auto_interval_minutes", 5.0) or 5.0, 5.0),
         initial_cash=initial_cash,
         cash=cash,
-        max_position_pct=float(data.get("max_position_pct", 0.25) or 0.25),
+        max_position_pct=_safe_float(data.get("max_position_pct", 0.25) or 0.25, 0.25),
         positions=positions,
         ledger=ledger,
         equity_curve=equity_curve,
         patrol_logs=patrol_logs,
-        realized_pnl=float(data.get("realized_pnl", 0.0) or 0.0),
+        realized_pnl=_safe_float(data.get("realized_pnl", 0.0) or 0.0, 0.0),
         total_equity=total_equity,
-        total_return=float(data.get("total_return", 0.0) or 0.0),
+        total_return=_safe_float(data.get("total_return", 0.0) or 0.0, 0.0),
         last_run_at=str(data.get("last_run_at", "") or ""),
         last_strategy_note=str(data.get("last_strategy_note", "") or ""),
-        order_sequence=int(data.get("order_sequence", 0) or 0),
+        order_sequence=_safe_int(data.get("order_sequence", 0) or 0, 0),
     )
 
 
@@ -185,7 +212,7 @@ def load_app_state(path: str | Path) -> AppState:
     return AppState(
         universe_dir=data.get("universe_dir", ""),
         selected_symbol=data.get("selected_symbol", ""),
-        watchlist=list(data.get("watchlist", [])),
+        watchlist=_as_string_list(data.get("watchlist", [])),
         ui_theme=data.get("ui_theme", "sunrise"),
         theme_alias_path=data.get("theme_alias_path", ""),
         recommend_theme_filter=data.get("recommend_theme_filter", _ALL),
@@ -193,7 +220,8 @@ def load_app_state(path: str | Path) -> AppState:
         recommend_action_filter=data.get("recommend_action_filter", _ALL),
         recommend_execution_filter=data.get("recommend_execution_filter", _ALL),
         market_theme_filter=data.get("market_theme_filter", _ALL),
-        focus_themes=list(data.get("focus_themes", [])),
+        focus_themes=_as_string_list(data.get("focus_themes", [])),
+        strategy_risk_profile=normalize_risk_profile(data.get("strategy_risk_profile", "standard")),
         strategy_top_theme_limit=int(data.get("strategy_top_theme_limit", 3) or 3),
         strategy_max_total_exposure=float(data.get("strategy_max_total_exposure", 0.85) or 0.85),
         strategy_theme_drop_reduce=bool(data.get("strategy_theme_drop_reduce", True)),

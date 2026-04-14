@@ -209,11 +209,52 @@ QToolTip {
                 "交易执行",
             ),
         }
+        pill_copy = {
+            "overview": "FLAGSHIP DESK",
+            "scanner": "LIVE SCAN",
+            "recommend": "ALPHA FLOW",
+            "board": "BOARD WATCH",
+            "config": "SYSTEM LAB",
+            "auth": "ACCESS LAYER",
+            "detail": "REVIEW LAB",
+            "broker": "EXECUTION CORE",
+        }
         title, subtitle, badge = page_copy.get(page_key, ("量化猎手 Pro", "统一管理行情、推荐、执行与复盘。", "机构终端"))
         if hasattr(self, "shell_product_title"):
             self._set_label_text_if_changed(self.shell_product_title, title, tooltip=title)
         if hasattr(self, "shell_product_subtitle"):
             self._set_label_text_if_changed(self.shell_product_subtitle, subtitle, tooltip=subtitle)
+        if hasattr(self, "shell_brand_pill"):
+            pill_text = pill_copy.get(page_key, "FLAGSHIP DESK")
+            self._set_label_text_if_changed(self.shell_brand_pill, pill_text, tooltip=pill_text)
+        for widget_name in [
+            "shell_brand_pill",
+            "shell_product_eyebrow",
+            "shell_product_title",
+            "shell_product_subtitle",
+            "top_badge",
+            "shell_header",
+            "shell_pulse_bar",
+            "shell_pulse_label",
+            "shell_pulse_hint",
+            "shell_pulse_meta",
+        ]:
+            widget = getattr(self, widget_name, None)
+            if isinstance(widget, QWidget) and widget.property("pageTone") != page_key:
+                widget.setProperty("pageTone", page_key)
+                self.style().unpolish(widget)
+                self.style().polish(widget)
+                widget.update()
+        for chip_name in ["shell_workspace_chip", "shell_market_chip", "shell_pipeline_chip", "shell_refresh_chip", "shell_runtime_chip"]:
+            chip = getattr(self, chip_name, None)
+            if isinstance(chip, dict):
+                for key in ("frame", "label", "value"):
+                    widget = chip.get(key)
+                    if isinstance(widget, QWidget) and widget.property("pageTone") != page_key:
+                        widget.setProperty("pageTone", page_key)
+                        self.style().unpolish(widget)
+                        self.style().polish(widget)
+                        widget.update()
         if hasattr(self, "top_badge"):
             badge_text = f"{badge} | 推荐 {pool_count} | 计划 {plan_count} | 待审 {pending_orders}"
             self._set_label_text_if_changed(self.top_badge, badge_text, tooltip=badge_text)

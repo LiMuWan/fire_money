@@ -29,13 +29,15 @@ class ParameterOptimizer:
 
     def _build_stability_windows(self, bars: list[PriceBar], params: StrategyParams) -> list[list[PriceBar]]:
         minimum = self._minimum_bars_required(params)
-        if len(bars) < minimum * 2:
+        if len(bars) < minimum + 2:
             return []
 
-        midpoint = len(bars) // 2
-        second_start = max(0, midpoint - (minimum - 1))
-        windows = [bars[:midpoint], bars[second_start:]]
-        return [window for window in windows if len(window) >= minimum]
+        window_size = max(minimum, int(len(bars) * 0.65))
+        first_window = bars[:window_size]
+        second_window = bars[-window_size:]
+        if first_window[0].date == second_window[0].date and len(first_window) == len(second_window):
+            return []
+        return [first_window, second_window]
 
     def _evaluate_symbol(self, bars: list[PriceBar], params: StrategyParams) -> tuple[float, float, float, int, float] | None:
         minimum = self._minimum_bars_required(params)

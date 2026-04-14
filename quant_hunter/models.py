@@ -157,6 +157,7 @@ class RecommendationRow:
     news_score: float
     leader_score: float
     total_score: float
+    backtest_quality_score: float = 0.0
     theme_name: str = ""
     theme_score: float = 0.0
     theme_rank: int = 0

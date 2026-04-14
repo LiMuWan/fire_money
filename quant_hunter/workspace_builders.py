@@ -1,6 +1,7 @@
 from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtCharts import QChartView
+from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -32,12 +33,24 @@ from quant_hunter.ui_config import (
     RECOMMEND_EMPTY_REFRESH_BUTTON_TEXT,
     RECOMMEND_EMPTY_SAMPLE_BUTTON_TEXT,
 )
+from quant_hunter.risk import RISK_PROFILE_LABELS
+
+
+def _configure_chart_view(view: QChartView, *, min_height: int) -> None:
+    view.setMinimumHeight(min_height)
+    view.setObjectName("marketChartPanel")
+    view.setFrameShape(QFrame.NoFrame)
+    view.setRenderHint(QPainter.Antialiasing, True)
+    view.setRenderHint(QPainter.TextAntialiasing, True)
+    view.setRenderHint(QPainter.SmoothPixmapTransform, True)
 
 
 def _build_recommend_daily_pool_table(window, build_table):
     table = build_table(DAILY_POOL_TABLE_HEADERS)
-    table.verticalHeader().setDefaultSectionSize(48)
+    table.verticalHeader().setDefaultSectionSize(74)
     table.setMinimumHeight(420)
+    table.setWordWrap(True)
+    table.setTextElideMode(Qt.ElideNone)
     table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
     table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
     table.setObjectName("recommendPoolTable")
@@ -723,6 +736,7 @@ def build_overview_workspace(
     layout.addWidget(controls_splitter)
     dashboard_metrics_box = QGroupBox("核心指标带")
     window._style_terminal_panel(dashboard_metrics_box)
+    dashboard_metrics_box.setProperty("surfaceRole", "metric-band")
     metrics_row = QHBoxLayout(dashboard_metrics_box)
     metrics_row.setContentsMargins(12, 12, 12, 12)
     metrics_row.setSpacing(10)
@@ -741,17 +755,20 @@ def build_overview_workspace(
     layout.addWidget(dashboard_metrics_box)
     cockpit_box = QGroupBox("市场驾驶舱")
     window._style_terminal_panel(cockpit_box)
+    cockpit_box.setProperty("surfaceRole", "spotlight")
     cockpit_layout = QVBoxLayout(cockpit_box)
     cockpit_body = QSplitter(Qt.Horizontal)
     cockpit_body.setChildrenCollapsible(False)
     window.overview_command_text = QTextEdit()
     window.overview_command_text.setReadOnly(True)
     window.overview_command_text.setObjectName("marketNotePanel")
+    window.overview_command_text.setProperty("panelTone", "command")
     window.overview_command_text.setMinimumHeight(150)
     cockpit_body.addWidget(window.overview_command_text)
     window.overview_execution_text = QTextEdit()
     window.overview_execution_text.setReadOnly(True)
     window.overview_execution_text.setObjectName("marketNotePanel")
+    window.overview_execution_text.setProperty("panelTone", "execution")
     window.overview_execution_text.setMinimumHeight(150)
     cockpit_body.addWidget(window.overview_execution_text)
     window._configure_splitter(cockpit_body, [1, 1])
@@ -770,6 +787,35 @@ def build_overview_workspace(
     cockpit_action_row.addStretch(1)
     cockpit_layout.addLayout(cockpit_action_row)
     layout.addWidget(cockpit_box)
+
+    playbook_box = QGroupBox("行动剧本")
+    window._style_terminal_panel(playbook_box)
+    playbook_box.setProperty("surfaceRole", "spotlight")
+    playbook_layout = QVBoxLayout(playbook_box)
+    window.overview_playbook_text = QTextEdit()
+    window.overview_playbook_text.setReadOnly(True)
+    window.overview_playbook_text.setObjectName("marketNotePanel")
+    window.overview_playbook_text.setProperty("panelTone", "playbook")
+    window.overview_playbook_text.setMinimumHeight(118)
+    window.overview_playbook_text.setPlainText(
+        "先完成登录与交易通道配置，再刷新市场、查看主线和推荐池，最后进入交易执行页复核委托。"
+    )
+    playbook_layout.addWidget(window.overview_playbook_text)
+    playbook_action_row = QHBoxLayout()
+    for label, workspace, role in [
+        ("前往登录配置", "auth", "accent"),
+        ("前往推荐池", "recommend", "ghost"),
+        ("前往交易执行", "broker", "ghost"),
+    ]:
+        button = QPushButton(label)
+        window._set_button_role(button, role)
+        button.setMinimumHeight(38)
+        button.clicked.connect(lambda checked=False, target=workspace: window._navigate_to_workspace(target))
+        playbook_action_row.addWidget(button)
+    playbook_action_row.addStretch(1)
+    playbook_layout.addLayout(playbook_action_row)
+    layout.addWidget(playbook_box)
+
     window.overview_stage_container = QWidget()
     overview_stage_layout = QVBoxLayout(window.overview_stage_container)
     overview_stage_layout.setContentsMargins(0, 0, 0, 0)
@@ -787,6 +833,7 @@ def build_overview_workspace(
     detail_stage_layout.setSpacing(14)
     overview_priority_box = QGroupBox("盘前优先级")
     window._style_terminal_panel(overview_priority_box)
+    overview_priority_box.setProperty("surfaceRole", "priority-rail")
     overview_priority_layout = QHBoxLayout(overview_priority_box)
     overview_priority_layout.setContentsMargins(12, 12, 12, 12)
     overview_priority_layout.setSpacing(10)
@@ -811,9 +858,7 @@ def build_overview_workspace(
     left_title.setObjectName("heroTitle")
     left_layout.addWidget(left_title)
     window.intraday_chart_view = chart_view_cls()
-    window.intraday_chart_view.setMinimumHeight(260)
-    window.intraday_chart_view.setObjectName("marketChartPanel")
-    window.intraday_chart_view.setFrameShape(QFrame.NoFrame)
+    _configure_chart_view(window.intraday_chart_view, min_height=260)
     left_layout.addWidget(window.intraday_chart_view, stretch=5)
     left_notes = QWidget()
     left_notes_layout = QVBoxLayout(left_notes)
@@ -824,6 +869,7 @@ def build_overview_workspace(
     window.market_buy_text = QTextEdit()
     window.market_buy_text.setReadOnly(True)
     window.market_buy_text.setObjectName("marketNotePanel")
+    window.market_buy_text.setProperty("panelTone", "buy")
     window.market_buy_text.setMinimumHeight(140)
     buy_layout.addWidget(window.market_buy_text)
     risk_box = QGroupBox("减仓和卖点")
@@ -831,6 +877,7 @@ def build_overview_workspace(
     window.market_sell_text = QTextEdit()
     window.market_sell_text.setReadOnly(True)
     window.market_sell_text.setObjectName("marketNotePanel")
+    window.market_sell_text.setProperty("panelTone", "risk")
     window.market_sell_text.setMinimumHeight(140)
     risk_layout.addWidget(window.market_sell_text)
     breadth_box = QGroupBox("消息面")
@@ -839,6 +886,7 @@ def build_overview_workspace(
     window.market_breadth_text = QTextEdit()
     window.market_breadth_text.setReadOnly(True)
     window.market_breadth_text.setObjectName("marketNotePanel")
+    window.market_breadth_text.setProperty("panelTone", "watch")
     window.market_breadth_text.setMinimumHeight(150)
     breadth_layout.addWidget(window.market_breadth_text)
     left_notes_layout.addWidget(buy_box)
@@ -940,27 +988,19 @@ def build_overview_workspace(
     chart_control_row.addStretch(1)
     center_layout.addLayout(chart_control_row)
     window.daily_chart_view = chart_view_cls()
-    window.daily_chart_view.setMinimumHeight(360)
-    window.daily_chart_view.setObjectName("marketChartPanel")
-    window.daily_chart_view.setFrameShape(QFrame.NoFrame)
+    _configure_chart_view(window.daily_chart_view, min_height=360)
     center_layout.addWidget(window.daily_chart_view, stretch=6)
     mini_chart_row = QSplitter(Qt.Horizontal)
     mini_chart_row.setChildrenCollapsible(False)
     window.overview_mini_chart_splitter = mini_chart_row
     window.fund_chart_view = chart_view_cls()
-    window.fund_chart_view.setMinimumHeight(200)
-    window.fund_chart_view.setObjectName("marketChartPanel")
-    window.fund_chart_view.setFrameShape(QFrame.NoFrame)
+    _configure_chart_view(window.fund_chart_view, min_height=200)
     mini_chart_row.addWidget(window.fund_chart_view)
     window.momentum_chart_view = chart_view_cls()
-    window.momentum_chart_view.setMinimumHeight(200)
-    window.momentum_chart_view.setObjectName("marketChartPanel")
-    window.momentum_chart_view.setFrameShape(QFrame.NoFrame)
+    _configure_chart_view(window.momentum_chart_view, min_height=200)
     mini_chart_row.addWidget(window.momentum_chart_view)
     window.indicator_chart_view = chart_view_cls()
-    window.indicator_chart_view.setMinimumHeight(200)
-    window.indicator_chart_view.setObjectName("marketChartPanel")
-    window.indicator_chart_view.setFrameShape(QFrame.NoFrame)
+    _configure_chart_view(window.indicator_chart_view, min_height=200)
     mini_chart_row.addWidget(window.indicator_chart_view)
     window._configure_splitter(mini_chart_row, [1, 1, 1])
     center_layout.addWidget(mini_chart_row, stretch=2)
@@ -978,9 +1018,11 @@ def build_overview_workspace(
     window.market_pool_table.itemSelectionChanged.connect(window.on_market_pool_selected)
     window.market_pool_table.setShowGrid(False)
     window.market_pool_table.setAlternatingRowColors(False)
-    window.market_pool_table.verticalHeader().setDefaultSectionSize(68)
+    window.market_pool_table.verticalHeader().setDefaultSectionSize(82)
     window.market_pool_table.setObjectName("marketPoolTable")
     window.market_pool_table.setMinimumHeight(260)
+    window.market_pool_table.setWordWrap(True)
+    window.market_pool_table.setTextElideMode(Qt.ElideNone)
     window.market_pool_table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
     window.market_pool_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
     pool_layout.addWidget(window.market_pool_table)
@@ -992,6 +1034,7 @@ def build_overview_workspace(
     right_layout.setContentsMargins(0, 0, 0, 0)
     right_layout.setSpacing(10)
     leaderboard_box = QGroupBox("掘龙榜")
+    leaderboard_box.setProperty("surfaceRole", "analysis")
     leaderboard_layout = QVBoxLayout(leaderboard_box)
     leaderboard_layout.setContentsMargins(10, 10, 10, 10)
     leaderboard_layout.setSpacing(10)
@@ -1006,6 +1049,7 @@ def build_overview_workspace(
     right_layout.addWidget(leaderboard_box, stretch=5)
     overview_summary_box = QGroupBox("主控摘要")
     window._style_terminal_panel(overview_summary_box)
+    overview_summary_box.setProperty("surfaceRole", "metric-band")
     overview_summary_layout = QHBoxLayout(overview_summary_box)
     overview_summary_layout.setContentsMargins(10, 10, 10, 10)
     overview_summary_layout.setSpacing(10)
@@ -1024,12 +1068,14 @@ def build_overview_workspace(
     right_notes_layout.setSpacing(10)
     right_layout.addWidget(right_notes, stretch=4)
     right_summary_box = QGroupBox("主题摘要")
+    right_summary_box.setProperty("surfaceRole", "analysis")
     right_summary_layout = QVBoxLayout(right_summary_box)
     right_summary_layout.setContentsMargins(10, 10, 10, 10)
     right_summary_layout.setSpacing(10)
     window.market_theme_brief_text = QTextEdit()
     window.market_theme_brief_text.setReadOnly(True)
     window.market_theme_brief_text.setObjectName("marketNotePanel")
+    window.market_theme_brief_text.setProperty("panelTone", "theme")
     window.market_theme_brief_text.setMinimumHeight(168)
     window.market_theme_brief_text.setMaximumHeight(220)
     right_summary_layout.addWidget(window.market_theme_brief_text, stretch=1)
@@ -1047,15 +1093,18 @@ def build_overview_workspace(
     window.market_source_status_text = QTextEdit()
     window.market_source_status_text.setReadOnly(True)
     window.market_source_status_text.setObjectName("marketNotePanel")
+    window.market_source_status_text.setProperty("panelTone", "system")
     window.market_source_status_text.setMinimumHeight(168)
     window.market_source_status_text.setMaximumHeight(220)
     right_summary_layout.addWidget(window.market_source_status_text, stretch=1)
     right_notes_layout.addWidget(right_summary_box, stretch=1)
     capital_box = QGroupBox("持仓与大盘")
+    capital_box.setProperty("surfaceRole", "analysis")
     capital_layout = QVBoxLayout(capital_box)
     window.market_capital_text = QTextEdit()
     window.market_capital_text.setReadOnly(True)
     window.market_capital_text.setObjectName("marketNotePanel")
+    window.market_capital_text.setProperty("panelTone", "capital")
     window.market_capital_text.setMinimumHeight(210)
     window.market_capital_text.setMaximumHeight(260)
     capital_layout.addWidget(window.market_capital_text)
@@ -1072,10 +1121,12 @@ def build_overview_workspace(
     capital_layout.addLayout(capital_action_row)
     right_notes_layout.addWidget(capital_box, stretch=1)
     decision_box = QGroupBox("买卖点结论")
+    decision_box.setProperty("surfaceRole", "analysis")
     decision_layout = QVBoxLayout(decision_box)
     window.market_decision_text = QTextEdit()
     window.market_decision_text.setReadOnly(True)
     window.market_decision_text.setObjectName("marketNotePanel")
+    window.market_decision_text.setProperty("panelTone", "decision")
     window.market_decision_text.setMinimumHeight(210)
     window.market_decision_text.setMaximumHeight(260)
     decision_layout.addWidget(window.market_decision_text)
@@ -1313,6 +1364,7 @@ def build_recommend_workspace(
 
     recommend_focus_cards_box = QGroupBox("当前焦点")
     window._style_terminal_panel(recommend_focus_cards_box)
+    recommend_focus_cards_box.setProperty("surfaceRole", "metric-band")
     recommend_focus_cards_layout = QHBoxLayout(recommend_focus_cards_box)
     recommend_focus_cards_layout.setContentsMargins(12, 12, 12, 12)
     recommend_focus_cards_layout.setSpacing(10)
@@ -1339,6 +1391,9 @@ def build_recommend_workspace(
     focus_review_box = QGroupBox("单票审查")
     queue_box = QGroupBox("执行队列")
     window._style_terminal_panel(dispatch_box, focus_review_box, queue_box)
+    dispatch_box.setProperty("surfaceRole", "analysis")
+    focus_review_box.setProperty("surfaceRole", "analysis")
+    queue_box.setProperty("surfaceRole", "analysis")
 
     dispatch_layout = QVBoxLayout(dispatch_box)
     window.recommend_dispatch_text = QTextEdit()
@@ -1346,6 +1401,7 @@ def build_recommend_workspace(
     window.recommend_dispatch_text.setMinimumHeight(156)
     window.recommend_dispatch_text.setMaximumHeight(188)
     window._style_terminal_console(window.recommend_dispatch_text)
+    window.recommend_dispatch_text.setProperty("panelTone", "dispatch")
     window.recommend_dispatch_text.setPlainText("先看单票结论，再扫执行节奏。")
     dispatch_layout.addWidget(window.recommend_dispatch_text)
 
@@ -1355,6 +1411,7 @@ def build_recommend_workspace(
     window.recommend_focus_review_text.setMinimumHeight(172)
     window.recommend_focus_review_text.setMaximumHeight(204)
     window._style_terminal_console(window.recommend_focus_review_text)
+    window.recommend_focus_review_text.setProperty("panelTone", "focus-review")
     window.recommend_focus_review_text.setPlainText("这里只保留价位、风险和复核重点。")
     focus_review_layout.addWidget(window.recommend_focus_review_text)
 
@@ -1364,6 +1421,7 @@ def build_recommend_workspace(
     window.recommend_queue_text.setMinimumHeight(156)
     window.recommend_queue_text.setMaximumHeight(188)
     window._style_terminal_console(window.recommend_queue_text)
+    window.recommend_queue_text.setProperty("panelTone", "queue")
     window.recommend_queue_text.setPlainText("这里只看待复核、已送审和失败回看。")
     queue_layout.addWidget(window.recommend_queue_text)
 
@@ -1417,6 +1475,7 @@ def build_recommend_workspace(
 
     decision_summary_box = QGroupBox("单票成交卡")
     window._style_terminal_panel(decision_summary_box)
+    decision_summary_box.setProperty("surfaceRole", "spotlight")
     decision_summary_layout = QVBoxLayout(decision_summary_box)
     window.recommend_decision_summary_label = QLabel("先选中一只股票，再判断是否具备成交条件、要不要进入送审。")
     window.recommend_decision_summary_label.setObjectName("focusStateLabel")
@@ -1427,6 +1486,7 @@ def build_recommend_workspace(
     window.recommend_decision_summary_text.setMinimumHeight(188)
     window.recommend_decision_summary_text.setMaximumHeight(236)
     window._style_terminal_console(window.recommend_decision_summary_text)
+    window.recommend_decision_summary_text.setProperty("panelTone", "decision")
     window.recommend_decision_summary_text.setPlainText(
         "单票成交卡\n\n"
         "这里会先给出当前结论、送审门槛、关键价位、失效条件和下一步动作。\n"
@@ -1532,6 +1592,9 @@ def build_recommend_workspace(
     watch_bucket_box = QGroupBox("观察池")
     risk_bucket_box = QGroupBox("风险池")
     window._style_terminal_panel(core_bucket_box, watch_bucket_box, risk_bucket_box)
+    core_bucket_box.setProperty("surfaceRole", "analysis")
+    watch_bucket_box.setProperty("surfaceRole", "analysis")
+    risk_bucket_box.setProperty("surfaceRole", "analysis")
 
     core_bucket_layout = QVBoxLayout(core_bucket_box)
     window.recommend_core_bucket_text = QTextEdit()
@@ -1539,6 +1602,7 @@ def build_recommend_workspace(
     window.recommend_core_bucket_text.setMinimumHeight(168)
     window.recommend_core_bucket_text.setMaximumHeight(220)
     window._style_terminal_console(window.recommend_core_bucket_text)
+    window.recommend_core_bucket_text.setProperty("panelTone", "buy")
     window.recommend_core_bucket_text.setPlainText("继续跟。先执行。")
     core_bucket_layout.addWidget(window.recommend_core_bucket_text)
 
@@ -1548,6 +1612,7 @@ def build_recommend_workspace(
     window.recommend_watch_bucket_text.setMinimumHeight(168)
     window.recommend_watch_bucket_text.setMaximumHeight(220)
     window._style_terminal_console(window.recommend_watch_bucket_text)
+    window.recommend_watch_bucket_text.setProperty("panelTone", "watch")
     window.recommend_watch_bucket_text.setPlainText("只观察。先盯信号。")
     watch_bucket_layout.addWidget(window.recommend_watch_bucket_text)
 
@@ -1557,6 +1622,7 @@ def build_recommend_workspace(
     window.recommend_risk_bucket_text.setMinimumHeight(168)
     window.recommend_risk_bucket_text.setMaximumHeight(220)
     window._style_terminal_console(window.recommend_risk_bucket_text)
+    window.recommend_risk_bucket_text.setProperty("panelTone", "risk")
     window.recommend_risk_bucket_text.setPlainText("防切换。先管风险。")
     risk_bucket_layout.addWidget(window.recommend_risk_bucket_text)
 
@@ -1927,6 +1993,13 @@ def build_config_workspace(window) -> None:
     window.config_inputs["max_total_exposure"] = QLineEdit(str(window.state.strategy_max_total_exposure))
     window.config_inputs["daily_plan_candidate_limit"] = QLineEdit(str(window.state.daily_plan_candidate_limit))
     window.focus_themes_input = QLineEdit(", ".join(window.state.focus_themes))
+    window.strategy_risk_profile_combo = QComboBox()
+    for key in ["conservative", "standard", "aggressive"]:
+        window.strategy_risk_profile_combo.addItem(RISK_PROFILE_LABELS.get(key, key), key)
+    for index in range(window.strategy_risk_profile_combo.count()):
+        if window.strategy_risk_profile_combo.itemData(index) == window.state.strategy_risk_profile:
+            window.strategy_risk_profile_combo.setCurrentIndex(index)
+            break
     window.theme_drop_reduce_checkbox = QCheckBox("题材掉队时优先减仓")
     window.theme_drop_reduce_checkbox.setChecked(window.state.strategy_theme_drop_reduce)
     window.auto_daily_plan_export_checkbox = QCheckBox("启用自动盘前报告")
@@ -1947,6 +2020,7 @@ def build_config_workspace(window) -> None:
             break
 
     strategy_layout.addRow("主线前排 N", window.config_inputs["top_theme_limit"])
+    strategy_layout.addRow("风险档位", window.strategy_risk_profile_combo)
     strategy_layout.addRow("总仓位上限", window.config_inputs["max_total_exposure"])
     strategy_layout.addRow("盘前候选上限", window.config_inputs["daily_plan_candidate_limit"])
     strategy_layout.addRow("关注题材", window.focus_themes_input)

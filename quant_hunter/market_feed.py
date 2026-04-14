@@ -797,7 +797,7 @@ class RemoteMarketScreener:
                     symbol=item.symbol,
                     stock_id=item.stock_id,
                     stock_name=item.stock_name,
-                    action="BUY" if total_score >= 72 else item.action,
+                    action=item.action if str(getattr(item, "signal_source", "") or "").startswith("synthetic://") else ("BUY" if total_score >= 72 else item.action),
                     label=item.label,
                     signal_date=item.signal_date,
                     close=item.close,
@@ -807,6 +807,7 @@ class RemoteMarketScreener:
                     technical_score=item.technical_score,
                     position_score=item.position_score,
                     persistence_score=item.persistence_score,
+                    backtest_quality_score=float(getattr(item, "backtest_quality_score", 0.0) or 0.0),
                     news_score=news_score,
                     leader_score=max(item.leader_score, 88.0 if snapshot.heat_score >= 80 else item.leader_score),
                     total_score=total_score,
@@ -815,6 +816,18 @@ class RemoteMarketScreener:
                     theme_rank=item.theme_rank,
                     leader_level=item.leader_level,
                     primary_strategy=boosted_primary,
+                    signal_source=getattr(item, "signal_source", ""),
+                    signal_age_days=int(getattr(item, "signal_age_days", 0) or 0),
+                    freshness_score=float(getattr(item, "freshness_score", 0.0) or 0.0),
+                    setup_quality_score=float(getattr(item, "setup_quality_score", 0.0) or 0.0),
+                    risk_reward_ratio=float(getattr(item, "risk_reward_ratio", 0.0) or 0.0),
+                    confidence_score=float(getattr(item, "confidence_score", 0.0) or 0.0),
+                    execution_readiness=float(getattr(item, "execution_readiness", 0.0) or 0.0),
+                    timeliness_score=float(getattr(item, "timeliness_score", 0.0) or 0.0),
+                    opportunity_tier=getattr(item, "opportunity_tier", ""),
+                    reject_reason=getattr(item, "reject_reason", ""),
+                    next_focus=getattr(item, "next_focus", ""),
+                    invalidation_reason=getattr(item, "invalidation_reason", ""),
                     leader_model_score=item.leader_model_score + (5.0 if boosted_primary == "龙头模型" else 0.0),
                     main_force_score=item.main_force_score + (5.0 if boosted_primary == "主力雷达" else 0.0),
                     board_attack_score=item.board_attack_score + (5.0 if boosted_primary == "擒龙打板" else 0.0),
@@ -878,7 +891,7 @@ class RemoteMarketScreener:
             close = bars[-1].close if bars else snapshot.latest_price
             score = int(max(58, min(90, round(snapshot.heat_score * 0.72 + max(snapshot.pct_change, 0.0) * 1.8))))
             label = "WATCH"
-            action = "BUY" if score >= 74 else "WATCH"
+            action = "WATCH"
             entry = close
             stop = round(close * 0.95, 2)
             target = round(close * 1.1, 2)

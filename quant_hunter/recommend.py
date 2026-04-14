@@ -5,6 +5,7 @@ from datetime import date, datetime
 
 from .data import extract_stock_id
 from .models import DailyAnalysis, NewsCatalyst, RecommendationRow, ScanRow, StockProfile, SymbolBacktestSummary
+from .risk import DEFAULT_RISK_CONTROLS, RiskControls, normalize_risk_profile, resolve_risk_controls
 from .theme import ThemeHeatEngine, infer_mainline_flow_signal, infer_mainline_stage, infer_theme_name
 
 
@@ -76,6 +77,7 @@ def _recommendation_sort_key(item: RecommendationRow) -> tuple[object, ...]:
         _mainline_stage_priority(stage_label),
         _mainline_flow_priority(flow_signal),
         *_one_day_hold_sort_priority(item),
+        -(getattr(item, "backtest_quality_score", 0.0) or 0.0),
         -(getattr(item, "setup_quality_score", 0.0) or 0.0),
         -(getattr(item, "freshness_score", 0.0) or 0.0),
         -(getattr(item, "risk_reward_ratio", 0.0) or 0.0),
@@ -105,12 +107,18 @@ class DailyPoolBuilder:
         theme_aliases: dict[str, tuple[str, ...]] | None = None,
         focus_themes: list[str] | None = None,
         focus_theme_boost: float = 0.0,
+        strategy_bias_by_name: dict[str, float] | None = None,
+        risk_profile: str | None = None,
+        risk_controls: RiskControls | None = None,
     ) -> None:
         self.stock_profiles = stock_profiles or {}
         self.news_map = news_map or {}
         self.theme_aliases = theme_aliases or {}
         self.focus_themes = tuple(item.strip() for item in (focus_themes or []) if item.strip())
         self.focus_theme_boost = max(focus_theme_boost, 0.0)
+        self.strategy_bias_by_name = {str(key).strip(): float(value or 0.0) for key, value in (strategy_bias_by_name or {}).items() if str(key).strip()}
+        self.risk_profile = normalize_risk_profile(risk_profile)
+        self.risk_controls = risk_controls or resolve_risk_controls(self.risk_profile)
         self.last_theme_rows = []
         self.last_leader_rows = []
 
@@ -131,9 +139,11 @@ class DailyPoolBuilder:
                 continue
             profile = self.stock_profiles.get(row.symbol)
             analyses = analyses_by_symbol.get(row.symbol, [])
+            summary = summary_map.get(row.symbol)
             technical_score = float(row.score)
             position_score = self._position_score(row, analyses)
-            persistence_score = self._persistence_score(analyses, summary_map.get(row.symbol))
+            persistence_score = self._persistence_score(analyses, summary)
+            backtest_quality_score = self._backtest_quality_score(summary)
             news_score, catalyst = self._news_score(row.symbol, as_of)
             leader_score = 88.0 if profile and profile.is_leader else 58.0
             theme_name = infer_theme_name(
@@ -164,12 +174,13 @@ class DailyPoolBuilder:
                 strategy_scores=strategy_scores,
             )
             total_score = round(
-                technical_score * 0.34
-                + position_score * 0.2
-                + persistence_score * 0.22
-                + news_score * 0.14
-                + leader_score * 0.1
-                + strategy_scores["dragon_decision_score"] * 0.06,
+                technical_score * 0.30
+                + position_score * 0.18
+                + persistence_score * 0.18
+                + backtest_quality_score * 0.10
+                + news_score * 0.12
+                + leader_score * 0.08
+                + strategy_scores["dragon_decision_score"] * 0.04,
                 2,
             )
             if focus_boost:
@@ -179,6 +190,7 @@ class DailyPoolBuilder:
                 f"位置 {position_score:.0f}",
                 f"持续性 {persistence_score:.0f}",
             ]
+            reasons.append(f"回测稳定性 {backtest_quality_score:.0f}")
             if catalyst:
                 reasons.append(f"消息面 {catalyst}")
             if profile and profile.is_leader:
@@ -212,6 +224,7 @@ class DailyPoolBuilder:
                     technical_score=technical_score,
                     position_score=position_score,
                     persistence_score=persistence_score,
+                    backtest_quality_score=backtest_quality_score,
                     news_score=news_score,
                     leader_score=leader_score,
                     total_score=total_score,
@@ -242,56 +255,6 @@ class DailyPoolBuilder:
         self.last_theme_rows = theme_rows
         self.last_leader_rows = leader_rows
         return themed_candidates[:top_n]
-
-    def _enrich_user_focus(self, row: RecommendationRow) -> RecommendationRow:
-        confidence_score = round(
-            self._bounded_score(
-                row.dragon_decision_score * 0.38
-                + row.total_score * 0.22
-                + row.mainline_window_score * 0.22
-                + (100.0 - row.theme_failure_risk) * 0.18
-            ),
-            2,
-        )
-        execution_readiness = round(
-            self._bounded_score(
-                row.position_score * 0.28
-                + row.mainline_window_score * 0.24
-                + row.technical_score * 0.18
-                + row.persistence_score * 0.14
-                + (100.0 - row.theme_failure_risk) * 0.16
-            ),
-            2,
-        )
-        timeliness_score = round(
-            self._bounded_score(
-                row.position_score * 0.52
-                + row.news_score * 0.18
-                + row.mainline_window_score * 0.18
-                + max(0.0, 100.0 - row.theme_rotation_score) * 0.12
-            ),
-            2,
-        )
-        reject_reason = self._reject_reason(row)
-        opportunity_tier = self._opportunity_tier(
-            row,
-            confidence_score=confidence_score,
-            execution_readiness=execution_readiness,
-            timeliness_score=timeliness_score,
-            reject_reason=reject_reason,
-        )
-        next_focus = self._next_focus(row, reject_reason)
-        invalidation_reason = (row.risk_line or "").strip() or "跌破计划防守线或主线窗口继续收缩时放弃。"
-        return replace(
-            row,
-            confidence_score=confidence_score,
-            execution_readiness=execution_readiness,
-            timeliness_score=timeliness_score,
-            opportunity_tier=opportunity_tier,
-            reject_reason=reject_reason,
-            next_focus=next_focus,
-            invalidation_reason=invalidation_reason,
-        )
 
     def _stock_pool_profile(
         self,
@@ -439,6 +402,19 @@ class DailyPoolBuilder:
             base += min(summary.win_rate * 20, 8.0)
         return max(40.0, min(base, 96.0))
 
+    def _backtest_quality_score(self, summary: SymbolBacktestSummary | None) -> float:
+        if summary is None:
+            return 52.0
+        trade_sample = min(float(summary.trades or 0), 12.0)
+        quality = (
+            52.0
+            + min(float(summary.total_return or 0.0) * 100.0, 18.0)
+            + min(float(summary.win_rate or 0.0) * 18.0, 12.0)
+            - min(float(summary.max_drawdown or 0.0) * 100.0 * 0.7, 16.0)
+            + trade_sample
+        )
+        return max(28.0, min(quality, 96.0))
+
     def _news_score(self, symbol: str, as_of: date) -> tuple[float, str]:
         items = self.news_map.get(symbol, [])
         if not items:
@@ -465,6 +441,10 @@ class DailyPoolBuilder:
         if delta_days <= 7:
             return 0.55
         return 0.3
+
+    def _strategy_rotation_bias(self, strategy_name: str) -> float:
+        raw = float(self.strategy_bias_by_name.get(strategy_name, 0.0) or 0.0)
+        return max(min(raw * 8.0, 6.0), -6.0)
 
     def _strategy_scores(
         self,
@@ -555,6 +535,12 @@ class DailyPoolBuilder:
             + tail_buy_window_score * 0.10
             + tail_buy_bias,
         )
+        leader_model_score = min(99.0, max(0.0, leader_model_score + self._strategy_rotation_bias("龙头模型")))
+        main_force_score = min(99.0, max(0.0, main_force_score + self._strategy_rotation_bias("主力雷达")))
+        board_attack_score = min(99.0, max(0.0, board_attack_score + self._strategy_rotation_bias("擒龙打板")))
+        value_recovery_score = min(99.0, max(0.0, value_recovery_score + self._strategy_rotation_bias("价值低吸")))
+        one_day_hold_score = min(99.0, max(0.0, one_day_hold_score + self._strategy_rotation_bias("一日持股法")))
+        tail_buy_score = min(99.0, max(0.0, tail_buy_score + self._strategy_rotation_bias("尾盘买入法")))
         dragon_decision_score = min(
             99.0,
             leader_model_score * 0.22
@@ -592,38 +578,6 @@ class DailyPoolBuilder:
     @staticmethod
     def _bounded_score(value: float) -> float:
         return max(0.0, min(value, 99.0))
-
-    def _reject_reason(self, row: RecommendationRow) -> str:
-        role = (row.mainline_role or "").strip()
-        risk_flag = (row.mainline_risk_flag or "").strip()
-        if role in {"NOISE", "ELIMINATED"}:
-            return "不在主线核心参与区，先不新开仓。"
-        if row.mainline_rank and row.mainline_rank > 3:
-            return "主线位次偏后，胜率和性价比都在下降。"
-        if risk_flag == "高" or row.theme_failure_risk >= 72.0:
-            return "题材退潮风险偏高，先回避。"
-        if row.mainline_window_score and row.mainline_window_score < 50.0:
-            return "窗口还没打开，容易追高后被动。"
-        if row.position_score < 60.0:
-            return "位置不够舒服，先等回踩或确认。"
-        return ""
-
-    def _opportunity_tier(
-        self,
-        row: RecommendationRow,
-        *,
-        confidence_score: float,
-        execution_readiness: float,
-        timeliness_score: float,
-        reject_reason: str,
-    ) -> str:
-        if getattr(row, "action", "") == "BUY" and not reject_reason:
-            if confidence_score >= 78.0 and execution_readiness >= 74.0 and timeliness_score >= 70.0:
-                return "优先处理"
-            return "跟踪确认"
-        if getattr(row, "action", "") in {"WATCH", "HOLD"}:
-            return "观察名单"
-        return "风险回避"
 
     def _signal_age_days(self, row: RecommendationRow) -> int:
         signal_date = _parse_date(getattr(row, "signal_date", "") or "")
@@ -666,11 +620,12 @@ class DailyPoolBuilder:
             self._bounded_score(
                 row.technical_score * 0.18
                 + row.position_score * 0.16
+                + row.backtest_quality_score * 0.12
                 + row.mainline_window_score * 0.16
                 + row.dragon_decision_score * 0.14
-                + min(risk_reward_ratio * 28.0, 99.0) * 0.18
+                + min(risk_reward_ratio * 28.0, 99.0) * 0.14
                 + freshness_score * 0.10
-                + (100.0 - row.theme_failure_risk) * 0.08
+                + (100.0 - row.theme_failure_risk) * 0.06
             ),
             2,
         )
@@ -678,10 +633,11 @@ class DailyPoolBuilder:
             self._bounded_score(
                 row.dragon_decision_score * 0.28
                 + row.total_score * 0.18
+                + row.backtest_quality_score * 0.10
                 + row.mainline_window_score * 0.18
                 + freshness_score * 0.12
-                + min(risk_reward_ratio * 30.0, 99.0) * 0.12
-                + setup_quality_score * 0.12
+                + min(risk_reward_ratio * 30.0, 99.0) * 0.10
+                + setup_quality_score * 0.04
             ),
             2,
         )
@@ -691,6 +647,7 @@ class DailyPoolBuilder:
                 + row.mainline_window_score * 0.20
                 + row.technical_score * 0.14
                 + row.persistence_score * 0.12
+                + row.backtest_quality_score * 0.08
                 + freshness_score * 0.10
                 + min(risk_reward_ratio * 26.0, 99.0) * 0.10
                 + (100.0 - row.theme_failure_risk) * 0.10
@@ -753,13 +710,15 @@ class DailyPoolBuilder:
         signal_source = str(getattr(row, "signal_source", "") or "").strip()
         if signal_source.startswith("synthetic://"):
             return "当前仅有补位候选，缺少真实历史信号，先不作为可执行买点。"
+        if row.backtest_quality_score and row.backtest_quality_score < 40.0:
+            return "历史回测稳定性偏弱，先观察，不急着执行。"
         if role in {"NOISE", "ELIMINATED"}:
             return "不在主线核心参与区，先不新开仓。"
         if row.mainline_rank and row.mainline_rank > 3:
             return "主线位次偏后，胜率和性价比都在下降。"
         if risk_flag == "高" or row.theme_failure_risk >= 72.0:
             return "题材退潮风险偏高，先回避。"
-        if risk_reward_ratio and risk_reward_ratio < 1.35:
+        if risk_reward_ratio and risk_reward_ratio < self.risk_controls.recommendation_min_risk_reward_ratio:
             return "预期盈亏比偏低，试错空间不够，先不急着出手。"
         if freshness_score < 45.0 or signal_age_days >= 4:
             return "信号已经偏旧，盘面节奏可能变化，需等新的触发点。"
@@ -783,17 +742,31 @@ class DailyPoolBuilder:
         risk_reward_ratio: float,
         reject_reason: str,
     ) -> str:
+        priority_confidence = 78.0
+        priority_readiness = 74.0
+        priority_timeliness = 70.0
+        confirm_risk_reward = 1.45
+        if self.risk_profile == "conservative":
+            priority_confidence = 82.0
+            priority_readiness = 78.0
+            priority_timeliness = 74.0
+            confirm_risk_reward = 1.6
+        elif self.risk_profile == "aggressive":
+            priority_confidence = 74.0
+            priority_readiness = 70.0
+            priority_timeliness = 66.0
+            confirm_risk_reward = 1.3
         if getattr(row, "action", "") == "BUY" and not reject_reason:
             if (
-                confidence_score >= 78.0
-                and execution_readiness >= 74.0
-                and timeliness_score >= 70.0
+                confidence_score >= priority_confidence
+                and execution_readiness >= priority_readiness
+                and timeliness_score >= priority_timeliness
                 and freshness_score >= 72.0
                 and setup_quality_score >= 74.0
                 and risk_reward_ratio >= 1.8
             ):
                 return "优先处理"
-            if risk_reward_ratio >= 1.45 and freshness_score >= 58.0:
+            if risk_reward_ratio >= confirm_risk_reward and freshness_score >= 58.0:
                 return "跟踪确认"
             return "观察名单"
         if getattr(row, "action", "") in {"WATCH", "HOLD"}:

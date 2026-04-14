@@ -367,7 +367,26 @@ def export_daily_trade_plan(
 
     with csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["section", "stock_name", "stock_id", "symbol", "action", "score", "price", "stop", "target", "note"])
+        writer.writerow(
+            [
+                "section",
+                "stock_name",
+                "stock_id",
+                "symbol",
+                "action",
+                "score",
+                "price",
+                "stop",
+                "target",
+                "opportunity_tier",
+                "risk_flag",
+                "risk_reward_ratio",
+                "signal_source",
+                "next_focus",
+                "invalidation_reason",
+                "note",
+            ]
+        )
 
         for item in plan_recommendations:
             writer.writerow(
@@ -381,6 +400,12 @@ def export_daily_trade_plan(
                     item.entry_price or item.close,
                     item.stop_price or "",
                     item.target_price or "",
+                    getattr(item, "opportunity_tier", ""),
+                    getattr(item, "mainline_risk_flag", ""),
+                    round(float(getattr(item, "risk_reward_ratio", 0.0) or 0.0), 2),
+                    getattr(item, "signal_source", ""),
+                    getattr(item, "next_focus", ""),
+                    getattr(item, "invalidation_reason", ""),
                     item.rationale,
                 ]
             )
@@ -397,6 +422,12 @@ def export_daily_trade_plan(
                     item.planned_entry,
                     item.planned_stop,
                     item.planned_target,
+                    getattr(item, "opportunity_tier", ""),
+                    "",
+                    round(float(getattr(item, "risk_reward_ratio", 0.0) or 0.0), 2),
+                    "trade_plan",
+                    getattr(item, "next_focus", ""),
+                    "",
                     item.rationale,
                 ]
             )
@@ -413,6 +444,12 @@ def export_daily_trade_plan(
                     item.current_price,
                     "",
                     "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
                     item.rationale,
                 ]
             )
@@ -427,6 +464,12 @@ def export_daily_trade_plan(
                     "HOLD",
                     "",
                     item.cost_price,
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
                     "",
                     "",
                     f"quantity={item.quantity}, market_value={item.market_value:.2f}",
@@ -522,6 +565,14 @@ def export_daily_trade_plan(
                 f"动作 {item.action} | 买点 {(item.entry_price or item.close):.2f} | 止损 {(item.stop_price or 0.0):.2f} | "
                 f"目标 {(item.target_price or 0.0):.2f}"
             )
+            lines.append(
+                f"   分层: {getattr(item, 'opportunity_tier', '') or '--'} | 风险: {getattr(item, 'mainline_risk_flag', '') or '--'} | "
+                f"盈亏比: {float(getattr(item, 'risk_reward_ratio', 0.0) or 0.0):.2f} | 来源: {getattr(item, 'signal_source', '') or '--'}"
+            )
+            if getattr(item, "next_focus", ""):
+                lines.append(f"   下一步: {getattr(item, 'next_focus', '')}")
+            if getattr(item, "invalidation_reason", ""):
+                lines.append(f"   失效条件: {getattr(item, 'invalidation_reason', '')}")
             lines.append(f"   理由: {item.rationale}")
     else:
         lines.append("- 今日未生成股票池结果。")
@@ -534,6 +585,12 @@ def export_daily_trade_plan(
                 f"计划买点 {item.planned_entry:.2f} | 止损 {item.planned_stop:.2f} | 目标 {item.planned_target:.2f} | "
                 f"建议资金 {item.suggested_budget:,.0f}"
             )
+            lines.append(
+                f"  分层: {getattr(item, 'opportunity_tier', '') or '--'} | 执行准备: {float(getattr(item, 'execution_readiness', 0.0) or 0.0):.1f} | "
+                f"盈亏比: {float(getattr(item, 'risk_reward_ratio', 0.0) or 0.0):.2f}"
+            )
+            if getattr(item, "next_focus", ""):
+                lines.append(f"  下一步: {getattr(item, 'next_focus', '')}")
             lines.append(f"  说明: {item.rationale}")
     else:
         lines.append("- 当前没有新的交易计划。")

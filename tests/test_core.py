@@ -6,7 +6,7 @@ import importlib
 import json
 import os
 import unittest
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -49,7 +49,7 @@ from quant_hunter.data import (
     load_theme_aliases_from_csv,
 )
 from quant_hunter.market_feed import EastmoneyMarketFeed, LocalMarketCache, MarketSnapshot, RemoteMarketScreener
-from quant_hunter.models import BacktestResult, BrokerProfile, CashSnapshot, DailyAnalysis, HoldingRecord, PriceBar, RecommendationRow, ScanRow
+from quant_hunter.models import BacktestResult, BrokerProfile, CashSnapshot, DailyAnalysis, HoldingRecord, PriceBar, RecommendationRow, ScanRow, SymbolBacktestSummary
 from quant_hunter.models import OrderIntent
 from quant_hunter.optimizer import ParameterOptimizer
 from quant_hunter.paper_trading import (
@@ -60,6 +60,15 @@ from quant_hunter.paper_trading import (
     summarize_paper_trading_performance,
 )
 from quant_hunter.recommend import DailyPoolBuilder, _recommendation_sort_key
+from quant_hunter.risk import (
+    DEFAULT_RISK_CONTROLS,
+    RISK_PROFILE_AGGRESSIVE,
+    RISK_PROFILE_CONSERVATIVE,
+    RISK_PROFILE_STANDARD,
+    normalize_risk_profile,
+    risk_profile_brief,
+    resolve_risk_controls,
+)
 from quant_hunter.reports import export_daily_trade_plan, export_end_of_day_review
 from quant_hunter.scanner import UniverseScanner
 from quant_hunter.storage import AppState, load_app_state, save_app_state
@@ -92,6 +101,33 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         self.assertIn("TRAP_DETECTED", labels)
         self.assertIn("RECLAIM_LONG", labels)
+
+    def test_csv_loader_ignores_blank_rows(self) -> None:
+        path = self._temp_dir() / "loader_blank_row.csv"
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["date", "symbol", "open", "high", "low", "close", "volume"])
+            writer.writerow(["2026-04-01", "SHSE.600000", "10", "10.5", "9.8", "10.2", "1000"])
+            writer.writerow(["", "", "", "", "", "", ""])
+            writer.writerow(["2026-04-02", "SHSE.600000", "10.2", "10.7", "10.0", "10.5", "1200"])
+        self.addCleanup(lambda: path.unlink(missing_ok=True))
+
+        bars = load_bars_from_csv(path)
+
+        self.assertEqual(len(bars), 2)
+        self.assertEqual(bars[0].date, "2026-04-01")
+        self.assertEqual(bars[1].date, "2026-04-02")
+
+    def test_csv_loader_reports_row_and_field_for_invalid_numeric_value(self) -> None:
+        path = self._temp_dir() / "loader_bad_number.csv"
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["date", "symbol", "open", "high", "low", "close", "volume"])
+            writer.writerow(["2026-04-01", "SHSE.600000", "10", "10.5", "9.8", "oops", "1000"])
+        self.addCleanup(lambda: path.unlink(missing_ok=True))
+
+        with self.assertRaisesRegex(ValueError, r"loader_bad_number\.csv 第 2 行字段 close 不是有效数字"):
+            load_bars_from_csv(path)
 
     def test_aggregate_price_bars_supports_weekly_and_monthly(self) -> None:
         bars = [
@@ -956,6 +992,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         )
 
         self.assertEqual(summary["readiness"], "可导出执行")
+        self.assertEqual(summary["risk_profile"], "standard")
         self.assertFalse(summary["blockers"])
         self.assertIn("当前为导出模式，下单前仍需人工导入券商终端", summary["warnings"])
         self.assertEqual(summary["side_counts"]["BUY"], 1)
@@ -1117,6 +1154,102 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(summary["estimated_capital"], 0.0)
         self.assertEqual(summary["capital_usage_ratio"], 0.0)
 
+    def test_broker_execution_summary_blocks_over_concentrated_buy(self) -> None:
+        summary = summarize_broker_execution(
+            profile=BrokerProfile(
+                mode="export",
+                export_dir="exports",
+            ),
+            env={
+                "direct_ready": False,
+                "bridge_ready": False,
+            },
+            order_intents=[
+                broker_module.OrderIntent(
+                    symbol="SHSE.600010",
+                    side="BUY",
+                    price=10.0,
+                    quantity=3000,
+                    stop_price=9.5,
+                    target_price=11.2,
+                    signal_date="2026-04-06",
+                    reason="demo",
+                )
+            ],
+            holdings=[],
+            cash_snapshot=CashSnapshot(available_cash=35000.0, total_assets=80000.0),
+        )
+
+        self.assertEqual(summary["portfolio_risk_review"]["status_code"], "BLOCKED")
+        self.assertTrue(any("资金占用过高" in item for item in summary["blockers"]))
+        self.assertEqual(summary["portfolio_risk_review"]["rows"][0]["status_code"], "BLOCKED")
+
+    def test_broker_execution_summary_warns_when_total_loss_budget_is_high(self) -> None:
+        summary = summarize_broker_execution(
+            profile=BrokerProfile(
+                mode="export",
+                export_dir="exports",
+            ),
+            env={
+                "direct_ready": False,
+                "bridge_ready": False,
+            },
+            order_intents=[
+                broker_module.OrderIntent(
+                    symbol="SHSE.600000",
+                    side="BUY",
+                    price=10.0,
+                    quantity=1200,
+                    stop_price=9.4,
+                    target_price=11.2,
+                    signal_date="2026-04-06",
+                    reason="demo-a",
+                ),
+                broker_module.OrderIntent(
+                    symbol="SZSE.000001",
+                    side="BUY",
+                    price=8.0,
+                    quantity=1200,
+                    stop_price=7.5,
+                    target_price=8.9,
+                    signal_date="2026-04-06",
+                    reason="demo-b",
+                ),
+            ],
+            holdings=[],
+            cash_snapshot=CashSnapshot(available_cash=50000.0, total_assets=50000.0),
+        )
+
+        self.assertEqual(summary["portfolio_risk_review"]["status_code"], "CAUTION")
+        self.assertGreater(summary["portfolio_risk_review"]["total_loss_ratio"], 0.02)
+        self.assertTrue(any("组合预估止损亏损占总资产约" in item for item in summary["warnings"]))
+
+    def test_broker_execution_summary_risk_profile_changes_portfolio_gate(self) -> None:
+        kwargs = dict(
+            profile=BrokerProfile(mode="export", export_dir="exports"),
+            env={"direct_ready": False, "bridge_ready": False},
+            order_intents=[
+                broker_module.OrderIntent(
+                    symbol="SHSE.600000",
+                    side="BUY",
+                    price=10.0,
+                    quantity=1000,
+                    stop_price=9.1,
+                    target_price=11.2,
+                    signal_date="2026-04-06",
+                    reason="demo-a",
+                )
+            ],
+            holdings=[],
+            cash_snapshot=CashSnapshot(available_cash=50000.0, total_assets=50000.0),
+        )
+
+        conservative = summarize_broker_execution(risk_profile="conservative", **kwargs)
+        aggressive = summarize_broker_execution(risk_profile="aggressive", **kwargs)
+
+        self.assertEqual(conservative["portfolio_risk_review"]["status_code"], "BLOCKED")
+        self.assertEqual(aggressive["portfolio_risk_review"]["status_code"], "CAUTION")
+
     def test_describe_order_intent_returns_priority_and_checks(self) -> None:
         detail = describe_order_intent(
             broker_module.OrderIntent(
@@ -1152,6 +1285,24 @@ class StrategyWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(risky["priority"], "C")
         self.assertIn("止损价偏高", risky["check_label"])
+
+    def test_describe_order_intent_risk_profile_changes_priority(self) -> None:
+        item = broker_module.OrderIntent(
+            symbol="SHSE.600000",
+            side="BUY",
+            price=10.0,
+            quantity=1000,
+            stop_price=9.5,
+            target_price=10.7,
+            signal_date="2026-04-06",
+            reason="demo",
+        )
+
+        conservative = describe_order_intent(item, available_cash=50000.0, risk_profile="conservative")
+        aggressive = describe_order_intent(item, available_cash=50000.0, risk_profile="aggressive")
+
+        self.assertEqual(conservative["priority"], "C")
+        self.assertEqual(aggressive["priority"], "B")
 
     def test_preview_position_changes_summarizes_holdings_transition(self) -> None:
         preview = preview_position_changes(
@@ -1534,6 +1685,211 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertAlmostEqual(board_pick.planned_target, 11.3, places=2)
         self.assertAlmostEqual(value_pick.planned_stop, 9.45, places=2)
         self.assertAlmostEqual(value_pick.planned_target, 10.9, places=2)
+
+    def test_decision_engine_filters_trade_with_wide_stop_loss(self) -> None:
+        recommendations = [
+            RecommendationRow(
+                symbol="SHSE.600000",
+                stock_id="600000",
+                stock_name="稳健样本",
+                action="BUY",
+                label="RECLAIM_LONG",
+                signal_date="2026-04-05",
+                close=10.0,
+                entry_price=10.0,
+                stop_price=9.5,
+                target_price=11.2,
+                technical_score=82.0,
+                position_score=80.0,
+                persistence_score=76.0,
+                news_score=70.0,
+                leader_score=78.0,
+                total_score=84.0,
+                theme_name="银行",
+                theme_rank=1,
+                dragon_decision_score=88.0,
+            ),
+            RecommendationRow(
+                symbol="SZSE.000001",
+                stock_id="000001",
+                stock_name="宽止损样本",
+                action="BUY",
+                label="RECLAIM_LONG",
+                signal_date="2026-04-05",
+                close=10.0,
+                entry_price=10.0,
+                stop_price=9.0,
+                target_price=11.4,
+                technical_score=80.0,
+                position_score=78.0,
+                persistence_score=75.0,
+                news_score=68.0,
+                leader_score=74.0,
+                total_score=83.0,
+                theme_name="银行",
+                theme_rank=1,
+                dragon_decision_score=87.0,
+            ),
+        ]
+
+        plan = DecisionEngine().build_plan(recommendations, [], available_cash=100000, max_picks=5)
+
+        self.assertEqual(len(plan.decisions), 1)
+        self.assertEqual(plan.decisions[0].stock_id, "600000")
+        self.assertTrue(any("计划风险结构过滤" in note or "过滤" in note for note in plan.notes))
+
+    def test_decision_engine_computes_risk_reward_ratio_when_row_missing(self) -> None:
+        recommendations = [
+            RecommendationRow(
+                symbol="SHSE.600000",
+                stock_id="600000",
+                stock_name="浦发银行",
+                action="BUY",
+                label="RECLAIM_LONG",
+                signal_date="2026-04-05",
+                close=10.0,
+                entry_price=10.0,
+                stop_price=9.5,
+                target_price=11.0,
+                technical_score=82.0,
+                position_score=84.0,
+                persistence_score=80.0,
+                news_score=76.0,
+                leader_score=78.0,
+                total_score=83.0,
+                theme_name="银行",
+                theme_rank=1,
+                primary_strategy="掘龙决策",
+                dragon_decision_score=88.0,
+                risk_reward_ratio=0.0,
+            ),
+        ]
+
+        plan = DecisionEngine().build_plan(recommendations, [], available_cash=100000, max_picks=5)
+
+        self.assertEqual(len(plan.decisions), 1)
+        self.assertAlmostEqual(plan.decisions[0].risk_reward_ratio, 2.0, places=2)
+
+    def test_decision_engine_applies_risk_profile_thresholds(self) -> None:
+        recommendations = [
+            RecommendationRow(
+                symbol="SHSE.600000",
+                stock_id="600000",
+                stock_name="档位样本",
+                action="BUY",
+                label="RECLAIM_LONG",
+                signal_date="2026-04-05",
+                close=10.0,
+                entry_price=10.0,
+                stop_price=9.5,
+                target_price=10.7,
+                technical_score=82.0,
+                position_score=84.0,
+                persistence_score=80.0,
+                news_score=76.0,
+                leader_score=78.0,
+                total_score=83.0,
+                theme_name="银行",
+                theme_rank=1,
+                primary_strategy="掘龙决策",
+                dragon_decision_score=88.0,
+                risk_reward_ratio=1.4,
+            ),
+        ]
+
+        standard_plan = DecisionEngine(risk_profile="standard").build_plan(recommendations, [], available_cash=100000, max_picks=5)
+        conservative_plan = DecisionEngine(risk_profile="conservative").build_plan(recommendations, [], available_cash=100000, max_picks=5)
+
+        self.assertEqual(len(standard_plan.decisions), 1)
+        self.assertEqual(len(conservative_plan.decisions), 0)
+
+    def test_decision_engine_risk_profile_changes_suggested_budget(self) -> None:
+        recommendations = [
+            RecommendationRow(
+                symbol="SHSE.600000",
+                stock_id="600000",
+                stock_name="仓位档位样本",
+                action="BUY",
+                label="RECLAIM_LONG",
+                signal_date=date.today().isoformat(),
+                close=10.0,
+                entry_price=10.0,
+                stop_price=9.5,
+                target_price=11.2,
+                technical_score=84.0,
+                position_score=82.0,
+                persistence_score=80.0,
+                news_score=76.0,
+                leader_score=82.0,
+                total_score=84.0,
+                theme_name="银行",
+                theme_rank=1,
+                primary_strategy="掘龙决策",
+                dragon_decision_score=88.0,
+                risk_reward_ratio=2.4,
+                opportunity_tier="优先处理",
+            ),
+            RecommendationRow(
+                symbol="SZSE.000001",
+                stock_id="000001",
+                stock_name="仓位档位对照",
+                action="BUY",
+                label="RECLAIM_LONG",
+                signal_date=date.today().isoformat(),
+                close=10.0,
+                entry_price=10.0,
+                stop_price=9.5,
+                target_price=11.2,
+                technical_score=82.0,
+                position_score=80.0,
+                persistence_score=78.0,
+                news_score=74.0,
+                leader_score=80.0,
+                total_score=82.0,
+                theme_name="银行",
+                theme_rank=1,
+                primary_strategy="掘龙决策",
+                dragon_decision_score=86.0,
+                risk_reward_ratio=2.4,
+                opportunity_tier="优先处理",
+            ),
+        ]
+
+        conservative_plan = DecisionEngine(risk_profile="conservative").build_plan(recommendations, [], available_cash=100000, max_picks=5)
+        standard_plan = DecisionEngine(risk_profile="standard").build_plan(recommendations, [], available_cash=100000, max_picks=5)
+        aggressive_plan = DecisionEngine(risk_profile="aggressive").build_plan(recommendations, [], available_cash=100000, max_picks=5)
+
+        self.assertEqual(len(conservative_plan.decisions), 2)
+        self.assertEqual(len(standard_plan.decisions), 2)
+        self.assertEqual(len(aggressive_plan.decisions), 2)
+        self.assertLess(conservative_plan.decisions[0].suggested_budget, standard_plan.decisions[0].suggested_budget)
+        self.assertLess(standard_plan.decisions[0].suggested_budget, aggressive_plan.decisions[0].suggested_budget)
+
+    def test_shared_risk_controls_keep_core_thresholds_aligned(self) -> None:
+        self.assertAlmostEqual(DEFAULT_RISK_CONTROLS.backtest_min_entry_risk_reward_ratio, 1.2, places=2)
+        self.assertAlmostEqual(DEFAULT_RISK_CONTROLS.plan_min_risk_reward_ratio, 1.2, places=2)
+        self.assertAlmostEqual(DEFAULT_RISK_CONTROLS.recommendation_min_risk_reward_ratio, 1.35, places=2)
+        self.assertAlmostEqual(DEFAULT_RISK_CONTROLS.execution_low_risk_reward_ratio, 1.35, places=2)
+        self.assertAlmostEqual(DEFAULT_RISK_CONTROLS.max_plan_stop_loss_pct, 0.08, places=2)
+
+    def test_risk_profile_resolution_supports_named_presets(self) -> None:
+        self.assertEqual(normalize_risk_profile("保守"), RISK_PROFILE_CONSERVATIVE)
+        self.assertEqual(normalize_risk_profile("激进"), RISK_PROFILE_AGGRESSIVE)
+        self.assertEqual(normalize_risk_profile("balanced"), RISK_PROFILE_STANDARD)
+
+        conservative = resolve_risk_controls("conservative")
+        standard = resolve_risk_controls("standard")
+        aggressive = resolve_risk_controls("aggressive")
+
+        self.assertGreater(conservative.plan_min_risk_reward_ratio, standard.plan_min_risk_reward_ratio)
+        self.assertLess(aggressive.plan_min_risk_reward_ratio, standard.plan_min_risk_reward_ratio)
+        self.assertLess(conservative.max_plan_stop_loss_pct, standard.max_plan_stop_loss_pct)
+        self.assertGreater(aggressive.max_plan_stop_loss_pct, standard.max_plan_stop_loss_pct)
+
+    def test_risk_profile_brief_returns_human_readable_summary(self) -> None:
+        self.assertIn("盈亏比", risk_profile_brief("conservative"))
+        self.assertIn("均衡", risk_profile_brief("standard"))
+        self.assertIn("放宽", risk_profile_brief("aggressive"))
 
     def test_board_mode_engine_builds_candidates(self) -> None:
         sample_dir = self._temp_dir() / "board_universe"
@@ -2315,12 +2671,297 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertTrue(Path(artifacts.json_path).exists())
         markdown = Path(artifacts.markdown_path).read_text(encoding="utf-8")
         payload = Path(artifacts.json_path).read_text(encoding="utf-8")
+        with Path(artifacts.csv_path).open("r", encoding="utf-8-sig", newline="") as handle:
+            csv_rows = list(csv.reader(handle))
         self.assertIn("盘前交易计划", markdown)
         self.assertIn("授权方案: TRIAL", markdown)
         self.assertIn("用户关注题材: 银行", markdown)
         self.assertIn("市场周期", markdown)
         self.assertIn("今日主线题材", markdown)
+        self.assertIn("分层:", markdown)
+        self.assertIn("盈亏比:", markdown)
         self.assertIn('"focus_themes": [', payload)
+        self.assertIn("opportunity_tier", payload)
+        self.assertIn("risk_reward_ratio", payload)
+        self.assertEqual(
+            csv_rows[0],
+            [
+                "section",
+                "stock_name",
+                "stock_id",
+                "symbol",
+                "action",
+                "score",
+                "price",
+                "stop",
+                "target",
+                "opportunity_tier",
+                "risk_flag",
+                "risk_reward_ratio",
+                "signal_source",
+                "next_focus",
+                "invalidation_reason",
+                "note",
+            ],
+        )
+
+    def test_end_to_end_exports_succeed_when_risk_filters_block_new_trades(self) -> None:
+        sample_dir = self._temp_dir() / "daily_plan_signal_exports"
+        sample_dir.mkdir(exist_ok=True)
+        files = {
+            "SHSE.600000_demo.csv": generate_rows("SHSE.600000", "reclaim"),
+            "SZSE.000001_demo.csv": generate_rows("SZSE.000001", "watch"),
+            "SHSE.601398_demo.csv": generate_rows("SHSE.601398", "weak"),
+        }
+        for filename, generated_rows in files.items():
+            path = sample_dir / filename
+            with path.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["date", "symbol", "open", "high", "low", "close", "volume"])
+                writer.writerows(generated_rows)
+            self.addCleanup(lambda target=path: target.unlink(missing_ok=True))
+
+        rows, bars_by_symbol, analyses_by_symbol, _ = UniverseScanner(StrategyParams()).scan_folder(sample_dir)
+        summaries = UniverseScanner(StrategyParams()).summarize_backtests(bars_by_symbol, analyses_by_symbol)
+        pool = DailyPoolBuilder(
+            stock_profiles=load_stock_profiles_from_csv(Path("sample_data/stock_profiles.csv")),
+            news_map=load_news_catalysts_from_csv(Path("sample_data/news_catalysts.csv")),
+            theme_aliases=load_theme_aliases_from_csv(Path("sample_data/theme_aliases.csv")),
+        ).build(rows, analyses_by_symbol, summaries, top_n=10)
+        trade_plan = DecisionEngine().build_plan(pool, [], available_cash=100000, max_picks=5)
+        board_plan = BoardModeEngine().build(pool, top_n=5)
+        paper_state = PaperTradingEngine().run_cycle(
+            PaperTradingState(enabled=True, initial_cash=100000.0, cash=100000.0, max_position_pct=0.25),
+            pool,
+            as_of="2026-04-15 14:35:00",
+        )
+
+        output_dir = self._temp_dir() / "daily_plan_signal_exports_reports"
+        output_dir.mkdir(exist_ok=True)
+        plan_artifacts = export_daily_trade_plan(
+            output_dir=output_dir,
+            recommendations=pool,
+            trade_plan=trade_plan,
+            holdings=[],
+        )
+        review_artifacts = export_end_of_day_review(
+            output_dir=output_dir,
+            recommendations=pool,
+            trade_plan=trade_plan,
+            board_plan=board_plan,
+            holdings=[],
+            cash_snapshot=None,
+            scan_rows=rows,
+        )
+        paper_artifacts = export_paper_trading_report(
+            paper_state,
+            output_dir=output_dir,
+            exported_at="2026-04-15 15:10:00",
+        )
+        for artifacts in (plan_artifacts, review_artifacts, paper_artifacts):
+            self.addCleanup(lambda target=Path(artifacts.markdown_path): target.unlink(missing_ok=True))
+            self.addCleanup(lambda target=Path(artifacts.csv_path): target.unlink(missing_ok=True))
+            self.addCleanup(lambda target=Path(artifacts.json_path): target.unlink(missing_ok=True))
+
+        self.assertEqual(len(pool), 2)
+        self.assertEqual(len(trade_plan.decisions), 0)
+        self.assertEqual(paper_state.positions, [])
+        self.assertEqual(paper_state.ledger, [])
+        self.assertIn("当前没有符合条件的新开仓候选", " | ".join(trade_plan.notes))
+        self.assertIn("本轮没有触发新的模拟成交", paper_state.last_strategy_note)
+        self.assertTrue(Path(plan_artifacts.markdown_path).exists())
+        self.assertTrue(Path(review_artifacts.markdown_path).exists())
+        self.assertTrue(Path(paper_artifacts.markdown_path).exists())
+
+    def test_end_to_end_trade_path_generates_decision_intent_and_reports(self) -> None:
+        recommendations = [
+            RecommendationRow(
+                symbol="SZSE.300024",
+                stock_id="300024",
+                stock_name="机器人核心",
+                action="BUY",
+                label="RECLAIM_LONG",
+                signal_date="2026-04-15",
+                close=28.5,
+                entry_price=28.5,
+                stop_price=27.6,
+                target_price=31.5,
+                technical_score=90.0,
+                position_score=84.0,
+                persistence_score=88.0,
+                news_score=82.0,
+                leader_score=92.0,
+                total_score=91.0,
+                theme_name="人工智能",
+                stock_pool="龙头股",
+                buy_point="回踩 28.50 附近承接后低吸",
+                sell_point="冲击 31.50 一带分批兑现",
+                primary_strategy="龙头模型",
+                mainline_tag="人工智能",
+                mainline_rank=1,
+                mainline_role="CORE",
+                mainline_strength_score=88.0,
+                mainline_continuation_score=76.0,
+                mainline_window_score=86.0,
+                theme_divergence_score=28.0,
+                theme_failure_risk=18.0,
+                risk_reward_ratio=3.33,
+                setup_quality_score=90.0,
+                execution_readiness=84.0,
+                confidence_score=87.0,
+                opportunity_tier="优先处理",
+                rationale="主线延续，空间和风报比都达标。",
+                next_focus="盯承接和主线强化，不追高。",
+                signal_source="synthetic-e2e",
+            )
+        ]
+
+        trade_plan = DecisionEngine().build_plan(recommendations, [], available_cash=100000, max_picks=5)
+        board_plan = BoardModeEngine().build(recommendations, top_n=5)
+        intents = [
+            item
+            for item in (build_order_intent_from_trade_decision(decision) for decision in trade_plan.decisions)
+            if item is not None
+        ]
+        paper_state = PaperTradingEngine().run_cycle(
+            PaperTradingState(enabled=True, initial_cash=100000.0, cash=100000.0, max_position_pct=0.25),
+            recommendations,
+            as_of="2026-04-15 10:05:00",
+        )
+
+        output_dir = self._temp_dir() / "daily_plan_buy_path_exports"
+        output_dir.mkdir(exist_ok=True)
+        plan_artifacts = export_daily_trade_plan(
+            output_dir=output_dir,
+            recommendations=recommendations,
+            trade_plan=trade_plan,
+            holdings=[],
+        )
+        review_artifacts = export_end_of_day_review(
+            output_dir=output_dir,
+            recommendations=recommendations,
+            trade_plan=trade_plan,
+            board_plan=board_plan,
+            holdings=[],
+            cash_snapshot=None,
+            scan_rows=[],
+        )
+        paper_artifacts = export_paper_trading_report(
+            paper_state,
+            output_dir=output_dir,
+            exported_at="2026-04-15 15:10:00",
+        )
+        for artifacts in (plan_artifacts, review_artifacts, paper_artifacts):
+            self.addCleanup(lambda target=Path(artifacts.markdown_path): target.unlink(missing_ok=True))
+            self.addCleanup(lambda target=Path(artifacts.csv_path): target.unlink(missing_ok=True))
+            self.addCleanup(lambda target=Path(artifacts.json_path): target.unlink(missing_ok=True))
+
+        self.assertEqual(len(trade_plan.decisions), 1)
+        self.assertEqual(trade_plan.decisions[0].symbol, "SZSE.300024")
+        self.assertEqual(len(intents), 1)
+        self.assertEqual(intents[0].symbol, "SZSE.300024")
+        self.assertGreaterEqual(intents[0].quantity, 100)
+        self.assertEqual(len(paper_state.positions), 1)
+        self.assertEqual(len(paper_state.ledger), 1)
+        self.assertIn("新开 1 笔", paper_state.last_strategy_note)
+        self.assertTrue(Path(plan_artifacts.markdown_path).exists())
+        self.assertTrue(Path(review_artifacts.markdown_path).exists())
+        self.assertTrue(Path(paper_artifacts.markdown_path).exists())
+        self.assertIn("机器人核心", Path(plan_artifacts.markdown_path).read_text(encoding="utf-8"))
+        self.assertIn("机器人核心", Path(review_artifacts.markdown_path).read_text(encoding="utf-8"))
+        self.assertIn("机器人核心", Path(paper_artifacts.markdown_path).read_text(encoding="utf-8"))
+
+    def test_report_exports_preserve_chinese_content(self) -> None:
+        recommendations = [
+            RecommendationRow(
+                symbol="SZSE.300024",
+                stock_id="300024",
+                stock_name="机器人核心",
+                action="BUY",
+                label="RECLAIM_LONG",
+                signal_date="2026-04-15",
+                close=28.5,
+                entry_price=28.5,
+                stop_price=27.6,
+                target_price=31.5,
+                technical_score=90.0,
+                position_score=84.0,
+                persistence_score=88.0,
+                news_score=82.0,
+                leader_score=92.0,
+                total_score=91.0,
+                theme_name="人工智能",
+                stock_pool="龙头股",
+                buy_point="回踩 28.50 附近承接后低吸",
+                sell_point="冲击 31.50 一带分批兑现",
+                primary_strategy="龙头模型",
+                mainline_tag="人工智能",
+                mainline_rank=1,
+                mainline_role="CORE",
+                mainline_strength_score=88.0,
+                mainline_continuation_score=76.0,
+                mainline_window_score=86.0,
+                theme_divergence_score=28.0,
+                theme_failure_risk=18.0,
+                risk_reward_ratio=3.33,
+                setup_quality_score=90.0,
+                execution_readiness=84.0,
+                confidence_score=87.0,
+                opportunity_tier="优先处理",
+                rationale="主线延续，空间和风报比都达标。",
+                next_focus="盯承接和主线强化，不追高。",
+                signal_source="utf8-check",
+            )
+        ]
+        trade_plan = DecisionEngine().build_plan(recommendations, [], available_cash=100000, max_picks=5)
+        board_plan = BoardModeEngine().build(recommendations, top_n=5)
+        paper_state = PaperTradingEngine().run_cycle(
+            PaperTradingState(enabled=True, initial_cash=100000.0, cash=100000.0, max_position_pct=0.25),
+            recommendations,
+            as_of="2026-04-15 10:05:00",
+        )
+
+        output_dir = self._temp_dir() / "utf8_exports"
+        output_dir.mkdir(exist_ok=True)
+        plan_artifacts = export_daily_trade_plan(
+            output_dir=output_dir,
+            recommendations=recommendations,
+            trade_plan=trade_plan,
+            holdings=[],
+        )
+        review_artifacts = export_end_of_day_review(
+            output_dir=output_dir,
+            recommendations=recommendations,
+            trade_plan=trade_plan,
+            board_plan=board_plan,
+            holdings=[],
+            cash_snapshot=None,
+            scan_rows=[],
+        )
+        paper_artifacts = export_paper_trading_report(
+            paper_state,
+            output_dir=output_dir,
+            exported_at="2026-04-15 15:10:00",
+        )
+        for artifacts in (plan_artifacts, review_artifacts, paper_artifacts):
+            self.addCleanup(lambda target=Path(artifacts.markdown_path): target.unlink(missing_ok=True))
+            self.addCleanup(lambda target=Path(artifacts.csv_path): target.unlink(missing_ok=True))
+            self.addCleanup(lambda target=Path(artifacts.json_path): target.unlink(missing_ok=True))
+
+        plan_markdown = Path(plan_artifacts.markdown_path).read_text(encoding="utf-8")
+        review_markdown = Path(review_artifacts.markdown_path).read_text(encoding="utf-8")
+        paper_markdown = Path(paper_artifacts.markdown_path).read_text(encoding="utf-8")
+        review_payload = Path(review_artifacts.json_path).read_text(encoding="utf-8")
+        paper_payload = Path(paper_artifacts.json_path).read_text(encoding="utf-8")
+
+        for text in (plan_markdown, review_markdown, paper_markdown, review_payload, paper_payload):
+            self.assertIn("机器人核心", text)
+            self.assertIn("人工智能", text)
+        self.assertIn("龙头模型", plan_markdown)
+        self.assertIn("龙头模型", paper_markdown)
+        self.assertIn("龙头模型", review_payload)
+        self.assertIn("龙头模型", paper_payload)
+        self.assertIn(board_plan.temperature, review_markdown)
 
     def test_daily_trade_plan_export_surfaces_mainline_prelaunch_guidance(self) -> None:
         from quant_hunter.reports import export_daily_trade_plan
@@ -2845,6 +3486,7 @@ class StrategyWorkflowTests(unittest.TestCase):
             state_path,
             AppState(
                 focus_themes=["银行", "机器人"],
+                strategy_risk_profile="conservative",
                 strategy_top_theme_limit=4,
                 strategy_max_total_exposure=0.65,
                 strategy_theme_drop_reduce=False,
@@ -2864,6 +3506,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         restored = load_app_state(state_path)
 
         self.assertEqual(restored.focus_themes, ["银行", "机器人"])
+        self.assertEqual(restored.strategy_risk_profile, "conservative")
         self.assertEqual(restored.strategy_top_theme_limit, 4)
         self.assertAlmostEqual(restored.strategy_max_total_exposure, 0.65)
         self.assertFalse(restored.strategy_theme_drop_reduce)
@@ -2877,6 +3520,18 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(restored.market_timeframe_mode, "周线")
         self.assertEqual(restored.market_history_window, "近3年")
 
+    def test_load_app_state_normalizes_risk_profile(self) -> None:
+        state_path = self._temp_dir() / "app_state_risk_profile.json"
+        state_path.write_text(
+            json.dumps({"strategy_risk_profile": "balanced"}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        self.addCleanup(lambda: state_path.unlink(missing_ok=True))
+
+        restored = load_app_state(state_path)
+
+        self.assertEqual(restored.strategy_risk_profile, "standard")
+
     def test_load_app_state_falls_back_on_invalid_json(self) -> None:
         state_path = self._temp_dir() / "app_state_invalid.json"
         state_path.write_text("", encoding="utf-8")
@@ -2887,6 +3542,90 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(restored.license_plan, "TRIAL")
         self.assertEqual(restored.ui_theme, "sunrise")
         self.assertEqual(restored.watchlist, [])
+
+    def test_load_app_state_ignores_string_values_for_list_fields(self) -> None:
+        state_path = self._temp_dir() / "app_state_string_lists.json"
+        state_path.write_text(
+            json.dumps(
+                {
+                    "watchlist": "SHSE.600000",
+                    "focus_themes": "人工智能",
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        self.addCleanup(lambda: state_path.unlink(missing_ok=True))
+
+        restored = load_app_state(state_path)
+
+        self.assertEqual(restored.watchlist, [])
+        self.assertEqual(restored.focus_themes, [])
+
+    def test_load_app_state_tolerates_invalid_numeric_paper_trading_fields(self) -> None:
+        state_path = self._temp_dir() / "app_state_paper_bad_numbers.json"
+        state_path.write_text(
+            json.dumps(
+                {
+                    "paper_trading_state": {
+                        "enabled": True,
+                        "cash": "oops",
+                        "total_equity": "bad",
+                        "positions": [
+                            {
+                                "symbol": "SHSE.600000",
+                                "stock_id": "600000",
+                                "stock_name": "Paper Demo",
+                                "quantity": "broken",
+                                "available": "broken",
+                                "avg_cost": "oops",
+                            }
+                        ],
+                        "ledger": [
+                            {
+                                "order_id": "SIM00001",
+                                "timestamp": "2026-04-13 09:35:00",
+                                "symbol": "SHSE.600000",
+                                "stock_id": "600000",
+                                "stock_name": "Paper Demo",
+                                "side": "BUY",
+                                "price": "oops",
+                                "quantity": "broken",
+                                "amount": "bad",
+                            }
+                        ],
+                    }
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        self.addCleanup(lambda: state_path.unlink(missing_ok=True))
+
+        restored = load_app_state(state_path)
+
+        self.assertTrue(restored.paper_trading_state.enabled)
+        self.assertEqual(restored.paper_trading_state.cash, 100000.0)
+        self.assertEqual(restored.paper_trading_state.total_equity, 100000.0)
+        self.assertEqual(restored.paper_trading_state.positions[0].quantity, 0)
+        self.assertEqual(restored.paper_trading_state.positions[0].avg_cost, 0.0)
+        self.assertEqual(restored.paper_trading_state.ledger[0].price, 0.0)
+        self.assertEqual(restored.paper_trading_state.ledger[0].quantity, 0)
+
+    def test_app_state_roundtrip_handles_large_watchlist(self) -> None:
+        state_path = self._temp_dir() / "app_state_large_watchlist.json"
+        watchlist = [f"SHSE.{600000 + index:06d}" for index in range(320)]
+
+        save_app_state(state_path, AppState(watchlist=watchlist))
+        self.addCleanup(lambda: state_path.unlink(missing_ok=True))
+
+        restored = load_app_state(state_path)
+
+        self.assertEqual(len(restored.watchlist), len(watchlist))
+        self.assertEqual(restored.watchlist[:3], watchlist[:3])
+        self.assertEqual(restored.watchlist[-3:], watchlist[-3:])
 
     def test_app_state_encrypts_sensitive_broker_credentials(self) -> None:
         state_path = self._temp_dir() / "app_state_broker_secure.json"
@@ -3095,7 +3834,62 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertGreaterEqual(len(updated.patrol_logs), 2)
         self.assertEqual(updated.patrol_logs[-1].event_type, "CYCLE")
         self.assertIn("本轮实验", updated.last_strategy_note)
-        self.assertIn("策略分布", updated.last_strategy_note)
+
+    def test_paper_trading_engine_risk_profile_changes_position_size(self) -> None:
+        recommendations = [
+            RecommendationRow(
+                symbol="SHSE.600000",
+                stock_id="600000",
+                stock_name="Risk Size Demo",
+                action="BUY",
+                label="RECLAIM_LONG",
+                signal_date="2026-04-15",
+                close=10.0,
+                entry_price=10.0,
+                stop_price=9.5,
+                target_price=11.2,
+                technical_score=84.0,
+                position_score=82.0,
+                persistence_score=80.0,
+                news_score=78.0,
+                leader_score=86.0,
+                total_score=85.0,
+                theme_name="AI",
+                theme_score=84.0,
+                theme_rank=1,
+                primary_strategy="掘龙决策",
+                buy_point="10.00 附近承接",
+                sell_point="11.20 附近止盈",
+                mainline_tag="AI",
+                mainline_rank=1,
+                mainline_role="CORE",
+                mainline_strength_score=86.0,
+                mainline_continuation_score=74.0,
+                mainline_window_score=78.0,
+                theme_failure_risk=30.0,
+                rationale="risk size demo",
+            )
+        ]
+
+        conservative_state = PaperTradingEngine().initialize_state(initial_cash=100000.0, max_position_pct=0.3)
+        aggressive_state = PaperTradingEngine().initialize_state(initial_cash=100000.0, max_position_pct=0.3)
+        conservative_updated = PaperTradingEngine().run_cycle(
+            conservative_state,
+            recommendations,
+            as_of="2026-04-15 10:00:00",
+            risk_profile="conservative",
+        )
+        aggressive_updated = PaperTradingEngine().run_cycle(
+            aggressive_state,
+            recommendations,
+            as_of="2026-04-15 10:00:00",
+            risk_profile="aggressive",
+        )
+
+        self.assertEqual(len(conservative_updated.positions), 1)
+        self.assertEqual(len(aggressive_updated.positions), 1)
+        self.assertLess(conservative_updated.positions[0].quantity, aggressive_updated.positions[0].quantity)
+        self.assertIn("本轮实验", aggressive_updated.last_strategy_note)
 
     def test_paper_trading_engine_exits_position_when_stop_price_breaks(self) -> None:
         recommendations = [
@@ -3274,6 +4068,95 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertGreaterEqual(len(updated.equity_curve), 2)
         self.assertEqual(updated.equity_curve[-1].timestamp, "2026-04-13 10:00:00")
         self.assertAlmostEqual(updated.equity_curve[-1].total_equity, updated.total_equity)
+
+    def test_paper_trading_engine_caps_history_buffers_at_500_items(self) -> None:
+        recommendations = [
+            RecommendationRow(
+                symbol="SHSE.600000",
+                stock_id="600000",
+                stock_name="Leader Demo",
+                action="BUY",
+                label="RECLAIM_LONG",
+                signal_date="2026-04-13",
+                close=10.0,
+                entry_price=10.0,
+                stop_price=9.6,
+                target_price=11.0,
+                technical_score=84.0,
+                position_score=82.0,
+                persistence_score=80.0,
+                news_score=78.0,
+                leader_score=86.0,
+                total_score=85.0,
+                theme_name="AI",
+                theme_score=84.0,
+                theme_rank=1,
+                primary_strategy="龙头模型",
+                mainline_tag="AI",
+                mainline_rank=1,
+                mainline_role="CORE",
+                mainline_strength_score=86.0,
+                mainline_continuation_score=74.0,
+                mainline_window_score=78.0,
+                theme_failure_risk=30.0,
+                rationale="leader demo",
+            )
+        ]
+        state = PaperTradingState(
+            enabled=True,
+            initial_cash=100000.0,
+            cash=100000.0,
+            max_position_pct=0.25,
+            ledger=[
+                PaperOrderRecord(
+                    order_id=f"SIM{i:05d}",
+                    timestamp=f"2026-04-12 09:{i % 60:02d}:00",
+                    symbol="SHSE.600000",
+                    stock_id="600000",
+                    stock_name="Leader Demo",
+                    side="BUY",
+                    price=10.0,
+                    quantity=100,
+                    amount=1000.0,
+                )
+                for i in range(505)
+            ],
+            equity_curve=[
+                PaperEquityPoint(
+                    timestamp=f"历史{i:03d}",
+                    cash=100000.0,
+                    market_value=0.0,
+                    total_equity=100000.0,
+                    realized_pnl=0.0,
+                    total_return=0.0,
+                    position_count=0,
+                )
+                for i in range(505)
+            ],
+            patrol_logs=[
+                PaperPatrolLog(
+                    timestamp=f"2026-04-12 14:{i % 60:02d}:00",
+                    event_type="CYCLE",
+                    summary=f"历史巡航 {i}",
+                    detail="demo",
+                    equity=100000.0,
+                    total_return=0.0,
+                    position_count=0,
+                )
+                for i in range(505)
+            ],
+        )
+
+        updated = PaperTradingEngine().run_cycle(state, recommendations, as_of="2026-04-13 10:05:00")
+
+        self.assertEqual(len(updated.ledger), 500)
+        self.assertEqual(len(updated.equity_curve), 500)
+        self.assertEqual(len(updated.patrol_logs), 500)
+        self.assertEqual(updated.ledger[0].order_id, "SIM00007")
+        self.assertEqual(updated.equity_curve[0].timestamp, "历史006")
+        self.assertEqual(updated.patrol_logs[0].summary, "历史巡航 7")
+        self.assertEqual(updated.equity_curve[-1].timestamp, "2026-04-13 10:05:00")
+        self.assertEqual(updated.patrol_logs[-1].event_type, "CYCLE")
 
     def test_summarize_paper_trading_performance_merges_strategy_aliases(self) -> None:
         state = PaperTradingState(
@@ -3673,6 +4556,148 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertTrue(item.opportunity_tier)
         self.assertTrue(item.next_focus)
         self.assertTrue(item.invalidation_reason)
+
+    def test_daily_pool_builder_prefers_stronger_backtest_quality(self) -> None:
+        rows = [
+            ScanRow(
+                stock_name="Strong Demo",
+                stock_id="300001",
+                symbol="SZSE.300001",
+                action="BUY",
+                label="RECLAIM_LONG",
+                score=82,
+                close=20.0,
+                signal_date="2026-04-05",
+                entry_price=20.0,
+                stop_price=19.0,
+                target_price=22.5,
+                reason="主线回流",
+                source_path="demo",
+            ),
+            ScanRow(
+                stock_name="Weak Demo",
+                stock_id="300002",
+                symbol="SZSE.300002",
+                action="BUY",
+                label="RECLAIM_LONG",
+                score=84,
+                close=20.0,
+                signal_date="2026-04-05",
+                entry_price=20.0,
+                stop_price=19.0,
+                target_price=22.5,
+                reason="主线回流",
+                source_path="demo",
+            ),
+        ]
+        analyses_by_symbol = {"SZSE.300001": [], "SZSE.300002": []}
+        profiles = {
+            "SZSE.300001": type("Profile", (), {"stock_id": "300001", "name": "Strong Demo", "industry": "AI", "notes": "主线前排", "is_leader": True})(),
+            "SZSE.300002": type("Profile", (), {"stock_id": "300002", "name": "Weak Demo", "industry": "AI", "notes": "主线前排", "is_leader": True})(),
+        }
+        summaries = [
+            SymbolBacktestSummary(symbol="SZSE.300001", trades=8, total_return=0.28, max_drawdown=0.06, win_rate=0.68, ending_equity=128000.0),
+            SymbolBacktestSummary(symbol="SZSE.300002", trades=3, total_return=-0.02, max_drawdown=0.19, win_rate=0.34, ending_equity=98000.0),
+        ]
+
+        pool = DailyPoolBuilder(stock_profiles=profiles).build(rows, analyses_by_symbol, summaries, top_n=5)
+
+        self.assertEqual(pool[0].stock_name, "Strong Demo")
+        self.assertGreater(pool[0].backtest_quality_score, pool[1].backtest_quality_score)
+
+    def test_daily_pool_builder_risk_profile_changes_opportunity_tier(self) -> None:
+        rows = [
+            ScanRow(
+                stock_name="Risk Demo",
+                stock_id="300003",
+                symbol="SZSE.300003",
+                action="BUY",
+                label="RECLAIM_LONG",
+                score=84,
+                close=20.0,
+                signal_date=date.today().isoformat(),
+                entry_price=20.0,
+                stop_price=19.0,
+                target_price=21.4,
+                reason="主线回流 主力承接",
+                source_path="demo",
+            ),
+        ]
+        analyses_by_symbol = {
+            "SZSE.300003": [
+                DailyAnalysis(
+                    date=date.today().isoformat(),
+                    symbol="SZSE.300003",
+                    close=20.0,
+                    atr=0.8,
+                    ma_fast=19.8,
+                    ma_slow=19.4,
+                    breakout_level=19.5,
+                    volume_ratio=1.2,
+                    upper_shadow_pct=1.0,
+                    close_location=0.75,
+                    label="RECLAIM_LONG",
+                    score=84,
+                    reason="主线回流",
+                    entry_price=20.0,
+                    stop_price=19.0,
+                    target_price=21.4,
+                )
+            ]
+        }
+        profiles = {
+            "SZSE.300003": type("Profile", (), {"stock_id": "300003", "name": "Risk Demo", "industry": "AI", "notes": "主线前排", "is_leader": True})(),
+        }
+
+        as_of = datetime(2026, 4, 6).date()
+        conservative_pool = DailyPoolBuilder(stock_profiles=profiles, risk_profile="conservative").build(
+            rows,
+            analyses_by_symbol,
+            [],
+            top_n=5,
+            as_of=as_of,
+        )
+        aggressive_pool = DailyPoolBuilder(stock_profiles=profiles, risk_profile="aggressive").build(
+            rows,
+            analyses_by_symbol,
+            [],
+            top_n=5,
+            as_of=as_of,
+        )
+
+        self.assertEqual(conservative_pool[0].opportunity_tier, "风险回避")
+        self.assertEqual(aggressive_pool[0].opportunity_tier, "跟踪确认")
+
+    def test_daily_pool_builder_applies_strategy_rotation_bias(self) -> None:
+        rows = [
+            ScanRow(
+                stock_name="Leader Demo",
+                stock_id="300001",
+                symbol="SZSE.300001",
+                action="BUY",
+                label="RECLAIM_LONG",
+                score=80,
+                close=20.0,
+                signal_date="2026-04-05",
+                entry_price=20.0,
+                stop_price=19.0,
+                target_price=22.0,
+                reason="主线 龙头 回封",
+                source_path="demo",
+            )
+        ]
+        analyses_by_symbol = {"SZSE.300001": []}
+        profiles = {
+            "SZSE.300001": type("Profile", (), {"stock_id": "300001", "name": "Leader Demo", "industry": "AI", "notes": "主线前排", "is_leader": True})(),
+        }
+
+        plain_pool = DailyPoolBuilder(stock_profiles=profiles).build(rows, analyses_by_symbol, [], top_n=5)
+        boosted_pool = DailyPoolBuilder(
+            stock_profiles=profiles,
+            strategy_bias_by_name={"龙头模型": 0.4},
+        ).build(rows, analyses_by_symbol, [], top_n=5)
+
+        self.assertGreater(boosted_pool[0].leader_model_score, plain_pool[0].leader_model_score)
 
     def test_daily_pool_builder_can_promote_one_day_hold_strategy(self) -> None:
         rows = [
@@ -7799,6 +8824,53 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(captured["experiment_bridge"]["badge"], "主测")
         self.assertIn("本次提交已取消", status["extra"])
         self.assertTrue(hasattr(window, "last_broker_execution_summary"))
+
+    def test_save_strategy_preferences_controller_persists_risk_profile(self) -> None:
+        from quant_hunter import ui_controllers
+
+        class DummyCombo:
+            def currentData(self):
+                return "conservative"
+
+        class DummyCheckbox:
+            def isChecked(self):
+                return True
+
+        calls = {"saved": 0, "license": 0, "pool": 0, "monitor": 0}
+        window = SimpleNamespace(
+            state=SimpleNamespace(
+                strategy_risk_profile="standard",
+                strategy_top_theme_limit=3,
+                strategy_max_total_exposure=0.85,
+                strategy_theme_drop_reduce=True,
+                focus_themes=[],
+                auto_daily_plan_export=False,
+                daily_plan_template="balanced",
+                daily_plan_focus_only=False,
+                daily_plan_candidate_limit=10,
+            ),
+            strategy_risk_profile_combo=DummyCombo(),
+            auto_daily_plan_export_checkbox=DummyCheckbox(),
+            _current_strategy_runtime_config=lambda: (4, 0.65, False),
+            _parse_focus_themes=lambda: ["银行", "机器人"],
+            _current_report_template_config=lambda: ("focus", True, 8),
+            save_state=lambda: calls.__setitem__("saved", calls["saved"] + 1),
+            _refresh_license_status_view=lambda: calls.__setitem__("license", calls["license"] + 1),
+            refresh_daily_pool=lambda: calls.__setitem__("pool", calls["pool"] + 1),
+            _refresh_intraday_monitor=lambda: calls.__setitem__("monitor", calls["monitor"] + 1),
+        )
+
+        ui_controllers.save_strategy_preferences_controller(window, info_dialog_fn=lambda *_args, **_kwargs: None)
+
+        self.assertEqual(window.state.strategy_risk_profile, "conservative")
+        self.assertEqual(window.state.strategy_top_theme_limit, 4)
+        self.assertAlmostEqual(window.state.strategy_max_total_exposure, 0.65)
+        self.assertEqual(window.state.focus_themes, ["银行", "机器人"])
+        self.assertEqual(window.state.daily_plan_template, "focus")
+        self.assertEqual(calls["saved"], 1)
+        self.assertEqual(calls["license"], 1)
+        self.assertEqual(calls["pool"], 1)
+        self.assertEqual(calls["monitor"], 1)
 
     def test_order_confirmation_dialog_surfaces_experiment_guardrails(self) -> None:
         module = importlib.import_module("app_qt")
