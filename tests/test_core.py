@@ -5020,6 +5020,34 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         self.assertEqual(line, "结论：阻塞待处理 / 先检查通道 / 去账户配置")
 
+    def test_broker_execution_deck_packs_middle_panel_values_for_execution_focus(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        deck = module._qh_broker_execution_deck_v50(
+            stock_name="宁德时代",
+            stock_id="300750",
+            symbol="SZSE.300750",
+            side_text="买入",
+            quantity="2400",
+            price="182.50",
+            mainline_signal="继续跟",
+            mainline_stage="强化中",
+            stage="待成交跟踪",
+            parameter_headline="买点偏高",
+            repair_headline="先收缩仓位",
+            resolution_target="推荐页",
+        )
+
+        self.assertEqual(deck["symbol_value"], "宁德时代")
+        self.assertEqual(deck["symbol_accent"], "300750 / SZSE.300750")
+        self.assertEqual(deck["gate_value"], "待成交跟踪")
+        self.assertEqual(deck["gate_accent"], "继续跟 / 强化中")
+        self.assertEqual(deck["risk_value"], "买点偏高")
+        self.assertEqual(deck["risk_accent"], "先收缩仓位")
+        self.assertEqual(deck["position_value"], "去推荐页")
+        self.assertEqual(deck["position_accent"], "买入 2400 @ 182.50")
+        self.assertEqual(deck["headline"], "执行动作面板：宁德时代 | 待成交跟踪 | 去推荐页")
+
     def test_set_aux_stage_visibility_updates_toggle_and_status(self) -> None:
         module = importlib.import_module("app_qt")
         app = module.QApplication.instance() or module.QApplication([])
