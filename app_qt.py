@@ -1190,11 +1190,13 @@ class QuantHunterWindow(QMainWindow):
         shell_chip_layout.setSpacing(10)
         self.shell_workspace_chip = create_shell_chip("当前页面", "龙头主控台")
         self.shell_market_chip = create_shell_chip("行情通道", "等待行情接入")
+        self.shell_pipeline_chip = create_shell_chip("今日流程", "市场待刷新")
         self.shell_refresh_chip = create_shell_chip("自动刷新", "待机")
         self.shell_runtime_chip = create_shell_chip("运行状态", "空闲")
         for chip in (
             self.shell_workspace_chip,
             self.shell_market_chip,
+            self.shell_pipeline_chip,
             self.shell_refresh_chip,
             self.shell_runtime_chip,
         ):
@@ -10748,9 +10750,22 @@ QPushButton#accentButton:hover {
         pending_orders = len(getattr(self, "order_intents", []) or [])
         submitted_orders = len(getattr(self, "order_submission_records", []) or [])
         pool_count = len(getattr(self, "daily_pool_rows", []) or [])
+        paper_state = getattr(self, "paper_trading_state", getattr(getattr(self, "state", None), "paper_trading_state", PaperTradingState()))
+        paper_analytics = summarize_paper_trading_performance(paper_state)
+        paper_closed_trades = int(paper_analytics.get("closed_trade_count", 0) or 0)
         blockers = list((getattr(self, "last_broker_execution_summary", {}) or {}).get("blockers", []))
         warnings = list((getattr(self, "last_broker_execution_summary", {}) or {}).get("warnings", []))
         risk_state = "红灯" if blockers else ("黄灯" if warnings else "绿灯")
+        pipeline_story = _qh_shell_pipeline_story_v41(
+            pool_count=pool_count,
+            trade_decisions_count=len(trade_decisions),
+            pending_orders=pending_orders,
+            submitted_orders=submitted_orders,
+            paper_enabled=bool(getattr(paper_state, "enabled", False)),
+            paper_closed_trades=paper_closed_trades,
+        )
+        if hasattr(self, "shell_pipeline_chip"):
+            set_shell_chip(self.shell_pipeline_chip, pipeline_story)
         market_running = self._is_job_running("market_refresh")
         scan_running = self._is_job_running("scan_universe")
         active_runtime = getattr(self, "last_job_name", "") or ("market_refresh" if market_running else ("scan_universe" if scan_running else "idle"))
@@ -10802,6 +10817,7 @@ QPushButton#accentButton:hover {
                 f"计划 {len(trade_decisions)}",
                 f"待审 {pending_orders}",
                 f"已提交 {submitted_orders}",
+                f"实验闭环 {paper_closed_trades}",
                 f"任务 {active_runtime}",
                 f"市场 {market_stamp[-8:] if len(market_stamp) >= 8 else market_stamp}",
                 f"完成 {job_stamp[-8:] if len(job_stamp) >= 8 else job_stamp}",
@@ -16598,6 +16614,7 @@ def _qh_refresh_recommend_decision_summary_v20(self: QuantHunterWindow, row: Rec
 
     current = row or self._current_recommend_focus()
     if current is None:
+        button_labels = _qh_recommend_cta_labels_v37(can_submit=False, can_open_broker=False, execution_state="")
         self._set_label_text_if_changed(label, "先选中一只股票，再看结论、关键价位、失效条件和下一步。")
         self._set_plain_text_if_changed(
             text_widget,
@@ -16605,10 +16622,21 @@ def _qh_refresh_recommend_decision_summary_v20(self: QuantHunterWindow, row: Rec
             "这里会先给出当前结论、关键买卖点、失效条件和下一步动作。\n"
             "你不需要先翻完所有卡片，再决定要不要送审。",
         )
-        for attr_name in ["recommend_push_focus_button", "recommend_detail_focus_button", "recommend_broker_focus_button"]:
-            button = getattr(self, attr_name, None)
-            if isinstance(button, QPushButton):
-                button.setEnabled(False)
+        push_button = getattr(self, "recommend_push_focus_button", None)
+        if isinstance(push_button, QPushButton):
+            push_button.setText(button_labels["push"])
+            push_button.setEnabled(False)
+            push_button.setToolTip("暂不送审：先从机会池选中焦点股票，再判断是否进入送审链路。")
+        detail_button = getattr(self, "recommend_detail_focus_button", None)
+        if isinstance(detail_button, QPushButton):
+            detail_button.setText(button_labels["detail"])
+            detail_button.setEnabled(False)
+            detail_button.setToolTip("查看复盘证据：先选中焦点股票，再查看信号、执行回放和近期消息。")
+        broker_button = getattr(self, "recommend_broker_focus_button", None)
+        if isinstance(broker_button, QPushButton):
+            broker_button.setText(button_labels["broker"])
+            broker_button.setEnabled(False)
+            broker_button.setToolTip("暂不进交易：先建立焦点票，再去交易页查看计划、委托和回执链路。")
         return
 
     self.active_symbol = getattr(current, "symbol", "") or getattr(self, "active_symbol", "")
@@ -16637,6 +16665,11 @@ def _qh_refresh_recommend_decision_summary_v20(self: QuantHunterWindow, row: Rec
     execution_state = getattr(current, "execution_status", "") or "待观察"
     queue_summary = _qh_queue_sequence_summary(queue_snapshot)
     next_review_target = _qh_next_review_target(queue_snapshot)
+    button_labels = _qh_recommend_cta_labels_v37(
+        can_submit=can_submit,
+        can_open_broker=can_open_broker,
+        execution_state=execution_state,
+    )
 
     self._set_label_text_if_changed(
         label,
@@ -16676,27 +16709,34 @@ def _qh_refresh_recommend_decision_summary_v20(self: QuantHunterWindow, row: Rec
 
     push_button = getattr(self, "recommend_push_focus_button", None)
     if isinstance(push_button, QPushButton):
+        push_button.setText(button_labels["push"])
         push_button.setEnabled(can_submit)
         push_tooltip = (
-            f"可送审：{stock_name}\n"
+            f"{button_labels['push']}：{stock_name}\n"
             f"结论：{verdict}\n"
             f"执行提示：{execution_summary}\n"
             f"下一复核：{next_review_target}"
             if can_submit
-            else f"暂不送审：{stock_name}\n结论：{verdict}\n原因：{execution_summary}\n建议：{next_focus}"
+            else f"{button_labels['push']}：{stock_name}\n结论：{verdict}\n原因：{execution_summary}\n建议：{next_focus}"
         )
         push_button.setToolTip(push_tooltip)
     detail_button = getattr(self, "recommend_detail_focus_button", None)
     if isinstance(detail_button, QPushButton):
+        detail_button.setText(button_labels["detail"])
         detail_button.setEnabled(True)
-        detail_button.setToolTip(f"查看复盘：{stock_name}\n重点：信号、执行回放、失效条件与近期消息。")
+        detail_button.setToolTip(
+            f"{button_labels['detail']}：{stock_name}\n"
+            f"重点：信号、执行回放、失效条件与近期消息。\n"
+            f"当前结论：{verdict}"
+        )
     broker_button = getattr(self, "recommend_broker_focus_button", None)
     if isinstance(broker_button, QPushButton):
+        broker_button.setText(button_labels["broker"])
         broker_button.setEnabled(can_open_broker)
         broker_tooltip = (
-            f"查看交易计划：{stock_name}\n价格计划：{price_brief}\n预算与执行链路会在交易页展开。"
+            f"{button_labels['broker']}：{stock_name}\n价格计划：{price_brief}\n预算与执行链路会在交易页展开。"
             if can_open_broker
-            else f"暂不跳交易页：{stock_name}\n原因：{execution_summary}\n建议：先回看复盘和确认信号。"
+            else f"{button_labels['broker']}：{stock_name}\n原因：{execution_summary}\n建议：先回看复盘和确认信号。"
         )
         broker_button.setToolTip(broker_tooltip)
 
@@ -19244,6 +19284,34 @@ QuantHunterWindow._set_broker_execution_detail_visibility_v40 = _qh_set_broker_e
 QuantHunterWindow.toggle_broker_execution_detail = _qh_toggle_broker_execution_detail_v40
 QuantHunterWindow._refresh_broker_auxiliary_panels = _qh_refresh_broker_auxiliary_panels_v40
 QuantHunterWindow._post_build_ui_tweaks = _qh_post_build_ui_tweaks_v40
+
+
+def _qh_shell_pipeline_story_v41(
+    *,
+    pool_count: int,
+    trade_decisions_count: int,
+    pending_orders: int,
+    submitted_orders: int,
+    paper_enabled: bool,
+    paper_closed_trades: int,
+) -> str:
+    market_stage = "市场已同步" if pool_count > 0 or trade_decisions_count > 0 or pending_orders > 0 or submitted_orders > 0 else "市场待刷新"
+    recommend_stage = "推荐已生成" if pool_count > 0 else "推荐待生成"
+    if submitted_orders > 0:
+        trade_stage = "交易跟踪中"
+    elif pending_orders > 0:
+        trade_stage = "交易待确认"
+    elif trade_decisions_count > 0:
+        trade_stage = "交易待生成"
+    else:
+        trade_stage = "交易未启动"
+    if not paper_enabled:
+        experiment_stage = "实验待初始化"
+    elif paper_closed_trades > 0:
+        experiment_stage = "实验可复盘"
+    else:
+        experiment_stage = "实验跑样本"
+    return f"{market_stage} -> {recommend_stage} -> {trade_stage} -> {experiment_stage}"
 
 
 def main() -> int:

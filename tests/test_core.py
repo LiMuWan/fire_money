@@ -4709,6 +4709,30 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(window.recommend_stage_toggle_button.text(), "收起辅助洞察")
         self.assertIn("辅助洞察已展开", window.recommend_stage_status_label.text())
 
+    def test_refresh_recommend_decision_summary_sets_empty_cta_defaults(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        window = SimpleNamespace(
+            recommend_decision_summary_label=module.QLabel(),
+            recommend_decision_summary_text=module.QTextEdit(),
+            recommend_push_focus_button=module.QPushButton(),
+            recommend_detail_focus_button=module.QPushButton(),
+            recommend_broker_focus_button=module.QPushButton(),
+            _current_recommend_focus=lambda: None,
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text) if widget.text() != text else None,
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text) if widget.toPlainText() != text else None,
+        )
+
+        module.QuantHunterWindow._refresh_recommend_decision_summary(window, None)
+
+        self.assertEqual(window.recommend_push_focus_button.text(), "暂不送审")
+        self.assertFalse(window.recommend_push_focus_button.isEnabled())
+        self.assertEqual(window.recommend_detail_focus_button.text(), "查看复盘证据")
+        self.assertFalse(window.recommend_detail_focus_button.isEnabled())
+        self.assertEqual(window.recommend_broker_focus_button.text(), "暂不进交易")
+        self.assertFalse(window.recommend_broker_focus_button.isEnabled())
+
     def test_toggle_recommend_auxiliary_stage_flips_state(self) -> None:
         module = importlib.import_module("app_qt")
         calls: list[bool] = []
@@ -4800,6 +4824,38 @@ class StrategyWorkflowTests(unittest.TestCase):
             module._qh_broker_workspace_stage_v40(1, 0, 2),
             ("风控阻塞", "存在阻塞项，先排除风险灯和仓位问题，再进入提交。"),
         )
+
+    def test_shell_pipeline_story_summarizes_daily_workflow(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        cold = module._qh_shell_pipeline_story_v41(
+            pool_count=0,
+            trade_decisions_count=0,
+            pending_orders=0,
+            submitted_orders=0,
+            paper_enabled=False,
+            paper_closed_trades=0,
+        )
+        active = module._qh_shell_pipeline_story_v41(
+            pool_count=12,
+            trade_decisions_count=4,
+            pending_orders=2,
+            submitted_orders=0,
+            paper_enabled=True,
+            paper_closed_trades=0,
+        )
+        review = module._qh_shell_pipeline_story_v41(
+            pool_count=18,
+            trade_decisions_count=5,
+            pending_orders=0,
+            submitted_orders=3,
+            paper_enabled=True,
+            paper_closed_trades=6,
+        )
+
+        self.assertEqual(cold, "市场待刷新 -> 推荐待生成 -> 交易未启动 -> 实验待初始化")
+        self.assertEqual(active, "市场已同步 -> 推荐已生成 -> 交易待确认 -> 实验跑样本")
+        self.assertEqual(review, "市场已同步 -> 推荐已生成 -> 交易跟踪中 -> 实验可复盘")
 
     def test_set_broker_execution_detail_visibility_updates_controls(self) -> None:
         module = importlib.import_module("app_qt")
