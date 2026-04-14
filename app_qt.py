@@ -634,10 +634,22 @@ TERMINAL_DASHBOARD_STYLE = """
 """
 
 TERMINAL_WORKSPACE_STYLE = """
+    QWidget#shellRoot > QWidget,
+    QWidget#shellRoot > QWidget > QWidget,
+    QWidget#shellRoot > QWidget > QWidget > QWidget {
+        background: transparent;
+    }
     QFrame#shellHeader {
         background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #141b24, stop:0.55 #10161f, stop:1 #0d131b);
         border: 1px solid rgba(118, 140, 168, 0.22);
         border-radius: 22px;
+    }
+    QFrame#shellHeader QLabel,
+    QFrame#shellPulseBar QLabel,
+    QFrame#workspaceHero QLabel,
+    QFrame#workspaceBadge QLabel,
+    QFrame#shellChip QLabel {
+        background: transparent;
     }
     QFrame#shellHeader[pageTone="recommend"] {
         background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1d2030, stop:0.55 #131722, stop:1 #10131b);
@@ -668,6 +680,13 @@ TERMINAL_WORKSPACE_STYLE = """
         border-color: rgba(167, 183, 202, 0.18);
     }
     QFrame#shellBrandBlock {
+        background: transparent;
+    }
+    QWidget#shellChipRail,
+    QWidget#shellPulseContent,
+    QWidget#workspaceStage,
+    QWidget#workspaceStage > QWidget,
+    QWidget#workspaceStage > QWidget > QWidget {
         background: transparent;
     }
     QLabel#shellProductEyebrow {

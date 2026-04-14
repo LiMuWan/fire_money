@@ -2829,6 +2829,16 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertGreaterEqual(sample.pool, 0)
         self.assertGreaterEqual(sample.decisions, 0)
 
+    def test_perf_smoke_pipeline_series_returns_summary_and_samples(self) -> None:
+        from tools import perf_smoke
+
+        summary, samples = perf_smoke._measure_pipeline_series(5, 2)
+
+        self.assertEqual(summary.files, 5)
+        self.assertEqual(len(samples), 2)
+        self.assertTrue(all(item.files == 5 for item in samples))
+        self.assertGreaterEqual(summary.scan_ms, 0.0)
+
     def test_perf_smoke_qt_boot_returns_expected_shape(self) -> None:
         from tools import perf_smoke
 

@@ -11,6 +11,7 @@ import sys
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from statistics import median
 from time import perf_counter
 from typing import Any
 
@@ -176,6 +177,33 @@ def _measure_pipeline(file_count: int) -> PerfSample:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def _measure_pipeline_series(file_count: int, repeats: int) -> tuple[PerfSample, list[PerfSample]]:
+    samples = [_measure_pipeline(file_count) for _ in range(max(repeats, 1))]
+    if len(samples) == 1:
+        return samples[0], samples
+
+    def metric(name: str) -> float:
+        return float(median(getattr(item, name) for item in samples))
+
+    def metric_int(name: str) -> int:
+        return int(round(median(getattr(item, name) for item in samples)))
+
+    summary = PerfSample(
+        files=file_count,
+        scan_ms=round(metric("scan_ms"), 2),
+        backtest_ms=round(metric("backtest_ms"), 2),
+        recommend_ms=round(metric("recommend_ms"), 2),
+        plan_ms=round(metric("plan_ms"), 2),
+        board_ms=round(metric("board_ms"), 2),
+        export_ms=round(metric("export_ms"), 2),
+        paper_ms=round(metric("paper_ms"), 2),
+        rows=metric_int("rows"),
+        pool=metric_int("pool"),
+        decisions=metric_int("decisions"),
+    )
+    return summary, samples
+
+
 def _measure_qt_boot(iterations: int) -> dict[str, Any]:
     if importlib.util.find_spec("PySide6") is None:
         return {"available": False, "iterations": 0, "boot_ms": []}
@@ -282,12 +310,14 @@ def _measure_qt_boot_breakdown(iterations: int) -> dict[str, Any]:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run local performance smoke checks for the app pipeline.")
     parser.add_argument("--files", nargs="+", type=int, default=[10, 50, 100], help="Universe sizes to benchmark.")
+    parser.add_argument("--pipeline-repeats", type=int, default=1, help="How many times to repeat each pipeline sample.")
     parser.add_argument("--qt-iterations", type=int, default=3, help="How many repeated Qt boot samples to capture.")
     parser.add_argument("--baseline", type=str, default="", help="Optional JSON baseline file to compare against.")
     parser.add_argument("--json", action="store_true", help="Print JSON instead of plain text.")
     args = parser.parse_args()
 
-    pipeline = [_measure_pipeline(file_count) for file_count in args.files]
+    pipeline_runs = [_measure_pipeline_series(file_count, args.pipeline_repeats) for file_count in args.files]
+    pipeline = [item[0] for item in pipeline_runs]
     qt = _measure_qt_boot(args.qt_iterations)
     qt_breakdown = _measure_qt_boot_breakdown(args.qt_iterations)
     perf_regressions: list[str] = []
@@ -295,6 +325,8 @@ def main() -> None:
         perf_regressions = _compare_pipeline_to_baseline(pipeline, _load_baseline(args.baseline))
     payload = {
         "pipeline": [asdict(item) for item in pipeline],
+        "pipeline_runs": [[asdict(sample) for sample in samples] for _, samples in pipeline_runs],
+        "pipeline_repeats": args.pipeline_repeats,
         "qt_boot": qt,
         "qt_boot_breakdown": qt_breakdown,
         "perf_regressions": perf_regressions,
