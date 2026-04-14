@@ -5,7 +5,7 @@ from datetime import date, datetime
 
 from .data import extract_stock_id
 from .models import DailyAnalysis, NewsCatalyst, RecommendationRow, ScanRow, StockProfile, SymbolBacktestSummary
-from .risk import DEFAULT_RISK_CONTROLS, RiskControls, normalize_risk_profile, resolve_risk_controls
+from .risk import DEFAULT_RISK_CONTROLS, RiskControls, normalize_risk_profile, resolve_risk_controls, risk_profile_brief
 from .theme import ThemeHeatEngine, infer_mainline_flow_signal, infer_mainline_stage, infer_theme_name
 
 
@@ -121,6 +121,7 @@ class DailyPoolBuilder:
         self.risk_controls = risk_controls or resolve_risk_controls(self.risk_profile)
         self.last_theme_rows = []
         self.last_leader_rows = []
+        self.last_build_meta: dict[str, object] = {}
 
     def build(
         self,
@@ -254,7 +255,20 @@ class DailyPoolBuilder:
         themed_candidates.sort(key=_recommendation_sort_key)
         self.last_theme_rows = theme_rows
         self.last_leader_rows = leader_rows
-        return themed_candidates[:top_n]
+        final_rows = themed_candidates[:top_n]
+        self.last_build_meta = {
+            "risk_profile": self.risk_profile,
+            "risk_profile_brief": risk_profile_brief(self.risk_profile),
+            "scan_candidate_count": len(scan_rows),
+            "candidate_count": len(candidates),
+            "ranked_count": len(themed_candidates),
+            "display_count": len(final_rows),
+            "buy_ready_count": sum(1 for item in themed_candidates if item.action == "BUY" and not item.reject_reason),
+            "rejected_count": sum(1 for item in themed_candidates if item.reject_reason),
+            "watch_count": sum(1 for item in themed_candidates if item.action in {"WATCH", "HOLD"}),
+            "top_theme": (theme_rows[0].theme_name if theme_rows else ""),
+        }
+        return final_rows
 
     def _stock_pool_profile(
         self,

@@ -30,6 +30,23 @@ _STRATEGY_SCORE_FIELDS = (
 )
 
 
+def _unique_paper_report_paths(root: Path) -> tuple[Path, Path, Path]:
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    markdown_path = root / f"paper_trading_report_{stamp}.md"
+    csv_path = root / f"paper_trading_ledger_{stamp}.csv"
+    json_path = root / f"paper_trading_snapshot_{stamp}.json"
+    if not any(path.exists() for path in (markdown_path, csv_path, json_path)):
+        return markdown_path, csv_path, json_path
+    counter = 1
+    while True:
+        markdown_path = root / f"paper_trading_report_{stamp}_{counter}.md"
+        csv_path = root / f"paper_trading_ledger_{stamp}_{counter}.csv"
+        json_path = root / f"paper_trading_snapshot_{stamp}_{counter}.json"
+        if not any(path.exists() for path in (markdown_path, csv_path, json_path)):
+            return markdown_path, csv_path, json_path
+        counter += 1
+
+
 def _risk_profile_position_multiplier(risk_profile: str) -> float:
     normalized = str(risk_profile or "").strip().lower()
     if normalized == "conservative":
@@ -823,11 +840,8 @@ def export_paper_trading_report(
 ) -> ReportArtifacts:
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     exported_at = exported_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    markdown_path = root / f"paper_trading_report_{stamp}.md"
-    csv_path = root / f"paper_trading_ledger_{stamp}.csv"
-    json_path = root / f"paper_trading_snapshot_{stamp}.json"
+    markdown_path, csv_path, json_path = _unique_paper_report_paths(root)
 
     with csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.writer(handle)

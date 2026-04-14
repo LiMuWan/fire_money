@@ -92,4 +92,25 @@ def risk_profile_brief(profile: str | None) -> str:
     return RISK_PROFILE_BRIEFS[normalized]
 
 
+def risk_profile_comparison_text() -> str:
+    parts = []
+    for key in (RISK_PROFILE_CONSERVATIVE, RISK_PROFILE_STANDARD, RISK_PROFILE_AGGRESSIVE):
+        parts.append(f"{RISK_PROFILE_LABELS[key]}={RISK_PROFILE_BRIEFS[key]}")
+    return "\uff1b".join(parts)
+
+
+def risk_pool_impact_text(meta: dict[str, object] | None) -> str:
+    payload = dict(meta or {})
+    display_count = int(payload.get("display_count", 0) or 0)
+    buy_ready_count = int(payload.get("buy_ready_count", 0) or 0)
+    rejected_count = int(payload.get("rejected_count", 0) or 0)
+    if not payload:
+        return "\u63a8\u8350\u7edf\u8ba1\u5f85\u751f\u6210"
+    return (
+        f"\u63a8\u8350 {display_count} \u53ea | "
+        f"\u53ef\u6267\u884c {buy_ready_count} \u53ea | "
+        f"\u62e6\u622a {rejected_count} \u53ea"
+    )
+
+
 DEFAULT_RISK_CONTROLS = resolve_risk_controls(RISK_PROFILE_STANDARD)

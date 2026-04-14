@@ -91,7 +91,7 @@ from quant_hunter.paper_trading import (
     summarize_paper_trading_performance,
 )
 from quant_hunter.recommend import DailyPoolBuilder
-from quant_hunter.risk import RISK_PROFILE_LABELS, risk_profile_brief
+from quant_hunter.risk import RISK_PROFILE_LABELS, risk_pool_impact_text, risk_profile_brief, risk_profile_comparison_text
 from quant_hunter.reports import export_daily_trade_plan, export_end_of_day_review, export_workspace_report
 from quant_hunter.scanner import UniverseScanner
 from quant_hunter.storage import AppState, load_app_state, save_app_state
@@ -7490,8 +7490,9 @@ QPushButton#accentButton:hover {
             self.config_live_summary_headline.setText(f"方案：{plan_text} | 主线前排 {top_theme_limit}")
             risk_key = getattr(self.state, "strategy_risk_profile", "standard")
             risk_hint = risk_profile_brief(risk_key)
+            pool_impact = risk_pool_impact_text(getattr(self, "last_daily_pool_meta", {}))
             self.config_live_summary_detail.setText(
-                f"总仓位上限 {max_total_exposure:.2f} | 模板 {self.daily_plan_template_combo.currentText() if hasattr(self, 'daily_plan_template_combo') else '--'}"
+                f"总仓位上限 {max_total_exposure:.2f} | 模板 {self.daily_plan_template_combo.currentText() if hasattr(self, 'daily_plan_template_combo') else '--'} | {pool_impact}"
             )
             focus_theme_text = self.focus_themes_input.text().strip() if hasattr(self, "focus_themes_input") else ""
             risk_text = self.strategy_risk_profile_combo.currentText() if hasattr(self, "strategy_risk_profile_combo") else getattr(self.state, "strategy_risk_profile", "standard")
@@ -8263,6 +8264,7 @@ QPushButton#accentButton:hover {
                 "配置说明\n\n"
                 "- 当前配置会直接影响每日推荐、盘前计划、盘中监控和版本能力边界。\n"
                 "- 主线阈值越高，开仓越偏向龙头和前排。\n"
+                f"- 风险档位对比：{risk_profile_comparison_text()}\n"
                 "- 关注题材会影响排序、报告和提醒。\n"
                 "- 自动盘前报告会在刷新后同步生成。\n"
                 "- 保存配置后，登录页、推荐页和交易页都会同步刷新说明。"
@@ -9939,7 +9941,8 @@ QPushButton#accentButton:hover {
             self._set_label_text_if_changed(self.config_live_summary_headline, f"方案：{plan_text} | 主线前排 {top_theme_limit}")
             risk_key = getattr(self.state, "strategy_risk_profile", "standard")
             risk_hint = risk_profile_brief(risk_key)
-            self._set_label_text_if_changed(self.config_live_summary_detail, f"总仓位上限：{max_total_exposure:.2f} | 模板：{self.daily_plan_template_combo.currentText() if hasattr(self, 'daily_plan_template_combo') else '--'}")
+            pool_impact = risk_pool_impact_text(getattr(self, "last_daily_pool_meta", {}))
+            self._set_label_text_if_changed(self.config_live_summary_detail, f"总仓位上限：{max_total_exposure:.2f} | 模板：{self.daily_plan_template_combo.currentText() if hasattr(self, 'daily_plan_template_combo') else '--'} | {pool_impact}")
             focus_theme_text = self.focus_themes_input.text().strip() if hasattr(self, "focus_themes_input") else ""
             risk_text = self.strategy_risk_profile_combo.currentText() if hasattr(self, "strategy_risk_profile_combo") else getattr(self.state, "strategy_risk_profile", "standard")
             self._set_label_text_if_changed(self.config_live_summary_meta, f"风险档位：{risk_text} | {risk_hint} | 关注题材：{focus_theme_text or '未设置'}")
@@ -11993,6 +11996,7 @@ QPushButton#accentButton:hover {
                 "配置说明\n\n"
                 "- 当前配置会直接影响每日推荐、盘前计划、盘中监控和仓位控制。\n"
                 "- 主线阈值越高，开仓越偏向龙头和前排。\n"
+                f"- 风险档位对比：{risk_profile_comparison_text()}\n"
                 "- 关注题材会影响排序、报告和提醒。\n"
                 "- 保存配置后，登录页、推荐页和交易页都会同步刷新说明。"
             )
@@ -12603,7 +12607,8 @@ QPushButton#accentButton:hover {
             risk_key = getattr(self.state, "strategy_risk_profile", "standard")
             risk_hint = risk_profile_brief(risk_key)
             self._set_label_text_if_changed(self.config_live_summary_headline, f"方案：{plan_text} | 主线前排 {top_theme_limit}")
-            self._set_label_text_if_changed(self.config_live_summary_detail, f"总仓位上限：{max_total_exposure:.2f} | 模板：{template_text}")
+            pool_impact = risk_pool_impact_text(getattr(self, "last_daily_pool_meta", {}))
+            self._set_label_text_if_changed(self.config_live_summary_detail, f"总仓位上限：{max_total_exposure:.2f} | 模板：{template_text} | {pool_impact}")
             risk_text = self.strategy_risk_profile_combo.currentText() if hasattr(self, "strategy_risk_profile_combo") else risk_key
             self._set_label_text_if_changed(self.config_live_summary_meta, f"风险档位：{risk_text} | {risk_hint} | 关注题材：{focus_theme_text or '未设置'}")
 

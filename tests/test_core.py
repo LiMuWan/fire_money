@@ -67,6 +67,8 @@ from quant_hunter.risk import (
     RISK_PROFILE_CONSERVATIVE,
     RISK_PROFILE_STANDARD,
     normalize_risk_profile,
+    risk_pool_impact_text,
+    risk_profile_comparison_text,
     risk_profile_brief,
     resolve_risk_controls,
 )
@@ -1939,6 +1941,20 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn("盈亏比", risk_profile_brief("conservative"))
         self.assertIn("均衡", risk_profile_brief("standard"))
         self.assertIn("放宽", risk_profile_brief("aggressive"))
+
+    def test_risk_profile_comparison_text_covers_all_profiles(self) -> None:
+        text = risk_profile_comparison_text()
+
+        self.assertIn("保守=", text)
+        self.assertIn("标准=", text)
+        self.assertIn("激进=", text)
+
+    def test_risk_pool_impact_text_formats_latest_pool_counts(self) -> None:
+        text = risk_pool_impact_text({"display_count": 12, "buy_ready_count": 5, "rejected_count": 7})
+
+        self.assertIn("推荐 12 只", text)
+        self.assertIn("可执行 5 只", text)
+        self.assertIn("拦截 7 只", text)
 
     def test_board_mode_engine_builds_candidates(self) -> None:
         sample_dir = self._temp_dir() / "board_universe"
@@ -4476,6 +4492,92 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn('"order_id": "SIM00001"', payload)
         self.assertIn('"analytics"', payload)
         self.assertIn('"patrol_logs"', payload)
+
+    def test_repeated_report_exports_do_not_overwrite_previous_files(self) -> None:
+        output_dir = self._temp_dir() / "repeat_export_reports"
+        output_dir.mkdir(exist_ok=True)
+        recommendations = [
+            RecommendationRow(
+                symbol="SZSE.300024",
+                stock_id="300024",
+                stock_name="机器人核心",
+                action="BUY",
+                label="RECLAIM_LONG",
+                signal_date="2026-04-15",
+                close=28.5,
+                entry_price=28.5,
+                stop_price=27.6,
+                target_price=31.5,
+                technical_score=90.0,
+                position_score=84.0,
+                persistence_score=88.0,
+                news_score=82.0,
+                leader_score=92.0,
+                total_score=91.0,
+                theme_name="人工智能",
+                stock_pool="龙头股",
+                primary_strategy="龙头模型",
+                mainline_tag="人工智能",
+                mainline_rank=1,
+                mainline_role="CORE",
+                mainline_strength_score=88.0,
+                mainline_continuation_score=76.0,
+                mainline_window_score=86.0,
+                theme_divergence_score=28.0,
+                theme_failure_risk=18.0,
+                risk_reward_ratio=3.33,
+                setup_quality_score=90.0,
+                execution_readiness=84.0,
+                confidence_score=87.0,
+                opportunity_tier="优先处理",
+                rationale="主线延续，空间和风报比都达标。",
+                next_focus="盯承接和主线强化，不追高。",
+            )
+        ]
+        trade_plan = DecisionEngine().build_plan(recommendations, [], available_cash=100000, max_picks=5)
+        board_plan = BoardModeEngine().build(recommendations, top_n=5)
+        paper_state = PaperTradingEngine().run_cycle(
+            PaperTradingState(enabled=True, initial_cash=100000.0, cash=100000.0, max_position_pct=0.25),
+            recommendations,
+            as_of="2026-04-15 10:05:00",
+        )
+
+        daily_first = export_daily_trade_plan(output_dir=output_dir, recommendations=recommendations, trade_plan=trade_plan, holdings=[])
+        daily_second = export_daily_trade_plan(output_dir=output_dir, recommendations=recommendations, trade_plan=trade_plan, holdings=[])
+        review_first = export_end_of_day_review(
+            output_dir=output_dir,
+            recommendations=recommendations,
+            trade_plan=trade_plan,
+            board_plan=board_plan,
+            holdings=[],
+            cash_snapshot=None,
+            scan_rows=[],
+        )
+        review_second = export_end_of_day_review(
+            output_dir=output_dir,
+            recommendations=recommendations,
+            trade_plan=trade_plan,
+            board_plan=board_plan,
+            holdings=[],
+            cash_snapshot=None,
+            scan_rows=[],
+        )
+        paper_first = export_paper_trading_report(paper_state, output_dir=output_dir, exported_at="2026-04-15 15:10:00")
+        paper_second = export_paper_trading_report(paper_state, output_dir=output_dir, exported_at="2026-04-15 15:10:00")
+        for artifacts in (daily_first, daily_second, review_first, review_second, paper_first, paper_second):
+            self.addCleanup(lambda target=Path(artifacts.markdown_path): target.unlink(missing_ok=True))
+            self.addCleanup(lambda target=Path(artifacts.csv_path): target.unlink(missing_ok=True))
+            self.addCleanup(lambda target=Path(artifacts.json_path): target.unlink(missing_ok=True))
+
+        self.assertNotEqual(daily_first.markdown_path, daily_second.markdown_path)
+        self.assertNotEqual(review_first.markdown_path, review_second.markdown_path)
+        self.assertNotEqual(paper_first.markdown_path, paper_second.markdown_path)
+        self.assertTrue(Path(daily_first.markdown_path).exists())
+        self.assertTrue(Path(daily_second.markdown_path).exists())
+        self.assertTrue(Path(review_first.markdown_path).exists())
+        self.assertTrue(Path(review_second.markdown_path).exists())
+        self.assertTrue(Path(paper_first.markdown_path).exists())
+        self.assertTrue(Path(paper_second.markdown_path).exists())
 
     def test_daily_pool_builder_boosts_focus_themes(self) -> None:
         rows = [
@@ -9045,11 +9147,23 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         apply_daily_pool_rows(
             window,
-            rows,
+            (
+                rows,
+                {
+                    "risk_profile": "conservative",
+                    "risk_profile_brief": "更高盈亏比、更紧止损、更低集中度",
+                    "top_theme": "银行",
+                    "buy_ready_count": 1,
+                    "rejected_count": 2,
+                },
+            ),
             lambda *_args, **_kwargs: ([SimpleNamespace(theme_rank=1, theme_name="银行")], []),
         )
 
         self.assertIn("风险档位 保守", window.recommend_status_label.value)
+        self.assertIn("拦截 2 只", window.recommend_status_label.value)
+        self.assertIn("可执行 /", window.daily_pool_text.value)
+        self.assertEqual(window.last_daily_pool_meta["risk_profile"], "conservative")
 
     def test_order_confirmation_dialog_surfaces_experiment_guardrails(self) -> None:
         module = importlib.import_module("app_qt")

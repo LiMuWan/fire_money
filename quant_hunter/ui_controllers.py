@@ -369,7 +369,8 @@ def refresh_daily_pool_controller(window, async_mode: bool, *, daily_pool_builde
             focus_themes=list(window.state.focus_themes),
             focus_theme_boost=float(capabilities["focus_theme_boost"]),
         )
-        return builder.build(scan_rows, analyses_by_symbol, backtest_summaries)
+        rows = builder.build(scan_rows, analyses_by_symbol, backtest_summaries)
+        return rows, getattr(builder, "last_build_meta", {})
 
     if async_mode:
         if hasattr(window, "recommend_status_label"):
@@ -861,7 +862,8 @@ def refresh_daily_pool_controller(window, async_mode: bool, *, daily_pool_builde
             strategy_bias_by_name=strategy_bias_by_name,
             risk_profile=getattr(window.state, "strategy_risk_profile", "standard"),
         )
-        return builder.build(scan_rows, analyses_by_symbol, backtest_summaries)
+        rows = builder.build(scan_rows, analyses_by_symbol, backtest_summaries)
+        return rows, getattr(builder, "last_build_meta", {})
 
     if async_mode:
         if hasattr(window, "recommend_status_label"):

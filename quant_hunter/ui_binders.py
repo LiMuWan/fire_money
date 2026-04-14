@@ -4,6 +4,12 @@ from .risk import RISK_PROFILE_LABELS, risk_profile_brief
 
 
 def apply_daily_pool_rows(window, rows, summarize_themes_fn) -> None:
+    payload = rows
+    build_meta: dict[str, object] = {}
+    if isinstance(payload, tuple) and len(payload) == 2 and isinstance(payload[1], dict):
+        rows = payload[0]
+        build_meta = dict(payload[1])
+    window.last_daily_pool_meta = build_meta
     window.daily_pool_rows = rows
     risk_key = getattr(getattr(window, "state", None), "strategy_risk_profile", "standard")
     risk_label = RISK_PROFILE_LABELS.get(risk_key, risk_key)
@@ -47,6 +53,37 @@ def apply_daily_pool_rows(window, rows, summarize_themes_fn) -> None:
                 )
             )
 
+    if hasattr(window, "daily_pool_text") and window.daily_pool_rows:
+        buy_ready_count = int(build_meta.get("buy_ready_count", 0) or 0)
+        rejected_count = int(build_meta.get("rejected_count", 0) or 0)
+        """
+        summary_lines = [
+            "",
+            f"- 椋庨櫓妗ｄ綅锛歿risk_label} | {risk_hint}",
+            f"- 鏈疆杩囨护锛歿buy_ready_count} 鍙彲鎵ц / {rejected_count} 鍙鎷︽埅",
+        ]
+        window.daily_pool_text.setPlainText(window.daily_pool_text.toPlainText() + "\n".join(summary_lines))
+
+    if hasattr(window, "daily_pool_text") and window.daily_pool_rows:
+        buy_ready_count = int(build_meta.get("buy_ready_count", 0) or 0)
+        rejected_count = int(build_meta.get("rejected_count", 0) or 0)
+        clean_summary_lines = [
+            "",
+            f"- \u98ce\u9669\u6863\u4f4d\uff1a{risk_label} | {risk_hint}",
+            f"- \u672c\u8f6e\u8fc7\u6ee4\uff1a{buy_ready_count} \u53ea\u53ef\u6267\u884c / {rejected_count} \u53ea\u88ab\u62e6\u622a",
+        ]
+        base_lines = window.daily_pool_text.toPlainText().splitlines()
+        base_lines = base_lines[:-3] if len(base_lines) >= 3 else base_lines
+        window.daily_pool_text.setPlainText("\n".join(base_lines + clean_summary_lines))
+
+        """
+        summary_lines = [
+            "",
+            f"- \u98ce\u9669\u6863\u4f4d\uff1a{risk_label} | {risk_hint}",
+            f"- \u672c\u8f6e\u8fc7\u6ee4\uff1a{buy_ready_count} \u53ea\u53ef\u6267\u884c / {rejected_count} \u53ea\u88ab\u62e6\u622a",
+        ]
+        window.daily_pool_text.setPlainText(window.daily_pool_text.toPlainText() + "\n".join(summary_lines))
+
     if hasattr(window, "recommend_status_label"):
         top_theme = window.theme_heat_rows[0].theme_name if window.theme_heat_rows else "未分类"
         window.recommend_status_label.setText(
@@ -57,10 +94,18 @@ def apply_daily_pool_rows(window, rows, summarize_themes_fn) -> None:
         window.recommend_status_label.setText(
             f"每日推荐池已生成：{len(window.daily_pool_rows)} 只候选，风险档位 {risk_label}，当前主线题材 {top_theme}。"
         )
+    if hasattr(window, "recommend_status_label"):
+        top_theme = build_meta.get("top_theme", "") or (window.theme_heat_rows[0].theme_name if window.theme_heat_rows else "未分类")
+        rejected_count = int(build_meta.get("rejected_count", 0) or 0)
+        window.recommend_status_label.setText(
+            f"每日推荐池已生成：{len(window.daily_pool_rows)} 只候选，风险档位 {risk_label}，当前主线题材 {top_theme}，拦截 {rejected_count} 只。"
+        )
     if hasattr(window, "_update_recommend_empty_state"):
         window._update_recommend_empty_state()
 
     window._append_runtime_log(f"推荐池已生成：{len(window.daily_pool_rows)} 只候选")
+    rejected_count = int(build_meta.get("rejected_count", 0) or 0)
+    window._append_runtime_log(f"推荐池附加提示：风险档位 {risk_label} | 拦截 {rejected_count} 只")
     window._refresh_trade_plan()
     if hasattr(window, "daily_pool_table") and window.daily_pool_rows and window.daily_pool_table.rowCount() > 0:
         window.daily_pool_table.selectRow(0)

@@ -11,6 +11,23 @@ from .models import HoldingRecord, OptimizationRun, RecommendationRow, ReportArt
 from .theme import infer_mainline_flow_signal, infer_mainline_stage, summarize_themes
 
 
+def _unique_report_paths(root: Path, prefix: str) -> tuple[Path, Path, Path]:
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    csv_path = root / f"{prefix}_{stamp}.csv"
+    json_path = root / f"{prefix}_{stamp}.json"
+    markdown_path = root / f"{prefix}_{stamp}.md"
+    if not any(path.exists() for path in (csv_path, json_path, markdown_path)):
+        return csv_path, json_path, markdown_path
+    counter = 1
+    while True:
+        csv_path = root / f"{prefix}_{stamp}_{counter}.csv"
+        json_path = root / f"{prefix}_{stamp}_{counter}.json"
+        markdown_path = root / f"{prefix}_{stamp}_{counter}.md"
+        if not any(path.exists() for path in (csv_path, json_path, markdown_path)):
+            return csv_path, json_path, markdown_path
+        counter += 1
+
+
 def _report_role_score(value: str) -> int:
     return {
         "CORE": 6,
@@ -216,10 +233,7 @@ def export_optimization_report(
 ) -> ReportArtifacts:
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    csv_path = root / f"optimization_{stamp}.csv"
-    json_path = root / f"optimization_{stamp}.json"
-    markdown_path = root / f"optimization_{stamp}.md"
+    csv_path, json_path, markdown_path = _unique_report_paths(root, "optimization")
 
     with csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.writer(handle)
@@ -278,10 +292,7 @@ def export_workspace_report(
 ) -> ReportArtifacts:
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    csv_path = root / f"workspace_{stamp}.csv"
-    json_path = root / f"workspace_{stamp}.json"
-    markdown_path = root / f"workspace_{stamp}.md"
+    csv_path, json_path, markdown_path = _unique_report_paths(root, "workspace")
 
     with csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.writer(handle)
@@ -348,10 +359,7 @@ def export_daily_trade_plan(
 ) -> ReportArtifacts:
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    csv_path = root / f"daily_plan_{stamp}.csv"
-    json_path = root / f"daily_plan_{stamp}.json"
-    markdown_path = root / f"daily_plan_{stamp}.md"
+    csv_path, json_path, markdown_path = _unique_report_paths(root, "daily_plan")
 
     decisions = list(getattr(trade_plan, "decisions", []))
     position_advice = list(getattr(trade_plan, "position_advice", []))
@@ -629,10 +637,7 @@ def export_end_of_day_review(
 ) -> ReportArtifacts:
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    csv_path = root / f"end_of_day_review_{stamp}.csv"
-    json_path = root / f"end_of_day_review_{stamp}.json"
-    markdown_path = root / f"end_of_day_review_{stamp}.md"
+    csv_path, json_path, markdown_path = _unique_report_paths(root, "end_of_day_review")
 
     decisions = list(getattr(trade_plan, "decisions", []))
     position_advice = list(getattr(trade_plan, "position_advice", []))
