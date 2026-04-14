@@ -279,7 +279,10 @@ def discover_csv_files(folder: str | Path) -> list[Path]:
 def load_universe_from_folder(folder: str | Path) -> dict[str, tuple[Path, list[PriceBar]]]:
     universe: dict[str, tuple[Path, list[PriceBar]]] = {}
     for path in discover_csv_files(folder):
-        bars = load_bars_from_csv(path, default_symbol=path.stem)
+        try:
+            bars = load_bars_from_csv(path, default_symbol=path.stem)
+        except Exception:
+            continue
         if bars:
             universe[bars[-1].symbol] = (path, bars)
     return universe

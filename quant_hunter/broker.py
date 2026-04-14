@@ -303,19 +303,32 @@ def _resolve_bridge_script() -> Path:
 
 PROJECT_ROOT = _runtime_root()
 SDK_BRIDGE = _resolve_bridge_script()
+_DEFAULT_BRIDGE_PYTHON_CACHE: str | None = None
+_MODULE_AVAILABILITY_CACHE: dict[tuple[str, str], bool] = {}
+_ENV_DIAG_CACHE: dict[tuple[str, str, bool, bool, str], dict[str, Any]] = {}
 
 
 class EastmoneyBrokerAdapter:
     """Bridge between the desktop app and Eastmoney/MyQuant SDK workflows."""
 
     def diagnose_environment(self, profile: BrokerProfile) -> dict[str, Any]:
+        cache_key = (
+            str(profile.sdk_python_path or "").strip(),
+            str(profile.sdk_module or "").strip(),
+            bool(profile.token),
+            bool(profile.account_id),
+            str(profile.mode or "").strip(),
+        )
+        cached = _ENV_DIAG_CACHE.get(cache_key)
+        if cached is not None:
+            return dict(cached)
         bridge_python = self.resolve_bridge_python(profile)
         bridge_module_installed = self._module_available_in_interpreter(bridge_python, profile.sdk_module) if bridge_python else False
         module_installed = self._has_module(profile.sdk_module)
         runtime_supported = self._is_runtime_supported(profile.sdk_module, sys.version_info[:2])
         direct_ready = module_installed and runtime_supported and bool(profile.token) and bool(profile.account_id)
         bridge_ready = bool(bridge_python and bridge_module_installed and profile.token and profile.account_id)
-        return {
+        result = {
             "python_version": platform.python_version(),
             "sdk_module": profile.sdk_module,
             "module_installed": module_installed,
@@ -326,6 +339,8 @@ class EastmoneyBrokerAdapter:
             "bridge_ready": bridge_ready,
             "mode": profile.mode,
         }
+        _ENV_DIAG_CACHE[cache_key] = dict(result)
+        return result
 
     def describe_status(self, profile: BrokerProfile) -> BrokerStatus:
         env = self.diagnose_environment(profile)
@@ -354,9 +369,13 @@ class EastmoneyBrokerAdapter:
     def resolve_bridge_python(self, profile: BrokerProfile) -> str:
         if profile.sdk_python_path:
             return profile.sdk_python_path
+        global _DEFAULT_BRIDGE_PYTHON_CACHE
+        if _DEFAULT_BRIDGE_PYTHON_CACHE is not None:
+            return _DEFAULT_BRIDGE_PYTHON_CACHE
         candidate = Path.home() / "AppData" / "Local" / "Programs" / "Python" / "Python312" / "python.exe"
         if candidate.exists():
-            return str(candidate)
+            _DEFAULT_BRIDGE_PYTHON_CACHE = str(candidate)
+            return _DEFAULT_BRIDGE_PYTHON_CACHE
         try:
             result = subprocess.run(
                 ["py", "-3.12", "-c", "import sys; print(sys.executable)"],
@@ -365,7 +384,8 @@ class EastmoneyBrokerAdapter:
                 text=True,
                 check=True,
             )
-            return result.stdout.strip()
+            _DEFAULT_BRIDGE_PYTHON_CACHE = result.stdout.strip()
+            return _DEFAULT_BRIDGE_PYTHON_CACHE
         except Exception:
             return ""
 
@@ -689,6 +709,9 @@ class EastmoneyBrokerAdapter:
     def _module_available_in_interpreter(self, python_executable: str, module_name: str) -> bool:
         if not python_executable:
             return False
+        cache_key = (python_executable, module_name)
+        if cache_key in _MODULE_AVAILABILITY_CACHE:
+            return _MODULE_AVAILABILITY_CACHE[cache_key]
         result = subprocess.run(
             [python_executable, str(SDK_BRIDGE), "diagnose"],
             cwd=PROJECT_ROOT,
@@ -698,10 +721,14 @@ class EastmoneyBrokerAdapter:
             check=False,
         )
         if result.returncode != 0:
+            _MODULE_AVAILABILITY_CACHE[cache_key] = False
             return False
         try:
-            return bool(json.loads(result.stdout).get("module_installed"))
+            available = bool(json.loads(result.stdout).get("module_installed"))
+            _MODULE_AVAILABILITY_CACHE[cache_key] = available
+            return available
         except Exception:
+            _MODULE_AVAILABILITY_CACHE[cache_key] = False
             return False
 
     def _call_first_available(self, gm: Any, names: list[str], **kwargs):

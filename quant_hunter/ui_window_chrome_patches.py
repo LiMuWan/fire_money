@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QLabel, QWidget
 
 
 def apply_commercial_chrome_patches(window_cls: type, *, set_shell_chip_fn) -> None:
@@ -269,6 +269,26 @@ QToolTip {
                         self.style().unpolish(widget)
                         self.style().polish(widget)
                         widget.update()
+        for label_name in ("statusBanner", "focusStateLabel", "workspaceFocusBanner"):
+            for label in self.findChildren(QLabel, label_name):
+                if label.property("pageTone") != page_key:
+                    label.setProperty("pageTone", page_key)
+                    self.style().unpolish(label)
+                    self.style().polish(label)
+                    label.update()
+        for label in self.findChildren(QLabel, "sectionTitle"):
+            if label.property("pageTone") != page_key:
+                label.setProperty("pageTone", page_key)
+                self.style().unpolish(label)
+                self.style().polish(label)
+                label.update()
+        for group_name in ("workspaceToolPanel", "terminalPanel"):
+            for group in self.findChildren(QWidget, group_name):
+                if group.property("pageTone") != page_key:
+                    group.setProperty("pageTone", page_key)
+                    self.style().unpolish(group)
+                    self.style().polish(group)
+                    group.update()
         if hasattr(self, "top_badge"):
             badge_text = f"{badge} | 推荐 {pool_count} | 计划 {plan_count} | 待审 {pending_orders}"
             self._set_label_text_if_changed(self.top_badge, badge_text, tooltip=badge_text)

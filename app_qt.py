@@ -1326,6 +1326,34 @@ TERMINAL_WORKSPACE_STYLE = """
     QLabel#workspaceFocusBanner[stateTone="idle"] {
         border-left: 4px solid #6db8ff;
     }
+    QLabel#workspaceFocusBanner[pageTone="recommend"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(46, 32, 70, 0.96), stop:1 rgba(19, 24, 34, 0.96));
+        border-color: rgba(182, 154, 255, 0.18);
+    }
+    QLabel#workspaceFocusBanner[pageTone="broker"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(19, 47, 35, 0.96), stop:1 rgba(16, 24, 34, 0.96));
+        border-color: rgba(102, 224, 163, 0.18);
+    }
+    QLabel#workspaceFocusBanner[pageTone="auth"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(58, 45, 18, 0.96), stop:1 rgba(16, 24, 34, 0.96));
+        border-color: rgba(255, 209, 102, 0.18);
+    }
+    QLabel#workspaceFocusBanner[pageTone="detail"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(24, 49, 62, 0.96), stop:1 rgba(16, 24, 34, 0.96));
+        border-color: rgba(126, 210, 255, 0.18);
+    }
+    QLabel#workspaceFocusBanner[pageTone="scanner"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(22, 48, 58, 0.96), stop:1 rgba(16, 24, 34, 0.96));
+        border-color: rgba(110, 214, 255, 0.18);
+    }
+    QLabel#workspaceFocusBanner[pageTone="board"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(61, 36, 24, 0.96), stop:1 rgba(16, 24, 34, 0.96));
+        border-color: rgba(255, 164, 122, 0.18);
+    }
+    QLabel#workspaceFocusBanner[pageTone="config"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(33, 41, 49, 0.96), stop:1 rgba(16, 24, 34, 0.96));
+        border-color: rgba(167, 183, 202, 0.18);
+    }
     QGroupBox#workspaceToolPanel {
         background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #17212d, stop:1 #111821);
         border: 1px solid rgba(123, 145, 170, 0.22);
@@ -1333,12 +1361,54 @@ TERMINAL_WORKSPACE_STYLE = """
         margin-top: 16px;
         padding: 16px 14px 12px 14px;
     }
+    QGroupBox#workspaceToolPanel[pageTone="recommend"] {
+        border-color: rgba(182, 154, 255, 0.18);
+    }
+    QGroupBox#workspaceToolPanel[pageTone="broker"] {
+        border-color: rgba(102, 224, 163, 0.18);
+    }
+    QGroupBox#workspaceToolPanel[pageTone="auth"] {
+        border-color: rgba(255, 209, 102, 0.18);
+    }
+    QGroupBox#workspaceToolPanel[pageTone="detail"] {
+        border-color: rgba(126, 210, 255, 0.18);
+    }
+    QGroupBox#workspaceToolPanel[pageTone="scanner"] {
+        border-color: rgba(110, 214, 255, 0.18);
+    }
+    QGroupBox#workspaceToolPanel[pageTone="board"] {
+        border-color: rgba(255, 164, 122, 0.18);
+    }
+    QGroupBox#workspaceToolPanel[pageTone="config"] {
+        border-color: rgba(167, 183, 202, 0.18);
+    }
     QGroupBox#workspaceToolPanel::title {
         subcontrol-origin: margin;
         left: 12px;
         padding: 0 6px;
         color: #f1f5fb;
         font-weight: 800;
+    }
+    QGroupBox#workspaceToolPanel[pageTone="recommend"]::title {
+        color: #f4eeff;
+    }
+    QGroupBox#workspaceToolPanel[pageTone="broker"]::title {
+        color: #ecfff6;
+    }
+    QGroupBox#workspaceToolPanel[pageTone="auth"]::title {
+        color: #fff7e8;
+    }
+    QGroupBox#workspaceToolPanel[pageTone="detail"]::title {
+        color: #eef9ff;
+    }
+    QGroupBox#workspaceToolPanel[pageTone="scanner"]::title {
+        color: #eefbff;
+    }
+    QGroupBox#workspaceToolPanel[pageTone="board"]::title {
+        color: #fff1e8;
+    }
+    QGroupBox#workspaceToolPanel[pageTone="config"]::title {
+        color: #f1f5fa;
     }
     QLabel#statusBanner {
         background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(25, 36, 48, 0.98), stop:1 rgba(17, 24, 32, 0.98));
@@ -1350,6 +1420,34 @@ TERMINAL_WORKSPACE_STYLE = """
         font-size: 12px;
         font-weight: 800;
     }
+    QLabel#statusBanner[pageTone="recommend"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(46, 32, 70, 0.98), stop:1 rgba(17, 25, 34, 0.98));
+        border-color: rgba(182, 154, 255, 0.18);
+    }
+    QLabel#statusBanner[pageTone="broker"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(19, 47, 35, 0.98), stop:1 rgba(17, 25, 34, 0.98));
+        border-color: rgba(102, 224, 163, 0.18);
+    }
+    QLabel#statusBanner[pageTone="auth"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(58, 45, 18, 0.98), stop:1 rgba(17, 25, 34, 0.98));
+        border-color: rgba(255, 209, 102, 0.18);
+    }
+    QLabel#statusBanner[pageTone="detail"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(24, 49, 62, 0.98), stop:1 rgba(17, 25, 34, 0.98));
+        border-color: rgba(126, 210, 255, 0.18);
+    }
+    QLabel#statusBanner[pageTone="scanner"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(22, 48, 58, 0.98), stop:1 rgba(17, 25, 34, 0.98));
+        border-color: rgba(110, 214, 255, 0.18);
+    }
+    QLabel#statusBanner[pageTone="board"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(61, 36, 24, 0.98), stop:1 rgba(17, 25, 34, 0.98));
+        border-color: rgba(255, 164, 122, 0.18);
+    }
+    QLabel#statusBanner[pageTone="config"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(33, 41, 49, 0.98), stop:1 rgba(17, 25, 34, 0.98));
+        border-color: rgba(167, 183, 202, 0.18);
+    }
     QLabel#focusStateLabel {
         background: rgba(16, 23, 31, 0.9);
         color: #f5f8fc;
@@ -1358,6 +1456,62 @@ TERMINAL_WORKSPACE_STYLE = """
         padding: 8px 12px;
         font-size: 12px;
         font-weight: 700;
+    }
+    QLabel#focusStateLabel[pageTone="recommend"] {
+        background: rgba(29, 24, 44, 0.92);
+        border-color: rgba(182, 154, 255, 0.18);
+        color: #f4eeff;
+    }
+    QLabel#focusStateLabel[pageTone="broker"] {
+        background: rgba(18, 34, 28, 0.92);
+        border-color: rgba(102, 224, 163, 0.18);
+        color: #ecfff6;
+    }
+    QLabel#focusStateLabel[pageTone="auth"] {
+        background: rgba(40, 31, 18, 0.92);
+        border-color: rgba(255, 209, 102, 0.18);
+        color: #fff7e8;
+    }
+    QLabel#focusStateLabel[pageTone="detail"] {
+        background: rgba(18, 32, 39, 0.92);
+        border-color: rgba(126, 210, 255, 0.18);
+        color: #eef9ff;
+    }
+    QLabel#focusStateLabel[pageTone="scanner"] {
+        background: rgba(18, 32, 37, 0.92);
+        border-color: rgba(110, 214, 255, 0.18);
+        color: #eefbff;
+    }
+    QLabel#focusStateLabel[pageTone="board"] {
+        background: rgba(41, 28, 21, 0.92);
+        border-color: rgba(255, 164, 122, 0.18);
+        color: #fff1e8;
+    }
+    QLabel#focusStateLabel[pageTone="config"] {
+        background: rgba(24, 29, 34, 0.92);
+        border-color: rgba(167, 183, 202, 0.18);
+        color: #f1f5fa;
+    }
+    QLabel#sectionTitle[pageTone="recommend"] {
+        color: #f4eeff;
+    }
+    QLabel#sectionTitle[pageTone="broker"] {
+        color: #ecfff6;
+    }
+    QLabel#sectionTitle[pageTone="auth"] {
+        color: #fff7e8;
+    }
+    QLabel#sectionTitle[pageTone="detail"] {
+        color: #eef9ff;
+    }
+    QLabel#sectionTitle[pageTone="scanner"] {
+        color: #eefbff;
+    }
+    QLabel#sectionTitle[pageTone="board"] {
+        color: #fff1e8;
+    }
+    QLabel#sectionTitle[pageTone="config"] {
+        color: #f1f5fa;
     }
     QLabel#emptyStateMeta {
         color: #9aaaba;
@@ -2142,9 +2296,11 @@ class QuantHunterWindow(QMainWindow):
         self._build_ui()
         self._post_build_ui_tweaks()
         self._apply_dashboard_labels()
+        QTimer.singleShot(0, self._finish_startup_bootstrap)
+
+    def _finish_startup_bootstrap(self) -> None:
         self._refresh_watchlist()
         self._refresh_broker_status()
-
         if self.state.universe_dir and Path(self.state.universe_dir).exists():
             QTimer.singleShot(80, lambda: self._scan_universe(Path(self.state.universe_dir), quiet=True, async_mode=True))
         QTimer.singleShot(20, lambda: self.refresh_remote_market(quiet=True, update_chart=True, async_mode=True))

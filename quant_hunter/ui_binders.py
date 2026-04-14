@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .risk import RISK_PROFILE_LABELS, risk_profile_brief
+from .risk import RISK_PROFILE_LABELS, risk_pool_impact_text, risk_profile_brief, risk_profile_comparison_text
 
 
 def apply_daily_pool_rows(window, rows, summarize_themes_fn) -> None:
@@ -9,8 +9,10 @@ def apply_daily_pool_rows(window, rows, summarize_themes_fn) -> None:
     if isinstance(payload, tuple) and len(payload) == 2 and isinstance(payload[1], dict):
         rows = payload[0]
         build_meta = dict(payload[1])
+
     window.last_daily_pool_meta = build_meta
-    window.daily_pool_rows = rows
+    window.daily_pool_rows = list(rows)
+
     risk_key = getattr(getattr(window, "state", None), "strategy_risk_profile", "standard")
     risk_label = RISK_PROFILE_LABELS.get(risk_key, risk_key)
     risk_hint = risk_profile_brief(risk_key)
@@ -20,6 +22,7 @@ def apply_daily_pool_rows(window, rows, summarize_themes_fn) -> None:
         top_n_themes=panel_size,
         top_n_leaders=panel_size,
     )
+
     window._refresh_recommend_theme_options()
     window._populate_filtered_daily_pool_table()
     window._refresh_theme_heat_panels()
@@ -28,19 +31,20 @@ def apply_daily_pool_rows(window, rows, summarize_themes_fn) -> None:
         if window.daily_pool_rows:
             top = window.daily_pool_rows[0]
             theme_summary = " / ".join(f"{item.theme_rank}.{item.theme_name}" for item in window.theme_heat_rows[:3]) or "暂无"
-            window.daily_pool_text.setPlainText(
-                "\n".join(
-                    [
-                        "今日算法优先候选：",
-                        f"- 股票：{top.stock_name} ({top.stock_id} / {top.symbol})",
-                        f"- 题材：{top.theme_name or '未分类'}，题材排名第 {top.theme_rank}，龙头级别：{window._display_leader_level(top.leader_level)}",
-                        f"- 主线题材：{theme_summary}",
-                        f"- 总分：{top.total_score:.1f}",
-                        f"- 逻辑：{top.rationale}",
-                        f"- 催化：{top.catalyst or '暂无外部催化，偏技术面驱动'}",
-                    ]
-                )
-            )
+            buy_ready_count = int(build_meta.get("buy_ready_count", 0) or 0)
+            rejected_count = int(build_meta.get("rejected_count", 0) or 0)
+            lines = [
+                "今日算法优先候选：",
+                f"- 风险档位：{risk_label} | {risk_hint}",
+                f"- 股票：{top.stock_name} ({top.stock_id} / {top.symbol})",
+                f"- 题材：{top.theme_name or '未分类'}，题材排名第 {top.theme_rank}，龙头级别：{window._display_leader_level(top.leader_level)}",
+                f"- 主线题材：{theme_summary}",
+                f"- 本轮过滤：{buy_ready_count} 只可执行 / {rejected_count} 只被拦截",
+                f"- 总分：{top.total_score:.1f}",
+                f"- 逻辑：{top.rationale}",
+                f"- 催化：{top.catalyst or '暂无外部催化，偏技术面驱动'}",
+            ]
+            window.daily_pool_text.setPlainText("\n".join(lines))
         else:
             window.daily_pool_text.setPlainText(
                 "\n".join(
@@ -53,59 +57,18 @@ def apply_daily_pool_rows(window, rows, summarize_themes_fn) -> None:
                 )
             )
 
-    if hasattr(window, "daily_pool_text") and window.daily_pool_rows:
-        buy_ready_count = int(build_meta.get("buy_ready_count", 0) or 0)
-        rejected_count = int(build_meta.get("rejected_count", 0) or 0)
-        """
-        summary_lines = [
-            "",
-            f"- 椋庨櫓妗ｄ綅锛歿risk_label} | {risk_hint}",
-            f"- 鏈疆杩囨护锛歿buy_ready_count} 鍙彲鎵ц / {rejected_count} 鍙鎷︽埅",
-        ]
-        window.daily_pool_text.setPlainText(window.daily_pool_text.toPlainText() + "\n".join(summary_lines))
-
-    if hasattr(window, "daily_pool_text") and window.daily_pool_rows:
-        buy_ready_count = int(build_meta.get("buy_ready_count", 0) or 0)
-        rejected_count = int(build_meta.get("rejected_count", 0) or 0)
-        clean_summary_lines = [
-            "",
-            f"- \u98ce\u9669\u6863\u4f4d\uff1a{risk_label} | {risk_hint}",
-            f"- \u672c\u8f6e\u8fc7\u6ee4\uff1a{buy_ready_count} \u53ea\u53ef\u6267\u884c / {rejected_count} \u53ea\u88ab\u62e6\u622a",
-        ]
-        base_lines = window.daily_pool_text.toPlainText().splitlines()
-        base_lines = base_lines[:-3] if len(base_lines) >= 3 else base_lines
-        window.daily_pool_text.setPlainText("\n".join(base_lines + clean_summary_lines))
-
-        """
-        summary_lines = [
-            "",
-            f"- \u98ce\u9669\u6863\u4f4d\uff1a{risk_label} | {risk_hint}",
-            f"- \u672c\u8f6e\u8fc7\u6ee4\uff1a{buy_ready_count} \u53ea\u53ef\u6267\u884c / {rejected_count} \u53ea\u88ab\u62e6\u622a",
-        ]
-        window.daily_pool_text.setPlainText(window.daily_pool_text.toPlainText() + "\n".join(summary_lines))
-
-    if hasattr(window, "recommend_status_label"):
-        top_theme = window.theme_heat_rows[0].theme_name if window.theme_heat_rows else "未分类"
-        window.recommend_status_label.setText(
-            f"每日推荐池已生成：{len(window.daily_pool_rows)} 只候选，当前主线题材为 {top_theme}。"
-        )
-    if hasattr(window, "recommend_status_label"):
-        top_theme = window.theme_heat_rows[0].theme_name if window.theme_heat_rows else "未分类"
-        window.recommend_status_label.setText(
-            f"每日推荐池已生成：{len(window.daily_pool_rows)} 只候选，风险档位 {risk_label}，当前主线题材 {top_theme}。"
-        )
     if hasattr(window, "recommend_status_label"):
         top_theme = build_meta.get("top_theme", "") or (window.theme_heat_rows[0].theme_name if window.theme_heat_rows else "未分类")
         rejected_count = int(build_meta.get("rejected_count", 0) or 0)
         window.recommend_status_label.setText(
             f"每日推荐池已生成：{len(window.daily_pool_rows)} 只候选，风险档位 {risk_label}，当前主线题材 {top_theme}，拦截 {rejected_count} 只。"
         )
+
     if hasattr(window, "_update_recommend_empty_state"):
         window._update_recommend_empty_state()
 
-    window._append_runtime_log(f"推荐池已生成：{len(window.daily_pool_rows)} 只候选")
     rejected_count = int(build_meta.get("rejected_count", 0) or 0)
-    window._append_runtime_log(f"推荐池附加提示：风险档位 {risk_label} | 拦截 {rejected_count} 只")
+    window._append_runtime_log(f"推荐池已生成：{len(window.daily_pool_rows)} 只候选，风险档位 {risk_label}，拦截 {rejected_count} 只")
     window._refresh_trade_plan()
     if hasattr(window, "daily_pool_table") and window.daily_pool_rows and window.daily_pool_table.rowCount() > 0:
         window.daily_pool_table.selectRow(0)
@@ -120,6 +83,7 @@ def apply_scan_universe_result(window, folder, payload) -> None:
     else:
         rows, bars_by_symbol, analyses_by_symbol, paths_by_symbol, summaries = payload
         scan_warnings = []
+
     window.scan_rows = rows
     window.universe_bars = bars_by_symbol
     window.universe_analyses = analyses_by_symbol
@@ -133,6 +97,7 @@ def apply_scan_universe_result(window, folder, payload) -> None:
     if hasattr(window, "scan_summary_label"):
         warning_suffix = f" | 跳过 {len(scan_warnings)} 个异常文件" if scan_warnings else ""
         window.scan_summary_label.setText(f"已扫描 {len(bars_by_symbol)} 只股票，生成 {len(rows)} 条策略信号{warning_suffix}")
+
     window._append_runtime_log(f"扫描完成：{len(bars_by_symbol)} 只股票，{len(rows)} 条信号")
     for warning in list(scan_warnings or [])[:3]:
         window._append_runtime_log(f"扫描跳过：{warning}")
@@ -167,6 +132,7 @@ def apply_market_screen_result(
     window._append_runtime_log(
         f"{source_label}：{len(result.algorithmic_pool)} 只算法池，缓存 {cache_stats['files']} 个文件 / {cache_stats['bytes'] / 1024:.1f} KB"
     )
+
     window.market_screen_result = result
     window.market_snapshots = result.snapshots
     window.scan_rows = result.scan_rows
@@ -290,16 +256,20 @@ def handle_scan_error(window, message, quiet, *, show_error_dialog_fn) -> None:
 def refresh_license_status_view(window, *, datetime_cls) -> None:
     if not hasattr(window, "license_status_text"):
         return
+
     started = window.state.trial_started_at or datetime_cls.now().date().isoformat()
     try:
         start_date = datetime_cls.strptime(started, "%Y-%m-%d").date()
     except ValueError:
         start_date = datetime_cls.now().date()
+
     days_used = max((datetime_cls.now().date() - start_date).days, 0)
-    trial_days = 14
-    remaining = max(trial_days - days_used, 0)
+    remaining = max(14 - days_used, 0)
     capabilities = window._license_capabilities()
     plan = capabilities["plan"]
+    risk_key = getattr(window.state, "strategy_risk_profile", "standard")
+    risk_label = RISK_PROFILE_LABELS.get(risk_key, risk_key)
+
     lines = [
         f"当前方案：{plan}",
         f"试用开始：{start_date.isoformat()}",
@@ -312,24 +282,29 @@ def refresh_license_status_view(window, *, datetime_cls) -> None:
         lines.append("专业版已启用：自动盘前报告和题材优先加权已开放。")
     else:
         lines.append("试用版保留手动研究流程，自动盘前报告保持关闭。")
-    lines.append(f"关注题材：{', '.join(window.state.focus_themes) if window.state.focus_themes else '未设置'}")
-    lines.append(f"主线题材阈值：前 {window.state.strategy_top_theme_limit}")
-    lines.append(f"题材加权：{float(capabilities['focus_theme_boost']):.0f}")
-    lines.append(f"盘前模板：{window.state.daily_plan_template}")
-    lines.append(f"模板仅关注题材：{'是' if window.state.daily_plan_focus_only else '否'}")
-    lines.append(
-        f"盘前股票池上限：{min(window.state.daily_plan_candidate_limit, int(capabilities['daily_plan_export_limit']))}"
+
+    lines.extend(
+        [
+            f"风险档位：{risk_label}",
+            f"档位说明：{risk_profile_brief(risk_key)}",
+            f"档位对比：{risk_profile_comparison_text()}",
+            f"关注题材：{', '.join(window.state.focus_themes) if window.state.focus_themes else '未设置'}",
+            f"主线题材阈值：前 {window.state.strategy_top_theme_limit}",
+            f"题材加权：{float(capabilities['focus_theme_boost']):.0f}",
+            f"盘前模板：{window.state.daily_plan_template}",
+            f"模板仅关注题材：{'是' if window.state.daily_plan_focus_only else '否'}",
+            f"盘前股票池上限：{min(window.state.daily_plan_candidate_limit, int(capabilities['daily_plan_export_limit']))}",
+            f"市场历史回看深度：{int(capabilities['market_history_limit'])}",
+            f"监控摘要容量：{int(capabilities['monitor_summary_limit'])}",
+            "自动盘前报告："
+            + (
+                "已开启"
+                if window.state.auto_daily_plan_export and bool(capabilities["auto_daily_plan_export"])
+                else "未开启"
+            ),
+        ]
     )
-    lines.append(f"市场历史回看深度：{int(capabilities['market_history_limit'])}")
-    lines.append(f"监控摘要容量：{int(capabilities['monitor_summary_limit'])}")
-    lines.append(
-        "自动盘前报告："
-        + (
-            "已开启"
-            if window.state.auto_daily_plan_export and bool(capabilities["auto_daily_plan_export"])
-            else "未开启"
-        )
-    )
+
     if hasattr(window, "auto_daily_plan_export_checkbox"):
         enabled = bool(capabilities["auto_daily_plan_export"])
         window.auto_daily_plan_export_checkbox.setEnabled(enabled)
@@ -338,6 +313,7 @@ def refresh_license_status_view(window, *, datetime_cls) -> None:
             window.state.auto_daily_plan_export = False
     if hasattr(window, "config_inputs") and "daily_plan_candidate_limit" in window.config_inputs:
         window.config_inputs["daily_plan_candidate_limit"].setPlaceholderText(str(capabilities["daily_plan_export_limit"]))
+
     window.license_status_text.setPlainText("\n".join(lines))
 
 

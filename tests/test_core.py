@@ -28,6 +28,7 @@ from quant_hunter.ui_refresh import (
     select_recommend_action_targets,
 )
 from quant_hunter.ui_binders import apply_daily_pool_rows
+from quant_hunter.ui_binders import refresh_license_status_view as refresh_license_status_view_binder
 from quant_hunter.ui_helpers import one_day_hold_grade, one_day_hold_phase_labels, one_day_hold_tripwire_metrics, position_advice_check_item, tail_buy_execution_checklist, tail_buy_runtime_panel_lines, tail_buy_runtime_status, trade_decision_focus_lines, trade_plan_execution_hint
 from quant_hunter.broker import (
     build_order_intent_from_trade_decision,
@@ -48,6 +49,7 @@ from quant_hunter.data import (
     load_news_catalysts_from_csv,
     load_stock_profiles_from_csv,
     load_theme_aliases_from_csv,
+    load_universe_from_folder,
 )
 from quant_hunter.market_feed import EastmoneyMarketFeed, LocalMarketCache, MarketScreenResult, MarketSnapshot, RemoteMarketScreener
 from quant_hunter.models import BacktestResult, BrokerProfile, CashSnapshot, DailyAnalysis, HoldingRecord, PriceBar, RecommendationRow, ScanRow, SymbolBacktestSummary
@@ -294,6 +296,27 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(len(analyses_by_symbol), file_count)
         self.assertEqual(len(paths_by_symbol), file_count)
         self.assertGreaterEqual(len(rows), file_count)
+
+    def test_load_universe_from_folder_skips_bad_csv_files(self) -> None:
+        sample_dir = self._temp_dir() / "load_universe_mixed_quality"
+        sample_dir.mkdir(exist_ok=True)
+        valid_path = sample_dir / "SHSE.600000_demo.csv"
+        with valid_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["date", "symbol", "open", "high", "low", "close", "volume"])
+            writer.writerows(generate_rows("SHSE.600000", "reclaim"))
+        bad_path = sample_dir / "BROKEN_demo.csv"
+        with bad_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["date", "symbol", "open", "high", "low", "close", "volume"])
+            writer.writerow(["2026-04-01", "BROKEN", "10", "10.5", "9.8", "oops", "1000"])
+        self.addCleanup(lambda: valid_path.unlink(missing_ok=True))
+        self.addCleanup(lambda: bad_path.unlink(missing_ok=True))
+
+        universe = load_universe_from_folder(sample_dir)
+
+        self.assertEqual(list(universe.keys()), ["SHSE.600000"])
+        self.assertEqual(universe["SHSE.600000"][0].name, "SHSE.600000_demo.csv")
 
     def test_universe_scanner_resets_last_scan_warnings_between_runs(self) -> None:
         scanner = UniverseScanner(StrategyParams())
@@ -2573,6 +2596,22 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         self.assertEqual(len(history), 1)
         self.assertEqual(history[0].generated_at, "2026-04-15T09:30:00")
+
+    def test_local_market_cache_returns_empty_for_broken_payload_files(self) -> None:
+        cache_dir = self._temp_dir() / "market_cache_broken_payload"
+        cache = LocalMarketCache(root=cache_dir, snapshot_ttl_seconds=60, bars_ttl_seconds=60)
+        snapshot_path = cache_dir / "snapshots_20.json"
+        bars_path = cache_dir / "bars_600000.json"
+        snapshot_path.write_text("{broken", encoding="utf-8")
+        bars_path.write_text(json.dumps({"saved_at": 1.0, "payload": {"bad": True}}, ensure_ascii=False), encoding="utf-8")
+        self.addCleanup(lambda: snapshot_path.unlink(missing_ok=True))
+        self.addCleanup(lambda: bars_path.unlink(missing_ok=True))
+
+        snapshots = cache.get_market_snapshots(20, allow_stale=True)
+        bars = cache.get_daily_bars("SHSE.600000", allow_stale=True)
+
+        self.assertEqual(snapshots, [])
+        self.assertEqual(bars, [])
 
     def test_qt_entry_module_imports(self) -> None:
         if importlib.util.find_spec("PySide6") is None:
@@ -9362,6 +9401,65 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn("拦截 2 只", window.recommend_status_label.value)
         self.assertIn("可执行 /", window.daily_pool_text.value)
         self.assertEqual(window.last_daily_pool_meta["risk_profile"], "conservative")
+
+    def test_refresh_license_status_view_surfaces_risk_profile_explanation(self) -> None:
+        class DummyText:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def setPlainText(self, value: str) -> None:
+                self.value = value
+
+            def toPlainText(self) -> str:
+                return self.value
+
+        class DummyCheckbox:
+            def __init__(self) -> None:
+                self.enabled = True
+                self.checked = True
+
+            def setEnabled(self, value: bool) -> None:
+                self.enabled = value
+
+            def setChecked(self, value: bool) -> None:
+                self.checked = value
+
+        class DummyInput:
+            def __init__(self) -> None:
+                self.placeholder = ""
+
+            def setPlaceholderText(self, value: str) -> None:
+                self.placeholder = value
+
+        window = SimpleNamespace(
+            state=SimpleNamespace(
+                strategy_risk_profile="conservative",
+                focus_themes=["银行"],
+                strategy_top_theme_limit=3,
+                daily_plan_template="balanced",
+                daily_plan_focus_only=False,
+                daily_plan_candidate_limit=10,
+                auto_daily_plan_export=False,
+                trial_started_at="2026-04-01",
+            ),
+            license_status_text=DummyText(),
+            auto_daily_plan_export_checkbox=DummyCheckbox(),
+            config_inputs={"daily_plan_candidate_limit": DummyInput()},
+            _license_capabilities=lambda: {
+                "plan": "TRIAL",
+                "focus_theme_boost": 0.0,
+                "daily_plan_export_limit": 10,
+                "market_history_limit": 120,
+                "monitor_summary_limit": 8,
+                "auto_daily_plan_export": False,
+            },
+        )
+
+        refresh_license_status_view_binder(window, datetime_cls=datetime)
+
+        self.assertIn("风险档位：保守", window.license_status_text.value)
+        self.assertIn("档位说明：更高盈亏比", window.license_status_text.value)
+        self.assertIn("档位对比：保守=", window.license_status_text.value)
 
     def test_order_confirmation_dialog_surfaces_experiment_guardrails(self) -> None:
         module = importlib.import_module("app_qt")
