@@ -33,7 +33,14 @@ from quant_hunter.ui_config import (
     RECOMMEND_EMPTY_REFRESH_BUTTON_TEXT,
     RECOMMEND_EMPTY_SAMPLE_BUTTON_TEXT,
 )
-from quant_hunter.risk import RISK_PROFILE_LABELS
+from quant_hunter.risk import (
+    RISK_PROFILE_AGGRESSIVE,
+    RISK_PROFILE_CONSERVATIVE,
+    RISK_PROFILE_LABELS,
+    RISK_PROFILE_STANDARD,
+    risk_profile_brief,
+    risk_profile_snapshot_text,
+)
 
 
 def _configure_chart_view(view: QChartView, *, min_height: int) -> None:
@@ -2065,6 +2072,42 @@ def build_config_workspace(window) -> None:
 
     window._configure_splitter(top, [620, 620])
     layout.addWidget(top, stretch=2)
+
+    snapshot_box = QGroupBox("风险档位快照")
+    window._style_terminal_panel(snapshot_box)
+    snapshot_layout = QGridLayout(snapshot_box)
+    snapshot_layout.setHorizontalSpacing(12)
+    snapshot_layout.setVerticalSpacing(12)
+    window.risk_snapshot_cards = {}
+    for column, profile_key in enumerate((RISK_PROFILE_CONSERVATIVE, RISK_PROFILE_STANDARD, RISK_PROFILE_AGGRESSIVE)):
+        card = QFrame()
+        card.setProperty("actionRow", True)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(12, 12, 12, 12)
+        card_layout.setSpacing(6)
+        title = QLabel(RISK_PROFILE_LABELS.get(profile_key, profile_key))
+        title.setObjectName("workspaceTitle")
+        detail = QLabel(risk_profile_brief(profile_key))
+        detail.setObjectName("workspaceSubtitle")
+        detail.setWordWrap(True)
+        metrics = QLabel(risk_profile_snapshot_text(profile_key, getattr(window, "last_daily_pool_meta", {})))
+        metrics.setObjectName("workspaceEyebrow")
+        metrics.setWordWrap(True)
+        flag = QLabel("当前" if getattr(window.state, "strategy_risk_profile", "standard") == profile_key else "对比")
+        flag.setObjectName("workspaceHeroStamp")
+        card_layout.addWidget(title)
+        card_layout.addWidget(detail)
+        card_layout.addWidget(metrics)
+        card_layout.addWidget(flag)
+        card_layout.addStretch(1)
+        snapshot_layout.addWidget(card, 0, column)
+        window.risk_snapshot_cards[profile_key] = {
+            "title": title,
+            "detail": detail,
+            "metrics": metrics,
+            "flag": flag,
+        }
+    layout.addWidget(snapshot_box, stretch=1)
 
     notes_box = QGroupBox("说明")
     window._style_terminal_panel(notes_box)

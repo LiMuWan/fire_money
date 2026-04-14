@@ -96,6 +96,7 @@ from quant_hunter.risk import (
     risk_pool_impact_text,
     risk_profile_brief,
     risk_profile_comparison_text,
+    risk_profile_snapshot_text,
     risk_profile_projection_text,
 )
 from quant_hunter.reports import export_daily_trade_plan, export_end_of_day_review, export_workspace_report
@@ -1531,12 +1532,61 @@ TERMINAL_WORKSPACE_STYLE = """
         margin-top: 16px;
         padding: 16px 14px 12px 14px;
     }
+    QGroupBox#terminalPanel[pageTone="recommend"] {
+        border-color: rgba(182, 154, 255, 0.18);
+        background: rgba(27, 22, 40, 0.96);
+    }
+    QGroupBox#terminalPanel[pageTone="broker"] {
+        border-color: rgba(102, 224, 163, 0.18);
+        background: rgba(19, 31, 27, 0.96);
+    }
+    QGroupBox#terminalPanel[pageTone="auth"] {
+        border-color: rgba(255, 209, 102, 0.18);
+        background: rgba(38, 30, 18, 0.96);
+    }
+    QGroupBox#terminalPanel[pageTone="detail"] {
+        border-color: rgba(126, 210, 255, 0.18);
+        background: rgba(19, 31, 38, 0.96);
+    }
+    QGroupBox#terminalPanel[pageTone="scanner"] {
+        border-color: rgba(110, 214, 255, 0.18);
+        background: rgba(19, 31, 35, 0.96);
+    }
+    QGroupBox#terminalPanel[pageTone="board"] {
+        border-color: rgba(255, 164, 122, 0.18);
+        background: rgba(40, 28, 22, 0.96);
+    }
+    QGroupBox#terminalPanel[pageTone="config"] {
+        border-color: rgba(167, 183, 202, 0.18);
+        background: rgba(25, 29, 35, 0.96);
+    }
     QGroupBox#terminalPanel::title {
         subcontrol-origin: margin;
         left: 12px;
         padding: 0 6px;
         color: #e5edf7;
         font-weight: 800;
+    }
+    QGroupBox#terminalPanel[pageTone="recommend"]::title {
+        color: #f4eeff;
+    }
+    QGroupBox#terminalPanel[pageTone="broker"]::title {
+        color: #ecfff6;
+    }
+    QGroupBox#terminalPanel[pageTone="auth"]::title {
+        color: #fff7e8;
+    }
+    QGroupBox#terminalPanel[pageTone="detail"]::title {
+        color: #eef9ff;
+    }
+    QGroupBox#terminalPanel[pageTone="scanner"]::title {
+        color: #eefbff;
+    }
+    QGroupBox#terminalPanel[pageTone="board"]::title {
+        color: #fff1e8;
+    }
+    QGroupBox#terminalPanel[pageTone="config"]::title {
+        color: #f1f5fa;
     }
     QTableWidget#terminalTable {
         background: rgba(12, 17, 24, 0.97);
@@ -1545,6 +1595,29 @@ TERMINAL_WORKSPACE_STYLE = """
         padding: 10px;
         selection-background-color: #172231;
         selection-color: #f8fbff;
+    }
+    QTableWidget#terminalTable[pageTone="recommend"],
+    QTableWidget#recommendPoolTable[pageTone="recommend"] {
+        border-color: rgba(182, 154, 255, 0.18);
+    }
+    QTableWidget#terminalTable[pageTone="broker"] {
+        border-color: rgba(102, 224, 163, 0.18);
+    }
+    QTableWidget#terminalTable[pageTone="auth"] {
+        border-color: rgba(255, 209, 102, 0.18);
+    }
+    QTableWidget#terminalTable[pageTone="detail"] {
+        border-color: rgba(126, 210, 255, 0.18);
+    }
+    QTableWidget#terminalTable[pageTone="scanner"],
+    QTableWidget#marketPoolTable[pageTone="scanner"] {
+        border-color: rgba(110, 214, 255, 0.18);
+    }
+    QTableWidget#terminalTable[pageTone="board"] {
+        border-color: rgba(255, 164, 122, 0.18);
+    }
+    QTableWidget#terminalTable[pageTone="config"] {
+        border-color: rgba(167, 183, 202, 0.18);
     }
     QTableWidget#terminalTable QHeaderView::section {
         background: rgba(29, 39, 51, 0.92);
@@ -1579,9 +1652,65 @@ TERMINAL_WORKSPACE_STYLE = """
         padding: 10px;
         color: #dfe7f1;
     }
+    QTextEdit#terminalConsole[pageTone="recommend"],
+    QTextEdit#marketNotePanel[pageTone="recommend"] {
+        background: rgba(21, 18, 33, 0.96);
+        border-color: rgba(182, 154, 255, 0.18);
+    }
+    QTextEdit#terminalConsole[pageTone="broker"],
+    QTextEdit#marketNotePanel[pageTone="broker"] {
+        background: rgba(16, 26, 22, 0.96);
+        border-color: rgba(102, 224, 163, 0.18);
+    }
+    QTextEdit#terminalConsole[pageTone="auth"],
+    QTextEdit#marketNotePanel[pageTone="auth"] {
+        background: rgba(31, 24, 16, 0.96);
+        border-color: rgba(255, 209, 102, 0.18);
+    }
+    QTextEdit#terminalConsole[pageTone="detail"],
+    QTextEdit#marketNotePanel[pageTone="detail"] {
+        background: rgba(17, 26, 32, 0.96);
+        border-color: rgba(126, 210, 255, 0.18);
+    }
+    QTextEdit#terminalConsole[pageTone="scanner"],
+    QTextEdit#marketNotePanel[pageTone="scanner"] {
+        background: rgba(17, 25, 30, 0.96);
+        border-color: rgba(110, 214, 255, 0.18);
+    }
+    QTextEdit#terminalConsole[pageTone="board"],
+    QTextEdit#marketNotePanel[pageTone="board"] {
+        background: rgba(31, 22, 17, 0.96);
+        border-color: rgba(255, 164, 122, 0.18);
+    }
+    QTextEdit#terminalConsole[pageTone="config"],
+    QTextEdit#marketNotePanel[pageTone="config"] {
+        background: rgba(20, 23, 28, 0.96);
+        border-color: rgba(167, 183, 202, 0.18);
+    }
     QLabel#inlineHint {
         color: #90a0b3;
         font-size: 11px;
+    }
+    QLabel#inlineHint[pageTone="recommend"] {
+        color: #a79bc4;
+    }
+    QLabel#inlineHint[pageTone="broker"] {
+        color: #96bcae;
+    }
+    QLabel#inlineHint[pageTone="auth"] {
+        color: #c5b089;
+    }
+    QLabel#inlineHint[pageTone="detail"] {
+        color: #97b6c5;
+    }
+    QLabel#inlineHint[pageTone="scanner"] {
+        color: #93b8c4;
+    }
+    QLabel#inlineHint[pageTone="board"] {
+        color: #c7a48d;
+    }
+    QLabel#inlineHint[pageTone="config"] {
+        color: #9daaba;
     }
     QTabWidget#compactInfoTabs::pane {
         border: 1px solid rgba(112, 130, 153, 0.18);
@@ -2014,6 +2143,30 @@ GRAPHITE_COMMERCIAL_STYLE = """
     QTableWidget#terminalTable::item:selected {
         background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(38, 72, 108, 0.98), stop:1 rgba(23, 36, 50, 0.98));
         color: #f8fbff;
+    }
+    QTableWidget#recommendPoolTable[pageTone="recommend"]::item:selected,
+    QTableWidget#terminalTable[pageTone="recommend"]::item:selected {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(76, 59, 119, 0.98), stop:1 rgba(35, 30, 52, 0.98));
+    }
+    QTableWidget#terminalTable[pageTone="broker"]::item:selected {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(31, 78, 60, 0.98), stop:1 rgba(24, 39, 31, 0.98));
+    }
+    QTableWidget#terminalTable[pageTone="auth"]::item:selected {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(93, 71, 28, 0.98), stop:1 rgba(41, 33, 21, 0.98));
+        color: #fff9f1;
+    }
+    QTableWidget#terminalTable[pageTone="detail"]::item:selected {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(37, 82, 103, 0.98), stop:1 rgba(23, 37, 48, 0.98));
+    }
+    QTableWidget#marketPoolTable[pageTone="scanner"]::item:selected,
+    QTableWidget#terminalTable[pageTone="scanner"]::item:selected {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(36, 87, 102, 0.98), stop:1 rgba(22, 37, 46, 0.98));
+    }
+    QTableWidget#terminalTable[pageTone="board"]::item:selected {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(94, 57, 35, 0.98), stop:1 rgba(39, 29, 23, 0.98));
+    }
+    QTableWidget#terminalTable[pageTone="config"]::item:selected {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(64, 78, 95, 0.98), stop:1 rgba(31, 38, 48, 0.98));
     }
     QTableWidget#marketPoolTable,
     QTableWidget#recommendPoolTable,
@@ -7208,6 +7361,19 @@ QPushButton#accentButton:hover {
         if tooltip is not None and current_tooltip != tooltip:
             widget.setToolTip(tooltip)
 
+    def _refresh_risk_snapshot_cards(self) -> None:
+        cards = getattr(self, "risk_snapshot_cards", None)
+        if not isinstance(cards, dict):
+            return
+        current_key = getattr(self.state, "strategy_risk_profile", "standard")
+        meta = getattr(self, "last_daily_pool_meta", {}) or {}
+        for profile_key, labels in cards.items():
+            profile_label = RISK_PROFILE_LABELS.get(profile_key, profile_key)
+            self._set_label_text_if_changed(labels.get("title"), profile_label)
+            self._set_label_text_if_changed(labels.get("detail"), risk_profile_brief(profile_key))
+            self._set_label_text_if_changed(labels.get("metrics"), risk_profile_snapshot_text(profile_key, meta))
+            self._set_label_text_if_changed(labels.get("flag"), "当前" if profile_key == current_key else "对比")
+
     def _set_plain_text_if_changed(self, widget, text: str) -> None:
         if widget is None:
             return
@@ -7842,6 +8008,7 @@ QPushButton#accentButton:hover {
             focus_theme_text = self.focus_themes_input.text().strip() if hasattr(self, "focus_themes_input") else ""
             risk_text = self.strategy_risk_profile_combo.currentText() if hasattr(self, "strategy_risk_profile_combo") else getattr(self.state, "strategy_risk_profile", "standard")
             self.config_live_summary_meta.setText(f"风险档位：{risk_text} | {risk_hint} | {pool_projection} | 关注题材：{focus_theme_text or '未设置'}")
+            self._refresh_risk_snapshot_cards()
 
     def _refresh_workspace_focus_banners(self) -> None:
         target_symbol = self.active_symbol or self._selected_symbol_from_watchlist() or self._selected_board_symbol() or ""
@@ -10294,6 +10461,7 @@ QPushButton#accentButton:hover {
             focus_theme_text = self.focus_themes_input.text().strip() if hasattr(self, "focus_themes_input") else ""
             risk_text = self.strategy_risk_profile_combo.currentText() if hasattr(self, "strategy_risk_profile_combo") else getattr(self.state, "strategy_risk_profile", "standard")
             self._set_label_text_if_changed(self.config_live_summary_meta, f"风险档位：{risk_text} | {risk_hint} | {pool_projection} | 关注题材：{focus_theme_text or '未设置'}")
+            self._refresh_risk_snapshot_cards()
 
     def _refresh_workspace_focus_banners(self) -> None:
         target_symbol = self.active_symbol or self._selected_symbol_from_watchlist() or self._selected_board_symbol() or ""
@@ -12960,6 +13128,7 @@ QPushButton#accentButton:hover {
             self._set_label_text_if_changed(self.config_live_summary_detail, f"总仓位上限：{max_total_exposure:.2f} | 模板：{template_text} | {pool_impact}")
             risk_text = self.strategy_risk_profile_combo.currentText() if hasattr(self, "strategy_risk_profile_combo") else risk_key
             self._set_label_text_if_changed(self.config_live_summary_meta, f"风险档位：{risk_text} | {risk_hint} | {pool_projection} | 关注题材：{focus_theme_text or '未设置'}")
+            self._refresh_risk_snapshot_cards()
 
     def _refresh_workspace_focus_banners(self) -> None:
         target_symbol = self.active_symbol or self._selected_symbol_from_watchlist() or self._selected_board_symbol() or ""

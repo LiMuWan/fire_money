@@ -113,6 +113,26 @@ def risk_pool_impact_text(meta: dict[str, object] | None) -> str:
     )
 
 
+def risk_profile_snapshot_text(profile: str | None, meta: dict[str, object] | None) -> str:
+    payload = dict(meta or {})
+    normalized = normalize_risk_profile(profile)
+    snapshots = payload.get("profile_snapshots")
+    snapshot = snapshots.get(normalized) if isinstance(snapshots, dict) else None
+    if not isinstance(snapshot, dict):
+        if payload.get("risk_profile") == normalized:
+            snapshot = payload
+        else:
+            return "\u5feb\u7167\u5f85\u751f\u6210"
+    display_count = int(snapshot.get("display_count", 0) or 0)
+    buy_ready_count = int(snapshot.get("buy_ready_count", 0) or 0)
+    rejected_count = int(snapshot.get("rejected_count", 0) or 0)
+    return (
+        f"\u63a8\u8350 {display_count} \u53ea | "
+        f"\u53ef\u6267\u884c {buy_ready_count} \u53ea | "
+        f"\u62e6\u622a {rejected_count} \u53ea"
+    )
+
+
 def _risk_strictness_score(controls: RiskControls) -> float:
     stop_tightness = max(0.0, (0.12 - controls.max_plan_stop_loss_pct) / 0.12)
     return (

@@ -71,6 +71,7 @@ from quant_hunter.risk import (
     normalize_risk_profile,
     risk_pool_impact_text,
     risk_profile_projection_text,
+    risk_profile_snapshot_text,
     risk_profile_comparison_text,
     risk_profile_brief,
     resolve_risk_controls,
@@ -2073,6 +2074,21 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn("可执行 5 只", text)
         self.assertIn("拦截 7 只", text)
 
+    def test_risk_profile_snapshot_text_prefers_profile_snapshot(self) -> None:
+        text = risk_profile_snapshot_text(
+            "conservative",
+            {
+                "profile_snapshots": {
+                    "conservative": {"display_count": 9, "buy_ready_count": 3, "rejected_count": 13},
+                    "standard": {"display_count": 12, "buy_ready_count": 5, "rejected_count": 7},
+                }
+            },
+        )
+
+        self.assertIn("推荐 9 只", text)
+        self.assertIn("可执行 3 只", text)
+        self.assertIn("拦截 13 只", text)
+
     def test_risk_profile_projection_text_describes_other_profiles(self) -> None:
         text = risk_profile_projection_text(
             "standard",
@@ -2829,6 +2845,89 @@ class StrategyWorkflowTests(unittest.TestCase):
             self.assertEqual(result["iterations"], 1)
             self.assertEqual(len(result["boot_ms"]), 1)
             self.assertGreater(result["boot_ms"][0], 0.0)
+
+    def test_perf_smoke_loads_json_baseline(self) -> None:
+        from tools import perf_smoke
+
+        path = self._temp_dir() / "perf_baseline_test.json"
+        path.write_text(json.dumps({"pipeline": [{"files": 10, "scan_ms": 5.0}]}, ensure_ascii=False), encoding="utf-8")
+        self.addCleanup(lambda: path.unlink(missing_ok=True))
+
+        payload = perf_smoke._load_baseline(path)
+
+        self.assertEqual(payload["pipeline"][0]["files"], 10)
+        self.assertEqual(payload["pipeline"][0]["scan_ms"], 5.0)
+
+    def test_perf_smoke_loads_utf16_json_baseline(self) -> None:
+        from tools import perf_smoke
+
+        path = self._temp_dir() / "perf_baseline_utf16.json"
+        path.write_text(json.dumps({"pipeline": [{"files": 20, "scan_ms": 8.0}]}, ensure_ascii=False), encoding="utf-16")
+        self.addCleanup(lambda: path.unlink(missing_ok=True))
+
+        payload = perf_smoke._load_baseline(path)
+
+        self.assertEqual(payload["pipeline"][0]["files"], 20)
+        self.assertEqual(payload["pipeline"][0]["scan_ms"], 8.0)
+
+    def test_perf_smoke_reports_pipeline_regressions_against_baseline(self) -> None:
+        from tools import perf_smoke
+
+        current = [
+            perf_smoke.PerfSample(
+                files=50,
+                scan_ms=30.0,
+                backtest_ms=2.0,
+                recommend_ms=2.0,
+                plan_ms=0.1,
+                board_ms=0.1,
+                export_ms=5.0,
+                paper_ms=1.0,
+                rows=10,
+                pool=10,
+                decisions=0,
+            )
+        ]
+        baseline = {
+            "pipeline": [
+                {
+                    "files": 50,
+                    "scan_ms": 10.0,
+                    "backtest_ms": 2.0,
+                    "recommend_ms": 2.0,
+                    "plan_ms": 0.1,
+                    "board_ms": 0.1,
+                    "export_ms": 5.0,
+                    "paper_ms": 1.0,
+                }
+            ]
+        }
+
+        issues = perf_smoke._compare_pipeline_to_baseline(current, baseline, tolerance_ratio=0.2, min_slack_ms=1.0)
+
+        self.assertEqual(len(issues), 1)
+        self.assertIn("files=50 scan_ms", issues[0])
+
+    def test_perf_smoke_qt_boot_breakdown_returns_expected_shape(self) -> None:
+        from tools import perf_smoke
+
+        result = perf_smoke._measure_qt_boot_breakdown(1)
+
+        self.assertIn("available", result)
+        self.assertIn("iterations", result)
+        self.assertIn("import_ms", result)
+        self.assertIn("breakdown", result)
+        if importlib.util.find_spec("PySide6") is None:
+            self.assertFalse(result["available"])
+            self.assertEqual(result["breakdown"], [])
+        else:
+            self.assertTrue(result["available"])
+            self.assertEqual(result["iterations"], 1)
+            self.assertEqual(len(result["breakdown"]), 1)
+            self.assertIn("total_ms", result["breakdown"][0])
+            self.assertIn("build_ui_ms", result["breakdown"][0])
+            self.assertIn("post_build_ms", result["breakdown"][0])
+            self.assertIn("finish_bootstrap_ms", result["breakdown"][0])
 
     def test_emit_action_feedback_updates_workspace_labels_and_story(self) -> None:
         module = importlib.import_module("app_qt")
