@@ -15,6 +15,18 @@ from typing import Any
 from .decision import TradeDecision
 from .models import BrokerProfile, BrokerStatus, CashSnapshot, HoldingRecord, OrderIntent, ScanRow
 
+_MIN_ORDER_RISK_REWARD_RATIO = 1.2
+
+
+def _is_trade_plan_viable(price: float, stop_price: float, target_price: float, min_ratio: float = _MIN_ORDER_RISK_REWARD_RATIO) -> bool:
+    if price <= 0 or stop_price <= 0 or target_price <= 0:
+        return False
+    estimated_loss = price - stop_price
+    estimated_profit = target_price - price
+    if estimated_loss <= 0 or estimated_profit <= 0:
+        return False
+    return (estimated_profit / estimated_loss) >= min_ratio
+
 
 def _display_mainline_role(value: str) -> str:
     return {
@@ -232,9 +244,13 @@ class EastmoneyBrokerAdapter:
         candidates = [row for row in scan_rows if row.label == "RECLAIM_LONG" and row.entry_price]
         intents: list[OrderIntent] = []
         for row in candidates[:max_orders]:
+            if row.stop_price is None or row.target_price is None:
+                continue
+            if not _is_trade_plan_viable(row.entry_price, row.stop_price, row.target_price):
+                continue
             quantity = int(per_trade_budget / row.entry_price)
             quantity = (quantity // lot_size) * lot_size
-            if quantity < lot_size or row.stop_price is None or row.target_price is None:
+            if quantity < lot_size:
                 continue
             intents.append(
                 OrderIntent(
@@ -934,6 +950,8 @@ def build_order_intent_from_trade_decision(
     lot_size: int = 100,
 ) -> OrderIntent | None:
     if decision.action != "BUY" or decision.planned_entry <= 0:
+        return None
+    if not _is_trade_plan_viable(decision.planned_entry, decision.planned_stop, decision.planned_target):
         return None
     quantity = int(decision.suggested_budget / decision.planned_entry)
     quantity = (quantity // lot_size) * lot_size

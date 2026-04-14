@@ -82,8 +82,20 @@ class DecisionEngine:
         role = str(getattr(row, "mainline_role", "") or "")
         failure_risk = float(getattr(row, "theme_failure_risk", 0.0) or 0.0)
         window_score = float(getattr(row, "mainline_window_score", 0.0) or 0.0)
+        reject_reason = str(getattr(row, "reject_reason", "") or "").strip()
+        signal_source = str(getattr(row, "signal_source", "") or "").strip()
+        signal_age_days = int(getattr(row, "signal_age_days", 0) or 0)
+        risk_reward_ratio = float(getattr(row, "risk_reward_ratio", 0.0) or 0.0)
         rank = int(getattr(row, "mainline_rank", getattr(row, "theme_rank", 0)) or 0)
         has_mainline_signal = bool(role or failure_risk or window_score or rank)
+        if reject_reason:
+            return False
+        if signal_source.startswith("synthetic://"):
+            return False
+        if signal_age_days >= 4:
+            return False
+        if risk_reward_ratio and risk_reward_ratio < 1.35:
+            return False
         if not has_mainline_signal:
             return True
         if role in {"NOISE", "ELIMINATED"}:
@@ -171,10 +183,30 @@ class DecisionEngine:
             and (row.theme_rank == 0 or row.theme_rank <= top_theme_limit)
             and self._row_is_buy_allowed(row)
         ]
+        buy_candidates.sort(
+            key=lambda row: (
+                float(getattr(row, "setup_quality_score", 0.0) or 0.0),
+                float(getattr(row, "execution_readiness", 0.0) or 0.0),
+                float(getattr(row, "risk_reward_ratio", 0.0) or 0.0),
+                -int(getattr(row, "signal_age_days", 0) or 0),
+                float(getattr(row, "dragon_decision_score", 0.0) or getattr(row, "total_score", 0.0) or 0.0),
+            ),
+            reverse=True,
+        )
         buy_candidates = buy_candidates[:max_new_positions]
-        budget_per_pick = available_cash / max(len(buy_candidates), 1) if available_cash > 0 else 0.0
+        holding_market_value = sum(
+            float(getattr(item, "market_value", 0.0) or 0.0)
+            if float(getattr(item, "market_value", 0.0) or 0.0) > 0
+            else float(getattr(item, "cost_price", 0.0) or 0.0) * float(getattr(item, "quantity", 0) or 0.0)
+            for item in holdings
+        )
+        total_equity = holding_market_value + max(available_cash, 0.0)
+        remaining_exposure_budget = max(total_equity * pulse.max_total_exposure - holding_market_value, 0.0)
+        deployable_budget = min(max(available_cash, 0.0), remaining_exposure_budget)
+        budget_per_pick = deployable_budget / max(len(buy_candidates), 1) if deployable_budget > 0 else 0.0
 
         decisions: list[TradeDecision] = []
+        remaining_budget = deployable_budget
         for row in buy_candidates:
             planned_entry = row.entry_price or row.close
             strategy_name = getattr(row, "primary_strategy", "") or "掘龙决策"
@@ -232,6 +264,11 @@ class DecisionEngine:
             if row.rationale:
                 rationale_parts.append(row.rationale)
 
+            suggested_budget = round(min(remaining_budget, budget_per_pick * budget_multiplier), 2)
+            if suggested_budget <= 0:
+                continue
+            remaining_budget = max(0.0, remaining_budget - suggested_budget)
+
             decisions.append(
                 TradeDecision(
                     symbol=row.symbol,
@@ -242,11 +279,14 @@ class DecisionEngine:
                     planned_entry=planned_entry,
                     planned_stop=planned_stop,
                     planned_target=planned_target,
-                    suggested_budget=round(budget_per_pick * budget_multiplier, 2),
+                    suggested_budget=suggested_budget,
                     rationale=" | ".join(part for part in rationale_parts if part),
                     stock_pool=stock_pool,
                     opportunity_tier=getattr(row, "opportunity_tier", ""),
                     execution_readiness=float(getattr(row, "execution_readiness", 0.0) or 0.0),
+                    setup_quality_score=float(getattr(row, "setup_quality_score", 0.0) or 0.0),
+                    risk_reward_ratio=float(getattr(row, "risk_reward_ratio", 0.0) or 0.0),
+                    signal_age_days=int(getattr(row, "signal_age_days", 0) or 0),
                     next_focus=(
                         "只在 14:30 后确认尾盘回流和承接，隔夜后次日开盘优先兑现，弱开直接走。"
                         if strategy_name == "尾盘买入法"

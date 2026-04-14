@@ -37,7 +37,7 @@ from quant_hunter.broker import (
     summarize_trade_recap,
     summarize_broker_execution,
 )
-from quant_hunter.backtest import Backtester
+from quant_hunter.backtest import Backtester, BacktestParams
 from quant_hunter.board import BoardModeEngine
 from quant_hunter.decision import DecisionEngine
 from quant_hunter.decision import TradeDecision
@@ -49,7 +49,7 @@ from quant_hunter.data import (
     load_theme_aliases_from_csv,
 )
 from quant_hunter.market_feed import EastmoneyMarketFeed, LocalMarketCache, MarketSnapshot, RemoteMarketScreener
-from quant_hunter.models import BrokerProfile, CashSnapshot, HoldingRecord, PriceBar, RecommendationRow, ScanRow
+from quant_hunter.models import BacktestResult, BrokerProfile, CashSnapshot, DailyAnalysis, HoldingRecord, PriceBar, RecommendationRow, ScanRow
 from quant_hunter.models import OrderIntent
 from quant_hunter.optimizer import ParameterOptimizer
 from quant_hunter.paper_trading import (
@@ -121,6 +121,68 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         self.assertGreaterEqual(len(result.trades), 1)
         self.assertGreater(result.ending_equity, 0)
+
+    def test_backtest_skips_gap_entry_when_risk_reward_breaks(self) -> None:
+        bars = [
+            PriceBar(date="2026-04-01", symbol="SHSE.600000", open=10.0, high=10.3, low=9.9, close=10.1, volume=1000),
+            PriceBar(date="2026-04-02", symbol="SHSE.600000", open=10.1, high=10.4, low=10.0, close=10.3, volume=1200),
+            PriceBar(date="2026-04-03", symbol="SHSE.600000", open=11.1, high=11.4, low=10.9, close=11.2, volume=1500),
+        ]
+        analyses = [
+            DailyAnalysis(
+                date="2026-04-01",
+                symbol="SHSE.600000",
+                close=10.1,
+                atr=0.3,
+                ma_fast=10.0,
+                ma_slow=9.9,
+                breakout_level=10.0,
+                volume_ratio=1.0,
+                upper_shadow_pct=0.1,
+                close_location=0.7,
+                label="NONE",
+                score=0,
+                reason="",
+            ),
+            DailyAnalysis(
+                date="2026-04-02",
+                symbol="SHSE.600000",
+                close=10.3,
+                atr=0.35,
+                ma_fast=10.1,
+                ma_slow=10.0,
+                breakout_level=10.1,
+                volume_ratio=1.5,
+                upper_shadow_pct=0.1,
+                close_location=0.8,
+                label="RECLAIM_LONG",
+                score=88,
+                reason="demo",
+                entry_price=10.3,
+                stop_price=9.8,
+                target_price=11.3,
+            ),
+            DailyAnalysis(
+                date="2026-04-03",
+                symbol="SHSE.600000",
+                close=11.2,
+                atr=0.4,
+                ma_fast=10.6,
+                ma_slow=10.2,
+                breakout_level=10.3,
+                volume_ratio=1.2,
+                upper_shadow_pct=0.1,
+                close_location=0.7,
+                label="NONE",
+                score=0,
+                reason="",
+            ),
+        ]
+
+        result = Backtester(backtest_params=BacktestParams(min_entry_risk_reward_ratio=1.2)).run(bars, analyses)
+
+        self.assertEqual(result.trades, [])
+        self.assertEqual(result.ending_equity, 200000.0)
 
     def test_universe_scanner_finds_ranked_rows(self) -> None:
         sample_dir = self._temp_dir() / "universe"
@@ -1279,6 +1341,22 @@ class StrategyWorkflowTests(unittest.TestCase):
         )
         self.assertIsNone(skipped)
 
+        low_rr = build_order_intent_from_trade_decision(
+            TradeDecision(
+                symbol="SHSE.600002",
+                stock_id="600002",
+                stock_name="低盈亏比示例",
+                action="BUY",
+                confidence=0.7,
+                planned_entry=10.0,
+                planned_stop=9.6,
+                planned_target=10.2,
+                suggested_budget=10000.0,
+                rationale="skip low rr",
+            )
+        )
+        self.assertIsNone(low_rr)
+
     def test_summarize_execution_statuses_counts_pipeline_states(self) -> None:
         summary = summarize_execution_statuses(
             ["SHSE.600000", "SHSE.600001", "SHSE.600002", "SHSE.600003"],
@@ -1503,6 +1581,64 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(results[0].rank, 1)
         self.assertLessEqual(len(results), 3)
         self.assertTrue(all(result.symbols_tested == 2 for result in results))
+
+    def test_optimizer_prefers_more_stable_parameter_set(self) -> None:
+        bars = [
+            PriceBar(
+                date=f"2026-04-{index:02d}",
+                symbol="SHSE.600000",
+                open=10.0,
+                high=10.5,
+                low=9.8,
+                close=10.2,
+                volume=1000 + index,
+            )
+            for index in range(1, 13)
+        ]
+        bars_by_symbol = {"SHSE.600000": bars}
+
+        class FakeStrategy:
+            def __init__(self, params):
+                self.params = params
+
+            def analyze(self, series):
+                return [None] * len(series)
+
+        class FakeBacktester:
+            def __init__(self, strategy_params=None, backtest_params=None):
+                self.params = strategy_params
+
+            def run(self, series, analyses):
+                first_date = series[0].date
+                key = int(self.params.breakout_lookback)
+                if len(series) == 12:
+                    if key == 4:
+                        total_return = 0.10
+                    else:
+                        total_return = 0.12
+                elif first_date == "2026-04-01":
+                    total_return = 0.09 if key == 4 else 0.24
+                else:
+                    total_return = 0.08 if key == 4 else -0.11
+                return BacktestResult(
+                    initial_capital=200000.0,
+                    ending_equity=200000.0 * (1 + total_return),
+                    total_return=total_return,
+                    max_drawdown=0.04,
+                    win_rate=0.6,
+                    profit_factor=1.8,
+                    trades=[],
+                    equity_curve=[],
+                )
+
+        with patch("quant_hunter.optimizer.AntiHarvestStrategy", FakeStrategy), patch("quant_hunter.optimizer.Backtester", FakeBacktester):
+            results = ParameterOptimizer(StrategyParams(slow_ma_window=4)).optimize(
+                bars_by_symbol,
+                grid={"breakout_lookback": [4, 5]},
+                top_n=2,
+            )
+
+        self.assertEqual(results[0].params["breakout_lookback"], 4)
 
     def test_broker_generates_gm_strategy_script(self) -> None:
         adapter = EastmoneyBrokerAdapter()

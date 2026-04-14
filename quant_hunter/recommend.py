@@ -76,6 +76,9 @@ def _recommendation_sort_key(item: RecommendationRow) -> tuple[object, ...]:
         _mainline_stage_priority(stage_label),
         _mainline_flow_priority(flow_signal),
         *_one_day_hold_sort_priority(item),
+        -(getattr(item, "setup_quality_score", 0.0) or 0.0),
+        -(getattr(item, "freshness_score", 0.0) or 0.0),
+        -(getattr(item, "risk_reward_ratio", 0.0) or 0.0),
         -item.mainline_window_score,
         -item.leader_position_score,
         -item.total_score,
@@ -227,6 +230,7 @@ class DailyPoolBuilder:
                     tail_buy_score=strategy_scores["tail_buy_score"],
                     one_day_hold_score=strategy_scores["one_day_hold_score"],
                     dragon_decision_score=strategy_scores["dragon_decision_score"],
+                    signal_source=row.source_path,
                     catalyst=catalyst,
                     rationale=" | ".join(reasons),
                 )
@@ -617,6 +621,181 @@ class DailyPoolBuilder:
             if confidence_score >= 78.0 and execution_readiness >= 74.0 and timeliness_score >= 70.0:
                 return "优先处理"
             return "跟踪确认"
+        if getattr(row, "action", "") in {"WATCH", "HOLD"}:
+            return "观察名单"
+        return "风险回避"
+
+    def _signal_age_days(self, row: RecommendationRow) -> int:
+        signal_date = _parse_date(getattr(row, "signal_date", "") or "")
+        if signal_date is None:
+            return 0
+        return max((date.today() - signal_date).days, 0)
+
+    def _risk_reward_ratio(self, row: RecommendationRow) -> float:
+        entry = float(row.entry_price or row.close or 0.0)
+        stop = float(row.stop_price or 0.0)
+        target = float(row.target_price or 0.0)
+        if entry <= 0 or stop <= 0 or target <= 0:
+            return 0.0
+        estimated_loss = max(entry - stop, 0.0)
+        estimated_profit = max(target - entry, 0.0)
+        if estimated_loss <= 0:
+            return 0.0
+        return estimated_profit / estimated_loss
+
+    def _freshness_score(self, row: RecommendationRow, signal_age_days: int) -> float:
+        if signal_age_days <= 0:
+            base = 96.0
+        elif signal_age_days == 1:
+            base = 84.0
+        elif signal_age_days == 2:
+            base = 68.0
+        elif signal_age_days == 3:
+            base = 54.0
+        else:
+            base = 36.0
+        if str(getattr(row, "signal_source", "") or "").startswith("synthetic://"):
+            base -= 28.0
+        return self._bounded_score(base)
+
+    def _enrich_user_focus(self, row: RecommendationRow) -> RecommendationRow:
+        signal_age_days = self._signal_age_days(row)
+        risk_reward_ratio = round(self._risk_reward_ratio(row), 2)
+        freshness_score = round(self._freshness_score(row, signal_age_days), 2)
+        setup_quality_score = round(
+            self._bounded_score(
+                row.technical_score * 0.18
+                + row.position_score * 0.16
+                + row.mainline_window_score * 0.16
+                + row.dragon_decision_score * 0.14
+                + min(risk_reward_ratio * 28.0, 99.0) * 0.18
+                + freshness_score * 0.10
+                + (100.0 - row.theme_failure_risk) * 0.08
+            ),
+            2,
+        )
+        confidence_score = round(
+            self._bounded_score(
+                row.dragon_decision_score * 0.28
+                + row.total_score * 0.18
+                + row.mainline_window_score * 0.18
+                + freshness_score * 0.12
+                + min(risk_reward_ratio * 30.0, 99.0) * 0.12
+                + setup_quality_score * 0.12
+            ),
+            2,
+        )
+        execution_readiness = round(
+            self._bounded_score(
+                row.position_score * 0.24
+                + row.mainline_window_score * 0.20
+                + row.technical_score * 0.14
+                + row.persistence_score * 0.12
+                + freshness_score * 0.10
+                + min(risk_reward_ratio * 26.0, 99.0) * 0.10
+                + (100.0 - row.theme_failure_risk) * 0.10
+            ),
+            2,
+        )
+        timeliness_score = round(
+            self._bounded_score(
+                row.position_score * 0.30
+                + row.news_score * 0.14
+                + row.mainline_window_score * 0.16
+                + max(0.0, 100.0 - row.theme_rotation_score) * 0.10
+                + freshness_score * 0.30
+            ),
+            2,
+        )
+        reject_reason = self._reject_reason(
+            row,
+            signal_age_days=signal_age_days,
+            risk_reward_ratio=risk_reward_ratio,
+            freshness_score=freshness_score,
+        )
+        opportunity_tier = self._opportunity_tier(
+            row,
+            confidence_score=confidence_score,
+            execution_readiness=execution_readiness,
+            timeliness_score=timeliness_score,
+            freshness_score=freshness_score,
+            setup_quality_score=setup_quality_score,
+            risk_reward_ratio=risk_reward_ratio,
+            reject_reason=reject_reason,
+        )
+        next_focus = self._next_focus(row, reject_reason)
+        invalidation_reason = (row.risk_line or "").strip() or "跌破计划防守线或主线窗口继续收缩时放弃。"
+        return replace(
+            row,
+            confidence_score=confidence_score,
+            execution_readiness=execution_readiness,
+            timeliness_score=timeliness_score,
+            freshness_score=freshness_score,
+            setup_quality_score=setup_quality_score,
+            risk_reward_ratio=risk_reward_ratio,
+            signal_age_days=signal_age_days,
+            opportunity_tier=opportunity_tier,
+            reject_reason=reject_reason,
+            next_focus=next_focus,
+            invalidation_reason=invalidation_reason,
+        )
+
+    def _reject_reason(
+        self,
+        row: RecommendationRow,
+        *,
+        signal_age_days: int,
+        risk_reward_ratio: float,
+        freshness_score: float,
+    ) -> str:
+        role = (row.mainline_role or "").strip()
+        risk_flag = (row.mainline_risk_flag or "").strip()
+        signal_source = str(getattr(row, "signal_source", "") or "").strip()
+        if signal_source.startswith("synthetic://"):
+            return "当前仅有补位候选，缺少真实历史信号，先不作为可执行买点。"
+        if role in {"NOISE", "ELIMINATED"}:
+            return "不在主线核心参与区，先不新开仓。"
+        if row.mainline_rank and row.mainline_rank > 3:
+            return "主线位次偏后，胜率和性价比都在下降。"
+        if risk_flag == "高" or row.theme_failure_risk >= 72.0:
+            return "题材退潮风险偏高，先回避。"
+        if risk_reward_ratio and risk_reward_ratio < 1.35:
+            return "预期盈亏比偏低，试错空间不够，先不急着出手。"
+        if freshness_score < 45.0 or signal_age_days >= 4:
+            return "信号已经偏旧，盘面节奏可能变化，需等新的触发点。"
+        if row.mainline_window_score and row.mainline_window_score < 50.0:
+            return "窗口还没打开，容易追高后被动。"
+        if row.position_score < 60.0:
+            return "位置不够舒服，先等回踩或确认。"
+        if (row.target_price or 0.0) <= (row.entry_price or row.close or 0.0):
+            return "目标位没有拉开，暂时不具备足够收益空间。"
+        return ""
+
+    def _opportunity_tier(
+        self,
+        row: RecommendationRow,
+        *,
+        confidence_score: float,
+        execution_readiness: float,
+        timeliness_score: float,
+        freshness_score: float,
+        setup_quality_score: float,
+        risk_reward_ratio: float,
+        reject_reason: str,
+    ) -> str:
+        if getattr(row, "action", "") == "BUY" and not reject_reason:
+            if (
+                confidence_score >= 78.0
+                and execution_readiness >= 74.0
+                and timeliness_score >= 70.0
+                and freshness_score >= 72.0
+                and setup_quality_score >= 74.0
+                and risk_reward_ratio >= 1.8
+            ):
+                return "优先处理"
+            if risk_reward_ratio >= 1.45 and freshness_score >= 58.0:
+                return "跟踪确认"
+            return "观察名单"
         if getattr(row, "action", "") in {"WATCH", "HOLD"}:
             return "观察名单"
         return "风险回避"

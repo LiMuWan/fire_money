@@ -32,6 +32,7 @@ class BacktestParams:
     slippage_rate: float = 0.0005
     max_hold_days: int = 8
     lot_size: int = 100
+    min_entry_risk_reward_ratio: float = 1.2
 
 
 class Backtester:
@@ -42,6 +43,26 @@ class Backtester:
     ) -> None:
         self.strategy_params = strategy_params or StrategyParams()
         self.backtest_params = backtest_params or BacktestParams()
+
+    def _resolve_entry_price(self, source_signal: DailyAnalysis, bar: PriceBar) -> float | None:
+        params = self.backtest_params
+        if source_signal.stop_price is None or source_signal.target_price is None:
+            return None
+
+        entry_price = bar.open * (1 + params.slippage_rate)
+        if entry_price <= 0:
+            return None
+
+        estimated_loss = entry_price - source_signal.stop_price
+        estimated_profit = source_signal.target_price - entry_price
+        if estimated_loss <= 0 or estimated_profit <= 0:
+            return None
+
+        risk_reward_ratio = estimated_profit / estimated_loss
+        if risk_reward_ratio < params.min_entry_risk_reward_ratio:
+            return None
+
+        return entry_price
 
     def run(self, bars: list[PriceBar], analyses: list[DailyAnalysis]) -> BacktestResult:
         params = self.backtest_params
@@ -55,8 +76,8 @@ class Backtester:
         for index, bar in enumerate(bars):
             if pending_entry and pending_entry.bar_index == index and position is None:
                 source = pending_entry.source_signal
-                if source.stop_price is not None and source.target_price is not None:
-                    entry_price = bar.open * (1 + params.slippage_rate)
+                entry_price = self._resolve_entry_price(source, bar)
+                if entry_price is not None and source.stop_price is not None and source.target_price is not None:
                     risk_per_share = max(entry_price - source.stop_price, 0.01)
                     risk_budget = equity * params.risk_fraction
                     max_by_risk = int(risk_budget / risk_per_share)
