@@ -90,6 +90,70 @@ def _compare_pipeline_to_baseline(
     return issues
 
 
+def _render_perf_report(payload: dict[str, Any], *, title: str = "Quant Hunter Performance Report") -> str:
+    lines = [f"# {title}", ""]
+    pipeline = list(payload.get("pipeline", []) or [])
+    regressions = list(payload.get("perf_regressions", []) or [])
+    qt_boot = payload.get("qt_boot", {}) or {}
+    qt_breakdown = payload.get("qt_boot_breakdown", {}) or {}
+    repeats = int(payload.get("pipeline_repeats", 1) or 1)
+
+    lines.extend(
+        [
+            "## Summary",
+            "",
+            f"- Pipeline sample groups: {len(pipeline)}",
+            f"- Pipeline repeats per group: {repeats}",
+            f"- Performance regressions: {len(regressions)}",
+            "",
+        ]
+    )
+
+    lines.extend(["## Pipeline", ""])
+    if pipeline:
+        for item in pipeline:
+            lines.append(
+                f"- {int(item.get('files', 0) or 0)} files | "
+                f"scan {float(item.get('scan_ms', 0.0) or 0.0):.2f}ms | "
+                f"backtest {float(item.get('backtest_ms', 0.0) or 0.0):.2f}ms | "
+                f"recommend {float(item.get('recommend_ms', 0.0) or 0.0):.2f}ms | "
+                f"plan {float(item.get('plan_ms', 0.0) or 0.0):.2f}ms | "
+                f"board {float(item.get('board_ms', 0.0) or 0.0):.2f}ms | "
+                f"export {float(item.get('export_ms', 0.0) or 0.0):.2f}ms | "
+                f"paper {float(item.get('paper_ms', 0.0) or 0.0):.2f}ms"
+            )
+    else:
+        lines.append("- No pipeline samples.")
+
+    lines.extend(["", "## Qt Boot", ""])
+    if qt_boot.get("available"):
+        samples = ", ".join(f"{float(value):.2f}ms" for value in list(qt_boot.get("boot_ms", []) or []))
+        lines.append(f"- Samples: {samples or 'none'}")
+    else:
+        lines.append("- Qt boot sampling unavailable.")
+
+    lines.extend(["", "## Qt Boot Breakdown", ""])
+    if qt_breakdown.get("available"):
+        lines.append(f"- Import: {float(qt_breakdown.get('import_ms', 0.0) or 0.0):.2f}ms")
+        for index, sample in enumerate(list(qt_breakdown.get("breakdown", []) or []), start=1):
+            lines.append(
+                f"- Run {index}: total {float(sample.get('total_ms', 0.0) or 0.0):.2f}ms | "
+                f"build {float(sample.get('build_ui_ms', 0.0) or 0.0):.2f}ms | "
+                f"post {float(sample.get('post_build_ms', 0.0) or 0.0):.2f}ms | "
+                f"finish {float(sample.get('finish_bootstrap_ms', 0.0) or 0.0):.2f}ms"
+            )
+    else:
+        lines.append("- Qt breakdown unavailable.")
+
+    lines.extend(["", "## Regressions", ""])
+    if regressions:
+        lines.extend(f"- {item}" for item in regressions)
+    else:
+        lines.append("- No performance regressions detected against the selected baseline.")
+
+    return "\n".join(lines)
+
+
 def _write_universe(root: Path, file_count: int) -> None:
     patterns = ("reclaim", "watch", "weak")
     for index in range(file_count):

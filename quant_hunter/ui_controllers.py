@@ -8,6 +8,7 @@ from quant_hunter.risk import (
     RISK_PROFILE_CONSERVATIVE,
     RISK_PROFILE_LABELS,
     RISK_PROFILE_STANDARD,
+    normalize_risk_profile,
 )
 from quant_hunter.ui_window_paper_experiment_patches import paper_strategy_experiment_bridge_v45
 
@@ -544,6 +545,19 @@ def save_strategy_preferences_controller(window, *, info_dialog_fn) -> None:
     window._refresh_intraday_monitor()
     info_dialog_fn(window, "保存成功", "策略配置已保存，并已刷新推荐与监控。")
 
+
+
+def switch_strategy_risk_profile_controller(window, profile_key: str, *, info_dialog_fn) -> None:
+    normalized = normalize_risk_profile(profile_key)
+    combo = getattr(window, "strategy_risk_profile_combo", None)
+    if combo is not None and hasattr(combo, "count") and hasattr(combo, "itemData") and hasattr(combo, "setCurrentIndex"):
+        for index in range(combo.count()):
+            if combo.itemData(index) == normalized:
+                combo.setCurrentIndex(index)
+                break
+    else:
+        window.state.strategy_risk_profile = normalized
+    save_strategy_preferences_controller(window, info_dialog_fn=info_dialog_fn)
 
 
 def switch_license_plan_controller(window, plan: str, *, datetime_cls) -> None:

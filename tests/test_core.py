@@ -2918,6 +2918,39 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(len(issues), 1)
         self.assertIn("files=50 scan_ms", issues[0])
 
+    def test_perf_smoke_renders_human_readable_report(self) -> None:
+        from tools import perf_smoke
+
+        payload = {
+            "pipeline": [
+                {
+                    "files": 50,
+                    "scan_ms": 20.0,
+                    "backtest_ms": 1.2,
+                    "recommend_ms": 2.3,
+                    "plan_ms": 0.1,
+                    "board_ms": 0.1,
+                    "export_ms": 7.0,
+                    "paper_ms": 1.5,
+                }
+            ],
+            "pipeline_repeats": 3,
+            "qt_boot": {"available": True, "boot_ms": [1100.0, 1150.0]},
+            "qt_boot_breakdown": {
+                "available": True,
+                "import_ms": 0.2,
+                "breakdown": [{"total_ms": 1200.0, "build_ui_ms": 120.0, "post_build_ms": 360.0, "finish_bootstrap_ms": 1.0}],
+            },
+            "perf_regressions": [],
+        }
+
+        report = perf_smoke._render_perf_report(payload, title="Perf Report")
+
+        self.assertIn("# Perf Report", report)
+        self.assertIn("50 files", report)
+        self.assertIn("1100.00ms", report)
+        self.assertIn("No performance regressions detected", report)
+
     def test_perf_smoke_qt_boot_breakdown_returns_expected_shape(self) -> None:
         from tools import perf_smoke
 
@@ -9386,8 +9419,20 @@ class StrategyWorkflowTests(unittest.TestCase):
         from quant_hunter import ui_controllers
 
         class DummyCombo:
+            def __init__(self) -> None:
+                self.index = 1
+
+            def count(self) -> int:
+                return 3
+
+            def itemData(self, index: int):
+                return ["standard", "conservative", "aggressive"][index]
+
+            def setCurrentIndex(self, index: int) -> None:
+                self.index = index
+
             def currentData(self):
-                return "conservative"
+                return ["standard", "conservative", "aggressive"][self.index]
 
         class DummyCheckbox:
             def isChecked(self):
@@ -9424,6 +9469,62 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertAlmostEqual(window.state.strategy_max_total_exposure, 0.65)
         self.assertEqual(window.state.focus_themes, ["银行", "机器人"])
         self.assertEqual(window.state.daily_plan_template, "focus")
+        self.assertEqual(calls["saved"], 1)
+        self.assertEqual(calls["license"], 1)
+        self.assertEqual(calls["pool"], 1)
+        self.assertEqual(calls["monitor"], 1)
+
+    def test_switch_strategy_risk_profile_controller_switches_and_saves(self) -> None:
+        from quant_hunter import ui_controllers
+
+        class DummyCombo:
+            def __init__(self) -> None:
+                self.index = 0
+
+            def count(self) -> int:
+                return 3
+
+            def itemData(self, index: int):
+                return ["standard", "conservative", "aggressive"][index]
+
+            def setCurrentIndex(self, index: int) -> None:
+                self.index = index
+
+            def currentData(self):
+                return ["standard", "conservative", "aggressive"][self.index]
+
+        class DummyCheckbox:
+            def isChecked(self):
+                return False
+
+        calls = {"saved": 0, "license": 0, "pool": 0, "monitor": 0}
+        window = SimpleNamespace(
+            state=SimpleNamespace(
+                strategy_risk_profile="standard",
+                strategy_top_theme_limit=3,
+                strategy_max_total_exposure=0.85,
+                strategy_theme_drop_reduce=True,
+                focus_themes=[],
+                auto_daily_plan_export=False,
+                daily_plan_template="balanced",
+                daily_plan_focus_only=False,
+                daily_plan_candidate_limit=10,
+            ),
+            strategy_risk_profile_combo=DummyCombo(),
+            auto_daily_plan_export_checkbox=DummyCheckbox(),
+            _current_strategy_runtime_config=lambda: (3, 0.85, True),
+            _parse_focus_themes=lambda: [],
+            _current_report_template_config=lambda: ("balanced", False, 10),
+            save_state=lambda: calls.__setitem__("saved", calls["saved"] + 1),
+            _refresh_license_status_view=lambda: calls.__setitem__("license", calls["license"] + 1),
+            refresh_daily_pool=lambda: calls.__setitem__("pool", calls["pool"] + 1),
+            _refresh_intraday_monitor=lambda: calls.__setitem__("monitor", calls["monitor"] + 1),
+        )
+
+        ui_controllers.switch_strategy_risk_profile_controller(window, "aggressive", info_dialog_fn=lambda *_args, **_kwargs: None)
+
+        self.assertEqual(window.state.strategy_risk_profile, "aggressive")
+        self.assertEqual(window.strategy_risk_profile_combo.currentData(), "aggressive")
         self.assertEqual(calls["saved"], 1)
         self.assertEqual(calls["license"], 1)
         self.assertEqual(calls["pool"], 1)

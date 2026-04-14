@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from PySide6.QtCharts import QChartView
 from PySide6.QtWidgets import QLabel, QTableWidget, QTextEdit, QWidget
 
 
@@ -20,6 +21,25 @@ QFrame#shellHeader {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #18212c, stop:0.55 #101820, stop:1 #0b1117);
     border: 1px solid rgba(119, 146, 175, 0.26);
     border-radius: 24px;
+}
+QFrame#shellHeader QLabel,
+QFrame#shellPulseBar QLabel,
+QFrame#workspaceHero QLabel,
+QFrame#workspaceBadge QLabel,
+QFrame#shellChip QLabel,
+QLabel#statusBanner,
+QLabel#focusStateLabel,
+QLabel#workspaceFocusBanner,
+QLabel#inlineHint,
+QLabel#sectionTitle {
+    background-color: transparent;
+}
+QFrame#shellBrandBlock,
+QWidget#shellChipRail,
+QWidget#workspaceStage,
+QWidget#workspaceStage > QWidget,
+QWidget#workspaceStage > QWidget > QWidget {
+    background-color: transparent;
 }
 QFrame#shellHeader[stateTone="buy"] {
     border: 1px solid rgba(77, 226, 154, 0.34);
@@ -309,6 +329,12 @@ QToolTip {
                     self.style().unpolish(table)
                     self.style().polish(table)
                     table.update()
+        for chart in self.findChildren(QChartView, "marketChartPanel"):
+            if chart.property("pageTone") != page_key:
+                chart.setProperty("pageTone", page_key)
+                self.style().unpolish(chart)
+                self.style().polish(chart)
+                chart.update()
         if hasattr(self, "top_badge"):
             badge_text = f"{badge} | 推荐 {pool_count} | 计划 {plan_count} | 待审 {pending_orders}"
             self._set_label_text_if_changed(self.top_badge, badge_text, tooltip=badge_text)

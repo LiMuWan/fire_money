@@ -824,6 +824,7 @@ def build_overview_workspace(
     layout.addWidget(playbook_box)
 
     window.overview_stage_container = QWidget()
+    window.overview_stage_container.setObjectName("workspaceStage")
     overview_stage_layout = QVBoxLayout(window.overview_stage_container)
     overview_stage_layout.setContentsMargins(0, 0, 0, 0)
     overview_stage_layout.setSpacing(14)
@@ -1546,12 +1547,16 @@ def build_recommend_workspace(
     layout.addLayout(stage_control_row)
 
     window.recommend_stage_container = QWidget()
+    window.recommend_stage_container.setObjectName("workspaceStage")
     recommend_stage_layout = QVBoxLayout(window.recommend_stage_container)
     recommend_stage_layout.setContentsMargins(0, 0, 0, 0)
     recommend_stage_layout.setSpacing(14)
     execution_stage = QWidget()
+    execution_stage.setObjectName("workspaceStage")
     decision_stage = QWidget()
+    decision_stage.setObjectName("workspaceStage")
     recap_stage = QWidget()
+    recap_stage.setObjectName("workspaceStage")
     recommend_stage_layout.addWidget(execution_stage, stretch=3)
     recommend_stage_layout.addWidget(decision_stage, stretch=3)
     recommend_stage_layout.addWidget(recap_stage, stretch=4)
@@ -2095,10 +2100,14 @@ def build_config_workspace(window) -> None:
         metrics.setWordWrap(True)
         flag = QLabel("当前" if getattr(window.state, "strategy_risk_profile", "standard") == profile_key else "对比")
         flag.setObjectName("workspaceHeroStamp")
+        action_button = QPushButton("切换到此档")
+        window._set_button_role(action_button, "accent" if getattr(window.state, "strategy_risk_profile", "standard") == profile_key else "tonal")
+        action_button.clicked.connect(lambda checked=False, current=profile_key: window.switch_strategy_risk_profile(current))
         card_layout.addWidget(title)
         card_layout.addWidget(detail)
         card_layout.addWidget(metrics)
         card_layout.addWidget(flag)
+        card_layout.addWidget(action_button)
         card_layout.addStretch(1)
         snapshot_layout.addWidget(card, 0, column)
         window.risk_snapshot_cards[profile_key] = {
@@ -2106,6 +2115,7 @@ def build_config_workspace(window) -> None:
             "detail": detail,
             "metrics": metrics,
             "flag": flag,
+            "button": action_button,
         }
     layout.addWidget(snapshot_box, stretch=1)
 

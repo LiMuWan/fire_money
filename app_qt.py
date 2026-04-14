@@ -112,7 +112,7 @@ from quant_hunter.ui_cards import (
     LeaderboardCard,
     StrategyWorkbenchCard,
 )
-from quant_hunter.ui_controllers import confirm_and_submit_orders_controller, refresh_daily_pool_controller, refresh_remote_market_controller, run_background_job_controller, run_parameter_optimization_controller, save_strategy_preferences_controller, switch_license_plan_controller
+from quant_hunter.ui_controllers import confirm_and_submit_orders_controller, refresh_daily_pool_controller, refresh_remote_market_controller, run_background_job_controller, run_parameter_optimization_controller, save_strategy_preferences_controller, switch_license_plan_controller, switch_strategy_risk_profile_controller
 from quant_hunter.ui_config import (
     DAILY_POOL_TABLE_HEADERS,
     BROKER_DEFAULT_STATUS_TEXT,
@@ -595,6 +595,34 @@ TERMINAL_DASHBOARD_STYLE = """
         border: 1px solid rgba(114, 132, 157, 0.22);
         border-radius: 16px;
     }
+    QChartView#marketChartPanel[pageTone="recommend"] {
+        border-color: rgba(182, 154, 255, 0.20);
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0f1018, stop:1 #12131b);
+    }
+    QChartView#marketChartPanel[pageTone="broker"] {
+        border-color: rgba(102, 224, 163, 0.20);
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0d1110, stop:1 #11161b);
+    }
+    QChartView#marketChartPanel[pageTone="auth"] {
+        border-color: rgba(255, 209, 102, 0.20);
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #13110d, stop:1 #12161b);
+    }
+    QChartView#marketChartPanel[pageTone="detail"] {
+        border-color: rgba(126, 210, 255, 0.20);
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0d1216, stop:1 #11161b);
+    }
+    QChartView#marketChartPanel[pageTone="scanner"] {
+        border-color: rgba(110, 214, 255, 0.20);
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0d1215, stop:1 #11161b);
+    }
+    QChartView#marketChartPanel[pageTone="board"] {
+        border-color: rgba(255, 164, 122, 0.20);
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #14100d, stop:1 #12161b);
+    }
+    QChartView#marketChartPanel[pageTone="config"] {
+        border-color: rgba(167, 183, 202, 0.20);
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #101216, stop:1 #11161b);
+    }
     QTextEdit#marketNotePanel {
         background: rgba(13, 18, 24, 0.94);
         border: 1px solid rgba(114, 132, 157, 0.18);
@@ -649,6 +677,11 @@ TERMINAL_WORKSPACE_STYLE = """
     QFrame#workspaceHero QLabel,
     QFrame#workspaceBadge QLabel,
     QFrame#shellChip QLabel {
+        background: transparent;
+    }
+    QWidget#shellChipRail,
+    QWidget#workspaceStage,
+    QWidget#workspaceStage > QWidget {
         background: transparent;
     }
     QFrame#shellHeader[pageTone="recommend"] {
@@ -2517,6 +2550,7 @@ class QuantHunterWindow(QMainWindow):
         shell_header_layout.addWidget(shell_brand_block, stretch=3)
 
         shell_chip_rail = QWidget()
+        shell_chip_rail.setObjectName("shellChipRail")
         shell_chip_layout = QHBoxLayout(shell_chip_rail)
         shell_chip_layout.setContentsMargins(0, 0, 0, 0)
         shell_chip_layout.setSpacing(10)
@@ -2715,6 +2749,12 @@ class QuantHunterWindow(QMainWindow):
         if hasattr(self, "recommend_status_label"):
             self.recommend_status_label.setText("正在保存策略配置并刷新推荐与监控...")
         save_strategy_preferences_controller(self, info_dialog_fn=QMessageBox.information)
+
+    def switch_strategy_risk_profile(self, profile_key: str) -> None:
+        if hasattr(self, "recommend_status_label"):
+            label = RISK_PROFILE_LABELS.get(profile_key, profile_key)
+            self.recommend_status_label.setText(f"正在切换风险档位：{label}...")
+        switch_strategy_risk_profile_controller(self, profile_key, info_dialog_fn=lambda *_args, **_kwargs: None)
 
     def _refresh_license_status_view(self) -> None:
         if not hasattr(self, "license_status_text"):
@@ -6702,6 +6742,8 @@ QPushButton#accentButton:hover {
             self._schedule_visual_surface_stylesheet_v1()
         if hasattr(self, "_schedule_depth_effects_v27"):
             self._schedule_depth_effects_v27()
+        if hasattr(self, "_schedule_shell_transparency_fix_v28"):
+            self._schedule_shell_transparency_fix_v28()
 
     def _build_scanner_tab(self) -> None:
         layout = QVBoxLayout(self.scanner_tab)
@@ -7392,6 +7434,15 @@ QPushButton#accentButton:hover {
             self._set_label_text_if_changed(labels.get("detail"), risk_profile_brief(profile_key))
             self._set_label_text_if_changed(labels.get("metrics"), risk_profile_snapshot_text(profile_key, meta))
             self._set_label_text_if_changed(labels.get("flag"), "当前" if profile_key == current_key else "对比")
+            button = labels.get("button")
+            if button is not None:
+                target_text = "当前档位" if profile_key == current_key else "切换到此档"
+                current_text_attr = getattr(button, "text", None)
+                current_text = current_text_attr() if callable(current_text_attr) else current_text_attr
+                if current_text != target_text:
+                    button.setText(target_text)
+                if hasattr(button, "setEnabled"):
+                    button.setEnabled(profile_key != current_key)
 
     def _set_plain_text_if_changed(self, widget, text: str) -> None:
         if widget is None:
@@ -16838,6 +16889,13 @@ def _qh_post_build_ui_tweaks_v2(self: QuantHunterWindow) -> None:
     _qh_post_build_ui_tweaks(self)
     if hasattr(self, "tabs") and isinstance(self.tabs, QTabWidget):
         self.tabs.tabBar().hide()
+    self._schedule_post_build_finalize_v28()
+
+
+def _qh_finalize_post_build_v28(self: QuantHunterWindow) -> None:
+    if getattr(self, "_qh_post_build_finalize_done_v28", False):
+        return
+    self._qh_post_build_finalize_done_v28 = True
     self._normalize_overview_builder_texts()
     self._normalize_recommend_workspace_texts()
     self._normalize_board_workspace_texts()
@@ -16852,6 +16910,22 @@ def _qh_post_build_ui_tweaks_v2(self: QuantHunterWindow) -> None:
     self._reorder_broker_primary_flow_v2()
     self._apply_focus_dashboard_v7()
     self._sync_signal_panel_tones_v6()
+    self._upgrade_story_defaults_v10()
+    self._apply_commercial_table_layout_v8()
+    self._balance_workspace_splitters_v8()
+    self._rebind_detail_routes_v9()
+    self._refresh_runtime_story_v10()
+    self._refresh_broker_auxiliary_panels()
+
+def _qh_schedule_post_build_finalize_v28(self: QuantHunterWindow) -> None:
+    if getattr(self, "_qh_post_build_finalize_done_v28", False):
+        return
+    if not hasattr(self, "_qh_post_build_finalize_timer_v28"):
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(self._finalize_post_build_v28)
+        self._qh_post_build_finalize_timer_v28 = timer
+    self._qh_post_build_finalize_timer_v28.start(25)
 
 
 QuantHunterWindow._workspace_badge_text = _qh_workspace_badge_text_v2
@@ -16881,6 +16955,8 @@ QuantHunterWindow._refresh_recommend_story_panels = _qh_refresh_recommend_story_
 QuantHunterWindow._refresh_trade_plan = _qh_refresh_trade_plan_v5
 QuantHunterWindow._refresh_broker_order_focus = _qh_refresh_broker_order_focus_v7
 QuantHunterWindow._refresh_workspace_status_labels = _qh_refresh_workspace_status_labels_v7
+QuantHunterWindow._finalize_post_build_v28 = _qh_finalize_post_build_v28
+QuantHunterWindow._schedule_post_build_finalize_v28 = _qh_schedule_post_build_finalize_v28
 QuantHunterWindow._post_build_ui_tweaks = _qh_post_build_ui_tweaks_v2
 
 
@@ -17144,13 +17220,6 @@ def _qh_refresh_runtime_story_v10(self: QuantHunterWindow) -> None:
 
 def _qh_post_build_ui_tweaks_v3(self: QuantHunterWindow) -> None:
     _qh_post_build_ui_tweaks_v2(self)
-    self._hydrate_empty_workspace_panels()
-    self._upgrade_story_defaults_v10()
-    self._apply_commercial_table_layout_v8()
-    self._balance_workspace_splitters_v8()
-    self._rebind_detail_routes_v9()
-    self._refresh_runtime_story_v10()
-    self._refresh_broker_auxiliary_panels()
 
 
 QuantHunterWindow._hydrate_empty_workspace_panels = _qh_hydrate_empty_workspace_panels_v3
@@ -19807,6 +19876,62 @@ def _qh_post_build_ui_tweaks_v27(self: QuantHunterWindow) -> None:
 QuantHunterWindow._apply_depth_effects_v27 = _qh_apply_depth_effects_v27
 QuantHunterWindow._schedule_depth_effects_v27 = _qh_schedule_depth_effects_v27
 QuantHunterWindow._post_build_ui_tweaks = _qh_post_build_ui_tweaks_v27
+
+
+def _qh_force_widget_transparent_v28(widget: QWidget | None) -> None:
+    if not isinstance(widget, QWidget):
+        return
+    widget.setAttribute(Qt.WA_StyledBackground, True)
+    widget.setAutoFillBackground(False)
+    base_style = widget.styleSheet() or ""
+    transparent_rule = "background: transparent; background-color: transparent;"
+    if transparent_rule not in base_style:
+        widget.setStyleSheet((base_style + " " + transparent_rule).strip())
+
+
+def _qh_apply_shell_transparency_fix_v28(self: QuantHunterWindow) -> None:
+    shell_targets = [
+        getattr(self, "shell_header", None),
+        getattr(self, "shell_pulse_bar", None),
+    ]
+    shell_targets.extend(self.findChildren(QFrame, "workspaceHero"))
+    shell_targets.extend(self.findChildren(QFrame, "workspaceBadge"))
+    shell_targets.extend(self.findChildren(QFrame, "workspaceBadgeRail"))
+
+    protected_names = {"shellHeader", "shellPulseBar", "workspaceHero", "workspaceBadge", "workspaceBadgeRail", "shellChip"}
+    for root in shell_targets:
+        if not isinstance(root, QWidget):
+            continue
+        for child in root.findChildren(QWidget):
+            if child.objectName() in protected_names:
+                continue
+            _qh_force_widget_transparent_v28(child)
+
+    for name in ("shellChipRail", "workspaceStage", "shellBrandBlock", "shellRoot"):
+        for widget in self.findChildren(QWidget, name):
+            _qh_force_widget_transparent_v28(widget)
+
+
+def _qh_schedule_shell_transparency_fix_v28(self: QuantHunterWindow) -> None:
+    if not hasattr(self, "_qh_shell_transparency_fix_timer_v28"):
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(self._apply_shell_transparency_fix_v28)
+        self._qh_shell_transparency_fix_timer_v28 = timer
+    self._qh_shell_transparency_fix_timer_v28.start(0)
+
+
+_ORIGINAL_QH_POST_BUILD_UI_TWEAKS_V28 = QuantHunterWindow._post_build_ui_tweaks
+
+
+def _qh_post_build_ui_tweaks_v28(self: QuantHunterWindow) -> None:
+    _ORIGINAL_QH_POST_BUILD_UI_TWEAKS_V28(self)
+    self._schedule_shell_transparency_fix_v28()
+
+
+QuantHunterWindow._apply_shell_transparency_fix_v28 = _qh_apply_shell_transparency_fix_v28
+QuantHunterWindow._schedule_shell_transparency_fix_v28 = _qh_schedule_shell_transparency_fix_v28
+QuantHunterWindow._post_build_ui_tweaks = _qh_post_build_ui_tweaks_v28
 
 
 for _startup_deferred_method_name in (
