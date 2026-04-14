@@ -68,6 +68,7 @@ from quant_hunter.risk import (
     RISK_PROFILE_STANDARD,
     normalize_risk_profile,
     risk_pool_impact_text,
+    risk_profile_projection_text,
     risk_profile_comparison_text,
     risk_profile_brief,
     resolve_risk_controls,
@@ -1916,6 +1917,72 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertLess(conservative_plan.decisions[0].suggested_budget, standard_plan.decisions[0].suggested_budget)
         self.assertLess(standard_plan.decisions[0].suggested_budget, aggressive_plan.decisions[0].suggested_budget)
 
+    def test_decision_engine_applies_strategy_budget_bias(self) -> None:
+        recommendations = [
+            RecommendationRow(
+                symbol="SHSE.600000",
+                stock_id="600000",
+                stock_name="龙头样本",
+                action="BUY",
+                label="RECLAIM_LONG",
+                signal_date=date.today().isoformat(),
+                close=10.0,
+                entry_price=10.0,
+                stop_price=9.5,
+                target_price=11.2,
+                technical_score=84.0,
+                position_score=82.0,
+                persistence_score=80.0,
+                news_score=76.0,
+                leader_score=88.0,
+                total_score=85.0,
+                theme_name="银行",
+                theme_rank=1,
+                stock_pool="龙头股",
+                primary_strategy="龙头模型",
+                dragon_decision_score=89.0,
+                risk_reward_ratio=2.4,
+                opportunity_tier="优先处理",
+            ),
+            RecommendationRow(
+                symbol="SZSE.000001",
+                stock_id="000001",
+                stock_name="低吸样本",
+                action="BUY",
+                label="RECLAIM_LONG",
+                signal_date=date.today().isoformat(),
+                close=10.0,
+                entry_price=10.0,
+                stop_price=9.5,
+                target_price=11.2,
+                technical_score=84.0,
+                position_score=82.0,
+                persistence_score=80.0,
+                news_score=76.0,
+                leader_score=80.0,
+                total_score=84.0,
+                theme_name="银行",
+                theme_rank=1,
+                stock_pool="价值股",
+                primary_strategy="价值低吸",
+                dragon_decision_score=87.0,
+                risk_reward_ratio=2.4,
+                opportunity_tier="优先处理",
+            ),
+        ]
+
+        plan = DecisionEngine().build_plan(
+            recommendations,
+            [],
+            available_cash=100000,
+            max_picks=5,
+            strategy_budget_bias_by_name={"龙头模型": 1.2, "价值低吸": 0.8},
+        )
+
+        self.assertEqual(len(plan.decisions), 2)
+        budget_by_name = {item.stock_name: item.suggested_budget for item in plan.decisions}
+        self.assertGreater(budget_by_name["龙头样本"], budget_by_name["低吸样本"])
+
     def test_shared_risk_controls_keep_core_thresholds_aligned(self) -> None:
         self.assertAlmostEqual(DEFAULT_RISK_CONTROLS.backtest_min_entry_risk_reward_ratio, 1.2, places=2)
         self.assertAlmostEqual(DEFAULT_RISK_CONTROLS.plan_min_risk_reward_ratio, 1.2, places=2)
@@ -1955,6 +2022,34 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn("推荐 12 只", text)
         self.assertIn("可执行 5 只", text)
         self.assertIn("拦截 7 只", text)
+
+    def test_risk_profile_projection_text_describes_other_profiles(self) -> None:
+        text = risk_profile_projection_text(
+            "standard",
+            {"display_count": 12, "buy_ready_count": 5, "rejected_count": 7},
+        )
+
+        self.assertIn("若切保守", text)
+        self.assertIn("若切激进", text)
+        self.assertIn("可执行", text)
+
+    def test_risk_profile_projection_text_prefers_real_snapshots_when_available(self) -> None:
+        text = risk_profile_projection_text(
+            "standard",
+            {
+                "display_count": 12,
+                "buy_ready_count": 5,
+                "rejected_count": 7,
+                "profile_snapshots": {
+                    "conservative": {"display_count": 9, "buy_ready_count": 3, "rejected_count": 13},
+                    "standard": {"display_count": 12, "buy_ready_count": 5, "rejected_count": 7},
+                    "aggressive": {"display_count": 16, "buy_ready_count": 8, "rejected_count": 8},
+                },
+            },
+        )
+
+        self.assertIn("若切保守≈推荐 9 / 可执行 3 / 拦截 13", text)
+        self.assertIn("若切激进≈推荐 16 / 可执行 8 / 拦截 8", text)
 
     def test_board_mode_engine_builds_candidates(self) -> None:
         sample_dir = self._temp_dir() / "board_universe"
@@ -9097,6 +9192,9 @@ class StrategyWorkflowTests(unittest.TestCase):
         class DummyText:
             def __init__(self) -> None:
                 self.value = ""
+
+            def toPlainText(self) -> str:
+                return self.value
 
             def setPlainText(self, value: str) -> None:
                 self.value = value

@@ -95,6 +95,13 @@ class DecisionEngine:
             return 1.12
         return 1.0
 
+    @staticmethod
+    def _strategy_budget_multiplier(strategy_name: str, strategy_budget_bias_by_name: dict[str, float] | None = None) -> float:
+        if not strategy_budget_bias_by_name:
+            return 1.0
+        raw = float(strategy_budget_bias_by_name.get(strategy_name, 1.0) or 1.0)
+        return max(min(raw, 1.45), 0.55)
+
     def _row_is_buy_allowed(self, row: RecommendationRow) -> bool:
         role = str(getattr(row, "mainline_role", "") or "")
         failure_risk = float(getattr(row, "theme_failure_risk", 0.0) or 0.0)
@@ -191,6 +198,7 @@ class DecisionEngine:
         top_theme_limit: int = 3,
         max_total_exposure: float | None = None,
         theme_drop_reduce: bool = True,
+        strategy_budget_bias_by_name: dict[str, float] | None = None,
     ) -> DailyTradePlan:
         pulse = self._market_pulse(recommendations)
         if max_total_exposure is not None:
@@ -289,6 +297,7 @@ class DecisionEngine:
             elif strategy_name == "一日持股法":
                 budget_multiplier = 0.96 if pulse.sentiment_score >= 72 else 0.86
 
+            budget_multiplier *= self._strategy_budget_multiplier(strategy_name, strategy_budget_bias_by_name)
             budget_multiplier *= self._risk_profile_budget_multiplier()
 
             confidence_source = getattr(row, "dragon_decision_score", 0.0) or row.total_score

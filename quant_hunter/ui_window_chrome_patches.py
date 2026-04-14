@@ -228,6 +228,7 @@ QToolTip {
             pill_text = pill_copy.get(page_key, "FLAGSHIP DESK")
             self._set_label_text_if_changed(self.shell_brand_pill, pill_text, tooltip=pill_text)
         for widget_name in [
+            "tabs",
             "shell_brand_pill",
             "shell_product_eyebrow",
             "shell_product_title",
@@ -245,6 +246,13 @@ QToolTip {
                 self.style().unpolish(widget)
                 self.style().polish(widget)
                 widget.update()
+        if hasattr(self, "tabs"):
+            bar = self.tabs.tabBar()
+            if isinstance(bar, QWidget) and bar.property("pageTone") != page_key:
+                bar.setProperty("pageTone", page_key)
+                self.style().unpolish(bar)
+                self.style().polish(bar)
+                bar.update()
         for chip_name in ["shell_workspace_chip", "shell_market_chip", "shell_pipeline_chip", "shell_refresh_chip", "shell_runtime_chip"]:
             chip = getattr(self, chip_name, None)
             if isinstance(chip, dict):

@@ -3,7 +3,12 @@ from __future__ import annotations
 from quant_hunter.broker_status import build_broker_execution_summary
 from quant_hunter.models import OrderIntent, PaperTradingState
 from quant_hunter.paper_trading import build_strategy_rotation_snapshot
-from quant_hunter.risk import RISK_PROFILE_LABELS
+from quant_hunter.risk import (
+    RISK_PROFILE_AGGRESSIVE,
+    RISK_PROFILE_CONSERVATIVE,
+    RISK_PROFILE_LABELS,
+    RISK_PROFILE_STANDARD,
+)
 from quant_hunter.ui_window_paper_experiment_patches import paper_strategy_experiment_bridge_v45
 
 
@@ -362,15 +367,30 @@ def refresh_daily_pool_controller(window, async_mode: bool, *, daily_pool_builde
     capabilities = window._license_capabilities()
 
     def build_pool():
-        builder = daily_pool_builder_cls(
-            stock_profiles,
-            news_catalysts,
-            theme_aliases,
-            focus_themes=list(window.state.focus_themes),
-            focus_theme_boost=float(capabilities["focus_theme_boost"]),
-        )
-        rows = builder.build(scan_rows, analyses_by_symbol, backtest_summaries)
-        return rows, getattr(builder, "last_build_meta", {})
+        focus_themes = list(window.state.focus_themes)
+        focus_theme_boost = float(capabilities["focus_theme_boost"])
+        current_risk_profile = getattr(window.state, "strategy_risk_profile", "standard")
+
+        def _build_for_profile(profile_key: str):
+            builder = daily_pool_builder_cls(
+                stock_profiles,
+                news_catalysts,
+                theme_aliases,
+                focus_themes=focus_themes,
+                focus_theme_boost=focus_theme_boost,
+                risk_profile=profile_key,
+            )
+            rows = builder.build(scan_rows, analyses_by_symbol, backtest_summaries)
+            return rows, dict(getattr(builder, "last_build_meta", {}) or {})
+
+        rows, meta = _build_for_profile(current_risk_profile)
+        snapshots: dict[str, dict[str, object]] = {}
+        for profile_key in (RISK_PROFILE_CONSERVATIVE, RISK_PROFILE_STANDARD, RISK_PROFILE_AGGRESSIVE):
+            snapshot_rows, snapshot_meta = (rows, dict(meta)) if profile_key == current_risk_profile else _build_for_profile(profile_key)
+            snapshot_meta["display_count"] = int(snapshot_meta.get("display_count", len(snapshot_rows)) or len(snapshot_rows))
+            snapshots[profile_key] = snapshot_meta
+        meta["profile_snapshots"] = snapshots
+        return rows, meta
 
     if async_mode:
         if hasattr(window, "recommend_status_label"):
@@ -853,17 +873,31 @@ def refresh_daily_pool_controller(window, async_mode: bool, *, daily_pool_builde
     }
 
     def build_pool():
-        builder = daily_pool_builder_cls(
-            stock_profiles,
-            news_catalysts,
-            theme_aliases,
-            focus_themes=list(window.state.focus_themes),
-            focus_theme_boost=float(capabilities["focus_theme_boost"]),
-            strategy_bias_by_name=strategy_bias_by_name,
-            risk_profile=getattr(window.state, "strategy_risk_profile", "standard"),
-        )
-        rows = builder.build(scan_rows, analyses_by_symbol, backtest_summaries)
-        return rows, getattr(builder, "last_build_meta", {})
+        focus_themes = list(window.state.focus_themes)
+        focus_theme_boost = float(capabilities["focus_theme_boost"])
+        current_risk_profile = getattr(window.state, "strategy_risk_profile", "standard")
+
+        def _build_for_profile(profile_key: str):
+            builder = daily_pool_builder_cls(
+                stock_profiles,
+                news_catalysts,
+                theme_aliases,
+                focus_themes=focus_themes,
+                focus_theme_boost=focus_theme_boost,
+                strategy_bias_by_name=strategy_bias_by_name,
+                risk_profile=profile_key,
+            )
+            rows = builder.build(scan_rows, analyses_by_symbol, backtest_summaries)
+            return rows, dict(getattr(builder, "last_build_meta", {}) or {})
+
+        rows, meta = _build_for_profile(current_risk_profile)
+        snapshots: dict[str, dict[str, object]] = {}
+        for profile_key in (RISK_PROFILE_CONSERVATIVE, RISK_PROFILE_STANDARD, RISK_PROFILE_AGGRESSIVE):
+            snapshot_rows, snapshot_meta = (rows, dict(meta)) if profile_key == current_risk_profile else _build_for_profile(profile_key)
+            snapshot_meta["display_count"] = int(snapshot_meta.get("display_count", len(snapshot_rows)) or len(snapshot_rows))
+            snapshots[profile_key] = snapshot_meta
+        meta["profile_snapshots"] = snapshots
+        return rows, meta
 
     if async_mode:
         if hasattr(window, "recommend_status_label"):

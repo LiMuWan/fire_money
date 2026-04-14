@@ -23,6 +23,19 @@ def _workspace_hero_tone(eyebrow: str, title: str) -> str:
         return "board"
     return "default"
 
+
+def _workspace_hero_stamp(hero_tone: str) -> str:
+    return {
+        "overview": "MARKET CORE",
+        "recommend": "ALPHA FLOW",
+        "broker": "EXECUTION CORE",
+        "detail": "REVIEW LAB",
+        "scanner": "LIVE SCAN",
+        "auth": "ACCESS LAYER",
+        "config": "SYSTEM LAB",
+        "board": "BOARD WATCH",
+    }.get(hero_tone, "QH PRO")
+
 try:
     from PySide6.QtCore import QTimer
     from PySide6.QtGui import QColor
@@ -149,7 +162,7 @@ def build_workspace_hero(
     eyebrow_label.setObjectName("workspaceEyebrow")
     top_row.addWidget(eyebrow_label)
 
-    stamp_label = QLabel("QH PRO")
+    stamp_label = QLabel(_workspace_hero_stamp(hero_tone))
     stamp_label.setObjectName("workspaceHeroStamp")
     stamp_label.setProperty("heroTone", hero_tone)
     top_row.addWidget(stamp_label)

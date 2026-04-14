@@ -640,6 +640,11 @@ class PaperTradingEngine:
             )
             for item in positions.values()
         ]
+        strategy_budget_bias_by_name = {
+            str(item.get("strategy_name", "") or ""): float(item.get("budget_multiplier", 1.0) or 1.0)
+            for item in build_strategy_rotation_snapshot(state)
+            if str(item.get("strategy_name", "") or "")
+        }
         plan = DecisionEngine(risk_profile=risk_profile).build_plan(
             recommendations,
             current_holdings,
@@ -647,6 +652,7 @@ class PaperTradingEngine:
             top_theme_limit=top_theme_limit,
             max_total_exposure=max_total_exposure,
             theme_drop_reduce=theme_drop_reduce,
+            strategy_budget_bias_by_name=strategy_budget_bias_by_name,
         )
         advice_by_symbol = {item.symbol: item for item in plan.position_advice}
 
@@ -702,6 +708,7 @@ class PaperTradingEngine:
             top_theme_limit=top_theme_limit,
             max_total_exposure=max_total_exposure,
             theme_drop_reduce=theme_drop_reduce,
+            strategy_budget_bias_by_name=strategy_budget_bias_by_name,
         )
 
         buy_count = 0

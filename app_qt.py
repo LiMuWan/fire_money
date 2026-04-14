@@ -91,7 +91,13 @@ from quant_hunter.paper_trading import (
     summarize_paper_trading_performance,
 )
 from quant_hunter.recommend import DailyPoolBuilder
-from quant_hunter.risk import RISK_PROFILE_LABELS, risk_pool_impact_text, risk_profile_brief, risk_profile_comparison_text
+from quant_hunter.risk import (
+    RISK_PROFILE_LABELS,
+    risk_pool_impact_text,
+    risk_profile_brief,
+    risk_profile_comparison_text,
+    risk_profile_projection_text,
+)
 from quant_hunter.reports import export_daily_trade_plan, export_end_of_day_review, export_workspace_report
 from quant_hunter.scanner import UniverseScanner
 from quant_hunter.storage import AppState, load_app_state, save_app_state
@@ -624,6 +630,18 @@ TERMINAL_WORKSPACE_STYLE = """
         background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #16232b, stop:0.55 #11181e, stop:1 #0f1419);
         border-color: rgba(126, 210, 255, 0.18);
     }
+    QFrame#shellHeader[pageTone="scanner"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #162229, stop:0.55 #11181d, stop:1 #0f1419);
+        border-color: rgba(110, 214, 255, 0.18);
+    }
+    QFrame#shellHeader[pageTone="board"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #261d18, stop:0.55 #171515, stop:1 #121419);
+        border-color: rgba(255, 164, 122, 0.18);
+    }
+    QFrame#shellHeader[pageTone="config"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1b2128, stop:0.55 #13171c, stop:1 #101419);
+        border-color: rgba(167, 183, 202, 0.18);
+    }
     QFrame#shellBrandBlock {
         background: transparent;
     }
@@ -650,6 +668,9 @@ TERMINAL_WORKSPACE_STYLE = """
     }
     QLabel#shellProductEyebrow[pageTone="board"] {
         color: #ffb27f;
+    }
+    QLabel#shellProductEyebrow[pageTone="config"] {
+        color: #b8c4d1;
     }
     QLabel#shellBrandPill {
         background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(42, 68, 97, 0.96), stop:1 rgba(26, 39, 54, 0.96));
@@ -706,6 +727,9 @@ TERMINAL_WORKSPACE_STYLE = """
     }
     QLabel#topBadge[pageTone="board"] {
         background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ffb17c, stop:1 #ffd8b8);
+    }
+    QLabel#topBadge[pageTone="config"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #c0ccd8, stop:1 #e2e8ef);
     }
     QLabel#shellProductTitle {
         color: #f6f8fb;
@@ -880,6 +904,9 @@ TERMINAL_WORKSPACE_STYLE = """
     QLabel#shellPulseLabel[pageTone="broker"] {
         color: #edfff6;
     }
+    QLabel#shellPulseLabel[pageTone="auth"] {
+        color: #fff8eb;
+    }
     QLabel#shellPulseLabel[pageTone="detail"] {
         color: #eef9ff;
     }
@@ -905,6 +932,18 @@ TERMINAL_WORKSPACE_STYLE = """
     }
     QLabel#shellPulseHint[pageTone="auth"] {
         color: #ffd37c;
+    }
+    QLabel#shellPulseHint[pageTone="detail"] {
+        color: #8edfff;
+    }
+    QLabel#shellPulseHint[pageTone="scanner"] {
+        color: #77d8ff;
+    }
+    QLabel#shellPulseHint[pageTone="board"] {
+        color: #ffb27f;
+    }
+    QLabel#shellPulseHint[pageTone="config"] {
+        color: #b8c4d1;
     }
     QLabel#shellPulseMeta {
         color: #7d90a7;
@@ -1044,6 +1083,9 @@ TERMINAL_WORKSPACE_STYLE = """
     QFrame#workspaceHero[heroTone="board"] QLabel#workspaceEyebrow {
         color: #ffb27f;
     }
+    QFrame#workspaceHero[heroTone="config"] QLabel#workspaceEyebrow {
+        color: #b8c4d1;
+    }
     QLabel#workspaceHeroStamp {
         background: rgba(12, 18, 25, 0.92);
         color: #f2f7ff;
@@ -1055,24 +1097,31 @@ TERMINAL_WORKSPACE_STYLE = """
         letter-spacing: 0.7px;
     }
     QLabel#workspaceHeroStamp[heroTone="recommend"] {
+        background: rgba(34, 26, 52, 0.94);
         border: 1px solid rgba(182, 154, 255, 0.22);
     }
     QLabel#workspaceHeroStamp[heroTone="broker"] {
+        background: rgba(18, 37, 29, 0.94);
         border: 1px solid rgba(102, 224, 163, 0.22);
     }
     QLabel#workspaceHeroStamp[heroTone="auth"] {
+        background: rgba(42, 33, 18, 0.94);
         border: 1px solid rgba(255, 209, 102, 0.22);
     }
     QLabel#workspaceHeroStamp[heroTone="detail"] {
+        background: rgba(20, 38, 47, 0.94);
         border: 1px solid rgba(126, 210, 255, 0.22);
     }
     QLabel#workspaceHeroStamp[heroTone="scanner"] {
+        background: rgba(19, 37, 44, 0.94);
         border: 1px solid rgba(110, 214, 255, 0.22);
     }
     QLabel#workspaceHeroStamp[heroTone="board"] {
+        background: rgba(46, 30, 21, 0.94);
         border: 1px solid rgba(255, 164, 122, 0.22);
     }
     QLabel#workspaceHeroStamp[heroTone="config"] {
+        background: rgba(27, 33, 39, 0.94);
         border: 1px solid rgba(167, 183, 202, 0.22);
     }
     QLabel#workspaceTitle {
@@ -1454,6 +1503,34 @@ GRAPHITE_COMMERCIAL_STYLE = """
         background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(37, 82, 127, 0.98), stop:0.55 rgba(24, 38, 54, 0.98), stop:1 rgba(18, 27, 38, 0.98));
         border: 1px solid rgba(133, 191, 255, 0.28);
     }
+    QTabBar[pageTone="recommend"]::tab:selected {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(98, 76, 154, 0.98), stop:0.55 rgba(44, 34, 67, 0.98), stop:1 rgba(25, 28, 40, 0.98));
+        border: 1px solid rgba(182, 154, 255, 0.28);
+    }
+    QTabBar[pageTone="broker"]::tab:selected {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(40, 93, 71, 0.98), stop:0.55 rgba(24, 46, 37, 0.98), stop:1 rgba(19, 28, 34, 0.98));
+        border: 1px solid rgba(102, 224, 163, 0.28);
+    }
+    QTabBar[pageTone="auth"]::tab:selected {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(122, 89, 37, 0.98), stop:0.55 rgba(55, 40, 22, 0.98), stop:1 rgba(24, 25, 30, 0.98));
+        border: 1px solid rgba(255, 209, 102, 0.28);
+    }
+    QTabBar[pageTone="detail"]::tab:selected {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(45, 96, 121, 0.98), stop:0.55 rgba(25, 42, 54, 0.98), stop:1 rgba(20, 27, 35, 0.98));
+        border: 1px solid rgba(126, 210, 255, 0.28);
+    }
+    QTabBar[pageTone="scanner"]::tab:selected {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(46, 104, 122, 0.98), stop:0.55 rgba(24, 46, 52, 0.98), stop:1 rgba(20, 27, 34, 0.98));
+        border: 1px solid rgba(110, 214, 255, 0.28);
+    }
+    QTabBar[pageTone="board"]::tab:selected {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(127, 74, 48, 0.98), stop:0.55 rgba(55, 36, 24, 0.98), stop:1 rgba(23, 25, 31, 0.98));
+        border: 1px solid rgba(255, 164, 122, 0.28);
+    }
+    QTabBar[pageTone="config"]::tab:selected {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(85, 98, 117, 0.98), stop:0.55 rgba(39, 47, 58, 0.98), stop:1 rgba(22, 26, 33, 0.98));
+        border: 1px solid rgba(167, 183, 202, 0.28);
+    }
     QGroupBox {
         border: 1px solid rgba(111, 130, 151, 0.18);
         border-radius: 18px;
@@ -1568,6 +1645,34 @@ GRAPHITE_COMMERCIAL_STYLE = """
     }
     QFrame#workspaceBadgeRail {
         background: transparent;
+    }
+    QFrame#workspaceBadgeRail[heroTone="recommend"] {
+        background: rgba(24, 21, 38, 0.38);
+        border-radius: 18px;
+    }
+    QFrame#workspaceBadgeRail[heroTone="broker"] {
+        background: rgba(18, 30, 26, 0.38);
+        border-radius: 18px;
+    }
+    QFrame#workspaceBadgeRail[heroTone="auth"] {
+        background: rgba(37, 28, 17, 0.34);
+        border-radius: 18px;
+    }
+    QFrame#workspaceBadgeRail[heroTone="detail"] {
+        background: rgba(18, 30, 37, 0.34);
+        border-radius: 18px;
+    }
+    QFrame#workspaceBadgeRail[heroTone="scanner"] {
+        background: rgba(18, 30, 35, 0.34);
+        border-radius: 18px;
+    }
+    QFrame#workspaceBadgeRail[heroTone="board"] {
+        background: rgba(38, 26, 21, 0.34);
+        border-radius: 18px;
+    }
+    QFrame#workspaceBadgeRail[heroTone="config"] {
+        background: rgba(24, 29, 34, 0.34);
+        border-radius: 18px;
     }
     QFrame#workspaceBadge,
     QFrame#shellChip,
@@ -2198,6 +2303,15 @@ class QuantHunterWindow(QMainWindow):
             return list(self.state.focus_themes)
         return [item.strip() for item in self.focus_themes_input.text().replace("，", ",").split(",") if item.strip()]
 
+    def _current_strategy_budget_bias_map(self) -> dict[str, float]:
+        paper_state = getattr(self, "paper_trading_state", getattr(self.state, "paper_trading_state", PaperTradingState()))
+        rows = build_strategy_rotation_snapshot(paper_state)
+        return {
+            str(item.get("strategy_name", "") or ""): float(item.get("budget_multiplier", 1.0) or 1.0)
+            for item in rows
+            if str(item.get("strategy_name", "") or "")
+        }
+
     def save_strategy_preferences(self) -> None:
         if hasattr(self, "recommend_status_label"):
             self.recommend_status_label.setText("正在保存策略配置并刷新推荐与监控...")
@@ -2497,6 +2611,7 @@ class QuantHunterWindow(QMainWindow):
             top_theme_limit=self.state.strategy_top_theme_limit,
             max_total_exposure=self.state.strategy_max_total_exposure,
             theme_drop_reduce=self.state.strategy_theme_drop_reduce,
+            strategy_budget_bias_by_name=self._current_strategy_budget_bias_map(),
         )
         self.current_trade_plan = plan
         self._emit_market_path_alerts(plan)
@@ -4348,6 +4463,7 @@ class QuantHunterWindow(QMainWindow):
             top_theme_limit=self.state.strategy_top_theme_limit,
             max_total_exposure=self.state.strategy_max_total_exposure,
             theme_drop_reduce=self.state.strategy_theme_drop_reduce,
+            strategy_budget_bias_by_name=self._current_strategy_budget_bias_map(),
         )
         board_plan = BoardModeEngine().build(self.daily_pool_rows, top_n=5)
         output_dir = self._review_output_dir()
@@ -4392,6 +4508,7 @@ class QuantHunterWindow(QMainWindow):
             top_theme_limit=self.state.strategy_top_theme_limit,
             max_total_exposure=self.state.strategy_max_total_exposure,
             theme_drop_reduce=self.state.strategy_theme_drop_reduce,
+            strategy_budget_bias_by_name=self._current_strategy_budget_bias_map(),
         )
         capabilities = self._license_capabilities()
         template_name, focus_only, candidate_limit = self._current_report_template_config()
@@ -7491,12 +7608,13 @@ QPushButton#accentButton:hover {
             risk_key = getattr(self.state, "strategy_risk_profile", "standard")
             risk_hint = risk_profile_brief(risk_key)
             pool_impact = risk_pool_impact_text(getattr(self, "last_daily_pool_meta", {}))
+            pool_projection = risk_profile_projection_text(risk_key, getattr(self, "last_daily_pool_meta", {}))
             self.config_live_summary_detail.setText(
                 f"总仓位上限 {max_total_exposure:.2f} | 模板 {self.daily_plan_template_combo.currentText() if hasattr(self, 'daily_plan_template_combo') else '--'} | {pool_impact}"
             )
             focus_theme_text = self.focus_themes_input.text().strip() if hasattr(self, "focus_themes_input") else ""
             risk_text = self.strategy_risk_profile_combo.currentText() if hasattr(self, "strategy_risk_profile_combo") else getattr(self.state, "strategy_risk_profile", "standard")
-            self.config_live_summary_meta.setText(f"风险档位：{risk_text} | {risk_hint} | 关注题材：{focus_theme_text or '未设置'}")
+            self.config_live_summary_meta.setText(f"风险档位：{risk_text} | {risk_hint} | {pool_projection} | 关注题材：{focus_theme_text or '未设置'}")
 
     def _refresh_workspace_focus_banners(self) -> None:
         target_symbol = self.active_symbol or self._selected_symbol_from_watchlist() or self._selected_board_symbol() or ""
@@ -8879,6 +8997,7 @@ QPushButton#accentButton:hover {
             top_theme_limit=self.state.strategy_top_theme_limit,
             max_total_exposure=self.state.strategy_max_total_exposure,
             theme_drop_reduce=self.state.strategy_theme_drop_reduce,
+            strategy_budget_bias_by_name=self._current_strategy_budget_bias_map(),
         )
         self.current_trade_plan = plan
         self._emit_market_path_alerts(plan)
@@ -9134,6 +9253,7 @@ QPushButton#accentButton:hover {
             top_theme_limit=self.state.strategy_top_theme_limit,
             max_total_exposure=self.state.strategy_max_total_exposure,
             theme_drop_reduce=self.state.strategy_theme_drop_reduce,
+            strategy_budget_bias_by_name=self._current_strategy_budget_bias_map(),
         )
         self.current_trade_plan = plan
         self._emit_market_path_alerts(plan)
@@ -9942,10 +10062,11 @@ QPushButton#accentButton:hover {
             risk_key = getattr(self.state, "strategy_risk_profile", "standard")
             risk_hint = risk_profile_brief(risk_key)
             pool_impact = risk_pool_impact_text(getattr(self, "last_daily_pool_meta", {}))
+            pool_projection = risk_profile_projection_text(risk_key, getattr(self, "last_daily_pool_meta", {}))
             self._set_label_text_if_changed(self.config_live_summary_detail, f"总仓位上限：{max_total_exposure:.2f} | 模板：{self.daily_plan_template_combo.currentText() if hasattr(self, 'daily_plan_template_combo') else '--'} | {pool_impact}")
             focus_theme_text = self.focus_themes_input.text().strip() if hasattr(self, "focus_themes_input") else ""
             risk_text = self.strategy_risk_profile_combo.currentText() if hasattr(self, "strategy_risk_profile_combo") else getattr(self.state, "strategy_risk_profile", "standard")
-            self._set_label_text_if_changed(self.config_live_summary_meta, f"风险档位：{risk_text} | {risk_hint} | 关注题材：{focus_theme_text or '未设置'}")
+            self._set_label_text_if_changed(self.config_live_summary_meta, f"风险档位：{risk_text} | {risk_hint} | {pool_projection} | 关注题材：{focus_theme_text or '未设置'}")
 
     def _refresh_workspace_focus_banners(self) -> None:
         target_symbol = self.active_symbol or self._selected_symbol_from_watchlist() or self._selected_board_symbol() or ""
@@ -12606,11 +12727,12 @@ QPushButton#accentButton:hover {
             focus_theme_text = self.focus_themes_input.text().strip() if hasattr(self, "focus_themes_input") else ""
             risk_key = getattr(self.state, "strategy_risk_profile", "standard")
             risk_hint = risk_profile_brief(risk_key)
+            pool_projection = risk_profile_projection_text(risk_key, getattr(self, "last_daily_pool_meta", {}))
             self._set_label_text_if_changed(self.config_live_summary_headline, f"方案：{plan_text} | 主线前排 {top_theme_limit}")
             pool_impact = risk_pool_impact_text(getattr(self, "last_daily_pool_meta", {}))
             self._set_label_text_if_changed(self.config_live_summary_detail, f"总仓位上限：{max_total_exposure:.2f} | 模板：{template_text} | {pool_impact}")
             risk_text = self.strategy_risk_profile_combo.currentText() if hasattr(self, "strategy_risk_profile_combo") else risk_key
-            self._set_label_text_if_changed(self.config_live_summary_meta, f"风险档位：{risk_text} | {risk_hint} | 关注题材：{focus_theme_text or '未设置'}")
+            self._set_label_text_if_changed(self.config_live_summary_meta, f"风险档位：{risk_text} | {risk_hint} | {pool_projection} | 关注题材：{focus_theme_text or '未设置'}")
 
     def _refresh_workspace_focus_banners(self) -> None:
         target_symbol = self.active_symbol or self._selected_symbol_from_watchlist() or self._selected_board_symbol() or ""
@@ -17137,6 +17259,7 @@ def _qh_refresh_paper_trading_panels_v17(self: QuantHunterWindow) -> None:
             top_theme_limit=top_theme_limit,
             max_total_exposure=max_total_exposure,
             theme_drop_reduce=theme_drop_reduce,
+            strategy_budget_bias_by_name=self._current_strategy_budget_bias_map(),
         )
         if follow_plan.position_advice:
             lines.append("- 本轮调仓建议：")

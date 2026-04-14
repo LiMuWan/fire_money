@@ -113,4 +113,62 @@ def risk_pool_impact_text(meta: dict[str, object] | None) -> str:
     )
 
 
+def _risk_strictness_score(controls: RiskControls) -> float:
+    stop_tightness = max(0.0, (0.12 - controls.max_plan_stop_loss_pct) / 0.12)
+    return (
+        controls.recommendation_min_risk_reward_ratio * 0.55
+        + controls.plan_min_risk_reward_ratio * 0.35
+        + stop_tightness * 0.25
+    )
+
+
+def risk_profile_projection_text(current_profile: str | None, meta: dict[str, object] | None) -> str:
+    payload = dict(meta or {})
+    snapshots = payload.get("profile_snapshots")
+    if isinstance(snapshots, dict):
+        current_key = normalize_risk_profile(current_profile)
+        parts: list[str] = []
+        for target_key in (RISK_PROFILE_CONSERVATIVE, RISK_PROFILE_STANDARD, RISK_PROFILE_AGGRESSIVE):
+            if target_key == current_key:
+                continue
+            snapshot = snapshots.get(target_key)
+            if not isinstance(snapshot, dict):
+                continue
+            label = RISK_PROFILE_LABELS[target_key]
+            parts.append(
+                f"\u82e5\u5207{label}\u2248\u63a8\u8350 {int(snapshot.get('display_count', 0) or 0)} / "
+                f"\u53ef\u6267\u884c {int(snapshot.get('buy_ready_count', 0) or 0)} / "
+                f"\u62e6\u622a {int(snapshot.get('rejected_count', 0) or 0)}"
+            )
+        if parts:
+            return "\uff1b".join(parts)
+
+    display_count = int(payload.get("display_count", 0) or 0)
+    buy_ready_count = int(payload.get("buy_ready_count", 0) or 0)
+    rejected_count = int(payload.get("rejected_count", 0) or 0)
+    total_candidates = max(display_count + rejected_count, 0)
+    if total_candidates <= 0:
+        return "\u5207\u6362\u9884\u4f30\u5f85\u751f\u6210"
+
+    current_key = normalize_risk_profile(current_profile)
+    current_controls = resolve_risk_controls(current_key)
+    current_score = _risk_strictness_score(current_controls)
+    parts: list[str] = []
+
+    for target_key in (RISK_PROFILE_CONSERVATIVE, RISK_PROFILE_STANDARD, RISK_PROFILE_AGGRESSIVE):
+        if target_key == current_key:
+            continue
+        target_controls = resolve_risk_controls(target_key)
+        factor = current_score / max(_risk_strictness_score(target_controls), 0.01)
+        factor = min(max(factor, 0.55), 1.6)
+        projected_display = min(total_candidates, max(0, round(display_count * factor)))
+        projected_ready = min(total_candidates, max(0, round(buy_ready_count * factor)))
+        projected_rejected = max(total_candidates - projected_ready, 0)
+        label = RISK_PROFILE_LABELS[target_key]
+        parts.append(
+            f"\u82e5\u5207{label}\u2248\u63a8\u8350 {projected_display} / \u53ef\u6267\u884c {projected_ready} / \u62e6\u622a {projected_rejected}"
+        )
+    return "\uff1b".join(parts) if parts else "\u5207\u6362\u9884\u4f30\u5f85\u751f\u6210"
+
+
 DEFAULT_RISK_CONTROLS = resolve_risk_controls(RISK_PROFILE_STANDARD)
