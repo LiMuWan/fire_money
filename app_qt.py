@@ -6392,11 +6392,11 @@ QPushButton#accentButton:hover {
         self,
         folder: Path,
         params: StrategyParams,
-    ) -> tuple[list[ScanRow], dict[str, list[PriceBar]], dict[str, list[DailyAnalysis]], dict[str, Path], list[SymbolBacktestSummary]]:
+    ) -> tuple[list[ScanRow], dict[str, list[PriceBar]], dict[str, list[DailyAnalysis]], dict[str, Path], list[SymbolBacktestSummary], list[str]]:
         scanner = UniverseScanner(params)
         rows, bars_by_symbol, analyses_by_symbol, paths_by_symbol = scanner.scan_folder(folder)
         summaries = scanner.summarize_backtests(bars_by_symbol, analyses_by_symbol)
-        return rows, bars_by_symbol, analyses_by_symbol, paths_by_symbol, summaries
+        return rows, bars_by_symbol, analyses_by_symbol, paths_by_symbol, summaries, list(getattr(scanner, "last_scan_warnings", []) or [])
 
     def _scan_universe(self, folder: Path, quiet: bool = False, async_mode: bool = True) -> None:
         target_folder = Path(folder)
@@ -6619,7 +6619,7 @@ QPushButton#accentButton:hover {
     def _apply_scan_universe_result(
         self,
         folder: Path,
-        payload: tuple[list[ScanRow], dict[str, list[PriceBar]], dict[str, list[DailyAnalysis]], dict[str, Path], list[SymbolBacktestSummary]],
+        payload: tuple[list[ScanRow], dict[str, list[PriceBar]], dict[str, list[DailyAnalysis]], dict[str, Path], list[SymbolBacktestSummary], list[str]],
     ) -> None:
         self._symbol_data_revision += 1
         apply_scan_universe_result(self, folder, payload)

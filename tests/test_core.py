@@ -48,7 +48,7 @@ from quant_hunter.data import (
     load_stock_profiles_from_csv,
     load_theme_aliases_from_csv,
 )
-from quant_hunter.market_feed import EastmoneyMarketFeed, LocalMarketCache, MarketSnapshot, RemoteMarketScreener
+from quant_hunter.market_feed import EastmoneyMarketFeed, LocalMarketCache, MarketScreenResult, MarketSnapshot, RemoteMarketScreener
 from quant_hunter.models import BacktestResult, BrokerProfile, CashSnapshot, DailyAnalysis, HoldingRecord, PriceBar, RecommendationRow, ScanRow, SymbolBacktestSummary
 from quant_hunter.models import OrderIntent
 from quant_hunter.optimizer import ParameterOptimizer
@@ -259,7 +259,8 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.addCleanup(lambda: valid_path.unlink(missing_ok=True))
         self.addCleanup(lambda: bad_path.unlink(missing_ok=True))
 
-        rows, bars_by_symbol, analyses_by_symbol, paths_by_symbol = UniverseScanner(StrategyParams()).scan_folder(sample_dir)
+        scanner = UniverseScanner(StrategyParams())
+        rows, bars_by_symbol, analyses_by_symbol, paths_by_symbol = scanner.scan_folder(sample_dir)
 
         self.assertEqual(len(bars_by_symbol), 1)
         self.assertIn("SHSE.600000", bars_by_symbol)
@@ -267,6 +268,28 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn("SHSE.600000", paths_by_symbol)
         self.assertNotIn("BROKEN", bars_by_symbol)
         self.assertEqual(rows[0].symbol, "SHSE.600000")
+        self.assertEqual(len(scanner.last_scan_warnings), 1)
+        self.assertIn("BROKEN_demo.csv", scanner.last_scan_warnings[0])
+
+    def test_universe_scanner_handles_many_valid_files(self) -> None:
+        sample_dir = self._temp_dir() / "universe_many_files"
+        sample_dir.mkdir(exist_ok=True)
+        file_count = 24
+        for index in range(file_count):
+            symbol = f"SHSE.{600100 + index:06d}"
+            path = sample_dir / f"{symbol}_demo.csv"
+            with path.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["date", "symbol", "open", "high", "low", "close", "volume"])
+                writer.writerows(generate_rows(symbol, "reclaim"))
+            self.addCleanup(lambda target=path: target.unlink(missing_ok=True))
+
+        rows, bars_by_symbol, analyses_by_symbol, paths_by_symbol = UniverseScanner(StrategyParams()).scan_folder(sample_dir)
+
+        self.assertEqual(len(bars_by_symbol), file_count)
+        self.assertEqual(len(analyses_by_symbol), file_count)
+        self.assertEqual(len(paths_by_symbol), file_count)
+        self.assertGreaterEqual(len(rows), file_count)
 
     def test_broker_export_creates_csv(self) -> None:
         row_path = self._write_demo_csv("order_demo.csv")
@@ -2345,6 +2368,33 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertGreater(cleared["bytes"], 0)
         self.assertEqual(after["files"], 0)
         self.assertEqual(after["bytes"], 0)
+
+    def test_local_market_cache_caps_screen_history_entries(self) -> None:
+        cache_dir = self._temp_dir() / "market_cache_history"
+        cache = LocalMarketCache(root=cache_dir, snapshot_ttl_seconds=60, bars_ttl_seconds=60)
+
+        for index in range(15):
+            cache.put_screen_result(
+                MarketScreenResult(
+                    market_name="A股",
+                    generated_at=f"2026-04-15T09:{index:02d}:00",
+                    algorithmic_pool=[],
+                    scan_rows=[],
+                    recommendations=[],
+                    bars_by_symbol={},
+                    analyses_by_symbol={},
+                    summaries=[],
+                    snapshots={},
+                    chart_series_by_symbol={},
+                ),
+                max_entries=12,
+            )
+
+        history = cache.get_screen_history(limit=20)
+
+        self.assertEqual(len(history), 12)
+        self.assertEqual(history[0].generated_at, "2026-04-15T09:14:00")
+        self.assertEqual(history[-1].generated_at, "2026-04-15T09:03:00")
 
     def test_qt_entry_module_imports(self) -> None:
         if importlib.util.find_spec("PySide6") is None:

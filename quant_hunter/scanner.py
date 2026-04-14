@@ -20,6 +20,7 @@ class UniverseScanner:
         self.params = params or StrategyParams()
         self.recent_window = recent_window
         self.strategy = AntiHarvestStrategy(self.params)
+        self.last_scan_warnings: list[str] = []
 
     def scan_folder(
         self, folder: str | Path
@@ -28,11 +29,13 @@ class UniverseScanner:
         bars_by_symbol: dict[str, list[PriceBar]] = {}
         analyses_by_symbol: dict[str, list[DailyAnalysis]] = {}
         paths_by_symbol: dict[str, Path] = {}
+        self.last_scan_warnings = []
 
         for path in discover_csv_files(folder):
             try:
                 bars = load_bars_from_csv(path, default_symbol=path.stem)
-            except Exception:
+            except Exception as exc:
+                self.last_scan_warnings.append(f"{path.name}: {exc}")
                 continue
             if not bars:
                 continue

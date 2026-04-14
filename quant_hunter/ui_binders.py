@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+from .risk import RISK_PROFILE_LABELS, risk_profile_brief
+
 
 def apply_daily_pool_rows(window, rows, summarize_themes_fn) -> None:
     window.daily_pool_rows = rows
+    risk_key = getattr(getattr(window, "state", None), "strategy_risk_profile", "standard")
+    risk_label = RISK_PROFILE_LABELS.get(risk_key, risk_key)
+    risk_hint = risk_profile_brief(risk_key)
     panel_size = int(window._license_capabilities()["theme_panel_size"])
     window.theme_heat_rows, window.leader_candidates = summarize_themes_fn(
         window.daily_pool_rows,
@@ -60,19 +65,27 @@ def apply_daily_pool_rows(window, rows, summarize_themes_fn) -> None:
 
 
 def apply_scan_universe_result(window, folder, payload) -> None:
-    rows, bars_by_symbol, analyses_by_symbol, paths_by_symbol, summaries = payload
+    if len(payload) >= 6:
+        rows, bars_by_symbol, analyses_by_symbol, paths_by_symbol, summaries, scan_warnings = payload
+    else:
+        rows, bars_by_symbol, analyses_by_symbol, paths_by_symbol, summaries = payload
+        scan_warnings = []
     window.scan_rows = rows
     window.universe_bars = bars_by_symbol
     window.universe_analyses = analyses_by_symbol
     window.paths_by_symbol = paths_by_symbol
     window.backtest_summaries = summaries
+    window.last_scan_warnings = list(scan_warnings or [])
     window.state.universe_dir = str(folder)
 
     if hasattr(window, "universe_label"):
         window.universe_label.setText(f"当前股票池：{folder}")
     if hasattr(window, "scan_summary_label"):
-        window.scan_summary_label.setText(f"已扫描 {len(bars_by_symbol)} 只股票，生成 {len(rows)} 条策略信号")
+        warning_suffix = f" | 跳过 {len(scan_warnings)} 个异常文件" if scan_warnings else ""
+        window.scan_summary_label.setText(f"已扫描 {len(bars_by_symbol)} 只股票，生成 {len(rows)} 条策略信号{warning_suffix}")
     window._append_runtime_log(f"扫描完成：{len(bars_by_symbol)} 只股票，{len(rows)} 条信号")
+    for warning in list(scan_warnings or [])[:3]:
+        window._append_runtime_log(f"扫描跳过：{warning}")
 
     window._fill_scan_rows()
     window._fill_backtest_summaries()
