@@ -5422,7 +5422,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(contexts["尾盘买入法"]["decision"], "降权观察")
 
     def test_paper_strategy_experiment_bridge_marks_strategy_role_and_cta(self) -> None:
-        module = importlib.import_module("app_qt")
+        module = importlib.import_module("quant_hunter.ui_window_paper_experiment_patches")
         state = PaperTradingState(enabled=True)
         analytics = {
             "strategy_rows": [
@@ -5449,13 +5449,13 @@ class StrategyWorkflowTests(unittest.TestCase):
             {"strategy_name": "价值低吸", "bias_label": "中性", "budget_multiplier": 0.98, "sample_count": 5, "rotation_score": 0.04},
         ]
 
-        lead = module._qh_paper_strategy_experiment_bridge_v45(
+        lead = module.paper_strategy_experiment_bridge_v45(
             state,
             "龙头模型",
             analytics=analytics,
             rotation_rows=rotation_rows,
         )
-        other = module._qh_paper_strategy_experiment_bridge_v45(
+        other = module.paper_strategy_experiment_bridge_v45(
             state,
             "尾盘买入法",
             analytics=analytics,
@@ -5534,14 +5534,6 @@ class StrategyWorkflowTests(unittest.TestCase):
             module, "_qh_next_review_target", return_value="龙头样本"
         ), patch.object(
             module, "_qh_recommend_cta_labels_v37", return_value={"push": "推进送审", "detail": "查看复盘证据", "broker": "进入交易准备"}
-        ), patch.object(
-            module, "_qh_paper_strategy_experiment_bridge_v45",
-            return_value={
-                "badge": "主测",
-                "title": "主测 | 龙头模型 | 继续主测",
-                "detail": "样本 7 | 胜率 62.0% | 平均持有 1.8 天 | 预算 x1.18",
-                "cta": "推荐页优先筛同战法前排，交易页按主测纪律推进。",
-            },
         ), patch.object(
             recommend_patches,
             "paper_strategy_experiment_bridge_v45",

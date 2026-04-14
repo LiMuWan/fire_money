@@ -181,6 +181,88 @@ def paper_experiment_table_context_v44(
     return contexts
 
 
+def _canonical_paper_strategy_name_v45(strategy_name: str) -> str:
+    raw = str(strategy_name or "").strip()
+    alias_map = {
+        "龙头主线": "龙头模型",
+        "资金承接": "主力雷达",
+        "强势接力": "擒龙打板",
+        "打板策略": "擒龙打板",
+        "趋势低吸": "价值低吸",
+        "尾盘买入": "尾盘买入法",
+        "一日持股": "一日持股法",
+        "隔日强势": "一日持股法",
+        "综合决策": "掘龙决策",
+        "掘龙": "掘龙决策",
+    }
+    return alias_map.get(raw, raw)
+
+
+def paper_strategy_experiment_bridge_v45(
+    state: PaperTradingState,
+    strategy_name: str,
+    *,
+    analytics: dict[str, object] | None = None,
+    rotation_rows: list[dict[str, object]] | None = None,
+) -> dict[str, str]:
+    canonical_strategy = _canonical_paper_strategy_name_v45(strategy_name) or "掘龙决策"
+    paper_state = state if isinstance(state, PaperTradingState) else PaperTradingState()
+    experiment_analytics = analytics if analytics is not None else summarize_paper_trading_performance(paper_state)
+    experiment_rows = rotation_rows if rotation_rows is not None else build_strategy_rotation_snapshot(paper_state)
+
+    if not getattr(paper_state, "enabled", False):
+        return {
+            "badge": "待初始化",
+            "title": "实验待初始化",
+            "detail": "模拟盘还没启用，当前没有可复用的主测/对照结论。",
+            "cta": "先初始化模拟盘并跑一轮，再决定哪些推荐值得进入真实交易链路。",
+        }
+
+    if not experiment_rows:
+        return {
+            "badge": "样本积累",
+            "title": f"样本积累中 | {canonical_strategy}",
+            "detail": "模拟盘已经启用，但还没有形成稳定战法排序。",
+            "cta": "推荐页先按主线与价位筛票，等模拟盘补出闭环样本后再放大战法结论。",
+        }
+
+    contexts = paper_experiment_table_context_v44(experiment_analytics, experiment_rows)
+    lead_name = str(experiment_rows[0].get("strategy_name", "") or "待补样本")
+    compare_name = str(experiment_rows[1].get("strategy_name", "") or "待补样本") if len(experiment_rows) > 1 else "待补样本"
+    context = contexts.get(canonical_strategy)
+
+    if context is None:
+        return {
+            "badge": "备选",
+            "title": f"未进入实验前排 | {canonical_strategy}",
+            "detail": f"当前实验主测 {lead_name} | 对照 {compare_name}，这套战法还没进入前排样本。",
+            "cta": "推荐页先把它当备选观察，不要脱离实验排序直接推进真实交易。",
+        }
+
+    role_label = str(context.get("role_label", "") or "备选")
+    decision = str(context.get("decision", "") or "继续观察")
+    sample_count = int(context.get("sample_count", 0) or 0)
+    win_rate = float(context.get("win_rate", 0.0) or 0.0)
+    avg_hold_days = float(context.get("avg_hold_days", 0.0) or 0.0)
+    budget_multiplier = float(context.get("budget_multiplier", 1.0) or 1.0)
+
+    if role_label == "主测":
+        cta = "推荐页优先筛同战法前排，交易页按主测纪律推进，但先别因为单票强弱临时改打法。"
+    elif role_label == "对照":
+        cta = "推荐页继续保留对照观察，不和主测抢仓位，等样本继续领先再考虑转主测。"
+    elif role_label == "观察":
+        cta = "交易页只保留观察或小样本试错，先复盘失败样本，避免把降权战法直接放大到真实执行。"
+    else:
+        cta = "先把它放在推荐页备选区观察，等样本和胜率继续抬升后再进入交易链路。"
+
+    return {
+        "badge": role_label,
+        "title": f"{role_label} | {canonical_strategy} | {decision}",
+        "detail": f"样本 {sample_count} | 胜率 {win_rate:.1%} | 平均持有 {avg_hold_days:.1f} 天 | 预算 x{budget_multiplier:.2f}",
+        "cta": cta,
+    }
+
+
 def apply_paper_experiment_patches(
     window_cls: type,
     *,

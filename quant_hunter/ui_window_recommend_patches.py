@@ -4,6 +4,9 @@ from typing import Any
 
 from PySide6.QtWidgets import QLabel, QPushButton, QTextEdit
 
+from quant_hunter.models import PaperTradingState
+from quant_hunter.ui_window_paper_experiment_patches import paper_strategy_experiment_bridge_v45
+
 
 def recommend_workspace_stage_v37(
     current,
@@ -101,17 +104,39 @@ def apply_recommend_workspace_patches(
             execution_state,
             can_open_broker,
         )
+        paper_state = getattr(self, "paper_trading_state", getattr(getattr(self, "state", None), "paper_trading_state", PaperTradingState()))
+        experiment_bridge = paper_strategy_experiment_bridge_v45(
+            paper_state,
+            getattr(current, "primary_strategy", "") or "掘龙决策",
+        )
         if isinstance(label, QLabel):
             self._set_label_text_if_changed(
                 label,
-                f"单票成交卡：{getattr(current, 'stock_name', '') or '当前焦点'} | {stage_title} | {verdict}",
+                f"单票成交卡：{getattr(current, 'stock_name', '') or '当前焦点'} | {stage_title} | {verdict} | 实验 {experiment_bridge['badge']}",
             )
         if isinstance(banner, QLabel):
             stock_name = getattr(current, "stock_name", "") or self._stock_name_for_symbol(getattr(current, "symbol", "") or "")
             self._set_label_text_if_changed(
                 banner,
-                f"推荐成交台：当前聚焦 {stock_name} | 阶段 {stage_title} | {stage_detail}",
+                f"推荐成交台：当前聚焦 {stock_name} | 阶段 {stage_title} | {stage_detail} | 实验 {experiment_bridge['badge']}",
             )
+        summary_widget = getattr(self, "recommend_decision_summary_text", None)
+        if isinstance(summary_widget, QTextEdit):
+            base_lines = [
+                line
+                for line in summary_widget.toPlainText().splitlines()
+                if not line.startswith("模拟盘联动：") and not line.startswith("实验提示：") and not line.startswith("实验 CTA：")
+            ]
+            while base_lines and not base_lines[-1].strip():
+                base_lines.pop()
+            base_lines.extend(
+                [
+                    f"模拟盘联动：{experiment_bridge['title']}",
+                    f"实验提示：{experiment_bridge['detail']}",
+                    f"实验 CTA：{experiment_bridge['cta']}",
+                ]
+            )
+            self._set_plain_text_if_changed(summary_widget, "\n".join(base_lines))
         button_labels = recommend_cta_labels_v37(
             can_submit=can_submit,
             can_open_broker=can_open_broker,
@@ -121,10 +146,16 @@ def apply_recommend_workspace_patches(
             push_button.setText(button_labels["push"])
             if not can_submit and execution_state not in {"已送审", "已提交", "提交失败"}:
                 push_button.setEnabled(False)
+            base_tooltip = str(push_button.toolTip() or "").strip()
+            if f"模拟盘：{experiment_bridge['title']}" not in base_tooltip:
+                push_button.setToolTip((base_tooltip + "\n" if base_tooltip else "") + f"模拟盘：{experiment_bridge['title']}")
         if isinstance(detail_button, QPushButton):
             detail_button.setText(button_labels["detail"])
         if isinstance(broker_button, QPushButton):
             broker_button.setText(button_labels["broker"])
+            base_tooltip = str(broker_button.toolTip() or "").strip()
+            if f"模拟盘：{experiment_bridge['title']}" not in base_tooltip:
+                broker_button.setToolTip((base_tooltip + "\n" if base_tooltip else "") + f"模拟盘：{experiment_bridge['title']}")
 
     def _refresh_recommendation_focus_panels_v37(self, row: Any = None) -> None:
         original_refresh_recommendation_focus_panels(self, row)
@@ -153,13 +184,35 @@ def apply_recommend_workspace_patches(
             execution_state,
             can_open_broker,
         )
+        paper_state = getattr(self, "paper_trading_state", getattr(getattr(self, "state", None), "paper_trading_state", PaperTradingState()))
+        experiment_bridge = paper_strategy_experiment_bridge_v45(
+            paper_state,
+            getattr(current, "primary_strategy", "") or "掘龙决策",
+        )
         dispatch_lines = [
             "执行速览",
             f"阶段：{stage_title}",
             f"结论：{getattr(current, 'stock_name', '') or '--'} | {verdict}",
+            f"模拟盘：{experiment_bridge['title']}",
             f"阶段说明：{stage_detail}",
         ]
         self._set_plain_text_if_changed(dispatch_widget, "\n".join(dispatch_lines))
+        review_widget = getattr(self, "recommend_focus_review_text", None)
+        if isinstance(review_widget, QTextEdit):
+            review_lines = [
+                line
+                for line in review_widget.toPlainText().splitlines()
+                if not line.startswith("实验提示：") and not line.startswith("实验 CTA：")
+            ]
+            while review_lines and not review_lines[-1].strip():
+                review_lines.pop()
+            review_lines.extend(
+                [
+                    f"实验提示：{experiment_bridge['detail']}",
+                    f"实验 CTA：{experiment_bridge['cta']}",
+                ]
+            )
+            self._set_plain_text_if_changed(review_widget, "\n".join(review_lines))
         if isinstance(queue_widget, QTextEdit):
             queue_text = queue_widget.toPlainText().splitlines()
             queue_lines = [line for line in queue_text if not line.startswith("当前阶段：")]
