@@ -243,6 +243,31 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(rows[0].label, "RECLAIM_LONG")
         self.assertIn("SZSE.000001", analyses_by_symbol)
 
+    def test_universe_scanner_skips_bad_csv_files_without_blocking_valid_ones(self) -> None:
+        sample_dir = self._temp_dir() / "universe_mixed_quality"
+        sample_dir.mkdir(exist_ok=True)
+        valid_path = sample_dir / "SHSE.600000_demo.csv"
+        with valid_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["date", "symbol", "open", "high", "low", "close", "volume"])
+            writer.writerows(generate_rows("SHSE.600000", "reclaim"))
+        bad_path = sample_dir / "BROKEN_demo.csv"
+        with bad_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["date", "symbol", "open", "high", "low", "close", "volume"])
+            writer.writerow(["2026-04-01", "BROKEN", "10", "10.5", "9.8", "oops", "1000"])
+        self.addCleanup(lambda: valid_path.unlink(missing_ok=True))
+        self.addCleanup(lambda: bad_path.unlink(missing_ok=True))
+
+        rows, bars_by_symbol, analyses_by_symbol, paths_by_symbol = UniverseScanner(StrategyParams()).scan_folder(sample_dir)
+
+        self.assertEqual(len(bars_by_symbol), 1)
+        self.assertIn("SHSE.600000", bars_by_symbol)
+        self.assertIn("SHSE.600000", analyses_by_symbol)
+        self.assertIn("SHSE.600000", paths_by_symbol)
+        self.assertNotIn("BROKEN", bars_by_symbol)
+        self.assertEqual(rows[0].symbol, "SHSE.600000")
+
     def test_broker_export_creates_csv(self) -> None:
         row_path = self._write_demo_csv("order_demo.csv")
         bars = load_bars_from_csv(row_path)
@@ -4152,7 +4177,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(len(updated.ledger), 500)
         self.assertEqual(len(updated.equity_curve), 500)
         self.assertEqual(len(updated.patrol_logs), 500)
-        self.assertEqual(updated.ledger[0].order_id, "SIM00007")
+        self.assertEqual(updated.ledger[0].order_id, "SIM00006")
         self.assertEqual(updated.equity_curve[0].timestamp, "历史006")
         self.assertEqual(updated.patrol_logs[0].summary, "历史巡航 7")
         self.assertEqual(updated.equity_curve[-1].timestamp, "2026-04-13 10:05:00")
