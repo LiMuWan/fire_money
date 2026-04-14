@@ -202,6 +202,7 @@ from quant_hunter.ui_window_shell_patches import (
 from quant_hunter.ui_window_paper_experiment_patches import (
     apply_paper_experiment_patches,
     paper_experiment_role_specs_v43 as _qh_paper_experiment_role_specs_v43,
+    paper_experiment_table_context_v44 as _qh_paper_experiment_table_context_v44,
 )
 
 
@@ -15969,8 +15970,10 @@ def _qh_install_paper_trading_workspace_v17(self: QuantHunterWindow) -> None:
 
     strategy_layout = QVBoxLayout(strategy_box)
     self.paper_strategy_table = QTableWidget()
-    self.paper_strategy_table.setColumnCount(8)
-    self.paper_strategy_table.setHorizontalHeaderLabels(["战法", "样本", "开仓", "卖出", "胜率", "已实现", "平均仓位", "倾向"])
+    self.paper_strategy_table.setColumnCount(11)
+    self.paper_strategy_table.setHorizontalHeaderLabels(
+        ["战法", "角色", "样本", "胜率", "胜率差", "平均持有", "持有差", "已实现", "预算", "倾向", "当前决策"]
+    )
     self.paper_strategy_table.verticalHeader().setVisible(False)
     self.paper_strategy_table.setSelectionBehavior(QAbstractItemView.SelectRows)
     self.paper_strategy_table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -16131,6 +16134,7 @@ def _qh_refresh_paper_trading_panels_v17(self: QuantHunterWindow) -> None:
     strategy_rows = list(analytics.get("strategy_rows", []) or [])
     rotation_rows = build_strategy_rotation_snapshot(state)
     rotation_map = {str(item.get("strategy_name", "") or ""): item for item in rotation_rows}
+    experiment_context_map = _qh_paper_experiment_table_context_v44(analytics, rotation_rows)
     strategy_updates_enabled = self.paper_strategy_table.updatesEnabled()
     self.paper_strategy_table.setUpdatesEnabled(False)
     self.paper_strategy_table.blockSignals(True)
@@ -16139,35 +16143,71 @@ def _qh_refresh_paper_trading_panels_v17(self: QuantHunterWindow) -> None:
         for row_index, item in enumerate(strategy_rows):
             strategy_name = str(item.get("strategy_name", "") or "--")
             rotation = rotation_map.get(strategy_name, {})
+            experiment_context = experiment_context_map.get(strategy_name, {})
             bias_label = str(rotation.get("bias_label", "") or "中性")
             multiplier = float(rotation.get("budget_multiplier", 1.0) or 1.0)
             avg_hold_days = float(item.get("avg_hold_days", 0.0) or rotation.get("avg_hold_days", 0.0) or 0.0)
-            tendency_text = f"{bias_label} x{multiplier:.2f}"
-            if avg_hold_days > 0:
-                tendency_text = f"{tendency_text} | {avg_hold_days:.1f}天"
+            role_label = str(experiment_context.get("role_label", "") or "备选")
+            decision_text = str(experiment_context.get("decision", "") or "继续观察")
+            win_rate_delta = float(experiment_context.get("win_rate_delta", 0.0) or 0.0)
+            hold_delta = float(experiment_context.get("hold_delta", 0.0) or 0.0)
+            hold_text = f"{avg_hold_days:.1f}天" if avg_hold_days > 0 else "--"
+            win_rate_delta_text = "基准" if role_label == "主测" else f"{win_rate_delta:+.1%}"
+            hold_delta_text = "基准" if role_label == "主测" else (f"{hold_delta:+.1f}天" if avg_hold_days > 0 else "待补样本")
+            budget_text = f"x{multiplier:.2f}"
             values = [
                 strategy_name,
+                role_label,
                 str(int(rotation.get("sample_count", int(item.get("buy_count", 0) or 0) + int(item.get("sell_count", 0) or 0)) or 0)),
-                str(int(item.get("buy_count", 0) or 0)),
-                str(int(item.get("sell_count", 0) or 0)),
                 f"{float(item.get('win_rate', 0.0) or 0.0):.1%}",
+                win_rate_delta_text,
+                hold_text,
+                hold_delta_text,
                 f"{float(item.get('realized_pnl', 0.0) or 0.0):,.0f}",
-                f"{float(item.get('avg_position_pct', 0.0) or 0.0):.1%}",
-                tendency_text,
+                budget_text,
+                bias_label,
+                decision_text,
             ]
+            row_tooltip = (
+                f"开仓 {int(item.get('buy_count', 0) or 0)} | "
+                f"卖出 {int(item.get('sell_count', 0) or 0)} | "
+                f"平均仓位 {float(item.get('avg_position_pct', 0.0) or 0.0):.1%} | "
+                f"预算倍率 {budget_text} | 当前决策：{decision_text}"
+            )
             for column, value in enumerate(values):
                 table_item = QTableWidgetItem(value)
-                if column == 5:
+                table_item.setToolTip(row_tooltip)
+                if column == 4:
+                    if win_rate_delta > 0:
+                        table_item.setForeground(QColor("#0F8A4B"))
+                    elif win_rate_delta < 0:
+                        table_item.setForeground(QColor("#C44536"))
+                elif column == 6:
+                    if hold_delta < 0:
+                        table_item.setForeground(QColor("#0F8A4B"))
+                    elif hold_delta > 0:
+                        table_item.setForeground(QColor("#C44536"))
+                elif column == 7:
                     pnl_value = float(item.get("realized_pnl", 0.0) or 0.0)
                     if pnl_value > 0:
                         table_item.setForeground(QColor("#0F8A4B"))
                     elif pnl_value < 0:
                         table_item.setForeground(QColor("#C44536"))
-                elif column == 7:
+                elif column == 8:
+                    if multiplier > 1.0:
+                        table_item.setForeground(QColor("#0F8A4B"))
+                    elif multiplier < 1.0:
+                        table_item.setForeground(QColor("#C44536"))
+                elif column == 9:
                     rotation_score = float(rotation.get("rotation_score", 0.0) or 0.0)
                     if rotation_score > 0.18:
                         table_item.setForeground(QColor("#0F8A4B"))
                     elif rotation_score < -0.18:
+                        table_item.setForeground(QColor("#C44536"))
+                elif column == 10:
+                    if "主测" in decision_text or "转主测" in decision_text:
+                        table_item.setForeground(QColor("#0F8A4B"))
+                    elif "降权" in decision_text or "复盘" in decision_text:
                         table_item.setForeground(QColor("#C44536"))
                 self.paper_strategy_table.setItem(row_index, column, table_item)
     finally:

@@ -4836,6 +4836,14 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(channel["headline"], "先检查通道")
         self.assertIn("桥接解释器", channel["checkpoint"])
 
+    def test_broker_execution_tone_maps_stage_to_visual_priority(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        self.assertEqual(module._qh_broker_execution_tone_v44("阻塞待处理"), "risk")
+        self.assertEqual(module._qh_broker_execution_tone_v44("待成交跟踪"), "watch")
+        self.assertEqual(module._qh_broker_execution_tone_v44("已成交待复盘"), "buy")
+        self.assertEqual(module._qh_broker_execution_tone_v44(""), "idle")
+
     def test_set_aux_stage_visibility_updates_toggle_and_status(self) -> None:
         module = importlib.import_module("app_qt")
         app = module.QApplication.instance() or module.QApplication([])
@@ -5250,6 +5258,54 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn("保留对照", specs[1]["detail"])
         self.assertEqual(specs[2]["headline"], "降权观察：尾盘买入法")
         self.assertIn("降权或暂停", specs[2]["detail"])
+
+    def test_paper_experiment_table_context_surfaces_role_deltas_and_decisions(self) -> None:
+        module = importlib.import_module("app_qt")
+        analytics = {
+            "strategy_rows": [
+                {
+                    "strategy_name": "龙头模型",
+                    "buy_count": 4,
+                    "sell_count": 3,
+                    "win_rate": 0.62,
+                    "realized_pnl": 4200.0,
+                    "avg_hold_days": 1.8,
+                },
+                {
+                    "strategy_name": "价值低吸",
+                    "buy_count": 3,
+                    "sell_count": 2,
+                    "win_rate": 0.5,
+                    "realized_pnl": 1200.0,
+                    "avg_hold_days": 1.1,
+                },
+                {
+                    "strategy_name": "尾盘买入法",
+                    "buy_count": 2,
+                    "sell_count": 1,
+                    "win_rate": 0.25,
+                    "realized_pnl": -900.0,
+                    "avg_hold_days": 2.6,
+                },
+            ]
+        }
+        rotation_rows = [
+            {"strategy_name": "龙头模型", "bias_label": "加权", "budget_multiplier": 1.18, "sample_count": 7, "rotation_score": 0.32},
+            {"strategy_name": "价值低吸", "bias_label": "中性", "budget_multiplier": 0.98, "sample_count": 5, "rotation_score": 0.04},
+            {"strategy_name": "尾盘买入法", "bias_label": "降权", "budget_multiplier": 0.68, "sample_count": 3, "rotation_score": -0.27},
+        ]
+
+        contexts = module._qh_paper_experiment_table_context_v44(analytics, rotation_rows)
+
+        self.assertEqual(contexts["龙头模型"]["role_label"], "主测")
+        self.assertEqual(contexts["龙头模型"]["decision"], "继续主测")
+        self.assertEqual(contexts["龙头模型"]["win_rate_delta"], 0.0)
+        self.assertEqual(contexts["价值低吸"]["role_label"], "对照")
+        self.assertEqual(contexts["价值低吸"]["decision"], "保留对照")
+        self.assertAlmostEqual(float(contexts["价值低吸"]["win_rate_delta"]), -0.12, places=2)
+        self.assertAlmostEqual(float(contexts["价值低吸"]["hold_delta"]), -0.7, places=2)
+        self.assertEqual(contexts["尾盘买入法"]["role_label"], "观察")
+        self.assertEqual(contexts["尾盘买入法"]["decision"], "降权观察")
 
     def test_filtered_daily_pool_rows_supports_tail_buy_priority_view(self) -> None:
         module = importlib.import_module("app_qt")

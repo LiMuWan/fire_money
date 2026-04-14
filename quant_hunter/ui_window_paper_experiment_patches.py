@@ -77,6 +77,110 @@ def paper_experiment_role_specs_v43(
     return specs
 
 
+def paper_experiment_table_context_v44(
+    analytics: dict[str, object],
+    rotation_rows: list[dict[str, object]],
+) -> dict[str, dict[str, object]]:
+    strategy_rows = {
+        str(item.get("strategy_name", "") or ""): dict(item)
+        for item in list(analytics.get("strategy_rows", []) or [])
+    }
+    lead_name = str(rotation_rows[0].get("strategy_name", "") or "") if rotation_rows else ""
+    compare_name = str(rotation_rows[1].get("strategy_name", "") or "") if len(rotation_rows) > 1 else ""
+    watch_name = ""
+    if len(rotation_rows) > 2:
+        trailing_name = str(rotation_rows[-1].get("strategy_name", "") or "")
+        if trailing_name not in {lead_name, compare_name}:
+            watch_name = trailing_name
+
+    lead_metrics = strategy_rows.get(lead_name, {})
+    lead_rotation = next(
+        (item for item in rotation_rows if str(item.get("strategy_name", "") or "") == lead_name),
+        {},
+    )
+    lead_win_rate = float(lead_metrics.get("win_rate", lead_rotation.get("win_rate", 0.0)) or 0.0)
+    lead_hold_days = float(lead_metrics.get("avg_hold_days", lead_rotation.get("avg_hold_days", 0.0)) or 0.0)
+
+    contexts: dict[str, dict[str, object]] = {}
+    for rotation in rotation_rows or []:
+        strategy_name = str(rotation.get("strategy_name", "") or "")
+        if not strategy_name:
+            continue
+        metrics = strategy_rows.get(strategy_name, {})
+        sample_count = int(
+            rotation.get(
+                "sample_count",
+                int(metrics.get("buy_count", 0) or 0) + int(metrics.get("sell_count", 0) or 0),
+            )
+            or 0
+        )
+        win_rate = float(metrics.get("win_rate", rotation.get("win_rate", 0.0)) or 0.0)
+        avg_hold_days = float(metrics.get("avg_hold_days", rotation.get("avg_hold_days", 0.0)) or 0.0)
+        realized_pnl = float(metrics.get("realized_pnl", rotation.get("realized_pnl", 0.0)) or 0.0)
+        rotation_score = float(rotation.get("rotation_score", 0.0) or 0.0)
+        budget_multiplier = float(rotation.get("budget_multiplier", 1.0) or 1.0)
+        bias_label = str(rotation.get("bias_label", "") or "中性")
+
+        if strategy_name == lead_name:
+            role_label = "主测"
+        elif strategy_name == compare_name:
+            role_label = "对照"
+        elif strategy_name == watch_name or bias_label == "降权":
+            role_label = "观察"
+        else:
+            role_label = "备选"
+
+        win_rate_delta = 0.0 if strategy_name == lead_name else win_rate - lead_win_rate
+        hold_delta = 0.0
+        if strategy_name != lead_name and lead_hold_days > 0 and avg_hold_days > 0:
+            hold_delta = avg_hold_days - lead_hold_days
+
+        if role_label == "主测":
+            if sample_count < 4:
+                decision = "继续主测，先补样本"
+            elif rotation_score >= 0.18 or budget_multiplier > 1.0:
+                decision = "继续主测"
+            elif win_rate < 0.45:
+                decision = "主测保留，降低仓位"
+            else:
+                decision = "继续主测观察"
+        elif role_label == "对照":
+            if sample_count < 3:
+                decision = "保留对照，补样本"
+            elif win_rate_delta >= 0.05 and rotation_score >= -0.05:
+                decision = "具备转主测机会"
+            else:
+                decision = "保留对照"
+        elif role_label == "观察":
+            if sample_count < 3:
+                decision = "先补样本后定级"
+            else:
+                decision = "降权观察"
+        elif sample_count < 3:
+            decision = "先补样本"
+        elif realized_pnl < 0 or rotation_score < -0.18:
+            decision = "复盘失败样本"
+        else:
+            decision = "继续观察"
+
+        contexts[strategy_name] = {
+            "role_label": role_label,
+            "decision": decision,
+            "win_rate": win_rate,
+            "win_rate_delta": round(win_rate_delta, 4),
+            "avg_hold_days": round(avg_hold_days, 2),
+            "hold_delta": round(hold_delta, 2),
+            "budget_multiplier": round(budget_multiplier, 4),
+            "bias_label": bias_label,
+            "rotation_score": round(rotation_score, 4),
+            "realized_pnl": round(realized_pnl, 2),
+            "sample_count": sample_count,
+            "buy_count": int(metrics.get("buy_count", 0) or 0),
+            "sell_count": int(metrics.get("sell_count", 0) or 0),
+        }
+    return contexts
+
+
 def apply_paper_experiment_patches(
     window_cls: type,
     *,
