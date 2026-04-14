@@ -4810,6 +4810,32 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(filled["route"], "复盘页")
         self.assertIn("执行偏差", filled["detail"])
 
+    def test_broker_repair_hint_distinguishes_capital_risk_and_channel_blockers(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        capital = module._qh_broker_repair_hint_v43(
+            failure_reason="可用资金不足",
+            message="柜台拒绝",
+            has_recommendation=True,
+        )
+        risk = module._qh_broker_repair_hint_v43(
+            failure_reason="超过可卖数量",
+            message="触发风控",
+            has_recommendation=True,
+        )
+        channel = module._qh_broker_repair_hint_v43(
+            failure_reason="",
+            message="SDK 通道未就绪",
+            has_recommendation=False,
+        )
+
+        self.assertEqual(capital["headline"], "先收缩仓位")
+        self.assertIn("可用资金", capital["checkpoint"])
+        self.assertEqual(risk["headline"], "先修正风控")
+        self.assertIn("止损位", risk["checkpoint"])
+        self.assertEqual(channel["headline"], "先检查通道")
+        self.assertIn("桥接解释器", channel["checkpoint"])
+
     def test_set_aux_stage_visibility_updates_toggle_and_status(self) -> None:
         module = importlib.import_module("app_qt")
         app = module.QApplication.instance() or module.QApplication([])

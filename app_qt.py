@@ -13017,6 +13017,49 @@ def _qh_broker_execution_followup_v42(
     }
 
 
+def _qh_broker_repair_hint_v43(
+    *,
+    failure_reason: str,
+    message: str,
+    has_recommendation: bool,
+) -> dict[str, str]:
+    failure_reason = str(failure_reason or "").strip()
+    message = str(message or "").strip()
+    combined = f"{failure_reason} {message}".strip()
+
+    if any(token in combined for token in ("可用资金", "资金不足", "余额不足", "现金不足")):
+        return {
+            "headline": "先收缩仓位",
+            "detail": "优先降低数量、拆分委托或调整预算，再回推荐页复核买点与仓位纪律。",
+            "checkpoint": "检查账户可用资金、单笔预算和目标仓位是否匹配。",
+        }
+    if any(token in combined for token in ("超卖", "持仓不足", "风控", "风险", "超过可卖")):
+        return {
+            "headline": "先修正风控",
+            "detail": (
+                "先修正数量、方向和风控阈值，再决定是否继续推进。"
+                if not has_recommendation
+                else "先回推荐页和交易页一起复核方向、止损与仓位纪律，再决定是否重试。"
+            ),
+            "checkpoint": "检查委托方向、可卖数量、止损位和风险灯是否一致。",
+        }
+    if any(token in combined for token in ("柜台", "通道", "登录", "环境", "SDK", "桥接")):
+        return {
+            "headline": "先检查通道",
+            "detail": "优先排查登录状态、SDK/桥接环境和柜台可用性，确认后再重新提交。",
+            "checkpoint": "检查交易通道、环境诊断、账户登录和桥接解释器状态。",
+        }
+    return {
+        "headline": "先复核参数",
+        "detail": (
+            "先回推荐页复核主线、价位和题材，再回交易页修正委托参数。"
+            if has_recommendation
+            else "当前缺少推荐联动，先留在交易页复核价格、数量和风险参数。"
+        ),
+        "checkpoint": "检查主线是否仍成立、价格是否偏离计划、数量与仓位是否匹配。",
+    }
+
+
 def _qh_focus_symbol_in_broker_workspace(self: QuantHunterWindow, symbol: str) -> None:
     if not symbol:
         return
@@ -18347,6 +18390,11 @@ def _qh_refresh_submission_focus_v26(self: QuantHunterWindow) -> None:
         has_recommendation=recommendation is not None,
         has_intent=intent is not None,
     )
+    repair_hint = _qh_broker_repair_hint_v43(
+        failure_reason=failure_reason,
+        message=message,
+        has_recommendation=recommendation is not None,
+    )
 
     if hasattr(self, "order_result_text"):
         lines = [
@@ -18358,6 +18406,7 @@ def _qh_refresh_submission_focus_v26(self: QuantHunterWindow) -> None:
             f"状态判断：{summary['judgement']}",
             summary["next_step"],
             f"链路建议：{followup['headline']} | {followup['detail']}",
+            f"处理建议：{repair_hint['headline']} | {repair_hint['detail']}",
             f"订单状态：{summary['order_status']} | 成交状态：{summary['fill_status']}",
             f"失败原因：{failure_reason or '无'}",
             f"反馈信息：{message or '等待更多反馈'}",
@@ -18379,6 +18428,7 @@ def _qh_refresh_submission_focus_v26(self: QuantHunterWindow) -> None:
             lines.append(f"推荐理由：{getattr(recommendation, 'rationale', '') or '等待推荐逻辑生成。'}")
         lines.append(summary["next_step"])
         lines.append(f"链路建议：{followup['headline']} | {followup['detail']}")
+        lines.append(f"处理建议：{repair_hint['headline']} | {repair_hint['checkpoint']}")
         if message:
             lines.append(f"系统反馈：{message}")
         if failure_reason:
@@ -18386,6 +18436,25 @@ def _qh_refresh_submission_focus_v26(self: QuantHunterWindow) -> None:
         else:
             lines.append("执行偏差：继续观察成交结果，并核对是否偏离原计划的价格和仓位。")
         self._set_plain_text_if_changed(self.broker_recap_text, "\n".join(lines))
+
+    if hasattr(self, "broker_mainline_review_text"):
+        lines = [
+            f"主线闸门审查：{stock_name}",
+            f"执行阶段：{summary['stage']} | 链路建议：{followup['headline']}",
+        ]
+        if recommendation is not None:
+            lines.extend(
+                [
+                    f"主线状态：{getattr(recommendation, 'mainline_flow_signal', '') or '待确认'} / {getattr(recommendation, 'mainline_stage', '') or '待确认'}",
+                    f"主线角色：{getattr(recommendation, 'mainline_role', '') or '待确认'} | 题材：{getattr(recommendation, 'mainline_tag', '') or getattr(recommendation, 'theme_name', '') or '待确认'}",
+                    f"推荐动作：{self._display_action(getattr(recommendation, 'action', ''))} | 推荐理由：{getattr(recommendation, 'rationale', '') or '等待推荐逻辑生成。'}",
+                ]
+            )
+        else:
+            lines.append("主线状态：当前缺少推荐联动，请先结合交易页和扫描页补齐主线判断。")
+        lines.append(f"处理建议：{repair_hint['headline']} | {repair_hint['detail']}")
+        lines.append(f"复核检查：{repair_hint['checkpoint']}")
+        self._set_plain_text_if_changed(self.broker_mainline_review_text, "\n".join(lines))
 
     if hasattr(self, "broker_execution_text"):
         lines = [
@@ -18396,21 +18465,39 @@ def _qh_refresh_submission_focus_v26(self: QuantHunterWindow) -> None:
             f"状态判断：{summary['judgement']}",
             summary["next_step"],
             f"联动建议：{followup['headline']} | {followup['detail']}",
+            f"修正路径：{repair_hint['headline']} | {repair_hint['checkpoint']}",
             f"推荐链路：建议前往 {followup['route']} 继续处理。",
         ]
         self._set_plain_text_if_changed(self.broker_execution_text, "\n".join(lines))
+
+    if hasattr(self, "orders_focus_label"):
+        focus_text = f"委托动作面板 / 执行焦点：{summary['stage']} | {followup['headline']} | 处理 {repair_hint['headline']}"
+        focus_tooltip = "\n".join(
+            [
+                f"焦点：{stock_name} ({stock_id} / {symbol or '--'})",
+                f"执行阶段：{summary['stage']}",
+                f"链路建议：{followup['headline']} | {followup['detail']}",
+                f"处理建议：{repair_hint['headline']} | {repair_hint['detail']}",
+                f"复核检查：{repair_hint['checkpoint']}",
+            ]
+        )
+        self._set_label_text_if_changed(
+            self.orders_focus_label,
+            focus_text,
+            tooltip=focus_tooltip,
+        )
 
     if hasattr(self, "broker_status_banner"):
         self._set_label_text_if_changed(
             self.broker_status_banner,
             summary["banner"],
-            tooltip=f"{summary['tooltip']}\n链路建议：{followup['headline']} | {followup['detail']}",
+            tooltip=f"{summary['tooltip']}\n链路建议：{followup['headline']} | {followup['detail']}\n处理建议：{repair_hint['headline']} | {repair_hint['checkpoint']}",
         )
     if hasattr(self, "broker_workbench_banner"):
         self._set_label_text_if_changed(
             self.broker_workbench_banner,
             f"交易工作台：{stock_name} | {summary['stage']} | {followup['headline']}",
-            tooltip=f"{summary['tooltip']}\n链路建议：{followup['headline']} | {followup['detail']}",
+            tooltip=f"{summary['tooltip']}\n链路建议：{followup['headline']} | {followup['detail']}\n处理建议：{repair_hint['headline']} | {repair_hint['checkpoint']}",
         )
 
 
