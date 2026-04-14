@@ -1838,6 +1838,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         ui_binders = importlib.import_module("quant_hunter.ui_binders")
         ui_controllers = importlib.import_module("quant_hunter.ui_controllers")
         ui_helpers = importlib.import_module("quant_hunter.ui_helpers")
+        focus_bridge_patches = importlib.import_module("quant_hunter.ui_window_focus_bridge_patches")
         broker_status = importlib.import_module("quant_hunter.broker_status")
         license_policy = importlib.import_module("quant_hunter.license_policy")
         recommend_status = importlib.import_module("quant_hunter.recommend_status")
@@ -1925,6 +1926,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertTrue(hasattr(ui_helpers, "stock_profile_for_symbol"))
         self.assertTrue(hasattr(ui_helpers, "stock_name_for_symbol"))
         self.assertTrue(hasattr(ui_helpers, "stock_id_for_symbol"))
+        self.assertTrue(hasattr(focus_bridge_patches, "apply_focus_bridge_patches"))
         self.assertTrue(hasattr(ui_refresh, "refresh_priority_cards"))
         self.assertTrue(hasattr(ui_refresh, "render_leaderboard_cards"))
         self.assertTrue(hasattr(ui_refresh, "refresh_theme_heat_panels"))
@@ -5007,6 +5009,17 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(brief["stage"], "执行阶段：待成交跟踪 | 主线 继续跟 | 去推荐页")
         self.assertEqual(brief["focus"], "执行焦点：宁德时代 | 买点偏高 | 去推荐页")
 
+    def test_broker_panel_conclusion_surfaces_stage_and_resolution_in_one_line(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        line = module._qh_broker_panel_conclusion_v49(
+            stage="阻塞待处理",
+            parameter_headline="先检查通道",
+            resolution_target="账户配置",
+        )
+
+        self.assertEqual(line, "结论：阻塞待处理 / 先检查通道 / 去账户配置")
+
     def test_set_aux_stage_visibility_updates_toggle_and_status(self) -> None:
         module = importlib.import_module("app_qt")
         app = module.QApplication.instance() or module.QApplication([])
@@ -5051,6 +5064,69 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertFalse(window.recommend_detail_focus_button.isEnabled())
         self.assertEqual(window.recommend_broker_focus_button.text(), "暂不进交易")
         self.assertFalse(window.recommend_broker_focus_button.isEnabled())
+
+    def test_update_paper_trading_focus_hint_toggles_label_and_buttons(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        window = SimpleNamespace(
+            paper_trading_focus_label=module.QLabel(),
+            paper_to_recommend_button=module.QPushButton(),
+            paper_to_detail_button=module.QPushButton(),
+            paper_to_broker_button=module.QPushButton(),
+            _selected_paper_symbol=lambda: "",
+            _stock_name_for_symbol=lambda _symbol: "龙头样本",
+            _stock_id_for_symbol=lambda _symbol: "300001",
+        )
+
+        module.QuantHunterWindow._update_paper_trading_focus_hint(window)
+        self.assertIn("点击持仓或交割单后", window.paper_trading_focus_label.text())
+        self.assertFalse(window.paper_to_recommend_button.isEnabled())
+        self.assertFalse(window.paper_to_detail_button.isEnabled())
+        self.assertFalse(window.paper_to_broker_button.isEnabled())
+
+        window._selected_paper_symbol = lambda: "SZSE.300001"
+        module.QuantHunterWindow._update_paper_trading_focus_hint(window)
+        self.assertIn("龙头样本", window.paper_trading_focus_label.text())
+        self.assertIn("300001 / SZSE.300001", window.paper_trading_focus_label.text())
+        self.assertTrue(window.paper_to_recommend_button.isEnabled())
+        self.assertTrue(window.paper_to_detail_button.isEnabled())
+        self.assertTrue(window.paper_to_broker_button.isEnabled())
+
+    def test_open_selected_recommend_in_broker_syncs_symbol_and_routes(self) -> None:
+        module = importlib.import_module("app_qt")
+        row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-14",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.6,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=77.0,
+            persistence_score=82.0,
+            news_score=73.0,
+            leader_score=90.0,
+            total_score=88.0,
+        )
+        broker_calls: list[str] = []
+        focus_calls: list[tuple[str, str]] = []
+        window = SimpleNamespace(
+            active_symbol="",
+            _current_recommend_focus=lambda: row,
+            _focus_symbol_in_broker_workspace=lambda symbol: broker_calls.append(symbol),
+            _focus_symbol_everywhere=lambda symbol, origin="": focus_calls.append((symbol, origin)),
+        )
+
+        module.QuantHunterWindow.open_selected_recommend_in_broker(window)
+
+        self.assertEqual(window.active_symbol, "SZSE.300001")
+        self.assertEqual(broker_calls, ["SZSE.300001"])
+        self.assertEqual(focus_calls, [("SZSE.300001", "recommend")])
 
     def test_toggle_recommend_auxiliary_stage_flips_state(self) -> None:
         module = importlib.import_module("app_qt")
@@ -5212,6 +5288,45 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn("模拟盘实验：主测 | 龙头模型 | 继续主测", window.broker_mainline_review_text.toPlainText())
         self.assertIn("交易约束：推荐页优先筛同战法前排，交易页按主测纪律推进。", window.broker_mainline_review_text.toPlainText())
         self.assertIn("模拟盘实验：主测 | 龙头模型 | 继续主测", window.broker_execution_text.toPlainText())
+
+    def test_broker_pre_submit_experiment_lines_surface_bridge_summary(self) -> None:
+        workbench_patches = importlib.import_module("quant_hunter.ui_window_workbench_patches")
+
+        with patch.object(
+            workbench_patches,
+            "paper_strategy_experiment_bridge_v45",
+            return_value={
+                "title": "主测 | 龙头模型 | 继续主测",
+                "detail": "样本 7 | 胜率 62.0% | 平均持有 1.8 天 | 预算 x1.18",
+                "cta": "推荐页优先筛同战法前排，交易页按主测纪律推进。",
+            },
+        ):
+            lines = workbench_patches.broker_pre_submit_experiment_lines_v48(
+                PaperTradingState(enabled=True),
+                "龙头模型",
+            )
+
+        self.assertEqual(lines[0], "模拟盘实验：主测 | 龙头模型 | 继续主测")
+        self.assertEqual(lines[1], "实验纪律：样本 7 | 胜率 62.0% | 平均持有 1.8 天 | 预算 x1.18")
+        self.assertEqual(lines[2], "提交前提示：推荐页优先筛同战法前排，交易页按主测纪律推进。")
+
+    def test_merge_broker_experiment_lines_replaces_old_block(self) -> None:
+        workbench_patches = importlib.import_module("quant_hunter.ui_window_workbench_patches")
+
+        merged = workbench_patches.merge_broker_experiment_lines_v47(
+            "执行回放\n\n当前状态：待提交委托 1 笔\n模拟盘实验：旧内容\n实验纪律：旧内容\n提交前提示：旧内容",
+            [
+                "模拟盘实验：主测 | 龙头模型 | 继续主测",
+                "实验纪律：样本 7 | 胜率 62.0% | 平均持有 1.8 天 | 预算 x1.18",
+                "提交前提示：推荐页优先筛同战法前排，交易页按主测纪律推进。",
+            ],
+        )
+
+        self.assertIn("执行回放", merged)
+        self.assertEqual(merged.count("模拟盘实验："), 1)
+        self.assertEqual(merged.count("实验纪律："), 1)
+        self.assertIn("模拟盘实验：主测 | 龙头模型 | 继续主测", merged)
+        self.assertIn("提交前提示：推荐页优先筛同战法前排，交易页按主测纪律推进。", merged)
 
     def test_shell_pipeline_story_summarizes_daily_workflow(self) -> None:
         module = importlib.import_module("app_qt")

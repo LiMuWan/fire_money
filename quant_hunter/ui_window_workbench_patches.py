@@ -3,7 +3,38 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel, QPushButton, QSplitter, QTableWidget, QTextEdit, QVBoxLayout, QWidget
 
-from quant_hunter.models import RecommendationRow
+from quant_hunter.models import PaperTradingState, RecommendationRow
+from quant_hunter.ui_window_paper_experiment_patches import paper_strategy_experiment_bridge_v45
+
+
+def broker_pre_submit_experiment_lines_v48(
+    state: PaperTradingState,
+    strategy_name: str,
+) -> list[str]:
+    bridge = paper_strategy_experiment_bridge_v45(state, strategy_name)
+    return [
+        f"模拟盘实验：{bridge['title']}",
+        f"实验纪律：{bridge['detail']}",
+        f"提交前提示：{bridge['cta']}",
+    ]
+
+
+def merge_broker_experiment_lines_v47(
+    current_text: str,
+    experiment_lines: list[str],
+) -> str:
+    prefixes = ("模拟盘实验：", "实验纪律：", "提交前提示：")
+    lines = [
+        line
+        for line in str(current_text or "").splitlines()
+        if not any(line.startswith(prefix) for prefix in prefixes)
+    ]
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if lines:
+        lines.append("")
+    lines.extend(experiment_lines)
+    return "\n".join(lines)
 
 
 def apply_workspace_workbench_patches(window_cls: type) -> None:
@@ -79,6 +110,26 @@ def apply_workspace_workbench_patches(window_cls: type) -> None:
         record = self._selected_submission_record() if hasattr(self, "_selected_submission_record") else None
         order_count = len(getattr(self, "order_intents", []) or [])
         submit_count = len(getattr(self, "order_submission_records", []) or [])
+        recommendation = None
+        if intent is not None:
+            symbol = getattr(intent, "symbol", "") or ""
+            recommendation = next(
+                (item for item in getattr(self, "daily_pool_rows", []) if getattr(item, "symbol", "") == symbol),
+                None,
+            )
+        paper_state = getattr(
+            self,
+            "paper_trading_state",
+            getattr(getattr(self, "state", None), "paper_trading_state", PaperTradingState()),
+        )
+        experiment_lines = (
+            broker_pre_submit_experiment_lines_v48(
+                paper_state,
+                getattr(recommendation, "primary_strategy", "") or "掘龙决策",
+            )
+            if recommendation is not None
+            else []
+        )
 
         if hasattr(self, "broker_workbench_banner"):
             if record is not None:
@@ -88,7 +139,8 @@ def apply_workspace_workbench_patches(window_cls: type) -> None:
             elif intent is not None:
                 symbol = getattr(intent, "symbol", "") or ""
                 stock_name = self._stock_name_for_symbol(symbol) if symbol else "焦点委托"
-                text = f"交易工作台：当前聚焦 {stock_name}，下一步打开确认弹窗核对账户、价格、止损与仓位。"
+                experiment_badge = experiment_lines[0].replace("模拟盘实验：", "") if experiment_lines else "实验待同步"
+                text = f"交易工作台：当前聚焦 {stock_name}，下一步打开确认弹窗核对账户、价格、止损与仓位。| {experiment_badge}"
             elif order_count:
                 text = f"交易工作台：已生成 {order_count} 笔待提交委托，优先选中一笔查看主线闸门和风险灯。"
             elif submit_count:
@@ -97,19 +149,22 @@ def apply_workspace_workbench_patches(window_cls: type) -> None:
                 text = "交易工作台：先从推荐池生成委托，再进入确认提交和执行回顾。"
             self._set_label_text_if_changed(self.broker_workbench_banner, text)
 
-        if hasattr(self, "order_result_text") and record is None and intent is None and not getattr(self, "order_submission_log", []):
+        if hasattr(self, "order_result_text") and record is None and not getattr(self, "order_submission_log", []):
             self._set_plain_text_if_changed(
                 self.order_result_text,
-                "\n".join(
-                    [
-                        "执行回放",
-                        "",
-                        f"当前状态：待提交委托 {order_count} 笔 | 已有回执 {submit_count} 条",
-                        "建议动作：",
-                        "1. 先在左侧选中一笔委托，检查主线闸门和风险灯。",
-                        "2. 再打开确认弹窗核对账户、价格、止损和仓位。",
-                        "3. 提交后这里会自动滚动到最新回执。",
-                    ]
+                merge_broker_experiment_lines_v47(
+                    "\n".join(
+                        [
+                            "执行回放",
+                            "",
+                            f"当前状态：待提交委托 {order_count} 笔 | 已有回执 {submit_count} 条",
+                            "建议动作：",
+                            "1. 先在左侧选中一笔委托，检查主线闸门和风险灯。",
+                            "2. 再打开确认弹窗核对账户、价格、止损和仓位。",
+                            "3. 提交后这里会自动滚动到最新回执。",
+                        ]
+                    ),
+                    experiment_lines,
                 ),
             )
 
@@ -117,16 +172,19 @@ def apply_workspace_workbench_patches(window_cls: type) -> None:
             focus_name = self._stock_name_for_symbol(getattr(intent, "symbol", "") or "") if intent is not None else "暂无焦点"
             self._set_plain_text_if_changed(
                 self.broker_recap_text,
-                "\n".join(
-                    [
-                        "成交回顾",
-                        "",
-                        f"当前焦点：{focus_name}",
-                        "回顾重点：",
-                        "- 看提交后是否存在失败、撤单、拒单或价格偏离。",
-                        "- 看成交是否符合原计划的主线逻辑和仓位纪律。",
-                        "- 看若执行失真，应该回机会池还是只修委托参数。",
-                    ]
+                merge_broker_experiment_lines_v47(
+                    "\n".join(
+                        [
+                            "成交回顾",
+                            "",
+                            f"当前焦点：{focus_name}",
+                            "回顾重点：",
+                            "- 看提交后是否存在失败、撤单、拒单或价格偏离。",
+                            "- 看成交是否符合原计划的主线逻辑和仓位纪律。",
+                            "- 看若执行失真，应该回机会池还是只修委托参数。",
+                        ]
+                    ),
+                    experiment_lines,
                 ),
             )
 
