@@ -203,7 +203,9 @@ from quant_hunter.ui_window_paper_experiment_patches import (
     apply_paper_experiment_patches,
     paper_experiment_role_specs_v43 as _qh_paper_experiment_role_specs_v43,
     paper_experiment_table_context_v44 as _qh_paper_experiment_table_context_v44,
+    paper_strategy_experiment_bridge_v45 as _qh_paper_strategy_experiment_bridge_v45,
 )
+from quant_hunter.ui_window_runtime_feedback_patches import apply_runtime_feedback_patches
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -13081,6 +13083,101 @@ def _qh_broker_execution_tone_v44(stage: str) -> str:
     return "idle"
 
 
+def _qh_broker_recommend_context_v45(
+    *,
+    price_brief: str,
+    news_lines: list[str],
+) -> list[str]:
+    lines: list[str] = []
+    price_brief = str(price_brief or "").strip()
+    if price_brief:
+        lines.append(f"价格计划：{price_brief}")
+    cleaned_news = [str(item or "").strip() for item in list(news_lines or []) if str(item or "").strip()]
+    if cleaned_news:
+        first = cleaned_news[0]
+        if first.startswith("- "):
+            first = first[2:]
+        lines.append(f"最近催化：{first}")
+    else:
+        lines.append("最近催化：暂无近期催化")
+    return lines
+
+
+def _qh_broker_parameter_alignment_v46(
+    *,
+    side: str,
+    order_price: str | float,
+    plan_entry: float | None,
+    plan_stop: float | None,
+    plan_target: float | None,
+) -> dict[str, str]:
+    side = str(side or "").upper()
+    try:
+        price_value = float(order_price or 0.0)
+    except (TypeError, ValueError):
+        price_value = 0.0
+    entry = float(plan_entry or 0.0)
+    stop = float(plan_stop or 0.0)
+    target = float(plan_target or 0.0)
+
+    if price_value <= 0 or entry <= 0:
+        return {
+            "headline": "参数待复核",
+            "detail": "当前缺少可比较的计划价格，先回推荐页或委托建议区补齐价格带。",
+            "checkpoint": "检查买点、止损、目标位是否已经生成并同步到交易页。",
+        }
+
+    if side in {"SELL", "REDUCE"}:
+        if stop > 0 and price_value <= stop:
+            return {
+                "headline": "防守位处理",
+                "detail": "当前卖减价格已落到防守位附近，更偏向纪律性退出而不是继续等待更高价格。",
+                "checkpoint": "确认减仓比例、退出节奏和剩余仓位是否符合防守计划。",
+            }
+        if target > 0 and price_value >= target * 0.99:
+            return {
+                "headline": "接近兑现区",
+                "detail": "当前卖减价格已经接近原计划目标位，可优先按兑现节奏执行并回看仓位变化。",
+                "checkpoint": "检查兑现比例、剩余持仓和后续跟踪计划是否清晰。",
+            }
+        return {
+            "headline": "仍在计划区",
+            "detail": "当前卖减价格仍处在可执行区间，继续结合回执与仓位纪律推进。",
+            "checkpoint": "检查减仓比例、成交回执和剩余仓位的处理安排。",
+        }
+
+    deviation_pct = (price_value - entry) / max(entry, 0.001)
+    if stop > 0 and price_value <= stop:
+        return {
+            "headline": "跌近防守位",
+            "detail": "当前委托价格已经逼近原计划防守位，先确认主线和承接是否仍然成立。",
+            "checkpoint": "优先复核止损纪律、主线强度和是否应继续执行。",
+        }
+    if target > 0 and price_value >= target:
+        return {
+            "headline": "接近目标位",
+            "detail": "当前价格已接近原计划目标位，继续追价的性价比明显下降。",
+            "checkpoint": "回推荐页复核是否需要降仓、放弃追价或改成等待回踩。",
+        }
+    if deviation_pct >= 0.02:
+        return {
+            "headline": "买点偏高",
+            "detail": f"当前委托价格较计划买点抬高 {deviation_pct:.1%}，先确认承接和仓位后再决定是否追价。",
+            "checkpoint": "检查是否需要降低仓位、分批成交，或回推荐页重算买点区间。",
+        }
+    if deviation_pct <= -0.02:
+        return {
+            "headline": "低于计划买点",
+            "detail": f"当前价格较计划买点低 {abs(deviation_pct):.1%}，先确认这是更优性价比还是主线走弱。",
+            "checkpoint": "检查是否跌破防守位、承接是否减弱，以及是否仍值得执行。",
+        }
+    return {
+        "headline": "价格贴合计划",
+        "detail": "当前委托价格仍在原计划买点附近，可重点关注回执、成交与执行偏差。",
+        "checkpoint": "保持仓位纪律，继续跟踪回执和成交是否偏离原计划。",
+    }
+
+
 def _qh_focus_symbol_in_broker_workspace(self: QuantHunterWindow, symbol: str) -> None:
     if not symbol:
         return
@@ -15207,591 +15304,11 @@ QuantHunterWindow._apply_commercial_table_layout_v8 = _qh_apply_commercial_table
 QuantHunterWindow._balance_workspace_splitters_v8 = _qh_balance_workspace_splitters_v8
 QuantHunterWindow._post_build_ui_tweaks = _qh_post_build_ui_tweaks_v3
 
-
-def _qh_emit_action_feedback_v11(
-    self: QuantHunterWindow,
-    destination: str,
-    detail: str,
-    recommend_text: str = "",
-    broker_text: str = "",
-    scan_text: str = "",
-) -> None:
-    try:
-        self._append_runtime_log(f"页面联动：{destination} | {detail}")
-    except Exception:
-        pass
-
-    if recommend_text and hasattr(self, "recommend_status_label"):
-        self._set_label_text_if_changed(self.recommend_status_label, recommend_text)
-    if broker_text and hasattr(self, "broker_status_banner"):
-        self._set_label_text_if_changed(self.broker_status_banner, broker_text)
-    if scan_text and hasattr(self, "scan_summary_label"):
-        self._set_label_text_if_changed(self.scan_summary_label, scan_text)
-
-    if hasattr(self, "_refresh_runtime_story_v10"):
-        self._refresh_runtime_story_v10()
-
-
-_ORIGINAL_QH_OPEN_DETAIL_TO_RECOMMEND_V11 = QuantHunterWindow.open_detail_to_recommend
-_ORIGINAL_QH_OPEN_DETAIL_TO_SCANNER_V11 = QuantHunterWindow.open_detail_to_scanner
-_ORIGINAL_QH_OPEN_DETAIL_TO_BROKER_V11 = QuantHunterWindow.open_detail_to_broker
-_ORIGINAL_QH_OPEN_BROKER_FOCUS_RECOMMEND_V11 = QuantHunterWindow.open_broker_focus_recommend
-_ORIGINAL_QH_OPEN_BROKER_FOCUS_ORDERS_V11 = QuantHunterWindow.open_broker_focus_orders
-_ORIGINAL_QH_OPEN_BROKER_FOCUS_EXECUTION_V11 = QuantHunterWindow.open_broker_focus_execution
-_ORIGINAL_QH_OPEN_RUNTIME_TO_OVERVIEW_V11 = QuantHunterWindow.open_runtime_to_overview
-_ORIGINAL_QH_REFRESH_RUNTIME_PANEL_V11 = QuantHunterWindow.refresh_runtime_panel
-_ORIGINAL_QH_EXPORT_RUNTIME_LOG_V11 = QuantHunterWindow.export_runtime_log
-_ORIGINAL_QH_REFRESH_WORKSPACE_STATUS_LABELS_V11 = QuantHunterWindow._refresh_workspace_status_labels
-
-
-def _qh_open_detail_to_recommend_v11(self: QuantHunterWindow) -> None:
-    _ORIGINAL_QH_OPEN_DETAIL_TO_RECOMMEND_V11(self)
-    symbol = getattr(self, "active_symbol", "") or ""
-    detail = f"复盘页 -> 机会池 | {self._stock_name_for_symbol(symbol)}" if symbol else "复盘页 -> 机会池"
-    recommend_text = (
-        f"推荐状态：已从复盘页同步 {self._stock_name_for_symbol(symbol)} ({self._stock_id_for_symbol(symbol)})，继续核对主线、计划与风险。"
-        if symbol
-        else "推荐状态：已从复盘页切回机会池，继续核对主线、计划与风险。"
-    )
-    self._emit_action_feedback_v11("机会池", detail, recommend_text=recommend_text)
-
-
-def _qh_open_detail_to_scanner_v11(self: QuantHunterWindow) -> None:
-    _ORIGINAL_QH_OPEN_DETAIL_TO_SCANNER_V11(self)
-    symbol = getattr(self, "active_symbol", "") or ""
-    scan_text = (
-        f"扫描状态：已从复盘页同步 {self._stock_name_for_symbol(symbol)} ({self._stock_id_for_symbol(symbol)})，继续查看盘中监控与观察池。"
-        if symbol
-        else "扫描状态：已从复盘页切回扫描页，继续查看盘中监控与观察池。"
-    )
-    self._emit_action_feedback_v11("扫描页", "复盘页 -> 扫描页", scan_text=scan_text)
-
-
-def _qh_open_detail_to_broker_v11(self: QuantHunterWindow) -> None:
-    _ORIGINAL_QH_OPEN_DETAIL_TO_BROKER_V11(self)
-    symbol = getattr(self, "active_symbol", "") or ""
-    broker_text = (
-        f"交易台：已从复盘页同步 {self._stock_name_for_symbol(symbol)} ({self._stock_id_for_symbol(symbol)}) | 请先复核委托链路与风险灯。"
-        if symbol
-        else "交易台：已从复盘页切到交易执行页 | 请优先核对当前委托链路。"
-    )
-    self._emit_action_feedback_v11("交易页", "复盘页 -> 交易执行", broker_text=broker_text)
-
-
-def _qh_open_broker_focus_recommend_v11(self: QuantHunterWindow) -> None:
-    _ORIGINAL_QH_OPEN_BROKER_FOCUS_RECOMMEND_V11(self)
-    symbol = getattr(self, "active_symbol", "") or ""
-    recommend_text = (
-        f"推荐状态：已从交易页回看 {self._stock_name_for_symbol(symbol)} ({self._stock_id_for_symbol(symbol)})，继续复核主线与送审理由。"
-        if symbol
-        else "推荐状态：已从交易页回到机会池，继续复核主线与送审理由。"
-    )
-    self._emit_action_feedback_v11("机会池", "交易页 -> 机会池", recommend_text=recommend_text)
-
-
-def _qh_open_broker_focus_orders_v11(self: QuantHunterWindow) -> None:
-    _ORIGINAL_QH_OPEN_BROKER_FOCUS_ORDERS_V11(self)
-    self._emit_action_feedback_v11(
-        "委托区",
-        "交易页定位到委托建议",
-        broker_text="交易台：已定位到委托建议区，请优先核对价格、数量、主线闸门与原因摘要。",
-    )
-
-
-def _qh_open_broker_focus_execution_v11(self: QuantHunterWindow) -> None:
-    _ORIGINAL_QH_OPEN_BROKER_FOCUS_EXECUTION_V11(self)
-    self._emit_action_feedback_v11(
-        "成交区",
-        "交易页定位到提交记录",
-        broker_text="交易台：已定位到提交记录区，请继续核对回执、成交状态与执行偏差。",
-    )
-
-
-def _qh_open_runtime_to_overview_v11(self: QuantHunterWindow) -> None:
-    _ORIGINAL_QH_OPEN_RUNTIME_TO_OVERVIEW_V11(self)
-    self._emit_action_feedback_v11(
-        "市场总览",
-        "运行页 -> 市场总览",
-        scan_text="扫描状态：已回到市场总览链路，可继续刷新市场、扫描候选并建立跨页焦点。",
-    )
-
-
-def _qh_refresh_runtime_panel_v11(self: QuantHunterWindow) -> None:
-    _ORIGINAL_QH_REFRESH_RUNTIME_PANEL_V11(self)
-    self._emit_action_feedback_v11("运行页", "已刷新运行诊断与状态摘要")
-
-
-def _qh_export_runtime_log_v11(self: QuantHunterWindow) -> None:
-    _ORIGINAL_QH_EXPORT_RUNTIME_LOG_V11(self)
-    self._emit_action_feedback_v11("运行页", "已导出运行日志，请继续核对最新事件与异常记录")
-
-
-def _qh_refresh_workspace_status_labels_v11(self: QuantHunterWindow) -> None:
-    _ORIGINAL_QH_REFRESH_WORKSPACE_STATUS_LABELS_V11(self)
-    if hasattr(self, "_refresh_runtime_story_v10"):
-        self._refresh_runtime_story_v10()
-
-
-QuantHunterWindow._emit_action_feedback_v11 = _qh_emit_action_feedback_v11
-QuantHunterWindow.open_detail_to_recommend = _qh_open_detail_to_recommend_v11
-QuantHunterWindow.open_detail_to_scanner = _qh_open_detail_to_scanner_v11
-QuantHunterWindow.open_detail_to_broker = _qh_open_detail_to_broker_v11
-QuantHunterWindow.open_broker_focus_recommend = _qh_open_broker_focus_recommend_v11
-QuantHunterWindow.open_broker_focus_orders = _qh_open_broker_focus_orders_v11
-QuantHunterWindow.open_broker_focus_execution = _qh_open_broker_focus_execution_v11
-QuantHunterWindow.open_runtime_to_overview = _qh_open_runtime_to_overview_v11
-QuantHunterWindow.refresh_runtime_panel = _qh_refresh_runtime_panel_v11
-QuantHunterWindow.export_runtime_log = _qh_export_runtime_log_v11
-QuantHunterWindow._refresh_workspace_status_labels = _qh_refresh_workspace_status_labels_v11
-
-
-_ORIGINAL_QH_LOAD_SAMPLE_UNIVERSE_V12 = QuantHunterWindow.load_sample_universe
-_ORIGINAL_QH_RESCAN_UNIVERSE_V12 = QuantHunterWindow.rescan_universe
-_ORIGINAL_QH_REFRESH_REMOTE_MARKET_V12 = QuantHunterWindow.refresh_remote_market
-_ORIGINAL_QH_REFRESH_DAILY_POOL_V12 = QuantHunterWindow.refresh_daily_pool
-_ORIGINAL_QH_GENERATE_ORDER_SUGGESTIONS_V12 = QuantHunterWindow.generate_order_suggestions
-_ORIGINAL_QH_LOAD_SAMPLE_REFERENCE_DATA_V12 = QuantHunterWindow.load_sample_reference_data
-
-
-def _qh_sync_pipeline_panels_v12(self: QuantHunterWindow) -> None:
-    scan_count = len(getattr(self, "scan_rows", []) or [])
-    recommend_count = len(getattr(self, "daily_pool_rows", []) or [])
-    order_count = len(getattr(self, "order_intents", []) or [])
-    runtime_count = len(getattr(self, "order_submission_records", []) or [])
-
-    if hasattr(self, "scanner_live_summary_headline"):
-        self.scanner_live_summary_headline.setText("扫描态势")
-    if hasattr(self, "scanner_live_summary_detail"):
-        self.scanner_live_summary_detail.setText(
-            f"已扫描 {scan_count} 只候选，观察池与监控链路{'已建立' if scan_count else '等待建立'}。"
-        )
-    if hasattr(self, "scanner_live_summary_meta"):
-        self.scanner_live_summary_meta.setText("下一步：进入机会池继续看主线和位置。" if scan_count else "下一步：先刷新市场或载入样例数据。")
-
-    if hasattr(self, "recommend_live_summary_headline"):
-        self.recommend_live_summary_headline.setText("推荐态势")
-    if hasattr(self, "recommend_live_summary_detail"):
-        self.recommend_live_summary_detail.setText(
-            f"已生成 {recommend_count} 只机会候选，{'可继续送审' if recommend_count else '等待机会池建立'}。"
-        )
-    if hasattr(self, "recommend_live_summary_meta"):
-        self.recommend_live_summary_meta.setText("下一步：先看前排和风险，再生成委托链路。" if recommend_count else "下一步：先刷新市场，再重算机会池。")
-
-    if hasattr(self, "broker_live_summary_headline"):
-        self.broker_live_summary_headline.setText("交易态势")
-    if hasattr(self, "broker_live_summary_detail"):
-        self.broker_live_summary_detail.setText(
-            f"委托建议 {order_count} 笔，提交记录 {runtime_count} 笔。"
-        )
-    if hasattr(self, "broker_live_summary_meta"):
-        self.broker_live_summary_meta.setText("下一步：复核委托后再确认提交。" if order_count else "下一步：先从机会池生成委托链路。")
-
-
-def _qh_load_sample_universe_v12(self: QuantHunterWindow) -> None:
-    self._emit_action_feedback_v11(
-        "扫描页",
-        "准备载入样例市场数据",
-        recommend_text="推荐状态：正在准备样例市场与机会池数据。",
-        scan_text="扫描状态：正在载入示例数据并建立观察池、监控与联动焦点。",
-    )
-    _ORIGINAL_QH_LOAD_SAMPLE_UNIVERSE_V12(self)
-    self._sync_pipeline_panels_v12()
-
-
-def _qh_rescan_universe_v12(self: QuantHunterWindow) -> None:
-    self._emit_action_feedback_v11(
-        "扫描页",
-        "开始重新扫描市场与观察池",
-        recommend_text="推荐状态：正在等待扫描结果回流，稍后自动刷新机会池。",
-        scan_text="扫描状态：正在重新扫描市场、观察池与盘中监控。",
-    )
-    _ORIGINAL_QH_RESCAN_UNIVERSE_V12(self)
-    self._sync_pipeline_panels_v12()
-
-
-def _qh_refresh_remote_market_v12(self: QuantHunterWindow, quiet: bool = False, update_chart: bool = False, async_mode: bool = True) -> None:
-    self._emit_action_feedback_v11(
-        "市场总览",
-        "开始刷新市场快照",
-        recommend_text="推荐状态：正在等待市场快照刷新，稍后自动重算机会池。",
-        scan_text="扫描状态：正在同步市场快照与盘中候选。",
-    )
-    _ORIGINAL_QH_REFRESH_REMOTE_MARKET_V12(self, quiet=quiet, update_chart=update_chart, async_mode=async_mode)
-    self._sync_pipeline_panels_v12()
-
-
-def _qh_refresh_daily_pool_v12(self: QuantHunterWindow, async_mode: bool = True) -> None:
-    self._emit_action_feedback_v11(
-        "机会池",
-        "开始重算每日机会池",
-        recommend_text="推荐状态：正在根据主线、位置、消息与风险重算机会池。",
-    )
-    _ORIGINAL_QH_REFRESH_DAILY_POOL_V12(self, async_mode=async_mode)
-    if getattr(self, "daily_pool_rows", None):
-        top = self.daily_pool_rows[0]
-        self._emit_action_feedback_v11(
-            "机会池",
-            f"机会池已更新，共 {len(self.daily_pool_rows)} 只候选",
-            recommend_text=f"推荐状态：已生成 {len(self.daily_pool_rows)} 只候选，当前前排 {top.stock_name}，可继续核对后送审。",
-        )
-    self._sync_pipeline_panels_v12()
-
-
-def _qh_generate_order_suggestions_v12(self: QuantHunterWindow) -> None:
-    self._emit_action_feedback_v11(
-        "交易页",
-        "开始生成委托链路",
-        broker_text="交易台：正在生成委托建议，请等待价格、数量和风险灯计算完成。",
-    )
-    _ORIGINAL_QH_GENERATE_ORDER_SUGGESTIONS_V12(self)
-    if getattr(self, "order_intents", None):
-        top = self.order_intents[0]
-        self._emit_action_feedback_v11(
-            "交易页",
-            f"委托链路已更新，共 {len(self.order_intents)} 笔建议",
-            broker_text=f"交易台：已生成 {len(self.order_intents)} 笔委托建议，优先复核 {self._stock_name_for_symbol(top.symbol)} 的执行链路。",
-        )
-    else:
-        self._emit_action_feedback_v11(
-            "交易页",
-            "当前参数下未生成新的委托建议",
-            broker_text="交易台：当前参数下暂无新的委托建议，请先回看机会池、预算和主线状态。",
-        )
-    self._sync_pipeline_panels_v12()
-
-
-def _qh_load_sample_reference_data_v12(self: QuantHunterWindow) -> None:
-    self._emit_action_feedback_v11(
-        "机会池",
-        "开始载入示例资料",
-        recommend_text="推荐状态：正在载入股票资料、消息面和题材词典。",
-    )
-    _ORIGINAL_QH_LOAD_SAMPLE_REFERENCE_DATA_V12(self)
-    loaded_profiles = len(getattr(self, "stock_profiles", {}) or {})
-    loaded_rows = len(getattr(self, "daily_pool_rows", []) or [])
-    self._emit_action_feedback_v11(
-        "机会池",
-        f"示例资料已载入，股票资料 {loaded_profiles} 条",
-        recommend_text=f"推荐状态：样例资料已接入，当前生成 {loaded_rows} 只候选，可继续重算计划或进入交易执行。",
-        scan_text="扫描状态：样例资料已接入，可继续查看观察池与盘中监控。",
-    )
-    self._sync_pipeline_panels_v12()
-
-
-QuantHunterWindow._sync_pipeline_panels_v12 = _qh_sync_pipeline_panels_v12
-QuantHunterWindow.load_sample_universe = _qh_load_sample_universe_v12
-QuantHunterWindow.rescan_universe = _qh_rescan_universe_v12
-QuantHunterWindow.refresh_remote_market = _qh_refresh_remote_market_v12
-QuantHunterWindow.refresh_daily_pool = _qh_refresh_daily_pool_v12
-QuantHunterWindow.generate_order_suggestions = _qh_generate_order_suggestions_v12
-QuantHunterWindow.load_sample_reference_data = _qh_load_sample_reference_data_v12
-
-
-def _qh_inject_recommend_broker_summary_panels_v13(self: QuantHunterWindow) -> None:
-    panel_specs = [
-        ("recommend_tab", "recommendLiveSummaryPanel", "推荐态势", "recommend_live_summary"),
-        ("broker_tab", "brokerLiveSummaryPanel", "交易态势", "broker_live_summary"),
-    ]
-    for tab_name, object_name, title, prefix in panel_specs:
-        tab = getattr(self, tab_name, None)
-        if not isinstance(tab, QWidget) or getattr(self, f"{prefix}_headline", None) is not None:
-            continue
-        tool_panel = tab.findChild(QGroupBox, "workspaceToolPanel")
-        if tool_panel is None:
-            continue
-        layout = tool_panel.layout()
-        if not isinstance(layout, (QGridLayout, QHBoxLayout, QVBoxLayout)):
-            continue
-        panel, headline, detail, meta = self._build_workspace_summary_panel(object_name, title)
-        if isinstance(layout, QGridLayout):
-            layout.addWidget(panel, 1, 1)
-        else:
-            layout.addWidget(panel)
-        setattr(self, f"{prefix}_headline", headline)
-        setattr(self, f"{prefix}_detail", detail)
-        setattr(self, f"{prefix}_meta", meta)
-
-
-def _qh_upgrade_recommend_and_broker_empty_states_v13(self: QuantHunterWindow) -> None:
-    text_defaults = {
-        "recommend_core_bucket_text": (
-            "主线前排执行桶\n\n"
-            "结论：这里只保留最值得优先送审的前排候选，不把观察票和风险票混在一起。\n"
-            "检查项：看主线地位、量能承接、催化是否强化，以及计划仓位是否还能承载。\n"
-            "下一步：有前排机会时先重算计划，没有的话先回综合机会池继续筛。"
-        ),
-        "recommend_watch_bucket_text": (
-            "观察池\n\n"
-            "结论：这里放延续待确认、需要二次确认或只适合盯盘的标的。\n"
-            "检查项：优先看分时承接、主线强度、消息兑现和是否重新回到前排。\n"
-            "下一步：一旦条件转强，就转入前排执行桶；若逻辑失效，就转风险池。"
-        ),
-        "recommend_risk_bucket_text": (
-            "风险池\n\n"
-            "结论：这里集中展示减仓、卖出、回避和逻辑失效的标的，不让风险散落在别处。\n"
-            "检查项：重点看主线切换、跌破防守位、量价背离和消息落空。\n"
-            "下一步：优先处理风险，再决定是否回看机会池补新候选。"
-        ),
-        "broker_mainline_review_text": (
-            "主线闸门 / 为什么\n\n"
-            "结论：这里先判断委托有没有站在主线前排、有没有硬阻塞，再决定能不能送审。\n"
-            "检查项：优先核对题材位置、主线角色、风险灯和计划仓位是否匹配。\n"
-            "下一步：主线成立再进入一键确认；主线不成立就回机会池重看。"
-        ),
-        "broker_execution_text": (
-            "最近执行\n\n"
-            "结论：这里沉淀当前委托、提交回执和执行链路，不需要来回切页看。\n"
-            "检查项：重点看订单状态、成交状态、失败原因和是否偏离计划价格。\n"
-            "下一步：若还未提交，先复核；若已提交，继续跟踪回执和成交偏差。"
-        ),
-        "broker_recap_text": (
-            "成交回顾\n\n"
-            "结论：这里复盘通过率、阻塞原因、成交偏差，以及主线是否还成立。\n"
-            "检查项：优先看失败原因、滑点、仓位偏差和是否需要重新送审。\n"
-            "下一步：执行合格就继续跟踪；执行失真就回头修正机会池和委托参数。"
-        ),
-        "order_result_text": (
-            "执行回放\n\n"
-            "结论：新的提交结果会按时间顺序沉淀在这里，包括订单状态、成交状态和系统反馈。\n"
-            "检查项：先看最新一条记录，再回看是否存在重复失败或连续阻塞。\n"
-            "下一步：确认提交后，这里会自动滚动到最新记录，便于盘中快速复核。"
-        ),
-    }
-    for attr_name, text in text_defaults.items():
-        widget = getattr(self, attr_name, None)
-        if isinstance(widget, QTextEdit):
-            current = widget.toPlainText().strip()
-            if not current or len(current) < 90:
-                self._set_plain_text_if_changed(widget, text)
-
-
-def _qh_post_build_ui_tweaks_v14(self: QuantHunterWindow) -> None:
-    _qh_post_build_ui_tweaks_v3(self)
-    self._inject_recommend_broker_summary_panels_v13()
-    self._upgrade_recommend_and_broker_empty_states_v13()
-    self._sync_pipeline_panels_v12()
-    self._refresh_live_workspace_summary_panels()
-
-
-QuantHunterWindow._inject_recommend_broker_summary_panels_v13 = _qh_inject_recommend_broker_summary_panels_v13
-QuantHunterWindow._upgrade_recommend_and_broker_empty_states_v13 = _qh_upgrade_recommend_and_broker_empty_states_v13
-QuantHunterWindow._post_build_ui_tweaks = _qh_post_build_ui_tweaks_v14
-
-
-_ORIGINAL_QH_REFRESH_LIVE_WORKSPACE_SUMMARY_PANELS_V15 = QuantHunterWindow._refresh_live_workspace_summary_panels
-
-
-def _qh_refresh_live_workspace_summary_panels_v15(self: QuantHunterWindow) -> None:
-    _ORIGINAL_QH_REFRESH_LIVE_WORKSPACE_SUMMARY_PANELS_V15(self)
-
-    recommend_count = len(getattr(self, "daily_pool_rows", []) or [])
-    plan = getattr(self, "current_trade_plan", None)
-    decisions = list(getattr(plan, "decisions", []) or [])
-    buy_count = sum(1 for item in decisions if str(getattr(item, "action", "") or "").upper() == "BUY")
-    watch_count = sum(1 for item in getattr(self, "daily_pool_rows", []) if str(getattr(item, "action", "") or "").upper() == "WATCH")
-    top = getattr(self, "daily_pool_rows", [None])[0] if recommend_count else None
-
-    if hasattr(self, "recommend_live_summary_headline"):
-        headline = f"候选 {recommend_count} / 买入 {buy_count} / 观察 {watch_count}"
-        self._set_label_text_if_changed(self.recommend_live_summary_headline, headline)
-    if hasattr(self, "recommend_live_summary_detail"):
-        if top is not None:
-            detail = (
-                f"前排焦点：{getattr(top, 'stock_name', '待确认')} | "
-                f"{getattr(top, 'mainline_tag', '') or getattr(top, 'theme_name', '') or '待确认'} | "
-                f"动作 {self._display_action(getattr(top, 'action', 'WATCH'))}"
-            )
-        else:
-            detail = "等待机会池建立，先刷新市场、导入样例或重算推荐候选。"
-        self._set_label_text_if_changed(self.recommend_live_summary_detail, detail)
-    if hasattr(self, "recommend_live_summary_meta"):
-        meta = (
-            f"下一步：先看 {getattr(top, 'stock_name', '前排候选')} 的主线、买点和风险，再决定是否生成委托链路。"
-            if top is not None
-            else "下一步：先刷新市场，再重算机会池。"
-        )
-        self._set_label_text_if_changed(self.recommend_live_summary_meta, meta)
-
-    order_count = len(getattr(self, "order_intents", []) or [])
-    submit_count = len(getattr(self, "order_submission_records", []) or [])
-    selected_intent = self._selected_order_intent() if hasattr(self, "_selected_order_intent") else None
-    latest_record = self._selected_submission_record() if hasattr(self, "_selected_submission_record") else None
-    if latest_record is None:
-        records = list(getattr(self, "order_submission_records", []) or [])
-        latest_record = records[-1] if records else None
-
-    if hasattr(self, "broker_live_summary_headline"):
-        self._set_label_text_if_changed(self.broker_live_summary_headline, f"委托 {order_count} / 提交 {submit_count}")
-    if hasattr(self, "broker_live_summary_detail"):
-        if selected_intent is not None:
-            detail = (
-                f"当前委托：{self._stock_name_for_symbol(getattr(selected_intent, 'symbol', '') or '')} | "
-                f"{self._display_action(getattr(selected_intent, 'side', ''))} | "
-                f"数量 {int(getattr(selected_intent, 'quantity', 0) or 0)}"
-            )
-        elif latest_record is not None:
-            detail = (
-                f"最近回执：{self._stock_name_for_symbol(str(latest_record.get('symbol', '') or ''))} | "
-                f"{self._display_order_status(latest_record.get('order_status', ''))} / "
-                f"{self._display_fill_status(latest_record.get('fill_status', ''))}"
-            )
-        else:
-            detail = "等待委托链路建立，先从机会池生成可执行建议。"
-        self._set_label_text_if_changed(self.broker_live_summary_detail, detail)
-    if hasattr(self, "broker_live_summary_meta"):
-        meta = (
-            "下一步：复核价格、仓位、主线闸门和风险灯后，再进入一键确认。"
-            if order_count
-            else "下一步：先从机会池生成委托链路。"
-        )
-        self._set_label_text_if_changed(self.broker_live_summary_meta, meta)
-
-
-QuantHunterWindow._refresh_live_workspace_summary_panels = _qh_refresh_live_workspace_summary_panels_v15
-
-
-def _qh_refresh_live_workspace_summary_panels_v16(self: QuantHunterWindow) -> None:
-    _qh_refresh_live_workspace_summary_panels_v15(self)
-
-    current_recommend = self._selected_daily_pool_recommendation() if hasattr(self, "_selected_daily_pool_recommendation") else None
-    active_symbol = getattr(self, "active_symbol", "") or ""
-    fallback_scan_row = None
-    if active_symbol:
-        fallback_scan_row = next((row for row in getattr(self, "scan_rows", []) if getattr(row, "symbol", "") == active_symbol), None)
-    if fallback_scan_row is None:
-        fallback_scan_row = (getattr(self, "scan_rows", []) or [None])[0]
-    if current_recommend is not None:
-        stock_name = getattr(current_recommend, "stock_name", "") or self._stock_name_for_symbol(getattr(current_recommend, "symbol", "") or "")
-        stock_id = getattr(current_recommend, "stock_id", "") or self._stock_id_for_symbol(getattr(current_recommend, "symbol", "") or "")
-        signal = _qh_mainline_signal_brief_v4(current_recommend)
-        action_text = _qh_signal_action_text_v4(current_recommend)
-        theme_name = getattr(current_recommend, "mainline_tag", "") or getattr(current_recommend, "theme_name", "") or "待确认"
-        risk_flag = getattr(current_recommend, "mainline_risk_flag", "") or "待评估"
-        next_focus = getattr(current_recommend, "next_focus", "") or "继续核对主线、位置和催化。"
-        if hasattr(self, "recommend_live_summary_detail"):
-            self._set_label_text_if_changed(
-                self.recommend_live_summary_detail,
-                f"焦点：{stock_name} ({stock_id} / {getattr(current_recommend, 'symbol', '')}) | {theme_name} | {action_text} / {signal}",
-            )
-        if hasattr(self, "recommend_live_summary_meta"):
-            self._set_label_text_if_changed(
-                self.recommend_live_summary_meta,
-                f"下一步：风险 {risk_flag} | {next_focus[:28]}",
-            )
-    elif fallback_scan_row is not None:
-        symbol = getattr(fallback_scan_row, "symbol", "") or ""
-        stock_name = self._stock_name_for_symbol(symbol)
-        stock_id = self._stock_id_for_symbol(symbol)
-        if hasattr(self, "recommend_live_summary_detail"):
-            self._set_label_text_if_changed(
-                self.recommend_live_summary_detail,
-                f"扫描焦点：{stock_name} ({stock_id} / {symbol}) | {self._display_action(getattr(fallback_scan_row, 'action', 'WATCH'))} / {self._display_label(getattr(fallback_scan_row, 'label', 'WATCH'))}",
-            )
-        if hasattr(self, "recommend_live_summary_meta"):
-            self._set_label_text_if_changed(
-                self.recommend_live_summary_meta,
-                f"下一步：先把扫描候选转成机会池，再核对评分 {getattr(fallback_scan_row, 'score', '--')} 与主线位置。",
-            )
-
-    selected_intent = self._selected_order_intent() if hasattr(self, "_selected_order_intent") else None
-    latest_record = self._selected_submission_record() if hasattr(self, "_selected_submission_record") else None
-    if latest_record is None:
-        records = list(getattr(self, "order_submission_records", []) or [])
-        latest_record = records[-1] if records else None
-
-    if selected_intent is not None:
-        symbol = getattr(selected_intent, "symbol", "") or ""
-        stock_name = self._stock_name_for_symbol(symbol)
-        recommendation = next((item for item in getattr(self, "daily_pool_rows", []) if getattr(item, "symbol", "") == symbol), None)
-        signal = _qh_mainline_signal_brief_v4(recommendation)
-        risk_lamp = self._broker_risk_lamp_for_intent(selected_intent, recommendation=recommendation) if hasattr(self, "_broker_risk_lamp_for_intent") else "黄灯"
-        if hasattr(self, "broker_live_summary_detail"):
-            self._set_label_text_if_changed(
-                self.broker_live_summary_detail,
-                f"焦点委托：{stock_name} ({self._stock_id_for_symbol(symbol)} / {symbol}) | {self._display_action(getattr(selected_intent, 'side', ''))} | 主线 {signal}",
-            )
-        if hasattr(self, "broker_live_summary_meta"):
-            self._set_label_text_if_changed(
-                self.broker_live_summary_meta,
-                f"下一步：风险灯 {risk_lamp} | 价格 {float(getattr(selected_intent, 'price', 0.0) or 0.0):.2f} | 数量 {int(getattr(selected_intent, 'quantity', 0) or 0)}",
-            )
-    elif latest_record is not None:
-        symbol = str(latest_record.get("symbol", "") or "")
-        stock_name = self._stock_name_for_symbol(symbol)
-        if hasattr(self, "broker_live_summary_detail"):
-            self._set_label_text_if_changed(
-                self.broker_live_summary_detail,
-                f"最近回执：{stock_name} ({self._stock_id_for_symbol(symbol)} / {symbol}) | {self._display_order_status(latest_record.get('order_status', ''))} / {self._display_fill_status(latest_record.get('fill_status', ''))}",
-            )
-        if hasattr(self, "broker_live_summary_meta"):
-            self._set_label_text_if_changed(
-                self.broker_live_summary_meta,
-                f"下一步：{str(latest_record.get('message', '') or '继续跟踪回执与成交偏差')[:34]}",
-            )
-    elif fallback_scan_row is not None:
-        symbol = getattr(fallback_scan_row, "symbol", "") or ""
-        stock_name = self._stock_name_for_symbol(symbol)
-        if hasattr(self, "broker_live_summary_detail"):
-            self._set_label_text_if_changed(
-                self.broker_live_summary_detail,
-                f"待生成委托：{stock_name} ({self._stock_id_for_symbol(symbol)} / {symbol}) | 扫描评分 {getattr(fallback_scan_row, 'score', '--')} | {self._display_action(getattr(fallback_scan_row, 'action', 'WATCH'))}",
-            )
-        if hasattr(self, "broker_live_summary_meta"):
-            self._set_label_text_if_changed(
-                self.broker_live_summary_meta,
-                "下一步：先生成委托链路，再复核价格、仓位、主线闸门与风险灯。",
-            )
-
-    detail_symbol = getattr(self, "active_symbol", "") or ""
-    if detail_symbol and hasattr(self, "detail_live_summary_headline"):
-        stock_name = self._stock_name_for_symbol(detail_symbol)
-        stock_id = self._stock_id_for_symbol(detail_symbol)
-        recommendation = next((item for item in getattr(self, "daily_pool_rows", []) if getattr(item, "symbol", "") == detail_symbol), None)
-        latest_signal = next((item for item in reversed(getattr(self, "analyses", [])) if getattr(item, "label", "") != "NONE"), None)
-        action_text = self._display_action(getattr(recommendation, "action", "WATCH")) if recommendation is not None else "观察"
-        theme_name = getattr(recommendation, "mainline_tag", "") or getattr(recommendation, "theme_name", "") or "待确认"
-        self._set_label_text_if_changed(self.detail_live_summary_headline, f"复盘焦点：{stock_name} ({stock_id})")
-        if hasattr(self, "detail_live_summary_detail"):
-            self._set_label_text_if_changed(
-                self.detail_live_summary_detail,
-                f"主线 {theme_name} | 动作 {action_text} | 最新信号 {self._display_label(getattr(latest_signal, 'label', '')) if latest_signal is not None else '等待信号同步'}",
-            )
-        if hasattr(self, "detail_live_summary_meta"):
-            self._set_label_text_if_changed(
-                self.detail_live_summary_meta,
-                f"下一步：优先回看执行纪律、买卖节奏和是否仍值得继续跟踪。",
-            )
-    elif hasattr(self, "detail_live_summary_headline"):
-        self._set_label_text_if_changed(self.detail_live_summary_headline, "复盘焦点：等待联动")
-        if hasattr(self, "detail_live_summary_detail"):
-            self._set_label_text_if_changed(
-                self.detail_live_summary_detail,
-                "等待从推荐页、扫描页或交易页同步一只股票，再展开信号、成交与复盘结论。",
-            )
-        if hasattr(self, "detail_live_summary_meta"):
-            self._set_label_text_if_changed(
-                self.detail_live_summary_meta,
-                "下一步：先在机会池、扫描页或交易页选中一只票，再进入复盘研究。",
-            )
-
-
-_ORIGINAL_QH_FOCUS_SYMBOL_IN_RECOMMEND_WORKSPACE_V16 = QuantHunterWindow._focus_symbol_in_recommend_workspace
-_ORIGINAL_QH_FOCUS_SYMBOL_IN_BROKER_WORKSPACE_V16 = QuantHunterWindow._focus_symbol_in_broker_workspace
-
-
-def _qh_focus_symbol_in_recommend_workspace_v16(self: QuantHunterWindow, symbol: str) -> None:
-    _ORIGINAL_QH_FOCUS_SYMBOL_IN_RECOMMEND_WORKSPACE_V16(self, symbol)
-    self._refresh_live_workspace_summary_panels()
-
-
-def _qh_focus_symbol_in_broker_workspace_v16(self: QuantHunterWindow, symbol: str) -> None:
-    _ORIGINAL_QH_FOCUS_SYMBOL_IN_BROKER_WORKSPACE_V16(self, symbol)
-    self._refresh_live_workspace_summary_panels()
-
-
-QuantHunterWindow._refresh_live_workspace_summary_panels = _qh_refresh_live_workspace_summary_panels_v16
-QuantHunterWindow._focus_symbol_in_recommend_workspace = _qh_focus_symbol_in_recommend_workspace_v16
-QuantHunterWindow._focus_symbol_in_broker_workspace = _qh_focus_symbol_in_broker_workspace_v16
+apply_runtime_feedback_patches(
+    QuantHunterWindow,
+    mainline_signal_brief_fn=_qh_mainline_signal_brief_v4,
+    signal_action_text_fn=_qh_signal_action_text_v4,
+)
 
 
 def _qh_paper_trading_config_v17(self: QuantHunterWindow) -> tuple[float, float, bool, float]:
@@ -16939,6 +16456,8 @@ def _qh_refresh_recommend_decision_summary_v20(self: QuantHunterWindow, row: Rec
     execution_state = getattr(current, "execution_status", "") or "待观察"
     queue_summary = _qh_queue_sequence_summary(queue_snapshot)
     next_review_target = _qh_next_review_target(queue_snapshot)
+    paper_state = getattr(self, "paper_trading_state", getattr(getattr(self, "state", None), "paper_trading_state", PaperTradingState()))
+    experiment_bridge = _qh_paper_strategy_experiment_bridge_v45(paper_state, strategy_name)
     button_labels = _qh_recommend_cta_labels_v37(
         can_submit=can_submit,
         can_open_broker=can_open_broker,
@@ -16947,7 +16466,7 @@ def _qh_refresh_recommend_decision_summary_v20(self: QuantHunterWindow, row: Rec
 
     self._set_label_text_if_changed(
         label,
-        f"当前结论：{stock_name} | {verdict} | {strategy_name}",
+        f"当前结论：{stock_name} | {verdict} | {strategy_name} | 实验 {experiment_bridge['badge']}",
     )
     price_plan_line = f"价格计划：{price_brief or '等待行情同步'}"
     price_detail_line = f"关键价位：买点 {planned_entry:.2f} | 止损 {planned_stop:.2f} | 目标 {planned_target:.2f}"
@@ -16959,10 +16478,13 @@ def _qh_refresh_recommend_decision_summary_v20(self: QuantHunterWindow, row: Rec
         price_detail_line,
         price_plan_line,
         f"逻辑 / 题材：{theme_name} | {hype_logic}",
+        f"模拟盘联动：{experiment_bridge['title']}",
+        f"实验提示：{experiment_bridge['detail']}",
         f"失效条件：{invalidation}",
         f"队列状态：{queue_summary}",
         f"下一复核：{next_review_target}",
         f"下一步：{next_focus}",
+        f"实验 CTA：{experiment_bridge['cta']}",
     ]
     upside_pct = price_snapshot.get("upside_pct") if isinstance(price_snapshot, dict) else None
     downside_pct = price_snapshot.get("downside_pct") if isinstance(price_snapshot, dict) else None
@@ -16989,9 +16511,10 @@ def _qh_refresh_recommend_decision_summary_v20(self: QuantHunterWindow, row: Rec
             f"{button_labels['push']}：{stock_name}\n"
             f"结论：{verdict}\n"
             f"执行提示：{execution_summary}\n"
+            f"模拟盘：{experiment_bridge['title']}\n"
             f"下一复核：{next_review_target}"
             if can_submit
-            else f"{button_labels['push']}：{stock_name}\n结论：{verdict}\n原因：{execution_summary}\n建议：{next_focus}"
+            else f"{button_labels['push']}：{stock_name}\n结论：{verdict}\n原因：{execution_summary}\n模拟盘：{experiment_bridge['title']}\n建议：{next_focus}"
         )
         push_button.setToolTip(push_tooltip)
     detail_button = getattr(self, "recommend_detail_focus_button", None)
@@ -17008,9 +16531,9 @@ def _qh_refresh_recommend_decision_summary_v20(self: QuantHunterWindow, row: Rec
         broker_button.setText(button_labels["broker"])
         broker_button.setEnabled(can_open_broker)
         broker_tooltip = (
-            f"{button_labels['broker']}：{stock_name}\n价格计划：{price_brief}\n预算与执行链路会在交易页展开。"
+            f"{button_labels['broker']}：{stock_name}\n价格计划：{price_brief}\n模拟盘：{experiment_bridge['title']}\n预算与执行链路会在交易页展开。"
             if can_open_broker
-            else f"{button_labels['broker']}：{stock_name}\n原因：{execution_summary}\n建议：先回看复盘和确认信号。"
+            else f"{button_labels['broker']}：{stock_name}\n原因：{execution_summary}\n模拟盘：{experiment_bridge['title']}\n建议：先回看复盘和确认信号。"
         )
         broker_button.setToolTip(broker_tooltip)
 
@@ -18448,6 +17971,13 @@ def _qh_refresh_submission_focus_v26(self: QuantHunterWindow) -> None:
     message = str(record.get("message", "") or "")
     intent = self._selected_order_intent() if hasattr(self, "_selected_order_intent") else None
     recommendation = next((item for item in getattr(self, "daily_pool_rows", []) if getattr(item, "symbol", "") == symbol), None)
+    price_snapshot = self._recommend_price_snapshot(recommendation) if recommendation is not None and hasattr(self, "_recommend_price_snapshot") else {}
+    price_brief = self._recommend_price_brief(recommendation) if recommendation is not None and hasattr(self, "_recommend_price_brief") else ""
+    news_lines = self._news_digest_lines_for_symbol(symbol, limit=2) if hasattr(self, "_news_digest_lines_for_symbol") else []
+    recommend_context_lines = _qh_broker_recommend_context_v45(
+        price_brief=price_brief,
+        news_lines=news_lines,
+    )
     summary = _qh_broker_execution_summary_v41(
         stock_name=stock_name,
         stock_id=stock_id,
@@ -18467,6 +17997,13 @@ def _qh_refresh_submission_focus_v26(self: QuantHunterWindow) -> None:
         message=message,
         has_recommendation=recommendation is not None,
     )
+    parameter_alignment = _qh_broker_parameter_alignment_v46(
+        side=str(record.get("side", "") or ""),
+        order_price=record.get("price", ""),
+        plan_entry=price_snapshot.get("entry"),
+        plan_stop=price_snapshot.get("stop"),
+        plan_target=price_snapshot.get("target"),
+    )
     execution_tone = _qh_broker_execution_tone_v44(summary["stage"])
 
     if hasattr(self, "order_result_text"):
@@ -18480,6 +18017,8 @@ def _qh_refresh_submission_focus_v26(self: QuantHunterWindow) -> None:
             summary["next_step"],
             f"链路建议：{followup['headline']} | {followup['detail']}",
             f"处理建议：{repair_hint['headline']} | {repair_hint['detail']}",
+            f"参数比对：{parameter_alignment['headline']} | {parameter_alignment['detail']}",
+            *recommend_context_lines,
             f"订单状态：{summary['order_status']} | 成交状态：{summary['fill_status']}",
             f"失败原因：{failure_reason or '无'}",
             f"反馈信息：{message or '等待更多反馈'}",
@@ -18499,9 +18038,11 @@ def _qh_refresh_submission_focus_v26(self: QuantHunterWindow) -> None:
             )
             lines.append(f"推荐动作：{self._display_action(getattr(recommendation, 'action', ''))}")
             lines.append(f"推荐理由：{getattr(recommendation, 'rationale', '') or '等待推荐逻辑生成。'}")
+        lines.extend(recommend_context_lines)
         lines.append(summary["next_step"])
         lines.append(f"链路建议：{followup['headline']} | {followup['detail']}")
         lines.append(f"处理建议：{repair_hint['headline']} | {repair_hint['checkpoint']}")
+        lines.append(f"参数比对：{parameter_alignment['headline']} | {parameter_alignment['checkpoint']}")
         if message:
             lines.append(f"系统反馈：{message}")
         if failure_reason:
@@ -18525,7 +18066,9 @@ def _qh_refresh_submission_focus_v26(self: QuantHunterWindow) -> None:
             )
         else:
             lines.append("主线状态：当前缺少推荐联动，请先结合交易页和扫描页补齐主线判断。")
+        lines.extend(recommend_context_lines)
         lines.append(f"处理建议：{repair_hint['headline']} | {repair_hint['detail']}")
+        lines.append(f"参数复核：{parameter_alignment['headline']} | {parameter_alignment['checkpoint']}")
         lines.append(f"复核检查：{repair_hint['checkpoint']}")
         self._set_plain_text_if_changed(self.broker_mainline_review_text, "\n".join(lines))
 
@@ -18537,6 +18080,8 @@ def _qh_refresh_submission_focus_v26(self: QuantHunterWindow) -> None:
             f"执行阶段：{summary['stage']}",
             f"状态判断：{summary['judgement']}",
             summary["next_step"],
+            *recommend_context_lines,
+            f"参数比对：{parameter_alignment['headline']} | {parameter_alignment['detail']}",
             f"联动建议：{followup['headline']} | {followup['detail']}",
             f"修正路径：{repair_hint['headline']} | {repair_hint['checkpoint']}",
             f"推荐链路：建议前往 {followup['route']} 继续处理。",
@@ -18549,6 +18094,8 @@ def _qh_refresh_submission_focus_v26(self: QuantHunterWindow) -> None:
             [
                 f"焦点：{stock_name} ({stock_id} / {symbol or '--'})",
                 f"阶段判断：{summary['judgement']}",
+                *recommend_context_lines,
+                f"参数比对：{parameter_alignment['headline']} | {parameter_alignment['checkpoint']}",
                 f"链路建议：{followup['headline']} | {followup['detail']}",
                 f"处理建议：{repair_hint['headline']} | {repair_hint['checkpoint']}",
             ]
@@ -18565,6 +18112,8 @@ def _qh_refresh_submission_focus_v26(self: QuantHunterWindow) -> None:
             [
                 f"焦点：{stock_name} ({stock_id} / {symbol or '--'})",
                 f"执行阶段：{summary['stage']}",
+                *recommend_context_lines,
+                f"参数比对：{parameter_alignment['headline']} | {parameter_alignment['detail']}",
                 f"链路建议：{followup['headline']} | {followup['detail']}",
                 f"处理建议：{repair_hint['headline']} | {repair_hint['detail']}",
                 f"复核检查：{repair_hint['checkpoint']}",
@@ -18594,13 +18143,13 @@ def _qh_refresh_submission_focus_v26(self: QuantHunterWindow) -> None:
         self._set_label_text_if_changed(
             self.broker_status_banner,
             summary["banner"],
-            tooltip=f"{summary['tooltip']}\n链路建议：{followup['headline']} | {followup['detail']}\n处理建议：{repair_hint['headline']} | {repair_hint['checkpoint']}",
+            tooltip=f"{summary['tooltip']}\n" + "\n".join(recommend_context_lines) + f"\n参数比对：{parameter_alignment['headline']} | {parameter_alignment['checkpoint']}\n链路建议：{followup['headline']} | {followup['detail']}\n处理建议：{repair_hint['headline']} | {repair_hint['checkpoint']}",
         )
     if hasattr(self, "broker_workbench_banner"):
         self._set_label_text_if_changed(
             self.broker_workbench_banner,
             f"交易工作台：{stock_name} | {summary['stage']} | {followup['headline']}",
-            tooltip=f"{summary['tooltip']}\n链路建议：{followup['headline']} | {followup['detail']}\n处理建议：{repair_hint['headline']} | {repair_hint['checkpoint']}",
+            tooltip=f"{summary['tooltip']}\n" + "\n".join(recommend_context_lines) + f"\n参数比对：{parameter_alignment['headline']} | {parameter_alignment['checkpoint']}\n链路建议：{followup['headline']} | {followup['detail']}\n处理建议：{repair_hint['headline']} | {repair_hint['checkpoint']}",
         )
 
 

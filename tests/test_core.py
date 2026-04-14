@@ -1990,6 +1990,72 @@ class StrategyWorkflowTests(unittest.TestCase):
                 window.close()
                 app.processEvents()
 
+    def test_emit_action_feedback_updates_workspace_labels_and_story(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        refresh_calls: list[str] = []
+        runtime_logs: list[str] = []
+        status_messages: list[tuple[str, int]] = []
+        window = SimpleNamespace(
+            recommend_status_label=module.QLabel(),
+            broker_status_banner=module.QLabel(),
+            scan_summary_label=module.QLabel(),
+            status_action_label=module.QLabel(),
+            _append_runtime_log=lambda message: runtime_logs.append(message),
+            _refresh_runtime_story_v10=lambda: refresh_calls.append("refresh"),
+            _sync_commercial_statusbar_v35=lambda: refresh_calls.append("statusbar"),
+            _set_label_text_if_changed=lambda label, text, tooltip=None: label.setText(text) if label.text() != text else None,
+            statusBar=lambda: SimpleNamespace(showMessage=lambda message, timeout: status_messages.append((message, timeout))),
+        )
+
+        module.QuantHunterWindow._emit_action_feedback_v11(
+            window,
+            "机会池",
+            "复盘页 -> 机会池",
+            recommend_text="推荐状态：已同步焦点。",
+            broker_text="交易台：等待复核。",
+            scan_text="扫描状态：继续观察。",
+        )
+
+        self.assertEqual(runtime_logs, ["页面联动：机会池 | 复盘页 -> 机会池"])
+        self.assertEqual(window.recommend_status_label.text(), "推荐状态：已同步焦点。")
+        self.assertEqual(window.broker_status_banner.text(), "交易台：等待复核。")
+        self.assertEqual(window.scan_summary_label.text(), "扫描状态：继续观察。")
+        self.assertEqual(status_messages, [("最近动作：机会池 | 复盘页 -> 机会池", 5000)])
+        self.assertEqual(window._qh_last_action_feedback_v35, "最近动作：机会池 | 复盘页 -> 机会池")
+        self.assertEqual(refresh_calls, ["refresh", "statusbar"])
+
+    def test_sync_pipeline_panels_updates_summary_counts(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        window = SimpleNamespace(
+            scan_rows=[object(), object()],
+            daily_pool_rows=[object()],
+            order_intents=[object(), object(), object()],
+            order_submission_records=[object()],
+            scanner_live_summary_headline=module.QLabel(),
+            scanner_live_summary_detail=module.QLabel(),
+            scanner_live_summary_meta=module.QLabel(),
+            recommend_live_summary_headline=module.QLabel(),
+            recommend_live_summary_detail=module.QLabel(),
+            recommend_live_summary_meta=module.QLabel(),
+            broker_live_summary_headline=module.QLabel(),
+            broker_live_summary_detail=module.QLabel(),
+            broker_live_summary_meta=module.QLabel(),
+        )
+
+        module.QuantHunterWindow._sync_pipeline_panels_v12(window)
+
+        self.assertEqual(window.scanner_live_summary_headline.text(), "扫描态势")
+        self.assertIn("已扫描 2 只候选", window.scanner_live_summary_detail.text())
+        self.assertEqual(window.recommend_live_summary_headline.text(), "推荐态势")
+        self.assertIn("已生成 1 只机会候选", window.recommend_live_summary_detail.text())
+        self.assertEqual(window.broker_live_summary_headline.text(), "交易态势")
+        self.assertEqual(window.broker_live_summary_detail.text(), "委托建议 3 笔，提交记录 1 笔。")
+        self.assertEqual(window.broker_live_summary_meta.text(), "下一步：复核委托后再确认提交。")
+
     def test_board_mode_engine_builds_candidates(self) -> None:
         sample_dir = self._temp_dir() / "board_universe_v2"
         sample_dir.mkdir(exist_ok=True)
@@ -4844,6 +4910,54 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(module._qh_broker_execution_tone_v44("已成交待复盘"), "buy")
         self.assertEqual(module._qh_broker_execution_tone_v44(""), "idle")
 
+    def test_broker_recommend_context_formats_price_plan_and_news(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        with_news = module._qh_broker_recommend_context_v45(
+            price_brief="买 12.30 | 损 11.70 | 目标 13.40",
+            news_lines=["- 机器人订单放量 (证券时报 / 10:05)", "  摘要内容"],
+        )
+        empty_news = module._qh_broker_recommend_context_v45(
+            price_brief="",
+            news_lines=[],
+        )
+
+        self.assertEqual(with_news[0], "价格计划：买 12.30 | 损 11.70 | 目标 13.40")
+        self.assertIn("机器人订单放量", with_news[1])
+        self.assertEqual(empty_news, ["最近催化：暂无近期催化"])
+
+    def test_broker_parameter_alignment_flags_buy_price_drift_and_goal_zone(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        rich_buy = module._qh_broker_parameter_alignment_v46(
+            side="BUY",
+            order_price="12.80",
+            plan_entry=12.0,
+            plan_stop=11.4,
+            plan_target=13.2,
+        )
+        near_target = module._qh_broker_parameter_alignment_v46(
+            side="BUY",
+            order_price="13.20",
+            plan_entry=12.0,
+            plan_stop=11.4,
+            plan_target=13.2,
+        )
+        sell_zone = module._qh_broker_parameter_alignment_v46(
+            side="SELL",
+            order_price="13.10",
+            plan_entry=12.0,
+            plan_stop=11.4,
+            plan_target=13.2,
+        )
+
+        self.assertEqual(rich_buy["headline"], "买点偏高")
+        self.assertIn("重算买点区间", rich_buy["checkpoint"])
+        self.assertEqual(near_target["headline"], "接近目标位")
+        self.assertIn("追价", near_target["detail"])
+        self.assertEqual(sell_zone["headline"], "接近兑现区")
+        self.assertIn("兑现比例", sell_zone["checkpoint"])
+
     def test_set_aux_stage_visibility_updates_toggle_and_status(self) -> None:
         module = importlib.import_module("app_qt")
         app = module.QApplication.instance() or module.QApplication([])
@@ -5306,6 +5420,147 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertAlmostEqual(float(contexts["价值低吸"]["hold_delta"]), -0.7, places=2)
         self.assertEqual(contexts["尾盘买入法"]["role_label"], "观察")
         self.assertEqual(contexts["尾盘买入法"]["decision"], "降权观察")
+
+    def test_paper_strategy_experiment_bridge_marks_strategy_role_and_cta(self) -> None:
+        module = importlib.import_module("app_qt")
+        state = PaperTradingState(enabled=True)
+        analytics = {
+            "strategy_rows": [
+                {
+                    "strategy_name": "龙头模型",
+                    "buy_count": 4,
+                    "sell_count": 3,
+                    "win_rate": 0.62,
+                    "realized_pnl": 4200.0,
+                    "avg_hold_days": 1.8,
+                },
+                {
+                    "strategy_name": "价值低吸",
+                    "buy_count": 3,
+                    "sell_count": 2,
+                    "win_rate": 0.5,
+                    "realized_pnl": 1200.0,
+                    "avg_hold_days": 1.1,
+                },
+            ]
+        }
+        rotation_rows = [
+            {"strategy_name": "龙头模型", "bias_label": "加权", "budget_multiplier": 1.18, "sample_count": 7, "rotation_score": 0.32},
+            {"strategy_name": "价值低吸", "bias_label": "中性", "budget_multiplier": 0.98, "sample_count": 5, "rotation_score": 0.04},
+        ]
+
+        lead = module._qh_paper_strategy_experiment_bridge_v45(
+            state,
+            "龙头模型",
+            analytics=analytics,
+            rotation_rows=rotation_rows,
+        )
+        other = module._qh_paper_strategy_experiment_bridge_v45(
+            state,
+            "尾盘买入法",
+            analytics=analytics,
+            rotation_rows=rotation_rows,
+        )
+
+        self.assertEqual(lead["badge"], "主测")
+        self.assertIn("主测 | 龙头模型 | 继续主测", lead["title"])
+        self.assertIn("样本 7", lead["detail"])
+        self.assertIn("推荐页优先筛同战法前排", lead["cta"])
+        self.assertEqual(other["badge"], "备选")
+        self.assertIn("未进入实验前排 | 尾盘买入法", other["title"])
+        self.assertIn("主测 龙头模型 | 对照 价值低吸", other["detail"])
+
+    def test_refresh_recommend_decision_summary_surfaces_paper_experiment_bridge(self) -> None:
+        module = importlib.import_module("app_qt")
+        recommend_patches = importlib.import_module("quant_hunter.ui_window_recommend_patches")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-14",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.6,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=77.0,
+            persistence_score=82.0,
+            news_score=73.0,
+            leader_score=90.0,
+            total_score=88.0,
+            theme_name="机器人",
+            mainline_tag="机器人",
+            mainline_risk_flag="低",
+            primary_strategy="龙头模型",
+            rationale="主线龙头延续",
+            next_focus="继续盯换手与承接。",
+        )
+        window = SimpleNamespace(
+            recommend_decision_summary_label=module.QLabel(),
+            recommend_decision_summary_text=module.QTextEdit(),
+            recommend_push_focus_button=module.QPushButton(),
+            recommend_detail_focus_button=module.QPushButton(),
+            recommend_broker_focus_button=module.QPushButton(),
+            paper_trading_state=PaperTradingState(enabled=True),
+            current_trade_plan=SimpleNamespace(decisions=[]),
+            current_position_advice=[],
+            _current_recommend_focus=lambda: row,
+            _stock_name_for_symbol=lambda _symbol: "龙头样本",
+            _stock_id_for_symbol=lambda _symbol: "300001",
+            _recommend_price_snapshot=lambda _row: {"upside_pct": 8.0, "downside_pct": 4.0, "rr_ratio": 2.0},
+            _recommend_price_brief=lambda _row: "买点 10.00 -> 目标 10.80",
+            _hype_logic_for_symbol=lambda _symbol, recommendation=None: getattr(recommendation, "rationale", ""),
+            _news_digest_lines_for_symbol=lambda _symbol, limit=2: ["最近催化：机器人主线延续"],
+            _display_action=lambda value: {"BUY": "买入", "WATCH": "观察", "SELL": "卖出"}.get(value, value),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text) if widget.text() != text else None,
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text) if widget.toPlainText() != text else None,
+        )
+
+        with patch.object(module, "_qh_mainline_signal_brief_v4", return_value="继续跟"), patch.object(
+            module, "_qh_signal_action_text_v4", return_value="买入"
+        ), patch.object(
+            module, "_qh_recommend_execution_summary_v24", return_value=("可继续跟踪", "主线和价位已对齐", True, True)
+        ), patch.object(
+            module, "_qh_recommend_focus_reason_v24", return_value="主线强度和位置都在前排"
+        ), patch.object(
+            module, "_qh_recommend_queue_snapshot_v25", return_value={"pending_review": [], "reviewing": [], "submitted": [], "failed": []}
+        ), patch.object(
+            module, "_qh_queue_sequence_summary", return_value="先看主线，再看价位"
+        ), patch.object(
+            module, "_qh_next_review_target", return_value="龙头样本"
+        ), patch.object(
+            module, "_qh_recommend_cta_labels_v37", return_value={"push": "推进送审", "detail": "查看复盘证据", "broker": "进入交易准备"}
+        ), patch.object(
+            module, "_qh_paper_strategy_experiment_bridge_v45",
+            return_value={
+                "badge": "主测",
+                "title": "主测 | 龙头模型 | 继续主测",
+                "detail": "样本 7 | 胜率 62.0% | 平均持有 1.8 天 | 预算 x1.18",
+                "cta": "推荐页优先筛同战法前排，交易页按主测纪律推进。",
+            },
+        ), patch.object(
+            recommend_patches,
+            "paper_strategy_experiment_bridge_v45",
+            return_value={
+                "badge": "主测",
+                "title": "主测 | 龙头模型 | 继续主测",
+                "detail": "样本 7 | 胜率 62.0% | 平均持有 1.8 天 | 预算 x1.18",
+                "cta": "推荐页优先筛同战法前排，交易页按主测纪律推进。",
+            },
+        ):
+            module.QuantHunterWindow._refresh_recommend_decision_summary(window, row)
+
+        text = window.recommend_decision_summary_text.toPlainText()
+        self.assertIn("模拟盘联动：主测 | 龙头模型 | 继续主测", text)
+        self.assertIn("实验提示：样本 7 | 胜率 62.0% | 平均持有 1.8 天 | 预算 x1.18", text)
+        self.assertIn("实验 CTA：推荐页优先筛同战法前排，交易页按主测纪律推进。", text)
+        self.assertIn("实验 主测", window.recommend_decision_summary_label.text())
+        self.assertIn("模拟盘：主测 | 龙头模型 | 继续主测", window.recommend_push_focus_button.toolTip())
+        self.assertIn("模拟盘：主测 | 龙头模型 | 继续主测", window.recommend_broker_focus_button.toolTip())
 
     def test_filtered_daily_pool_rows_supports_tail_buy_priority_view(self) -> None:
         module = importlib.import_module("app_qt")
