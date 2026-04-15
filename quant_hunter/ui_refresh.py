@@ -2801,6 +2801,22 @@ def refresh_broker_execution_panel(window, summary: dict[str, object]) -> None:
     available_cash = float(summary.get("available_cash", 0.0))
     capital_usage_ratio = float(summary.get("capital_usage_ratio", 0.0))
     asset_usage_ratio = float(summary.get("asset_usage_ratio", 0.0))
+    portfolio_review = dict(summary.get("portfolio_risk_review", {}) or {})
+    portfolio_rows = list(portfolio_review.get("rows", []))
+    portfolio_status = str(portfolio_review.get("status", "待评估") or "待评估")
+    total_loss_ratio = float(portfolio_review.get("total_loss_ratio", 0.0) or 0.0)
+    top_portfolio_row = max(
+        portfolio_rows,
+        key=lambda item: (
+            float(item.get("loss_ratio", 0.0) or 0.0),
+            float(item.get("asset_usage_ratio", 0.0) or 0.0),
+            float(item.get("cash_usage_ratio", 0.0) or 0.0),
+        ),
+        default={},
+    )
+    top_portfolio_symbol = str(top_portfolio_row.get("symbol", "") or "")
+    top_portfolio_asset_ratio = float(top_portfolio_row.get("asset_usage_ratio", 0.0) or 0.0)
+    top_portfolio_cash_ratio = float(top_portfolio_row.get("cash_usage_ratio", 0.0) or 0.0)
     side_counts = summary.get("side_counts", {})
     risk_lamp = "红灯" if blockers else ("黄灯" if warnings else "绿灯")
     risk_note = blockers[0] if blockers else (warnings[0] if warnings else "当前无硬阻塞")
@@ -2821,9 +2837,13 @@ def refresh_broker_execution_panel(window, summary: dict[str, object]) -> None:
         _set_label_text_if_changed(window.broker_metric_accents["risk_reward"], f"{risk_profile_label}档 | 综合止盈 / 综合止损")
 
         _set_label_text_if_changed(window.broker_metric_labels["risk_budget"], f"{estimated_loss:,.0f}")
-        blocker_count = len(blockers)
-        warning_count = len(warnings)
-        _set_label_text_if_changed(window.broker_metric_accents["risk_budget"], f"{risk_profile_label}档 | {blocker_count} 个阻塞 / {warning_count} 个提醒")
+        portfolio_hint = f"组合{portfolio_status} | 止损 {total_loss_ratio * 100:.1f}%"
+        if top_portfolio_symbol:
+            symbol_tail = top_portfolio_symbol.split(".")[-1]
+            portfolio_hint += f" | {symbol_tail} 占资 {top_portfolio_asset_ratio * 100:.1f}%"
+            if top_portfolio_cash_ratio > 0:
+                portfolio_hint += f" / 资金 {top_portfolio_cash_ratio * 100:.1f}%"
+        _set_label_text_if_changed(window.broker_metric_accents["risk_budget"], portfolio_hint)
 
     if hasattr(window, "broker_gate_summary_text"):
         headline = "可进入确认"
@@ -2834,8 +2854,8 @@ def refresh_broker_execution_panel(window, summary: dict[str, object]) -> None:
         next_step = blockers[0] if blockers else (warnings[0] if warnings else (f"优先核对 {symbols[0]}" if symbols else "继续确认委托"))
         if available_cash <= 0 and estimated_capital > 0:
             next_step = "先同步资金，再确认委托占用"
-        risk = f"{risk_lamp} | {risk_profile_label}档 | {risk_note}"
-        conclusion = f"{headline} | 准备 {readiness_score}% | 闸门 {review_status}"
+        risk = f"{risk_lamp} | {risk_profile_label}档 | 组合 {portfolio_status} | {risk_note}"
+        conclusion = f"{headline} | 准备 {readiness_score}% | 闸门 {review_status} | 组合 {portfolio_status}"
         _set_plain_text_if_changed(window.broker_gate_summary_text, _brief_panel_text("风控总览", conclusion, risk, next_step))
     if hasattr(window, "broker_focus_blocker_button"):
         _set_enabled_if_changed(window.broker_focus_blocker_button, bool(blockers))
@@ -2870,8 +2890,8 @@ def refresh_broker_execution_panel(window, summary: dict[str, object]) -> None:
         _set_plain_text_if_changed(window.broker_mainline_review_text, _brief_panel_text("主线审查", conclusion, risk, next_step))
 
     if hasattr(window, "broker_execution_text"):
-        conclusion = f"{readiness} | 委托 {len(symbols)} 笔 | 主线闸门 {review_status}"
-        risk = f"{risk_lamp} | {risk_profile_label}档 | 止损 {estimated_loss:,.0f} | 资产占比 {asset_usage_ratio * 100:.1f}%"
+        conclusion = f"{readiness} | 委托 {len(symbols)} 笔 | 主线闸门 {review_status} | 组合 {portfolio_status}"
+        risk = f"{risk_lamp} | {risk_profile_label}档 | 止损 {estimated_loss:,.0f} | 组合止损 {total_loss_ratio * 100:.1f}% | 资产占比 {asset_usage_ratio * 100:.1f}%"
         next_step = blockers[0] if blockers else (warnings[0] if warnings else (f"继续确认 {symbols[0]}" if symbols else "等待新的委托建议"))
         _set_plain_text_if_changed(
             window.broker_execution_text,

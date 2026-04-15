@@ -1,0 +1,47 @@
+{
+  "pipeline": [
+    {
+      "files": 5,
+      "scan_ms": 2.44,
+      "backtest_ms": 0.22,
+      "recommend_ms": 2.83,
+      "plan_ms": 0.05,
+      "board_ms": 0.04,
+      "export_ms": 3.48,
+      "paper_ms": 1.1,
+      "rows": 4,
+      "pool": 4,
+      "decisions": 0
+    }
+  ],
+  "pipeline_runs": [
+    [
+      {
+        "files": 5,
+        "scan_ms": 2.44,
+        "backtest_ms": 0.22,
+        "recommend_ms": 2.83,
+        "plan_ms": 0.05,
+        "board_ms": 0.04,
+        "export_ms": 3.48,
+        "paper_ms": 1.1,
+        "rows": 4,
+        "pool": 4,
+        "decisions": 0
+      }
+    ]
+  ],
+  "pipeline_repeats": 1,
+  "qt_boot": {
+    "available": true,
+    "iterations": 0,
+    "boot_ms": []
+  },
+  "qt_boot_breakdown": {
+    "available": true,
+    "iterations": 0,
+    "import_ms": 0.0,
+    "breakdown": []
+  },
+  "perf_regressions": []
+}

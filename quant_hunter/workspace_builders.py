@@ -730,6 +730,9 @@ def build_overview_workspace(
     overview_search_box = QGroupBox("搜索与刷新")
     overview_tag_box = QGroupBox("策略快筛")
     window._style_terminal_panel(overview_view_box, overview_search_box, overview_tag_box)
+    overview_view_box.setProperty("pageTone", "overview")
+    overview_search_box.setProperty("pageTone", "overview")
+    overview_tag_box.setProperty("pageTone", "overview")
     overview_view_layout = QVBoxLayout(overview_view_box)
     overview_view_layout.addLayout(quick_row)
     overview_search_layout = QVBoxLayout(overview_search_box)
@@ -743,6 +746,7 @@ def build_overview_workspace(
     layout.addWidget(controls_splitter)
     dashboard_metrics_box = QGroupBox("核心指标带")
     window._style_terminal_panel(dashboard_metrics_box)
+    dashboard_metrics_box.setProperty("pageTone", "overview")
     dashboard_metrics_box.setProperty("surfaceRole", "metric-band")
     metrics_row = QHBoxLayout(dashboard_metrics_box)
     metrics_row.setContentsMargins(12, 12, 12, 12)
@@ -762,6 +766,7 @@ def build_overview_workspace(
     layout.addWidget(dashboard_metrics_box)
     cockpit_box = QGroupBox("市场驾驶舱")
     window._style_terminal_panel(cockpit_box)
+    cockpit_box.setProperty("pageTone", "overview")
     cockpit_box.setProperty("surfaceRole", "spotlight")
     cockpit_layout = QVBoxLayout(cockpit_box)
     cockpit_body = QSplitter(Qt.Horizontal)
@@ -797,6 +802,7 @@ def build_overview_workspace(
 
     playbook_box = QGroupBox("行动剧本")
     window._style_terminal_panel(playbook_box)
+    playbook_box.setProperty("pageTone", "overview")
     playbook_box.setProperty("surfaceRole", "spotlight")
     playbook_layout = QVBoxLayout(playbook_box)
     window.overview_playbook_text = QTextEdit()
@@ -841,6 +847,7 @@ def build_overview_workspace(
     detail_stage_layout.setSpacing(14)
     overview_priority_box = QGroupBox("盘前优先级")
     window._style_terminal_panel(overview_priority_box)
+    overview_priority_box.setProperty("pageTone", "overview")
     overview_priority_box.setProperty("surfaceRole", "priority-rail")
     overview_priority_layout = QHBoxLayout(overview_priority_box)
     overview_priority_layout.setContentsMargins(12, 12, 12, 12)
@@ -858,6 +865,7 @@ def build_overview_workspace(
     main_splitter.setChildrenCollapsible(False)
     window.overview_main_splitter = main_splitter
     left_panel = QWidget()
+    left_panel.setObjectName("overviewSidePanel")
     left_panel.setMinimumWidth(300)
     left_layout = QVBoxLayout(left_panel)
     left_layout.setContentsMargins(0, 0, 0, 0)
@@ -903,6 +911,7 @@ def build_overview_workspace(
     left_layout.addWidget(left_notes, stretch=2)
     main_splitter.addWidget(left_panel)
     center_panel = QWidget()
+    center_panel.setObjectName("overviewCenterPanel")
     center_panel.setMinimumWidth(860)
     center_layout = QVBoxLayout(center_panel)
     center_layout.setContentsMargins(0, 0, 0, 0)
@@ -958,6 +967,9 @@ def build_overview_workspace(
     prev_chart_button = QPushButton("向左看")
     next_chart_button = QPushButton("向右看")
     reset_chart_button = QPushButton("回到最新")
+    window.market_chart_prev_button = prev_chart_button
+    window.market_chart_next_button = next_chart_button
+    window.market_chart_reset_button = reset_chart_button
     window._set_button_role(prev_chart_button)
     window._set_button_role(next_chart_button)
     window._set_button_role(reset_chart_button, "tonal")
@@ -983,7 +995,7 @@ def build_overview_workspace(
     chart_control_row.addSpacing(12)
     chart_control_row.addWidget(QLabel("副图指标"))
     window.secondary_indicator_buttons = {}
-    for text, checked in [("MACD", True), ("RSI", False), ("KDJ", False)]:
+    for text, checked in [("MACD", True), ("RSI", False), ("KDJ", False), ("VOL", False)]:
         button = QPushButton(text)
         button.setCheckable(True)
         button.setChecked(checked)
@@ -1015,6 +1027,7 @@ def build_overview_workspace(
     window.price_chart_view = window.daily_chart_view
     window.volume_chart_view = window.fund_chart_view
     pool_box = QGroupBox("机会股票池")
+    pool_box.setProperty("pageTone", "overview")
     pool_layout = QVBoxLayout(pool_box)
     window.market_pool_table = build_table(["序", "股票", "资金标签", "策略标签", "涨跌幅", "最新价"])
     window.market_pool_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
@@ -1037,11 +1050,13 @@ def build_overview_workspace(
     center_layout.addWidget(pool_box, stretch=7)
     main_splitter.addWidget(center_panel)
     right_panel = QWidget()
+    right_panel.setObjectName("overviewRightPanel")
     right_panel.setMinimumWidth(340)
     right_layout = QVBoxLayout(right_panel)
     right_layout.setContentsMargins(0, 0, 0, 0)
     right_layout.setSpacing(10)
     leaderboard_box = QGroupBox("掘龙榜")
+    leaderboard_box.setProperty("pageTone", "overview")
     leaderboard_box.setProperty("surfaceRole", "analysis")
     leaderboard_layout = QVBoxLayout(leaderboard_box)
     leaderboard_layout.setContentsMargins(10, 10, 10, 10)
@@ -1057,6 +1072,7 @@ def build_overview_workspace(
     right_layout.addWidget(leaderboard_box, stretch=5)
     overview_summary_box = QGroupBox("主控摘要")
     window._style_terminal_panel(overview_summary_box)
+    overview_summary_box.setProperty("pageTone", "overview")
     overview_summary_box.setProperty("surfaceRole", "metric-band")
     overview_summary_layout = QHBoxLayout(overview_summary_box)
     overview_summary_layout.setContentsMargins(10, 10, 10, 10)
@@ -1076,6 +1092,7 @@ def build_overview_workspace(
     right_notes_layout.setSpacing(10)
     right_layout.addWidget(right_notes, stretch=4)
     right_summary_box = QGroupBox("主题摘要")
+    right_summary_box.setProperty("pageTone", "overview")
     right_summary_box.setProperty("surfaceRole", "analysis")
     right_summary_layout = QVBoxLayout(right_summary_box)
     right_summary_layout.setContentsMargins(10, 10, 10, 10)
@@ -1107,6 +1124,7 @@ def build_overview_workspace(
     right_summary_layout.addWidget(window.market_source_status_text, stretch=1)
     right_notes_layout.addWidget(right_summary_box, stretch=1)
     capital_box = QGroupBox("持仓与大盘")
+    capital_box.setProperty("pageTone", "overview")
     capital_box.setProperty("surfaceRole", "analysis")
     capital_layout = QVBoxLayout(capital_box)
     window.market_capital_text = QTextEdit()
@@ -1129,6 +1147,7 @@ def build_overview_workspace(
     capital_layout.addLayout(capital_action_row)
     right_notes_layout.addWidget(capital_box, stretch=1)
     decision_box = QGroupBox("买卖点结论")
+    decision_box.setProperty("pageTone", "overview")
     decision_box.setProperty("surfaceRole", "analysis")
     decision_layout = QVBoxLayout(decision_box)
     window.market_decision_text = QTextEdit()
@@ -1997,6 +2016,7 @@ def build_config_workspace(window) -> None:
     top.setChildrenCollapsible(False)
 
     strategy_box = QGroupBox("策略参数")
+    strategy_box.setObjectName("configStrategyBox")
     window._style_terminal_panel(strategy_box)
     strategy_layout = QFormLayout(strategy_box)
     strategy_layout.setLabelAlignment(Qt.AlignRight)
@@ -2043,6 +2063,7 @@ def build_config_workspace(window) -> None:
     top.addWidget(strategy_box)
 
     license_box = QGroupBox("授权与状态")
+    license_box.setObjectName("configLicenseBox")
     window._style_terminal_panel(license_box)
     license_layout = QVBoxLayout(license_box)
     window.license_status_text = QTextEdit()
@@ -2079,6 +2100,7 @@ def build_config_workspace(window) -> None:
     layout.addWidget(top, stretch=2)
 
     snapshot_box = QGroupBox("风险档位快照")
+    snapshot_box.setObjectName("configRiskSnapshotBox")
     window._style_terminal_panel(snapshot_box)
     snapshot_layout = QGridLayout(snapshot_box)
     snapshot_layout.setHorizontalSpacing(12)
@@ -2103,6 +2125,13 @@ def build_config_workspace(window) -> None:
         action_button = QPushButton("切换到此档")
         window._set_button_role(action_button, "accent" if getattr(window.state, "strategy_risk_profile", "standard") == profile_key else "tonal")
         action_button.clicked.connect(lambda checked=False, current=profile_key: window.switch_strategy_risk_profile(current))
+        detail_tooltip = f"{RISK_PROFILE_LABELS.get(profile_key, profile_key)}档：{risk_profile_brief(profile_key)}"
+        card.setToolTip(detail_tooltip)
+        title.setToolTip(detail_tooltip)
+        detail.setToolTip(detail_tooltip)
+        metrics.setToolTip(detail_tooltip)
+        flag.setToolTip(detail_tooltip)
+        action_button.setToolTip(f"切换到{RISK_PROFILE_LABELS.get(profile_key, profile_key)}档并立即刷新推荐池")
         card_layout.addWidget(title)
         card_layout.addWidget(detail)
         card_layout.addWidget(metrics)
@@ -2111,6 +2140,7 @@ def build_config_workspace(window) -> None:
         card_layout.addStretch(1)
         snapshot_layout.addWidget(card, 0, column)
         window.risk_snapshot_cards[profile_key] = {
+            "card": card,
             "title": title,
             "detail": detail,
             "metrics": metrics,
@@ -2120,6 +2150,7 @@ def build_config_workspace(window) -> None:
     layout.addWidget(snapshot_box, stretch=1)
 
     notes_box = QGroupBox("说明")
+    notes_box.setObjectName("configNotesBox")
     window._style_terminal_panel(notes_box)
     notes_layout = QVBoxLayout(notes_box)
     window.config_notes_text = QTextEdit()

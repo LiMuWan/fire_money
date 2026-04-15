@@ -156,6 +156,25 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(monthly[0].low, 9.9)
         self.assertEqual(monthly[0].volume, 2200)
 
+    def test_aggregate_price_bars_uses_iso_week_boundaries(self) -> None:
+        bars = [
+            PriceBar(date="2025-12-29", symbol="SHSE.600000", open=10.0, high=10.4, low=9.9, close=10.2, volume=900),
+            PriceBar(date="2025-12-31", symbol="SHSE.600000", open=10.2, high=10.6, low=10.1, close=10.5, volume=1100),
+            PriceBar(date="2026-01-02", symbol="SHSE.600000", open=10.5, high=10.9, low=10.3, close=10.8, volume=1500),
+            PriceBar(date="2026-01-05", symbol="SHSE.600000", open=10.8, high=11.1, low=10.6, close=10.9, volume=1200),
+        ]
+
+        weekly = aggregate_price_bars(bars, "weekly")
+
+        self.assertEqual(len(weekly), 2)
+        self.assertEqual(weekly[0].date, "2026-01-02")
+        self.assertEqual(weekly[0].open, 10.0)
+        self.assertEqual(weekly[0].close, 10.8)
+        self.assertEqual(weekly[0].volume, 3500)
+        self.assertEqual(weekly[1].date, "2026-01-05")
+        self.assertEqual(weekly[1].open, 10.8)
+        self.assertEqual(weekly[1].close, 10.9)
+
     def test_backtest_produces_trade(self) -> None:
         path = self._write_demo_csv("backtest_demo.csv")
         bars = load_bars_from_csv(path)
@@ -2951,6 +2970,52 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn("1100.00ms", report)
         self.assertIn("No performance regressions detected", report)
 
+    def test_perf_smoke_can_write_markdown_report(self) -> None:
+        from tools import perf_smoke
+
+        payload = {
+            "pipeline": [{"files": 10, "scan_ms": 5.0, "backtest_ms": 1.0, "recommend_ms": 2.0, "plan_ms": 0.1, "board_ms": 0.1, "export_ms": 3.0, "paper_ms": 1.0}],
+            "pipeline_repeats": 1,
+            "qt_boot": {"available": False, "boot_ms": []},
+            "qt_boot_breakdown": {"available": False, "import_ms": 0.0, "breakdown": []},
+            "perf_regressions": [],
+        }
+        path = self._temp_dir() / "perf_report.md"
+        path.write_text(perf_smoke._render_perf_report(payload), encoding="utf-8")
+        self.addCleanup(lambda: path.unlink(missing_ok=True))
+
+        text = path.read_text(encoding="utf-8")
+
+        self.assertIn("# Quant Hunter Performance Report", text)
+        self.assertIn("10 files", text)
+
+    def test_perf_smoke_can_write_json_payload(self) -> None:
+        payload = self._temp_dir() / "perf_payload.json"
+        self.addCleanup(lambda: payload.unlink(missing_ok=True))
+
+        command = (
+            "C:\\Users\\18335\\AppData\\Local\\Programs\\Python\\Python313\\python.exe "
+            ".\\tools\\perf_smoke.py --files 5 --pipeline-repeats 1 --qt-iterations 0 --save-json "
+            f"\"{payload}\""
+        )
+        # Run via shell in tests to cover the actual CLI write path.
+        import subprocess
+
+        completed = subprocess.run(
+            command,
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            text=True,
+            shell=True,
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertTrue(payload.exists())
+        saved = json.loads(payload.read_text(encoding="utf-8"))
+        self.assertIn("pipeline", saved)
+        self.assertIn("qt_boot", saved)
+
     def test_perf_smoke_qt_boot_breakdown_returns_expected_shape(self) -> None:
         from tools import perf_smoke
 
@@ -5129,6 +5194,44 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertTrue(item.next_focus)
         self.assertTrue(item.invalidation_reason)
 
+    def test_recommendation_focus_lines_include_price_plan_and_discipline(self) -> None:
+        ui_helpers = importlib.import_module("quant_hunter.ui_helpers")
+        row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="Focus Demo",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-14",
+            close=10.0,
+            technical_score=82.0,
+            position_score=79.0,
+            persistence_score=77.0,
+            news_score=74.0,
+            leader_score=81.0,
+            total_score=86.0,
+            entry_price=10.0,
+            stop_price=9.4,
+            target_price=11.1,
+            mainline_tag="机器人",
+            mainline_window_score=78.0,
+            mainline_risk_flag="低",
+            confidence_score=84.0,
+            execution_readiness=80.0,
+            timeliness_score=83.0,
+            opportunity_tier="优先处理",
+            next_focus="继续盯量能、承接和主线延续。",
+            invalidation_reason="跌破防守线就放弃。",
+            primary_strategy="一日持股法",
+            one_day_hold_score=88.0,
+        )
+
+        lines = ui_helpers.recommendation_focus_lines(row)
+
+        self.assertTrue(any("价格计划：入场 10.00 | 止损 9.40 | 目标 11.10" in line for line in lines))
+        self.assertTrue(any("执行窗口：" in line for line in lines))
+        self.assertTrue(any("交易纪律：" in line for line in lines))
+
     def test_daily_pool_builder_prefers_stronger_backtest_quality(self) -> None:
         rows = [
             ScanRow(
@@ -6377,7 +6480,23 @@ class StrategyWorkflowTests(unittest.TestCase):
                     mainline_stage="加速",
                 )
             ],
-            last_broker_execution_summary={"blockers": [], "warnings": ["SHSE.600001 盘中回撤需关注"]},
+            last_broker_execution_summary={
+                "blockers": [],
+                "warnings": ["SHSE.600001 盘中回撤需关注"],
+                "portfolio_risk_review": {
+                    "status": "谨慎",
+                    "rows": [
+                        {
+                            "symbol": "SHSE.600001",
+                            "status": "谨慎",
+                            "detail": "单笔资金占用 12.0%/12.0%",
+                            "loss_ratio": 0.012,
+                            "asset_usage_ratio": 0.12,
+                            "cash_usage_ratio": 0.12,
+                        }
+                    ],
+                },
+            },
             _selected_order_intent=lambda: intent,
             _mainline_gate_for_order_intent=lambda _intent: (True, "主线闸门通过"),
             _broker_risk_lamp_for_intent=lambda *_args, **_kwargs: "红灯",
@@ -6396,6 +6515,8 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn("动作建议：先改数量", focus_window.broker_order_focus_text.text)
         self.assertIn("主线状态：延续偏强 / 加速 | 继续跟", focus_window.broker_order_focus_text.text)
         self.assertIn("下一步：卖出数量超过可卖仓位，先改数量再提交。", focus_window.broker_order_focus_text.text)
+        self.assertIn("组合影响：预计释放 1,200 资金 | 可卖 40", focus_window.broker_order_focus_text.text)
+        self.assertIn("缓解动作：优先确认这是止盈或风控动作", focus_window.broker_order_focus_text.text)
         self.assertIn("阻塞/预警：阻塞项：卖出数量超过可卖仓位", focus_window.broker_order_focus_text.text)
         self.assertIn("可卖信息：可卖 40", focus_window.broker_order_focus_text.text)
         self.assertIn("委托焦点", focus_window.orders_focus_label.text)
@@ -7821,9 +7942,85 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn("模拟盘联动：主测 | 龙头模型 | 继续主测", text)
         self.assertIn("实验提示：样本 7 | 胜率 62.0% | 平均持有 1.8 天 | 预算 x1.18", text)
         self.assertIn("实验 CTA：推荐页优先筛同战法前排，交易页按主测纪律推进。", text)
+        self.assertIn("首选动作：推进送审", text)
+        self.assertIn("路径建议：当前条件已经比较齐，先送审，再去交易页复核委托和仓位。", text)
         self.assertIn("实验 主测", window.recommend_decision_summary_label.text())
+        self.assertIn("首选动作：推进送审", window.recommend_detail_focus_button.toolTip())
         self.assertIn("模拟盘：主测 | 龙头模型 | 继续主测", window.recommend_push_focus_button.toolTip())
         self.assertIn("模拟盘：主测 | 龙头模型 | 继续主测", window.recommend_broker_focus_button.toolTip())
+
+    def test_refresh_recommend_decision_summary_surfaces_reject_reason_as_primary_cta(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        row = RecommendationRow(
+            symbol="SZSE.300002",
+            stock_id="300002",
+            stock_name="观察样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-14",
+            close=12.0,
+            entry_price=12.0,
+            stop_price=11.5,
+            target_price=12.8,
+            technical_score=80.0,
+            position_score=61.0,
+            persistence_score=74.0,
+            news_score=68.0,
+            leader_score=72.0,
+            total_score=79.0,
+            theme_name="机器人",
+            mainline_tag="机器人",
+            mainline_risk_flag="中",
+            primary_strategy="龙头模型",
+            rationale="位置还不够舒服",
+            next_focus="等回踩后的承接确认。",
+            reject_reason="位置不够舒服，先等回踩或确认。",
+        )
+        window = SimpleNamespace(
+            recommend_decision_summary_label=module.QLabel(),
+            recommend_decision_summary_text=module.QTextEdit(),
+            recommend_push_focus_button=module.QPushButton(),
+            recommend_detail_focus_button=module.QPushButton(),
+            recommend_broker_focus_button=module.QPushButton(),
+            paper_trading_state=PaperTradingState(enabled=False),
+            current_trade_plan=SimpleNamespace(decisions=[]),
+            current_position_advice=[],
+            _current_recommend_focus=lambda: row,
+            _stock_name_for_symbol=lambda _symbol: "观察样本",
+            _stock_id_for_symbol=lambda _symbol: "300002",
+            _recommend_price_snapshot=lambda _row: {"upside_pct": 6.0, "downside_pct": 4.0, "rr_ratio": 1.5},
+            _recommend_price_brief=lambda _row: "买点 12.00 -> 目标 12.80",
+            _hype_logic_for_symbol=lambda _symbol, recommendation=None: getattr(recommendation, "rationale", ""),
+            _news_digest_lines_for_symbol=lambda _symbol, limit=2: [],
+            _display_action=lambda value: {"BUY": "买入", "WATCH": "观察", "SELL": "卖出"}.get(value, value),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text) if widget.text() != text else None,
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text) if widget.toPlainText() != text else None,
+        )
+
+        with patch.object(module, "_qh_mainline_signal_brief_v4", return_value="只观察"), patch.object(
+            module, "_qh_signal_action_text_v4", return_value="观察"
+        ), patch.object(
+            module, "_qh_recommend_execution_summary_v24", return_value=("暂不推进", "位置和节奏还没到位", False, False)
+        ), patch.object(
+            module, "_qh_recommend_focus_reason_v24", return_value="位置和节奏还没到位"
+        ), patch.object(
+            module, "_qh_recommend_queue_snapshot_v25", return_value={"pending_review": [], "reviewing": [], "submitted": [], "failed": []}
+        ), patch.object(
+            module, "_qh_queue_sequence_summary", return_value="先看主线，再看位置"
+        ), patch.object(
+            module, "_qh_next_review_target", return_value="观察样本"
+        ), patch.object(
+            module, "_qh_recommend_cta_labels_v37", return_value={"push": "暂不送审", "detail": "查看复盘证据", "broker": "暂不进交易"}
+        ):
+            module.QuantHunterWindow._refresh_recommend_decision_summary(window, row)
+
+        text = window.recommend_decision_summary_text.toPlainText()
+        self.assertIn("首选动作：先看暂不执行原因", text)
+        self.assertIn("路径建议：位置不够舒服，先等回踩或确认。", text)
+        self.assertIn("首选动作：先看暂不执行原因", window.recommend_push_focus_button.toolTip())
+        self.assertIn("首选动作：先看暂不执行原因", window.recommend_detail_focus_button.toolTip())
 
     def test_filtered_daily_pool_rows_supports_tail_buy_priority_view(self) -> None:
         module = importlib.import_module("app_qt")
@@ -9529,6 +9726,150 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(calls["license"], 1)
         self.assertEqual(calls["pool"], 1)
         self.assertEqual(calls["monitor"], 1)
+
+    def test_refresh_risk_snapshot_cards_marks_current_profile(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        class DummyLabel:
+            def __init__(self) -> None:
+                self.value = ""
+                self.tooltip = ""
+
+            def text(self) -> str:
+                return self.value
+
+            def setText(self, value: str) -> None:
+                self.value = value
+
+            def toolTip(self) -> str:
+                return self.tooltip
+
+            def setToolTip(self, value: str) -> None:
+                self.tooltip = value
+
+        class DummyButton(DummyLabel):
+            def __init__(self) -> None:
+                super().__init__()
+                self.enabled = True
+
+            def setEnabled(self, value: bool) -> None:
+                self.enabled = value
+
+        class DummyCard:
+            def __init__(self) -> None:
+                self.tooltip = ""
+                self.props = {}
+
+            def setToolTip(self, value: str) -> None:
+                self.tooltip = value
+
+            def setProperty(self, key: str, value) -> None:
+                self.props[key] = value
+
+            def property(self, key: str):
+                return self.props.get(key)
+
+            def style(self):
+                return SimpleNamespace(unpolish=lambda *_args, **_kwargs: None, polish=lambda *_args, **_kwargs: None)
+
+        window = SimpleNamespace(
+            state=SimpleNamespace(strategy_risk_profile="conservative"),
+            last_daily_pool_meta={
+                "profile_snapshots": {
+                    "conservative": {"display_count": 9, "buy_ready_count": 3, "rejected_count": 13},
+                    "standard": {"display_count": 12, "buy_ready_count": 5, "rejected_count": 7},
+                }
+            },
+            risk_snapshot_cards={
+                "conservative": {
+                    "card": DummyCard(),
+                    "title": DummyLabel(),
+                    "detail": DummyLabel(),
+                    "metrics": DummyLabel(),
+                    "flag": DummyLabel(),
+                    "button": DummyButton(),
+                },
+                "standard": {
+                    "card": DummyCard(),
+                    "title": DummyLabel(),
+                    "detail": DummyLabel(),
+                    "metrics": DummyLabel(),
+                    "flag": DummyLabel(),
+                    "button": DummyButton(),
+                },
+            },
+            _set_label_text_if_changed=module.QuantHunterWindow._set_label_text_if_changed,
+            _set_button_role=lambda button, role="ghost": setattr(button, "role", role),
+        )
+
+        module.QuantHunterWindow._refresh_risk_snapshot_cards(window)
+
+        self.assertEqual(window.risk_snapshot_cards["conservative"]["flag"].value, "当前启用")
+        self.assertFalse(window.risk_snapshot_cards["conservative"]["button"].enabled)
+        self.assertEqual(window.risk_snapshot_cards["conservative"]["button"].role, "accent")
+        self.assertTrue(window.risk_snapshot_cards["conservative"]["card"].props["riskActive"])
+        self.assertEqual(window.risk_snapshot_cards["conservative"]["button"].value, "当前档位")
+        self.assertIn("当前已启用", window.risk_snapshot_cards["conservative"]["button"].tooltip)
+        self.assertEqual(window.risk_snapshot_cards["standard"]["flag"].value, "点击切换")
+        self.assertTrue(window.risk_snapshot_cards["standard"]["button"].enabled)
+        self.assertEqual(window.risk_snapshot_cards["standard"]["button"].role, "tonal")
+        self.assertFalse(window.risk_snapshot_cards["standard"]["card"].props["riskActive"])
+        self.assertEqual(window.risk_snapshot_cards["standard"]["button"].value, "切换到此档")
+        self.assertIn("点击后将保存配置并刷新推荐池", window.risk_snapshot_cards["standard"]["button"].tooltip)
+
+    def test_normalize_config_workspace_texts_uses_object_names_for_clean_titles(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        class DummyGroup:
+            def __init__(self, name: str, title: str) -> None:
+                self._name = name
+                self._title = title
+
+            def objectName(self) -> str:
+                return self._name
+
+            def title(self) -> str:
+                return self._title
+
+            def setTitle(self, value: str) -> None:
+                self._title = value
+
+        groups = [
+            DummyGroup("configStrategyBox", "??"),
+            DummyGroup("configLicenseBox", "??"),
+            DummyGroup("configRiskSnapshotBox", "??"),
+            DummyGroup("configNotesBox", "??"),
+        ]
+        config_tab = SimpleNamespace(findChildren=lambda _cls: groups)
+        window = SimpleNamespace(
+            config_tab=config_tab,
+            _has_mojibake_text=lambda _text: True,
+            _set_plain_text_if_changed=lambda *_args, **_kwargs: None,
+            _license_capabilities=lambda: {
+                "plan": "TRIAL",
+                "focus_theme_boost": 0.0,
+                "daily_plan_export_limit": 10,
+                "market_history_limit": 120,
+                "monitor_summary_limit": 8,
+                "auto_daily_plan_export": False,
+            },
+            state=SimpleNamespace(
+                strategy_risk_profile="standard",
+                auto_daily_plan_export=False,
+                focus_themes=[],
+                strategy_top_theme_limit=3,
+                daily_plan_template="balanced",
+            ),
+            license_status_text=None,
+            config_notes_text=None,
+        )
+
+        module.QuantHunterWindow._normalize_config_workspace_texts(window)
+
+        self.assertEqual(groups[0].title(), "策略参数")
+        self.assertEqual(groups[1].title(), "授权与状态")
+        self.assertEqual(groups[2].title(), "风险档位快照")
+        self.assertEqual(groups[3].title(), "说明")
 
     def test_apply_daily_pool_rows_surfaces_risk_profile_in_status(self) -> None:
         class DummyLabel:

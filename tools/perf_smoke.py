@@ -269,6 +269,8 @@ def _measure_pipeline_series(file_count: int, repeats: int) -> tuple[PerfSample,
 
 
 def _measure_qt_boot(iterations: int) -> dict[str, Any]:
+    if iterations <= 0:
+        return {"available": importlib.util.find_spec("PySide6") is not None, "iterations": 0, "boot_ms": []}
     if importlib.util.find_spec("PySide6") is None:
         return {"available": False, "iterations": 0, "boot_ms": []}
 
@@ -296,6 +298,8 @@ def _measure_qt_boot(iterations: int) -> dict[str, Any]:
 
 
 def _measure_qt_boot_breakdown(iterations: int) -> dict[str, Any]:
+    if iterations <= 0:
+        return {"available": importlib.util.find_spec("PySide6") is not None, "iterations": 0, "import_ms": 0.0, "breakdown": []}
     if importlib.util.find_spec("PySide6") is None:
         return {"available": False, "iterations": 0, "import_ms": 0.0, "breakdown": []}
 
@@ -377,6 +381,8 @@ def main() -> None:
     parser.add_argument("--pipeline-repeats", type=int, default=1, help="How many times to repeat each pipeline sample.")
     parser.add_argument("--qt-iterations", type=int, default=3, help="How many repeated Qt boot samples to capture.")
     parser.add_argument("--baseline", type=str, default="", help="Optional JSON baseline file to compare against.")
+    parser.add_argument("--report-md", type=str, default="", help="Optional markdown file path for a rendered report.")
+    parser.add_argument("--save-json", type=str, default="", help="Optional JSON file path for saving the measured payload.")
     parser.add_argument("--json", action="store_true", help="Print JSON instead of plain text.")
     args = parser.parse_args()
 
@@ -395,6 +401,15 @@ def main() -> None:
         "qt_boot_breakdown": qt_breakdown,
         "perf_regressions": perf_regressions,
     }
+
+    if args.report_md:
+        report_path = Path(args.report_md)
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(_render_perf_report(payload), encoding="utf-8")
+    if args.save_json:
+        json_path = Path(args.save_json)
+        json_path.parent.mkdir(parents=True, exist_ok=True)
+        json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))

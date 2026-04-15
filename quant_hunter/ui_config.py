@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# The desktop UI is intentionally unified around a single high-contrast terminal theme.
+THEME_OPTIONS = [("graphite", "专业终端")]
+
 
 THEME_OPTIONS = [
     ("sunrise", "晨曦"),
@@ -7,6 +10,9 @@ THEME_OPTIONS = [
     ("graphite", "石墨"),
     ("pro_terminal", "专业黑金"),
 ]
+
+# Keep the runtime theme picker locked to the terminal theme.
+THEME_OPTIONS = [("graphite", "专业终端")]
 
 DISPLAY_TEXT = {
     "action": {

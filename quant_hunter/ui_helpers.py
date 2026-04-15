@@ -340,6 +340,9 @@ def set_shell_chip(chip: dict[str, object] | None, value: str) -> None:
 def recommendation_focus_lines(row) -> list[str]:
     if row is None:
         return ["等待推荐池刷新。"]
+    entry_price = float(getattr(row, "entry_price", 0.0) or getattr(row, "close", 0.0) or 0.0)
+    stop_price = float(getattr(row, "stop_price", 0.0) or 0.0)
+    target_price = float(getattr(row, "target_price", 0.0) or 0.0)
     lines = [
         f"机会分层：{getattr(row, 'opportunity_tier', '') or '待观察'}",
         (
@@ -353,16 +356,28 @@ def recommendation_focus_lines(row) -> list[str]:
             f"时效 {float(getattr(row, 'timeliness_score', 0.0) or 0.0):.1f}"
         ),
     ]
+    if entry_price > 0 or stop_price > 0 or target_price > 0:
+        entry_text = f"{entry_price:.2f}" if entry_price > 0 else "--"
+        stop_text = f"{stop_price:.2f}" if stop_price > 0 else "--"
+        target_text = f"{target_price:.2f}" if target_price > 0 else "--"
+        lines.append(f"价格计划：入场 {entry_text} | 止损 {stop_text} | 目标 {target_text}")
     reject_reason = str(getattr(row, "reject_reason", "") or "").strip()
     next_focus = str(getattr(row, "next_focus", "") or "").strip()
     invalidation_reason = str(getattr(row, "invalidation_reason", "") or "").strip()
     one_day_grade = one_day_hold_grade(row)
     if one_day_grade:
         lines.append(f"隔日博弈等级：{one_day_grade}")
+    tripwire_metrics = one_day_hold_tripwire_metrics(row)
+    if tripwire_metrics:
+        focus_metric = max(tripwire_metrics, key=lambda item: item[1])
+        lines.append(f"执行窗口：{focus_metric[0]} {focus_metric[1]:.1f} / 100 | {focus_metric[2]}")
     if reject_reason:
         lines.append(f"暂不执行原因：{reject_reason}")
     if next_focus:
         lines.append(f"下一步：{next_focus}")
+    discipline = trade_plan_execution_hint(row, row)
+    if discipline and discipline != next_focus:
+        lines.append(f"交易纪律：{discipline}")
     if invalidation_reason:
         lines.append(f"失效条件：{invalidation_reason}")
     return lines

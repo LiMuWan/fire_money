@@ -7,8 +7,8 @@ from dataclasses import replace
 from datetime import datetime, time
 from pathlib import Path
 
-from PySide6.QtCore import QDateTime, QModelIndex, QObject, QRunnable, Qt, QThreadPool, QTimer, QUrl, Signal, QMargins
-from PySide6.QtGui import QCloseEvent, QColor, QDesktopServices, QFont, QFontDatabase, QPen
+from PySide6.QtCore import QDateTime, QModelIndex, QObject, QPointF, QRunnable, Qt, QThreadPool, QTimer, QUrl, Signal, QMargins
+from PySide6.QtGui import QCloseEvent, QColor, QDesktopServices, QFont, QFontDatabase, QMouseEvent, QPen, QWheelEvent
 from PySide6.QtCharts import (
     QBarCategoryAxis,
     QBarSeries,
@@ -31,6 +31,8 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QFrame,
     QGraphicsDropShadowEffect,
+    QGraphicsLineItem,
+    QGraphicsSimpleTextItem,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -51,6 +53,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QHeaderView,
+    QToolTip,
 )
 
 from quant_hunter.backtest import Backtester, format_result
@@ -58,6 +61,7 @@ from quant_hunter.board import BoardModeEngine
 from quant_hunter.broker import EastmoneyBrokerAdapter
 from quant_hunter.decision import DecisionEngine
 from quant_hunter.data import (
+    aggregate_price_bars,
     extract_stock_id,
     load_bars_from_csv,
     load_cash_snapshot_from_csv,
@@ -223,6 +227,247 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 SAMPLE_DIR = PROJECT_ROOT / "sample_data"
 STATE_FILE = PROJECT_ROOT / ".quant_hunter" / "app_state.json"
 REPORT_DIR = PROJECT_ROOT / "reports"
+
+
+class MarketChartView(QChartView):
+    hoverKeyChanged = Signal(str)
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._context: dict[str, object] = {}
+        self._crosshair_items_ready = False
+        self._crosshair_v = QGraphicsLineItem()
+        self._crosshair_h = QGraphicsLineItem()
+        self._crosshair_label = QGraphicsSimpleTextItem()
+        for item in (self._crosshair_v, self._crosshair_h):
+            item.setPen(QPen(QColor("#5cbcff"), 1.0, Qt.DashLine))
+            item.setZValue(50)
+            item.hide()
+        self._crosshair_label.setBrush(QColor("#eff6ff"))
+        self._crosshair_label.setZValue(51)
+        self._crosshair_label.hide()
+        self._current_hover_key = ""
+        self.setMouseTracking(True)
+        self.setRubberBand(QChartView.NoRubberBand)
+
+    def setChart(self, chart: QChart) -> None:
+        super().setChart(chart)
+        self._ensure_crosshair_items()
+
+    def set_chart_context(self, **context: object) -> None:
+        self._context = dict(context)
+        self._current_hover_key = ""
+
+    def leaveEvent(self, event) -> None:
+        self._hide_crosshair(notify=True)
+        super().leaveEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        self._hide_crosshair(notify=False)
+        super().mouseDoubleClickEvent(event)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        super().mouseMoveEvent(event)
+        self._update_crosshair(event.position())
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        super().mouseReleaseEvent(event)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        if self.chart() is not None and self._plot_contains(event.position()):
+            event.accept()
+            return
+        super().wheelEvent(event)
+
+    def _ensure_crosshair_items(self) -> None:
+        scene = self.scene()
+        if scene is None:
+            return
+        for item in (self._crosshair_v, self._crosshair_h, self._crosshair_label):
+            if item.scene() is not scene:
+                scene.addItem(item)
+        self._crosshair_items_ready = True
+
+    def _plot_contains(self, position: QPointF) -> bool:
+        chart = self.chart()
+        if chart is None:
+            return False
+        return chart.plotArea().contains(position)
+
+    def _hide_crosshair(self, *, notify: bool) -> None:
+        for item in (self._crosshair_v, self._crosshair_h, self._crosshair_label):
+            item.hide()
+        QToolTip.hideText()
+        if notify and self._current_hover_key:
+            self._current_hover_key = ""
+            self.hoverKeyChanged.emit("")
+
+    def _update_crosshair(self, position: QPointF) -> None:
+        chart = self.chart()
+        if chart is None:
+            self._hide_crosshair(notify=False)
+            return
+        self._ensure_crosshair_items()
+        plot_area = chart.plotArea()
+        if not plot_area.contains(position):
+            self._hide_crosshair(notify=True)
+            return
+        hover_index = self._hover_index_from_position(position)
+        if hover_index is None:
+            self._hide_crosshair(notify=True)
+            return
+        self._apply_crosshair_for_index(hover_index, global_pos=position.toPoint(), notify=True)
+
+    def sync_hover_key(self, key: str) -> None:
+        if not key:
+            self._hide_crosshair(notify=False)
+            return
+        hover_keys = list(self._context.get("hover_keys", []) or [])
+        if not hover_keys:
+            return
+        try:
+            index = hover_keys.index(key)
+        except ValueError:
+            return
+        self._apply_crosshair_for_index(index, global_pos=None, notify=False)
+
+    def _apply_crosshair_for_index(self, index: int, global_pos=None, *, notify: bool) -> None:
+        chart = self.chart()
+        if chart is None:
+            self._hide_crosshair(notify=False)
+            return
+        plot_area = chart.plotArea()
+        x_numeric = self._numeric_x_value_for_index(index)
+        y_numeric = self._context_y_midpoint()
+        point = chart.mapToPosition(QPointF(x_numeric, y_numeric))
+        x = max(plot_area.left(), min(plot_area.right(), point.x()))
+        y = max(plot_area.top(), min(plot_area.bottom(), point.y()))
+        self._crosshair_v.setLine(x, plot_area.top(), x, plot_area.bottom())
+        self._crosshair_h.setLine(plot_area.left(), y, plot_area.right(), y)
+        self._crosshair_v.show()
+        self._crosshair_h.show()
+
+        tooltip = self._build_tooltip_text_for_index(index)
+        if tooltip:
+            self._crosshair_label.setText(tooltip.replace("\n", " | "))
+            label_pos = QPointF(min(x + 12, plot_area.right() - 280), max(plot_area.top() + 6, y - 22))
+            self._crosshair_label.setPos(label_pos)
+            self._crosshair_label.show()
+            if global_pos is not None:
+                QToolTip.showText(self.mapToGlobal(global_pos), tooltip, self)
+        else:
+            self._crosshair_label.hide()
+
+        hover_key = self._hover_key_for_index(index)
+        self._current_hover_key = hover_key
+        if notify and hover_key:
+            self.hoverKeyChanged.emit(hover_key)
+
+    def _hover_index_from_position(self, position: QPointF) -> int | None:
+        chart = self.chart()
+        if chart is None:
+            return None
+        try:
+            value = chart.mapToValue(position)
+        except Exception:
+            return None
+        x_kind = str(self._context.get("x_kind", "value"))
+        hover_keys = list(self._context.get("hover_keys", []) or [])
+        max_index = len(hover_keys) - 1
+        if max_index < 0:
+            payloads = list(self._context.get("hover_payloads", []) or [])
+            max_index = len(payloads) - 1
+        if max_index < 0:
+            labels = list(self._context.get("x_labels", []) or [])
+            max_index = len(labels) - 1
+        if max_index < 0:
+            return None
+        if x_kind == "datetime":
+            x_values = list(self._context.get("x_values", []) or [])
+            if not x_values:
+                return None
+            return min(range(len(x_values)), key=lambda current: abs(x_values[current] - value.x()))
+        if x_kind == "category":
+            return max(0, min(int(round(value.x())), max_index))
+        x_values = list(self._context.get("x_values", []) or [])
+        if x_values:
+            return min(range(len(x_values)), key=lambda current: abs(x_values[current] - value.x()))
+        return max(0, min(int(round(value.x())), max_index))
+
+    def _numeric_x_value_for_index(self, index: int) -> float:
+        x_kind = str(self._context.get("x_kind", "value"))
+        if x_kind == "datetime":
+            x_values = list(self._context.get("x_values", []) or [])
+            if x_values:
+                clamped = max(0, min(index, len(x_values) - 1))
+                return float(x_values[clamped])
+        if x_kind == "category":
+            return float(index)
+        x_values = list(self._context.get("x_values", []) or [])
+        if x_values:
+            clamped = max(0, min(index, len(x_values) - 1))
+            return float(x_values[clamped])
+        return float(index)
+
+    def _context_y_midpoint(self) -> float:
+        chart = self.chart()
+        if chart is None:
+            return 0.0
+        axes = chart.axes(Qt.Vertical)
+        if not axes:
+            return 0.0
+        axis = axes[0]
+        if hasattr(axis, "min") and hasattr(axis, "max"):
+            return float(axis.min() + axis.max()) / 2.0
+        return 0.0
+
+    def _hover_key_for_index(self, index: int) -> str:
+        hover_keys = list(self._context.get("hover_keys", []) or [])
+        if hover_keys:
+            clamped = max(0, min(index, len(hover_keys) - 1))
+            return str(hover_keys[clamped])
+        x_kind = str(self._context.get("x_kind", "value"))
+        return self._format_x_value(self._numeric_x_value_for_index(index), x_kind)
+
+    def _build_tooltip_text_for_index(self, index: int) -> str:
+        payloads = list(self._context.get("hover_payloads", []) or [])
+        if payloads:
+            clamped = max(0, min(index, len(payloads) - 1))
+            return self._format_payload_tooltip(payloads[clamped])
+        x_label = str(self._context.get("x_label", "X"))
+        y_label = str(self._context.get("y_label", "Y"))
+        y_suffix = str(self._context.get("y_suffix", ""))
+        x_kind = str(self._context.get("x_kind", "value"))
+        value = self._numeric_x_value_for_index(index)
+        y_values = list(self._context.get("y_values", []) or [])
+        y_value = y_values[max(0, min(index, len(y_values) - 1))] if y_values else 0.0
+        return f"{x_label}: {self._format_x_value(value, x_kind)}\n{y_label}: {float(y_value):,.2f}{y_suffix}"
+
+    @staticmethod
+    def _format_payload_tooltip(payload: object) -> str:
+        if payload is None:
+            return ""
+        if isinstance(payload, str):
+            return payload
+        if isinstance(payload, dict):
+            return "\n".join(f"{key}: {value}" for key, value in payload.items())
+        if isinstance(payload, (list, tuple)):
+            return "\n".join(str(item) for item in payload if str(item).strip())
+        return str(payload)
+
+    def _format_x_value(self, x_value: float, x_kind: str) -> str:
+        if x_kind == "datetime":
+            pattern = str(self._context.get("datetime_format", "MM-dd"))
+            return QDateTime.fromMSecsSinceEpoch(int(x_value)).toString(pattern)
+        if x_kind == "category":
+            labels = list(self._context.get("x_labels", []) or [])
+            if labels:
+                index = max(0, min(int(round(x_value)), len(labels) - 1))
+                return str(labels[index])
+        return f"{x_value:.2f}"
 THEME_STYLES = {
     "sunrise": """
         QMainWindow, QWidget {
@@ -533,6 +778,26 @@ TERMINAL_DASHBOARD_STYLE = """
     QWidget#overviewRoot {
         background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #121823, stop:0.42 #0d1219, stop:1 #101722);
     }
+    QWidget#overviewSidePanel,
+    QWidget#overviewCenterPanel,
+    QWidget#overviewRightPanel {
+        background: transparent;
+    }
+    QWidget#overviewRoot QSplitter,
+    QWidget#overviewRoot QSplitter > QWidget,
+    QWidget#overviewRoot QWidget {
+        background: transparent;
+    }
+    QWidget#overviewRoot QGroupBox {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(20, 28, 37, 0.98), stop:1 rgba(14, 20, 27, 0.98));
+        border: 1px solid rgba(123, 145, 170, 0.18);
+        border-radius: 18px;
+        color: #eef5fd;
+    }
+    QWidget#overviewRoot QGroupBox::title {
+        color: #eef5fd;
+        font-weight: 800;
+    }
     QFrame#metricCard {
         background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1b2533, stop:1 #121a23);
         border: 1px solid rgba(120, 143, 168, 0.26);
@@ -679,6 +944,26 @@ TERMINAL_WORKSPACE_STYLE = """
     QFrame#shellChip QLabel {
         background: transparent;
     }
+    QFrame#shellHeader,
+    QFrame#shellPulseBar,
+    QFrame#shellChip,
+    QFrame#workspaceHero,
+    QFrame#workspaceBadge,
+    QLabel#statusBanner,
+    QLabel#focusStateLabel,
+    QLabel#workspaceFocusBanner {
+        color: #f7fbff;
+    }
+    QFrame#shellHeader QLabel,
+    QFrame#shellPulseBar QLabel,
+    QFrame#shellChip QLabel,
+    QFrame#workspaceHero QLabel,
+    QFrame#workspaceBadge QLabel,
+    QLabel#workspaceFocusBanner,
+    QLabel#statusBanner,
+    QLabel#focusStateLabel {
+        color: #eef5fd;
+    }
     QWidget#shellChipRail,
     QWidget#workspaceStage,
     QWidget#workspaceStage > QWidget {
@@ -723,31 +1008,31 @@ TERMINAL_WORKSPACE_STYLE = """
         background: transparent;
     }
     QLabel#shellProductEyebrow {
-        color: #7bb2ff;
+        color: #9fd1ff;
         font-size: 10px;
         font-weight: 800;
         letter-spacing: 1px;
     }
     QLabel#shellProductEyebrow[pageTone="recommend"] {
-        color: #b69aff;
+        color: #ccb6ff;
     }
     QLabel#shellProductEyebrow[pageTone="broker"] {
-        color: #7ee6b4;
+        color: #a5f2ca;
     }
     QLabel#shellProductEyebrow[pageTone="auth"] {
-        color: #ffd37c;
+        color: #ffe1a5;
     }
     QLabel#shellProductEyebrow[pageTone="detail"] {
-        color: #8edfff;
+        color: #b9efff;
     }
     QLabel#shellProductEyebrow[pageTone="scanner"] {
-        color: #77d8ff;
+        color: #afe9ff;
     }
     QLabel#shellProductEyebrow[pageTone="board"] {
-        color: #ffb27f;
+        color: #ffd0af;
     }
     QLabel#shellProductEyebrow[pageTone="config"] {
-        color: #b8c4d1;
+        color: #d0d9e4;
     }
     QLabel#shellBrandPill {
         background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(42, 68, 97, 0.96), stop:1 rgba(26, 39, 54, 0.96));
@@ -809,7 +1094,7 @@ TERMINAL_WORKSPACE_STYLE = """
         background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #c0ccd8, stop:1 #e2e8ef);
     }
     QLabel#shellProductTitle {
-        color: #f6f8fb;
+        color: #fbfdff;
         font-size: 20px;
         font-weight: 900;
     }
@@ -835,29 +1120,30 @@ TERMINAL_WORKSPACE_STYLE = """
         color: #f1f5fa;
     }
     QLabel#shellProductSubtitle {
-        color: #92a3b7;
-        font-size: 12px;
+        color: #d2dde8;
+        font-size: 13px;
+        font-weight: 600;
     }
     QLabel#shellProductSubtitle[pageTone="recommend"] {
-        color: #ad9fca;
+        color: #d6caee;
     }
     QLabel#shellProductSubtitle[pageTone="broker"] {
-        color: #9bc6b3;
+        color: #c5e2d5;
     }
     QLabel#shellProductSubtitle[pageTone="auth"] {
-        color: #c8b593;
+        color: #e5d7b8;
     }
     QLabel#shellProductSubtitle[pageTone="detail"] {
-        color: #9cb7c4;
+        color: #c7dde8;
     }
     QLabel#shellProductSubtitle[pageTone="scanner"] {
-        color: #93b8c4;
+        color: #c2dde6;
     }
     QLabel#shellProductSubtitle[pageTone="board"] {
-        color: #c5a791;
+        color: #e1c7b8;
     }
     QLabel#shellProductSubtitle[pageTone="config"] {
-        color: #9eabba;
+        color: #c6cfda;
     }
     QFrame#shellChip {
         background: rgba(11, 17, 24, 0.92);
@@ -905,34 +1191,34 @@ TERMINAL_WORKSPACE_STYLE = """
         border-color: rgba(255, 209, 102, 0.26);
     }
     QLabel#shellChipLabel {
-        color: #7d90a7;
+        color: #afbdd0;
         font-size: 11px;
         font-weight: 700;
     }
     QLabel#shellChipLabel[pageTone="recommend"] {
-        color: #9f95bf;
+        color: #c1b6df;
     }
     QLabel#shellChipLabel[pageTone="broker"] {
-        color: #8fb6a4;
+        color: #add2c0;
     }
     QLabel#shellChipLabel[pageTone="auth"] {
-        color: #bda77f;
+        color: #d9c49a;
     }
     QLabel#shellChipLabel[pageTone="detail"] {
-        color: #8fb8c8;
+        color: #b5d3de;
     }
     QLabel#shellChipLabel[pageTone="scanner"] {
-        color: #8ab9c6;
+        color: #b0d6df;
     }
     QLabel#shellChipLabel[pageTone="board"] {
-        color: #c2a28e;
+        color: #dfbfab;
     }
     QLabel#shellChipLabel[pageTone="config"] {
-        color: #9caab8;
+        color: #c0cad5;
     }
     QLabel#shellChipValue {
-        color: #f4f7fb;
-        font-size: 14px;
+        color: #fbfdff;
+        font-size: 15px;
         font-weight: 900;
     }
     QLabel#shellChipValue[pageTone="recommend"] {
@@ -983,9 +1269,9 @@ TERMINAL_WORKSPACE_STYLE = """
         border-color: rgba(167, 183, 202, 0.18);
     }
     QLabel#shellPulseLabel {
-        color: #f4f7fb;
-        font-size: 12px;
-        font-weight: 700;
+        color: #fbfdff;
+        font-size: 13px;
+        font-weight: 800;
     }
     QLabel#shellPulseLabel[pageTone="recommend"] {
         color: #f5efff;
@@ -1009,56 +1295,56 @@ TERMINAL_WORKSPACE_STYLE = """
         color: #f1f5fa;
     }
     QLabel#shellPulseHint {
-        color: #8fb5ff;
-        font-size: 11px;
+        color: #bfd9ff;
+        font-size: 12px;
         font-weight: 700;
     }
     QLabel#shellPulseHint[pageTone="recommend"] {
-        color: #b69aff;
+        color: #cfbcff;
     }
     QLabel#shellPulseHint[pageTone="broker"] {
-        color: #7ee6b4;
+        color: #abf3d0;
     }
     QLabel#shellPulseHint[pageTone="auth"] {
-        color: #ffd37c;
+        color: #ffe4ab;
     }
     QLabel#shellPulseHint[pageTone="detail"] {
-        color: #8edfff;
+        color: #b9efff;
     }
     QLabel#shellPulseHint[pageTone="scanner"] {
-        color: #77d8ff;
+        color: #afeaff;
     }
     QLabel#shellPulseHint[pageTone="board"] {
-        color: #ffb27f;
+        color: #ffd2b2;
     }
     QLabel#shellPulseHint[pageTone="config"] {
-        color: #b8c4d1;
+        color: #d1d9e3;
     }
     QLabel#shellPulseMeta {
-        color: #7d90a7;
-        font-size: 11px;
+        color: #aab9cc;
+        font-size: 12px;
         font-weight: 700;
     }
     QLabel#shellPulseMeta[pageTone="recommend"] {
-        color: #9f95bf;
+        color: #c1b7df;
     }
     QLabel#shellPulseMeta[pageTone="broker"] {
-        color: #8fb6a4;
+        color: #acd1c0;
     }
     QLabel#shellPulseMeta[pageTone="auth"] {
-        color: #bda77f;
+        color: #d7c39b;
     }
     QLabel#shellPulseMeta[pageTone="detail"] {
-        color: #8fb8c8;
+        color: #b4d2df;
     }
     QLabel#shellPulseMeta[pageTone="scanner"] {
-        color: #8ab9c6;
+        color: #afd6df;
     }
     QLabel#shellPulseMeta[pageTone="board"] {
-        color: #c2a28e;
+        color: #debfaa;
     }
     QLabel#shellPulseMeta[pageTone="config"] {
-        color: #9caab8;
+        color: #bfcad4;
     }
     QWidget#scannerRoot,
     QWidget#recommendRoot,
@@ -1149,31 +1435,31 @@ TERMINAL_WORKSPACE_STYLE = """
         background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ff9f7a, stop:0.45 #ffd166, stop:1 #7db7ff);
     }
     QLabel#workspaceEyebrow {
-        color: #76a9ff;
+        color: #9fd1ff;
         font-size: 11px;
         font-weight: 800;
         letter-spacing: 1px;
     }
     QFrame#workspaceHero[heroTone="recommend"] QLabel#workspaceEyebrow {
-        color: #b69aff;
+        color: #ccb6ff;
     }
     QFrame#workspaceHero[heroTone="broker"] QLabel#workspaceEyebrow {
-        color: #7ee6b4;
+        color: #a5f2ca;
     }
     QFrame#workspaceHero[heroTone="auth"] QLabel#workspaceEyebrow {
-        color: #ffd37c;
+        color: #ffe1a5;
     }
     QFrame#workspaceHero[heroTone="detail"] QLabel#workspaceEyebrow {
-        color: #8edfff;
+        color: #b9efff;
     }
     QFrame#workspaceHero[heroTone="scanner"] QLabel#workspaceEyebrow {
-        color: #77d8ff;
+        color: #afe9ff;
     }
     QFrame#workspaceHero[heroTone="board"] QLabel#workspaceEyebrow {
-        color: #ffb27f;
+        color: #ffd0af;
     }
     QFrame#workspaceHero[heroTone="config"] QLabel#workspaceEyebrow {
-        color: #b8c4d1;
+        color: #d0d9e4;
     }
     QLabel#workspaceHeroStamp {
         background: rgba(12, 18, 25, 0.92);
@@ -1214,7 +1500,7 @@ TERMINAL_WORKSPACE_STYLE = """
         border: 1px solid rgba(167, 183, 202, 0.22);
     }
     QLabel#workspaceTitle {
-        color: #f6f8fb;
+        color: #fbfdff;
         font-size: 18px;
         font-weight: 900;
     }
@@ -1240,29 +1526,30 @@ TERMINAL_WORKSPACE_STYLE = """
         color: #f1f5fa;
     }
     QLabel#workspaceSubtitle {
-        color: #93a2b4;
-        font-size: 11px;
+        color: #d0dae5;
+        font-size: 12px;
+        font-weight: 600;
     }
     QFrame#workspaceHero[heroTone="recommend"] QLabel#workspaceSubtitle {
-        color: #aa9dbf;
+        color: #d1c6e4;
     }
     QFrame#workspaceHero[heroTone="broker"] QLabel#workspaceSubtitle {
-        color: #9cc2b3;
+        color: #c3dfd2;
     }
     QFrame#workspaceHero[heroTone="auth"] QLabel#workspaceSubtitle {
-        color: #c6b38e;
+        color: #e2d1b0;
     }
     QFrame#workspaceHero[heroTone="detail"] QLabel#workspaceSubtitle {
-        color: #9cb7c4;
+        color: #c5dbe6;
     }
     QFrame#workspaceHero[heroTone="scanner"] QLabel#workspaceSubtitle {
-        color: #93b8c4;
+        color: #c1dce5;
     }
     QFrame#workspaceHero[heroTone="board"] QLabel#workspaceSubtitle {
-        color: #c5a791;
+        color: #dfc4b4;
     }
     QFrame#workspaceHero[heroTone="config"] QLabel#workspaceSubtitle {
-        color: #9eabba;
+        color: #c5ced8;
     }
     QFrame#workspaceBadge {
         background: rgba(13, 20, 31, 0.92);
@@ -1298,7 +1585,7 @@ TERMINAL_WORKSPACE_STYLE = """
         background: rgba(24, 29, 34, 0.92);
     }
     QLabel#workspaceBadgeValue {
-        color: #ffd166;
+        color: #ffe08a;
         font-size: 14px;
         font-weight: 900;
     }
@@ -1325,7 +1612,7 @@ TERMINAL_WORKSPACE_STYLE = """
     }
     QLabel#workspaceBadgeCaption {
         color: #8392a6;
-        font-size: 10px;
+        font-size: 11px;
         font-weight: 600;
     }
     QLabel#workspaceBadgeCaption[heroTone="recommend"] {
@@ -1356,7 +1643,7 @@ TERMINAL_WORKSPACE_STYLE = """
     }
     QLabel#workspaceFocusBanner {
         background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(27, 40, 56, 0.96), stop:1 rgba(16, 24, 34, 0.96));
-        color: #eef5ff;
+        color: #f7fbff;
         border: 1px solid rgba(121, 145, 171, 0.22);
         border-left: 4px solid #6db8ff;
         border-radius: 14px;
@@ -1463,9 +1750,18 @@ TERMINAL_WORKSPACE_STYLE = """
     QGroupBox#workspaceToolPanel[pageTone="config"]::title {
         color: #f1f5fa;
     }
+    QGroupBox[pageTone="overview"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(20, 28, 37, 0.98), stop:1 rgba(14, 20, 27, 0.98));
+        border: 1px solid rgba(123, 145, 170, 0.18);
+        border-radius: 18px;
+    }
+    QGroupBox[pageTone="overview"]::title {
+        color: #eef5fd;
+        font-weight: 800;
+    }
     QLabel#statusBanner {
         background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(25, 36, 48, 0.98), stop:1 rgba(17, 24, 32, 0.98));
-        color: #eef4fb;
+        color: #f7fbff;
         border: 1px solid rgba(126, 151, 179, 0.24);
         border-left: 4px solid #ffd166;
         border-radius: 14px;
@@ -1503,7 +1799,7 @@ TERMINAL_WORKSPACE_STYLE = """
     }
     QLabel#focusStateLabel {
         background: rgba(16, 23, 31, 0.9);
-        color: #f5f8fc;
+        color: #f8fbff;
         border: 1px solid rgba(113, 133, 156, 0.18);
         border-radius: 12px;
         padding: 8px 12px;
@@ -1740,29 +2036,30 @@ TERMINAL_WORKSPACE_STYLE = """
         border-color: rgba(167, 183, 202, 0.18);
     }
     QLabel#inlineHint {
-        color: #90a0b3;
-        font-size: 11px;
+        color: #b8c6d4;
+        font-size: 12px;
+        font-weight: 600;
     }
     QLabel#inlineHint[pageTone="recommend"] {
-        color: #a79bc4;
+        color: #cabfe0;
     }
     QLabel#inlineHint[pageTone="broker"] {
-        color: #96bcae;
+        color: #b8d7c8;
     }
     QLabel#inlineHint[pageTone="auth"] {
-        color: #c5b089;
+        color: #e0ceac;
     }
     QLabel#inlineHint[pageTone="detail"] {
-        color: #97b6c5;
+        color: #bfd6e1;
     }
     QLabel#inlineHint[pageTone="scanner"] {
-        color: #93b8c4;
+        color: #bdd8e1;
     }
     QLabel#inlineHint[pageTone="board"] {
-        color: #c7a48d;
+        color: #e0c2b1;
     }
     QLabel#inlineHint[pageTone="config"] {
-        color: #9daaba;
+        color: #c1cad5;
     }
     QTabWidget#compactInfoTabs::pane {
         border: 1px solid rgba(112, 130, 153, 0.18);
@@ -2413,7 +2710,7 @@ class QuantHunterWindow(QMainWindow):
         self.setMinimumSize(1200, 760)
 
         self.state = load_app_state(STATE_FILE)
-        self.current_theme = self.state.ui_theme or "graphite"
+        self.current_theme = "graphite"
 
         self.scan_rows: list[ScanRow] = []
         self.backtest_summaries: list[SymbolBacktestSummary] = []
@@ -2628,11 +2925,15 @@ class QuantHunterWindow(QMainWindow):
         self.theme_combo = QComboBox()
         for key, label in THEME_OPTIONS:
             self.theme_combo.addItem(label, key)
+        self.theme_combo.setEnabled(False)
+        self.theme_title_label.hide()
+        self.theme_combo.hide()
         corner_layout.addWidget(self.top_badge)
         corner_layout.addWidget(self.theme_title_label)
         corner_layout.addWidget(self.theme_combo)
         self.tabs.setCornerWidget(corner_widget, Qt.TopRightCorner)
         self.tabs.currentChanged.connect(self._on_workspace_tab_changed)
+        self._chart_view_cls = MarketChartView
 
         self._build_overview_tab()
         self._build_scanner_tab()
@@ -4873,6 +5174,7 @@ class QuantHunterWindow(QMainWindow):
         return DISPLAY_TEXT["mode"].get(value, value)
 
     def _set_theme_combo_value(self, theme_key: str) -> None:
+        theme_key = "graphite"
         for index in range(self.theme_combo.count()):
             if self.theme_combo.itemData(index) == theme_key:
                 self.theme_combo.setCurrentIndex(index)
@@ -4880,7 +5182,11 @@ class QuantHunterWindow(QMainWindow):
         self.theme_combo.setCurrentIndex(0)
 
     def change_theme(self, *_args: object) -> None:
-        theme_key = str(self.theme_combo.currentData() or "sunrise")
+        theme_key = "graphite"
+        if hasattr(self, "theme_combo"):
+            self.theme_combo.blockSignals(True)
+            self._set_theme_combo_value(theme_key)
+            self.theme_combo.blockSignals(False)
         self.current_theme = theme_key
         self._apply_theme(theme_key)
         self.save_state()
@@ -5991,31 +6297,264 @@ class QuantHunterWindow(QMainWindow):
         points = [type("P", (), {"t": f"{index}", "v": value})() for index, value in enumerate(values)]
         return points, base_price
 
+    def _normalize_market_timeframe(self, timeframe: str | None = None) -> str:
+        value = (timeframe or getattr(self, "market_timeframe_mode", "日线") or "日线").strip()
+        return value or "日线"
+
+    def _is_intraday_market_timeframe(self, timeframe: str | None = None) -> bool:
+        return self._normalize_market_timeframe(timeframe) in {"分时", "1分", "5分", "15分", "30分", "60分"}
+
+    @staticmethod
+    def _market_intraday_time_label(index: int, total: int) -> str:
+        if total <= 1:
+            return "09:30"
+        ratio = index / max(total - 1, 1)
+        minutes = int(round(ratio * 240))
+        minutes = max(0, min(minutes, 240))
+        if minutes <= 120:
+            total_minutes = 30 + minutes
+            hour = 9 + total_minutes // 60
+            minute = total_minutes % 60
+        else:
+            after_lunch = minutes - 120
+            hour = 13 + after_lunch // 60
+            minute = after_lunch % 60
+        return f"{hour:02d}:{minute:02d}"
+
+    @staticmethod
+    def _interpolate_market_values(values: list[float], target_count: int) -> list[float]:
+        if not values or target_count <= 0:
+            return []
+        if len(values) == 1:
+            return [values[0]] * target_count
+        if len(values) == target_count:
+            return list(values)
+        result: list[float] = []
+        max_source = len(values) - 1
+        max_target = max(target_count - 1, 1)
+        for index in range(target_count):
+            position = index * max_source / max_target
+            left = int(position)
+            right = min(left + 1, max_source)
+            ratio = position - left
+            result.append(values[left] + (values[right] - values[left]) * ratio)
+        return result
+
+    def _build_intraday_source_points(
+        self,
+        symbol: str,
+        snapshot,
+        chart_series,
+        target_points: int = 240,
+    ) -> list[tuple[str, float]]:
+        raw_points = list(getattr(chart_series, "intraday_price", [])) if chart_series else []
+        values = [
+            float(getattr(point, "v", 0.0) or 0.0)
+            for point in raw_points
+            if getattr(point, "v", None) is not None
+        ]
+        if not values and snapshot is not None:
+            base = snapshot.prev_close or snapshot.latest_price or 0.0
+            pseudo = [
+                base,
+                snapshot.open_price or base,
+                snapshot.low_price or base,
+                ((snapshot.low_price or base) + (snapshot.open_price or base)) / 2,
+                ((snapshot.high_price or base) + (snapshot.latest_price or base)) / 2,
+                snapshot.high_price or base,
+                snapshot.latest_price or base,
+            ]
+            values = [float(value or 0.0) for value in pseudo]
+        if not values:
+            proxy_points, _ = self._build_market_proxy_points()
+            values = [
+                float(getattr(point, "v", 0.0) or 0.0)
+                for point in proxy_points
+                if getattr(point, "v", None) is not None
+            ]
+        if not values:
+            day_bars = list(self.universe_bars.get(symbol, []))
+            if day_bars:
+                values = [day_bars[-1].close]
+        resampled = self._interpolate_market_values(values, max(target_points, len(values), 1))
+        return [
+            (self._market_intraday_time_label(index, len(resampled)), round(value, 3))
+            for index, value in enumerate(resampled)
+        ]
+
+    def _build_intraday_bars_for_timeframe(self, symbol: str, snapshot, chart_series) -> list[PriceBar]:
+        bucket_minutes = {
+            "分时": 5,
+            "1分": 1,
+            "5分": 5,
+            "15分": 15,
+            "30分": 30,
+            "60分": 60,
+        }.get(self._normalize_market_timeframe())
+        if bucket_minutes is None:
+            return []
+        source_points = self._build_intraday_source_points(symbol, snapshot, chart_series, target_points=240)
+        if not source_points:
+            return []
+        day_bars = list(self.universe_bars.get(symbol, []))
+        trade_date = day_bars[-1].date if day_bars else datetime.now().strftime("%Y-%m-%d")
+        day_volume = float(day_bars[-1].volume) if day_bars else 0.0
+        midpoint = max((len(source_points) - 1) / 2, 1.0)
+        weights = [1.0 + abs(index - midpoint) / midpoint * 0.9 for index in range(len(source_points))]
+        total_weight = sum(weights) or 1.0
+
+        bars: list[PriceBar] = []
+        for start in range(0, len(source_points), bucket_minutes):
+            chunk = source_points[start:start + bucket_minutes]
+            if not chunk:
+                continue
+            chunk_weights = weights[start:start + bucket_minutes]
+            values = [value for _, value in chunk]
+            reference = max(abs(values[0]), 1.0)
+            volatility_boost = 1.0 + (max(values) - min(values)) / reference * 2.2
+            volume = day_volume * (sum(chunk_weights) / total_weight) * volatility_boost
+            bars.append(
+                PriceBar(
+                    date=f"{trade_date} {chunk[0][0]}",
+                    symbol=symbol,
+                    open=values[0],
+                    high=max(values),
+                    low=min(values),
+                    close=values[-1],
+                    volume=volume,
+                )
+            )
+        return bars
+
+    def _market_chart_bars(self, symbol: str, snapshot=None, chart_series=None) -> list[PriceBar]:
+        bars = list(self.universe_bars.get(symbol, []))
+        timeframe = self._normalize_market_timeframe()
+        if timeframe == "周线":
+            return aggregate_price_bars(bars, "weekly")
+        if timeframe == "月线":
+            return aggregate_price_bars(bars, "monthly")
+        if self._is_intraday_market_timeframe(timeframe):
+            intraday_bars = self._build_intraday_bars_for_timeframe(symbol, snapshot, chart_series)
+            return intraday_bars if intraday_bars else bars[-60:]
+        return bars
+
+    def _market_history_target_size(self, total_bars: int, timeframe: str | None = None) -> int:
+        if total_bars <= 0:
+            return 0
+        normalized = self._normalize_market_timeframe(timeframe)
+        if self._is_intraday_market_timeframe(normalized):
+            history_sizes = {"近1月": 48, "近3月": 96, "近1年": 240, "近3年": 240, "全部": total_bars}
+            minimum = 16
+        elif normalized == "周线":
+            history_sizes = {"近1月": 8, "近3月": 16, "近1年": 52, "近3年": 156, "全部": total_bars}
+            minimum = 8
+        elif normalized == "月线":
+            history_sizes = {"近1月": 6, "近3月": 12, "近1年": 24, "近3年": 36, "全部": total_bars}
+            minimum = 6
+        else:
+            history_sizes = {"近1月": 22, "近3月": 66, "近1年": 250, "近3年": 750, "全部": total_bars}
+            minimum = 20
+        target_size = history_sizes.get(getattr(self, "market_history_window", "近1年"), history_sizes.get("近1年", total_bars))
+        return max(minimum, min(target_size, total_bars))
+
+    @staticmethod
+    def _chart_datetime_from_label(label: str) -> QDateTime:
+        for pattern in ("yyyy-MM-dd hh:mm", "yyyy-MM-dd"):
+            parsed = QDateTime.fromString(label, pattern)
+            if parsed.isValid():
+                return parsed
+        if ":" in label and len(label) == 5:
+            parsed = QDateTime.fromString(f"{datetime.now().strftime('%Y-%m-%d')} {label}", "yyyy-MM-dd hh:mm")
+            if parsed.isValid():
+                return parsed
+        return QDateTime.currentDateTime()
+
+    def _market_axis_format(self, timeframe: str | None = None) -> str:
+        normalized = self._normalize_market_timeframe(timeframe)
+        if self._is_intraday_market_timeframe(normalized):
+            return "hh:mm"
+        if normalized == "月线":
+            return "yyyy-MM"
+        return "MM-dd"
+
+    @staticmethod
+    def _moving_average_values(values: list[float], window: int) -> list[float | None]:
+        if window <= 0:
+            return [None for _ in values]
+        result: list[float | None] = []
+        running = 0.0
+        for index, value in enumerate(values):
+            running += value
+            if index >= window:
+                running -= values[index - window]
+            result.append(running / window if index + 1 >= window else None)
+        return result
+
+    @staticmethod
+    def _compact_number(value: float) -> str:
+        absolute = abs(float(value or 0.0))
+        if absolute >= 1e8:
+            return f"{value / 1e8:.2f}亿"
+        if absolute >= 1e4:
+            return f"{value / 1e4:.2f}万"
+        return f"{value:,.0f}"
+
+    def _connect_market_chart_hover_links(self) -> None:
+        if getattr(self, "_market_chart_hover_links_ready", False):
+            return
+        self._market_chart_hover_links_ready = True
+        views = [
+            getattr(self, "daily_chart_view", None),
+            getattr(self, "fund_chart_view", None),
+            getattr(self, "indicator_chart_view", None),
+        ]
+        for source in views:
+            if source is None or not hasattr(source, "hoverKeyChanged"):
+                continue
+            source.hoverKeyChanged.connect(lambda key, current=source: self._sync_market_hover_views(current, key))
+
+    def _sync_market_hover_views(self, source_view, key: str) -> None:
+        for target in [
+            getattr(self, "daily_chart_view", None),
+            getattr(self, "fund_chart_view", None),
+            getattr(self, "indicator_chart_view", None),
+        ]:
+            if target is None or target is source_view or not hasattr(target, "sync_hover_key"):
+                continue
+            target.sync_hover_key(key)
+
     def _update_intraday_chart(self, symbol: str, snapshot, chart_series) -> None:
         if not hasattr(self, "intraday_chart_view"):
             return
         chart = QChart()
-        intraday_title = "市场代理走势"
+        timeframe = self._normalize_market_timeframe()
+        intraday_title = "市场代理走势" if not self._is_intraday_market_timeframe(timeframe) else f"{timeframe} 分时走势"
         self._style_dark_chart(chart, intraday_title)
         price_series = QLineSeries()
         price_series.setPen(QPen(QColor("#57c7ff"), 2.4))
         reference_series = QLineSeries()
         reference_series.setPen(QPen(QColor("#f4c96a"), 1.2, Qt.DashLine))
 
-        proxy_points, proxy_base = self._build_market_proxy_points()
-        points = proxy_points if proxy_points else (list(getattr(chart_series, "intraday_price", [])) if chart_series else [])
-        if not points and snapshot is not None:
-            base = snapshot.prev_close or snapshot.latest_price
-            pseudo = [
-                base,
-                snapshot.open_price or base,
-                snapshot.low_price or base * 0.99,
-                (snapshot.low_price + snapshot.open_price) / 2 if snapshot.low_price and snapshot.open_price else base,
-                (snapshot.high_price + snapshot.latest_price) / 2 if snapshot.high_price and snapshot.latest_price else base,
-                snapshot.high_price or base * 1.01,
-                snapshot.latest_price or base,
-            ]
-            points = [type("P", (), {"t": f"{index}", "v": value})() for index, value in enumerate(pseudo)]
+        if self._is_intraday_market_timeframe(timeframe):
+            point_pairs = self._build_intraday_source_points(symbol, snapshot, chart_series, target_points=240)
+            points = [type("P", (), {"t": t, "v": v})() for t, v in point_pairs]
+            proxy_points = []
+            proxy_base = 0.0
+        else:
+            proxy_points, proxy_base = self._build_market_proxy_points()
+            points = proxy_points if proxy_points else (list(getattr(chart_series, "intraday_price", [])) if chart_series else [])
+            if not points and snapshot is not None:
+                base = snapshot.prev_close or snapshot.latest_price
+                pseudo = [
+                    base,
+                    snapshot.open_price or base,
+                    snapshot.low_price or base * 0.99,
+                    (snapshot.low_price + snapshot.open_price) / 2 if snapshot.low_price and snapshot.open_price else base,
+                    (snapshot.high_price + snapshot.latest_price) / 2 if snapshot.high_price and snapshot.latest_price else base,
+                    snapshot.high_price or base * 1.01,
+                    snapshot.latest_price or base,
+                ]
+                points = [type("P", (), {"t": f"{index}", "v": value})() for index, value in enumerate(pseudo)]
 
         values = []
         base_price = proxy_base if proxy_points else (
@@ -6048,14 +6587,38 @@ class QuantHunterWindow(QMainWindow):
             reference_series.attachAxis(axis_x)
             reference_series.attachAxis(axis_y)
         self.intraday_chart_view.setChart(chart)
+        if hasattr(self.intraday_chart_view, "set_chart_context"):
+            labels = [getattr(point, "t", str(index)) for index, point in enumerate(points)]
+            payloads = [
+                [
+                    f"时间: {label}",
+                    f"价格: {float(getattr(point, 'v', 0.0) or 0.0):.2f}",
+                    f"昨收基准: {base_price:.2f}",
+                    f"偏离: {((float(getattr(point, 'v', 0.0) or 0.0) - base_price) / base_price * 100.0 if base_price else 0.0):+.2f}%",
+                ]
+                for label, point in zip(labels, points)
+            ]
+            self.intraday_chart_view.set_chart_context(
+                x_label="时间",
+                y_label="价格",
+                y_suffix="",
+                x_kind="category",
+                x_labels=labels,
+                x_values=list(range(len(labels))),
+                y_values=[float(getattr(point, "v", 0.0) or 0.0) for point in points],
+                hover_keys=labels,
+                hover_payloads=payloads,
+            )
 
     def _update_daily_chart(self, symbol: str) -> None:
         if not hasattr(self, "daily_chart_view"):
             return
-        bars = self.universe_bars.get(symbol, [])
-        analyses = self.universe_analyses.get(symbol, [])
+        chart_series = getattr(self.market_screen_result, "chart_series_by_symbol", {}).get(symbol)
+        snapshot = getattr(self.market_screen_result, "snapshots", {}).get(symbol)
+        bars = self._market_chart_bars(symbol, snapshot, chart_series)
         chart = QChart()
-        self._style_dark_chart(chart, "日线主图")
+        timeframe = self._normalize_market_timeframe()
+        self._style_dark_chart(chart, "日线主图" if timeframe == "日线" else f"{timeframe} 主图")
 
         candle_series = QCandlestickSeries()
         candle_series.setIncreasingColor(QColor("#3fd59a"))
@@ -6078,23 +6641,40 @@ class QuantHunterWindow(QMainWindow):
         boll_lower_series.setPen(QPen(QColor("#59d998"), 1.1, Qt.DashLine))
         boll_lower_series.setName("BOLL 下轨")
 
-        visible_bars, visible_analyses = self._windowed_market_bars(symbol, bars, analyses)
+        visible_bars, _ = self._windowed_market_bars(symbol, bars, [])
         dates = []
         highs = []
         lows = []
         closes: list[float] = []
+        ma_fast_values: list[float | None] = []
+        ma_slow_values: list[float | None] = []
+        boll_mid_values: list[float | None] = []
+        boll_upper_values: list[float | None] = []
+        boll_lower_values: list[float | None] = []
         for index, bar in enumerate(visible_bars):
-            dt = QDateTime.fromString(bar.date, "yyyy-MM-dd")
+            dt = self._chart_datetime_from_label(bar.date)
             ts = float(dt.toMSecsSinceEpoch())
             candle_series.append(QCandlestickSet(bar.open, bar.high, bar.low, bar.close, ts))
             dates.append(ts)
             highs.append(bar.high)
             lows.append(bar.low)
             closes.append(bar.close)
-            if "MA" in self.market_overlay_modes and index < len(visible_analyses):
-                analysis = visible_analyses[index]
-                ma_fast_series.append(ts, analysis.ma_fast)
-                ma_slow_series.append(ts, analysis.ma_slow)
+            if "MA" in self.market_overlay_modes:
+                if len(closes) >= 5:
+                    ma_fast_value = sum(closes[-5:]) / 5
+                    ma_fast_series.append(ts, ma_fast_value)
+                else:
+                    ma_fast_value = None
+                if len(closes) >= 20:
+                    ma_slow_value = sum(closes[-20:]) / 20
+                    ma_slow_series.append(ts, ma_slow_value)
+                else:
+                    ma_slow_value = None
+            else:
+                ma_fast_value = None
+                ma_slow_value = None
+            ma_fast_values.append(ma_fast_value)
+            ma_slow_values.append(ma_slow_value)
             if "BOLL" in self.market_overlay_modes and len(closes) >= 20:
                 window = closes[-20:]
                 mid = sum(window) / len(window)
@@ -6103,6 +6683,13 @@ class QuantHunterWindow(QMainWindow):
                 boll_mid_series.append(ts, mid)
                 boll_upper_series.append(ts, mid + std * 2)
                 boll_lower_series.append(ts, mid - std * 2)
+                boll_mid_values.append(mid)
+                boll_upper_values.append(mid + std * 2)
+                boll_lower_values.append(mid - std * 2)
+            else:
+                boll_mid_values.append(None)
+                boll_upper_values.append(None)
+                boll_lower_values.append(None)
 
         chart.addSeries(candle_series)
         if "MA" in self.market_overlay_modes and ma_fast_series.count():
@@ -6114,7 +6701,7 @@ class QuantHunterWindow(QMainWindow):
             chart.addSeries(boll_lower_series)
 
         axis_x = QDateTimeAxis()
-        axis_x.setFormat("MM-dd")
+        axis_x.setFormat(self._market_axis_format(timeframe))
         axis_x.setTickCount(6)
         self._style_chart_axis(axis_x, compact=True)
 
@@ -6140,6 +6727,40 @@ class QuantHunterWindow(QMainWindow):
             axis_x.setRange(QDateTime.fromMSecsSinceEpoch(int(dates[0])), QDateTime.fromMSecsSinceEpoch(int(dates[-1])))
 
         self.daily_chart_view.setChart(chart)
+        if hasattr(self.daily_chart_view, "set_chart_context"):
+            tooltip_format = "hh:mm" if self._is_intraday_market_timeframe(timeframe) else ("yyyy-MM" if timeframe == "月线" else "yyyy-MM-dd")
+            hover_keys = [bar.date for bar in visible_bars]
+            hover_payloads = []
+            for index, bar in enumerate(visible_bars):
+                prev_close = visible_bars[index - 1].close if index > 0 else (snapshot.prev_close if snapshot is not None else bar.open)
+                pct = ((bar.close - prev_close) / prev_close * 100.0) if prev_close else 0.0
+                lines = [
+                    f"时间: {bar.date}",
+                    f"开/高/低/收: {bar.open:.2f} / {bar.high:.2f} / {bar.low:.2f} / {bar.close:.2f}",
+                    f"涨跌: {pct:+.2f}%",
+                    f"成交量: {self._compact_number(bar.volume)}",
+                ]
+                if ma_fast_values[index] is not None:
+                    lines.append(f"MA5: {ma_fast_values[index]:.2f}")
+                if ma_slow_values[index] is not None:
+                    lines.append(f"MA20: {ma_slow_values[index]:.2f}")
+                if boll_mid_values[index] is not None:
+                    lines.append(
+                        f"BOLL: {boll_mid_values[index]:.2f} / {boll_upper_values[index]:.2f} / {boll_lower_values[index]:.2f}"
+                    )
+                hover_payloads.append(lines)
+            self.daily_chart_view.set_chart_context(
+                x_label="时间",
+                y_label="价格",
+                y_suffix="",
+                x_kind="datetime",
+                datetime_format=tooltip_format,
+                x_values=dates,
+                y_values=closes,
+                hover_keys=hover_keys,
+                hover_payloads=hover_payloads,
+            )
+        self._connect_market_chart_hover_links()
 
     def _windowed_market_bars(
         self,
@@ -6151,16 +6772,8 @@ class QuantHunterWindow(QMainWindow):
         full_analyses = list(analyses if analyses is not None else self.universe_analyses.get(symbol, []))
         if not full_bars:
             return [], []
-
-        history_sizes = {
-            "近1月": 22,
-            "近3月": 66,
-            "近1年": 250,
-            "全部": len(full_bars),
-        }
-        target_size = history_sizes.get(getattr(self, "market_history_window", "近1年"), 250)
-        target_size = max(20, min(target_size, len(full_bars)))
-        step = max(10, target_size // 3)
+        target_size = self._market_history_target_size(len(full_bars))
+        step = max(4 if self._is_intraday_market_timeframe() else 1, target_size // 3)
         max_offset = max((len(full_bars) - target_size + step - 1) // step, 0)
         self.market_chart_offset = max(0, min(getattr(self, "market_chart_offset", 0), max_offset))
 
@@ -6172,7 +6785,10 @@ class QuantHunterWindow(QMainWindow):
     def _update_indicator_chart(self, symbol: str) -> None:
         if not hasattr(self, "indicator_chart_view"):
             return
-        bars, _ = self._windowed_market_bars(symbol)
+        chart_series = getattr(self.market_screen_result, "chart_series_by_symbol", {}).get(symbol)
+        snapshot = getattr(self.market_screen_result, "snapshots", {}).get(symbol)
+        display_bars = self._market_chart_bars(symbol, snapshot, chart_series)
+        bars, _ = self._windowed_market_bars(symbol, display_bars, [])
         chart = QChart()
         indicator_name = getattr(self, "market_secondary_indicator_mode", "MACD") or "MACD"
         self._style_dark_chart(chart, f"{indicator_name} 副图")
@@ -6181,10 +6797,77 @@ class QuantHunterWindow(QMainWindow):
             return
 
         closes = [bar.close for bar in bars]
-        categories = [bar.date[5:] for bar in bars[-30:]]
-        recent_closes = closes[-30:]
+        recent_bars = bars[-min(60 if self._is_intraday_market_timeframe() else 30, len(bars)):]
+        categories = [bar.date[-5:] if ":" in bar.date else bar.date[5:] for bar in recent_bars]
+        recent_closes = [bar.close for bar in recent_bars]
 
-        if indicator_name == "RSI":
+        if indicator_name == "VOL":
+            positive = QBarSet("放量")
+            negative = QBarSet("缩量")
+            positive.setColor(QColor("#ff6b6b"))
+            negative.setColor(QColor("#3fd59a"))
+            volumes = [float(bar.volume or 0.0) for bar in recent_bars]
+            ma5_values = self._moving_average_values(volumes, 5)
+            ma10_values = self._moving_average_values(volumes, 10)
+            ma5_series = QLineSeries()
+            ma10_series = QLineSeries()
+            ma5_series.setPen(QPen(QColor("#ffd166"), 1.6))
+            ma10_series.setPen(QPen(QColor("#7ed7ff"), 1.4))
+            for index, bar in enumerate(recent_bars):
+                volume = volumes[index]
+                positive.append(volume if bar.close >= bar.open else 0.0)
+                negative.append(volume if bar.close < bar.open else 0.0)
+                if ma5_values[index] is not None:
+                    ma5_series.append(index, ma5_values[index])
+                if ma10_values[index] is not None:
+                    ma10_series.append(index, ma10_values[index])
+            bars_series = QBarSeries()
+            bars_series.append(positive)
+            bars_series.append(negative)
+            chart.addSeries(bars_series)
+            if ma5_series.count():
+                chart.addSeries(ma5_series)
+            if ma10_series.count():
+                chart.addSeries(ma10_series)
+            axis_x = QBarCategoryAxis()
+            axis_x.append(categories or ["--"])
+            self._style_chart_axis(axis_x, compact=True)
+            axis_y = QValueAxis()
+            upper = max(volumes) if volumes else 1.0
+            if ma10_values:
+                upper = max(upper, max((value or 0.0) for value in ma10_values))
+            axis_y.setRange(0, upper * 1.2 if upper > 0 else 1.0)
+            self._style_chart_axis(axis_y, compact=True)
+            chart.addAxis(axis_x, Qt.AlignBottom)
+            chart.addAxis(axis_y, Qt.AlignRight)
+            bars_series.attachAxis(axis_x)
+            bars_series.attachAxis(axis_y)
+            if ma5_series.count():
+                ma5_series.attachAxis(axis_x)
+                ma5_series.attachAxis(axis_y)
+            if ma10_series.count():
+                ma10_series.attachAxis(axis_x)
+                ma10_series.attachAxis(axis_y)
+            hover_payloads = []
+            for index, label in enumerate(categories):
+                lines = [f"时间: {label}", f"成交量: {self._compact_number(volumes[index])}"]
+                if ma5_values[index] is not None:
+                    lines.append(f"VOL MA5: {self._compact_number(ma5_values[index] or 0.0)}")
+                if ma10_values[index] is not None:
+                    lines.append(f"VOL MA10: {self._compact_number(ma10_values[index] or 0.0)}")
+                hover_payloads.append(lines)
+            context_payload = {
+                "x_label": "周期",
+                "y_label": "VOL",
+                "y_suffix": "",
+                "x_kind": "category",
+                "x_labels": categories or ["--"],
+                "x_values": list(range(len(categories))),
+                "y_values": volumes or [0.0],
+                "hover_keys": [bar.date for bar in recent_bars] if recent_bars else (categories or ["--"]),
+                "hover_payloads": hover_payloads,
+            }
+        elif indicator_name == "RSI":
             series = QLineSeries()
             series.setPen(QPen(QColor("#57c7ff"), 2.0))
             series.setName("RSI")
@@ -6214,6 +6897,21 @@ class QuantHunterWindow(QMainWindow):
             series.attachAxis(axis_x)
             series.attachAxis(axis_y)
             axis_x.setRange(0, max(series.count() - 1, 1))
+            hover_payloads = []
+            for index, label in enumerate(categories[1:], start=0):
+                value = series.at(index).y() if index < series.count() else 0.0
+                hover_payloads.append([f"时间: {label}", f"RSI: {value:.2f}"])
+            context_payload = {
+                "x_label": "周期",
+                "y_label": "RSI",
+                "y_suffix": "",
+                "x_kind": "category",
+                "x_labels": categories[1:] or ["--"],
+                "x_values": list(range(len(categories[1:]))),
+                "y_values": [series.at(index).y() if index < series.count() else 0.0 for index in range(len(categories[1:]))],
+                "hover_keys": [bar.date for bar in recent_bars[1:]] if len(recent_bars) > 1 else (categories[1:] or ["--"]),
+                "hover_payloads": hover_payloads,
+            }
         elif indicator_name == "KDJ":
             k_series = QLineSeries()
             d_series = QLineSeries()
@@ -6250,6 +6948,23 @@ class QuantHunterWindow(QMainWindow):
                 series.attachAxis(axis_x)
                 series.attachAxis(axis_y)
             axis_x.setRange(0, max(k_series.count() - 1, 1))
+            hover_payloads = []
+            for index in range(len(categories)):
+                k_value = k_series.at(index).y() if index < k_series.count() else 0.0
+                d_value = d_series.at(index).y() if index < d_series.count() else 0.0
+                j_value = j_series.at(index).y() if index < j_series.count() else 0.0
+                hover_payloads.append([f"时间: {categories[index]}", f"K: {k_value:.2f}", f"D: {d_value:.2f}", f"J: {j_value:.2f}"])
+            context_payload = {
+                "x_label": "周期",
+                "y_label": "KDJ",
+                "y_suffix": "",
+                "x_kind": "category",
+                "x_labels": categories or ["--"],
+                "x_values": list(range(len(categories))),
+                "y_values": [k_series.at(index).y() if index < k_series.count() else 0.0 for index in range(len(categories))],
+                "hover_keys": [bar.date for bar in recent_bars] if recent_bars else (categories or ["--"]),
+                "hover_payloads": hover_payloads,
+            }
         else:
             dif_series = QLineSeries()
             dea_series = QLineSeries()
@@ -6292,8 +7007,30 @@ class QuantHunterWindow(QMainWindow):
             for series in [bars_series, dif_series, dea_series]:
                 series.attachAxis(axis_x)
                 series.attachAxis(axis_y)
+            hover_payloads = []
+            macd_values: list[float] = []
+            for index in range(len(categories)):
+                dif_value = dif_series.at(index).y() if index < dif_series.count() else 0.0
+                dea_value = dea_series.at(index).y() if index < dea_series.count() else 0.0
+                hist_value = positive.at(index) if index < positive.count() else -(negative.at(index) if index < negative.count() else 0.0)
+                macd_values.append(hist_value)
+                hover_payloads.append([f"时间: {categories[index]}", f"DIF: {dif_value:.3f}", f"DEA: {dea_value:.3f}", f"MACD: {hist_value:.3f}"])
+            context_payload = {
+                "x_label": "周期",
+                "y_label": "MACD",
+                "y_suffix": "",
+                "x_kind": "category",
+                "x_labels": categories or ["--"],
+                "x_values": list(range(len(categories))),
+                "y_values": macd_values or [0.0],
+                "hover_keys": [bar.date for bar in recent_bars] if recent_bars else (categories or ["--"]),
+                "hover_payloads": hover_payloads,
+            }
 
         self.indicator_chart_view.setChart(chart)
+        if hasattr(self.indicator_chart_view, "set_chart_context"):
+            self.indicator_chart_view.set_chart_context(**context_payload)
+        self._connect_market_chart_hover_links()
 
     def _update_price_chart(self, symbol: str) -> None:
         self._update_daily_chart(symbol)
@@ -6302,38 +7039,138 @@ class QuantHunterWindow(QMainWindow):
         if not hasattr(self, "fund_chart_view"):
             return
         chart = QChart()
-        self._style_dark_chart(chart, "主力资金")
-        points = list(getattr(chart_series, "capital_flow", [])) if chart_series else []
+        timeframe = self._normalize_market_timeframe()
+        if self._is_intraday_market_timeframe(timeframe):
+            self._style_dark_chart(chart, "主力资金" if timeframe == "分时" else f"{timeframe} 资金")
+            points = list(getattr(chart_series, "capital_flow", [])) if chart_series else []
 
-        positive = QBarSet("流入")
-        negative = QBarSet("流出")
-        positive.setColor(QColor("#25d07f"))
-        negative.setColor(QColor("#ff5e57"))
-        categories = []
-        values = []
-        for point in points[-24:]:
-            value = point.v
-            categories.append(point.t)
-            positive.append(max(value, 0.0))
-            negative.append(abs(min(value, 0.0)))
-            values.append(abs(value))
+            positive = QBarSet("流入")
+            negative = QBarSet("流出")
+            positive.setColor(QColor("#25d07f"))
+            negative.setColor(QColor("#ff5e57"))
+            categories = []
+            values = []
+            for point in points[-24:]:
+                value = point.v
+                categories.append(point.t)
+                positive.append(max(value, 0.0))
+                negative.append(abs(min(value, 0.0)))
+                values.append(abs(value))
 
-        series = QBarSeries()
-        series.append(positive)
-        series.append(negative)
-        chart.addSeries(series)
+            series = QBarSeries()
+            series.append(positive)
+            series.append(negative)
+            chart.addSeries(series)
 
-        axis_x = QBarCategoryAxis()
-        axis_x.append(categories or ["00"])
-        self._style_chart_axis(axis_x, compact=True)
-        axis_y = QValueAxis()
-        self._style_chart_axis(axis_y, compact=True)
-        axis_y.setRange(0, max(values) * 1.25 if values else 1.0)
-        chart.addAxis(axis_x, Qt.AlignBottom)
-        chart.addAxis(axis_y, Qt.AlignRight)
-        series.attachAxis(axis_x)
-        series.attachAxis(axis_y)
+            axis_x = QBarCategoryAxis()
+            axis_x.append(categories or ["00"])
+            self._style_chart_axis(axis_x, compact=True)
+            axis_y = QValueAxis()
+            self._style_chart_axis(axis_y, compact=True)
+            axis_y.setRange(0, max(values) * 1.25 if values else 1.0)
+            chart.addAxis(axis_x, Qt.AlignBottom)
+            chart.addAxis(axis_y, Qt.AlignRight)
+            series.attachAxis(axis_x)
+            series.attachAxis(axis_y)
+        else:
+            snapshot = getattr(self.market_screen_result, "snapshots", {}).get(symbol)
+            display_bars = self._market_chart_bars(symbol, snapshot, chart_series)
+            visible_bars, _ = self._windowed_market_bars(symbol, display_bars, [])
+            self._style_dark_chart(chart, "成交量" if timeframe == "日线" else f"{timeframe} 成交量")
+
+            rising = QBarSet("放量")
+            falling = QBarSet("缩量")
+            rising.setColor(QColor("#3fd59a"))
+            falling.setColor(QColor("#ff6b6b"))
+            categories = []
+            volumes: list[float] = []
+            for bar in visible_bars:
+                categories.append(bar.date[-5:] if ":" in bar.date else bar.date[5:])
+                volume = float(bar.volume or 0.0)
+                volumes.append(volume)
+                rising.append(volume if bar.close >= bar.open else 0.0)
+                falling.append(volume if bar.close < bar.open else 0.0)
+
+            series = QBarSeries()
+            series.append(rising)
+            series.append(falling)
+            chart.addSeries(series)
+
+            ma5_values = self._moving_average_values(volumes, 5)
+            ma10_values = self._moving_average_values(volumes, 10)
+            ma5_series = QLineSeries()
+            ma5_series.setPen(QPen(QColor("#ffd166"), 1.6))
+            ma10_series = QLineSeries()
+            ma10_series.setPen(QPen(QColor("#7ed7ff"), 1.4))
+            for index, value in enumerate(ma5_values):
+                if value is not None:
+                    ma5_series.append(index, value)
+            for index, value in enumerate(ma10_values):
+                if value is not None:
+                    ma10_series.append(index, value)
+            if ma5_series.count():
+                chart.addSeries(ma5_series)
+            if ma10_series.count():
+                chart.addSeries(ma10_series)
+
+            axis_x = QBarCategoryAxis()
+            axis_x.append(categories or ["--"])
+            self._style_chart_axis(axis_x, compact=True)
+            axis_y = QValueAxis()
+            self._style_chart_axis(axis_y, compact=True)
+            upper = max(volumes) if volumes else 1.0
+            if ma10_values:
+                upper = max(upper, max((value or 0.0) for value in ma10_values))
+            axis_y.setRange(0, upper * 1.2 if upper > 0 else 1.0)
+            chart.addAxis(axis_x, Qt.AlignBottom)
+            chart.addAxis(axis_y, Qt.AlignRight)
+            series.attachAxis(axis_x)
+            series.attachAxis(axis_y)
+            if ma5_series.count():
+                ma5_series.attachAxis(axis_x)
+                ma5_series.attachAxis(axis_y)
+            if ma10_series.count():
+                ma10_series.attachAxis(axis_x)
+                ma10_series.attachAxis(axis_y)
         self.fund_chart_view.setChart(chart)
+        if hasattr(self.fund_chart_view, "set_chart_context"):
+            if self._is_intraday_market_timeframe(timeframe):
+                hover_payloads = [
+                    [f"时间: {label}", f"净流: {(positive.at(index) if index < positive.count() else 0.0) - (negative.at(index) if index < negative.count() else 0.0):.2f} 亿"]
+                    for index, label in enumerate(categories or ["00"])
+                ]
+                self.fund_chart_view.set_chart_context(
+                    x_label="时间",
+                    y_label="资金",
+                    y_suffix=" 亿",
+                    x_kind="category",
+                    x_labels=categories or ["00"],
+                    x_values=list(range(len(categories or ["00"]))),
+                    y_values=[(positive.at(index) if index < positive.count() else 0.0) - (negative.at(index) if index < negative.count() else 0.0) for index in range(len(categories or ["00"]))],
+                    hover_keys=categories or ["00"],
+                    hover_payloads=hover_payloads,
+                )
+            else:
+                hover_payloads = []
+                for index, label in enumerate(categories or ["--"]):
+                    lines = [f"时间: {label}", f"成交量: {self._compact_number(volumes[index] if index < len(volumes) else 0.0)}"]
+                    if index < len(ma5_values) and ma5_values[index] is not None:
+                        lines.append(f"VOL MA5: {self._compact_number(ma5_values[index] or 0.0)}")
+                    if index < len(ma10_values) and ma10_values[index] is not None:
+                        lines.append(f"VOL MA10: {self._compact_number(ma10_values[index] or 0.0)}")
+                    hover_payloads.append(lines)
+                self.fund_chart_view.set_chart_context(
+                    x_label="周期",
+                    y_label="成交量",
+                    y_suffix="",
+                    x_kind="category",
+                    x_labels=categories or ["--"],
+                    x_values=list(range(len(categories or ["--"]))),
+                    y_values=volumes if volumes else [0.0],
+                    hover_keys=[bar.date for bar in visible_bars] if visible_bars else (categories or ["--"]),
+                    hover_payloads=hover_payloads,
+                )
+        self._connect_market_chart_hover_links()
 
     def _update_volume_chart(self, symbol: str) -> None:
         chart_series = getattr(self.market_screen_result, "chart_series_by_symbol", {}).get(symbol)
@@ -6651,11 +7488,10 @@ class QuantHunterWindow(QMainWindow):
         self._refresh_shell_header()
 
     def _apply_theme(self, theme_key: str) -> None:
-        base_style = THEME_STYLES.get(theme_key, THEME_STYLES["sunrise"])
-        extra_style = TERMINAL_DASHBOARD_STYLE + TERMINAL_WORKSPACE_STYLE if theme_key == "graphite" else ""
-        if theme_key == "graphite":
-            extra_style += GRAPHITE_COMMERCIAL_STYLE
-            extra_style += """
+        theme_key = "graphite"
+        base_style = THEME_STYLES["graphite"]
+        extra_style = TERMINAL_DASHBOARD_STYLE + TERMINAL_WORKSPACE_STYLE + GRAPHITE_COMMERCIAL_STYLE
+        extra_style += """
 QTableWidget {
     background: #0f1319;
     alternate-background-color: #11161d;
@@ -6693,6 +7529,10 @@ QLineEdit:focus, QComboBox:focus {
         background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(29, 38, 51, 0.92), stop:1 rgba(18, 24, 33, 0.88));
         border: 1px solid rgba(109, 137, 167, 0.22);
         border-radius: 14px;
+    }
+    QFrame[actionRow="true"][riskActive="true"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(40, 55, 76, 0.98), stop:1 rgba(21, 31, 44, 0.95));
+        border: 1px solid rgba(125, 183, 255, 0.40);
     }
     QFrame[actionRow="true"]:hover {
         border-color: rgba(138, 186, 245, 0.30);
@@ -7428,21 +8268,53 @@ QPushButton#accentButton:hover {
             return
         current_key = getattr(self.state, "strategy_risk_profile", "standard")
         meta = getattr(self, "last_daily_pool_meta", {}) or {}
+        set_label = getattr(self, "_set_label_text_if_changed", None)
+
+        def _set_card_label(widget, text: str) -> None:
+            if callable(set_label):
+                try:
+                    set_label(widget, text)
+                    return
+                except TypeError:
+                    pass
+            QuantHunterWindow._set_label_text_if_changed(self, widget, text)
+
         for profile_key, labels in cards.items():
             profile_label = RISK_PROFILE_LABELS.get(profile_key, profile_key)
-            self._set_label_text_if_changed(labels.get("title"), profile_label)
-            self._set_label_text_if_changed(labels.get("detail"), risk_profile_brief(profile_key))
-            self._set_label_text_if_changed(labels.get("metrics"), risk_profile_snapshot_text(profile_key, meta))
-            self._set_label_text_if_changed(labels.get("flag"), "当前" if profile_key == current_key else "对比")
+            _set_card_label(labels.get("title"), profile_label)
+            _set_card_label(labels.get("detail"), risk_profile_brief(profile_key))
+            _set_card_label(labels.get("metrics"), risk_profile_snapshot_text(profile_key, meta))
+            is_current = profile_key == current_key
+            _set_card_label(labels.get("flag"), "当前启用" if is_current else "点击切换")
             button = labels.get("button")
+            tooltip = f"{profile_label}档：{risk_profile_brief(profile_key)}"
+            card = labels.get("card")
+            if card is not None and hasattr(card, "setToolTip"):
+                card.setToolTip(tooltip)
+            if card is not None and hasattr(card, "setProperty"):
+                current_value = card.property("riskActive") if hasattr(card, "property") else None
+                if current_value != is_current:
+                    card.setProperty("riskActive", is_current)
+                    style = getattr(card, "style", lambda: None)()
+                    if style is not None:
+                        try:
+                            style.unpolish(card)
+                            style.polish(card)
+                        except Exception:
+                            pass
             if button is not None:
-                target_text = "当前档位" if profile_key == current_key else "切换到此档"
+                target_text = "当前档位" if is_current else "切换到此档"
                 current_text_attr = getattr(button, "text", None)
                 current_text = current_text_attr() if callable(current_text_attr) else current_text_attr
                 if current_text != target_text:
                     button.setText(target_text)
+                self._set_button_role(button, "accent" if is_current else "tonal")
                 if hasattr(button, "setEnabled"):
-                    button.setEnabled(profile_key != current_key)
+                    button.setEnabled(not is_current)
+                if hasattr(button, "setToolTip"):
+                    button.setToolTip(
+                        f"{tooltip} | {'当前已启用' if is_current else '点击后将保存配置并刷新推荐池'}"
+                    )
 
     def _set_plain_text_if_changed(self, widget, text: str) -> None:
         if widget is None:
@@ -8616,7 +9488,7 @@ QPushButton#accentButton:hover {
             ("market_filter_buttons", ["全部", "龙头模型", "主力雷达", "擒龙打板", "价值低吸", "尾盘买入法", "一日持股法", "掘龙决策"], self.set_market_filter),
             ("timeframe_buttons", ["分时", "1分", "5分", "15分", "30分", "60分", "日线", "周线", "月线"], self.set_market_timeframe),
             ("history_window_buttons", ["近1月", "近3月", "近1年", "全部"], self.set_market_history_window),
-            ("secondary_indicator_buttons", ["MACD", "RSI", "KDJ"], self.set_market_secondary_indicator),
+            ("secondary_indicator_buttons", ["MACD", "RSI", "KDJ", "VOL"], self.set_market_secondary_indicator),
         ]
         for attr_name, labels, handler in button_groups:
             current_map = getattr(self, attr_name, None)
@@ -9402,24 +10274,104 @@ QPushButton#accentButton:hover {
         if self.active_symbol and self.active_symbol in self.universe_bars:
             self._render_market_dashboard(self.active_symbol)
 
-    def shift_market_chart_window(self, step_delta: int) -> None:
+    def _current_market_chart_symbol(self) -> str:
         current_symbol = self.active_symbol if self.active_symbol in self.universe_bars else ""
         if not current_symbol and getattr(self.market_screen_result, "algorithmic_pool", []):
             candidate = self.market_screen_result.algorithmic_pool[0].symbol
             current_symbol = candidate if candidate in self.universe_bars else ""
+        return current_symbol
+
+    def _market_chart_navigation_metrics(self, symbol: str, chart_series=None, snapshot=None) -> tuple[list[PriceBar], int, int, int, int]:
+        bars = self._market_chart_bars(symbol, snapshot, chart_series)
+        target_size = self._market_history_target_size(len(bars)) if bars else 0
+        fine_step = max(1, min(12 if self._is_intraday_market_timeframe() else 5, target_size // 8 if target_size else 1))
+        coarse_step = max(4 if self._is_intraday_market_timeframe() else 1, target_size // 3 if target_size else 1)
+        max_offset = max((len(bars) - target_size + coarse_step - 1) // coarse_step, 0) if bars else 0
+        return bars, target_size, fine_step, coarse_step, max_offset
+
+    @staticmethod
+    def _market_chart_range_text(visible_bars: list[PriceBar], timeframe: str) -> str:
+        if not visible_bars:
+            return "--"
+        start = visible_bars[0].date
+        end = visible_bars[-1].date
+        if timeframe in {"分时", "1分", "5分", "15分", "30分", "60分"}:
+            start_text = start[-5:] if len(start) >= 5 else start
+            end_text = end[-5:] if len(end) >= 5 else end
+        elif timeframe == "月线":
+            start_text = start[:7]
+            end_text = end[:7]
+        else:
+            start_text = start
+            end_text = end
+        return start_text if start_text == end_text else f"{start_text} ~ {end_text}"
+
+    def _refresh_market_chart_navigation_state(self, symbol: str, chart_series=None, snapshot=None) -> None:
+        if not symbol:
+            return
+        bars, _, _, _, max_offset = self._market_chart_navigation_metrics(symbol, chart_series, snapshot)
+        visible_bars, _ = self._windowed_market_bars(symbol, bars, [])
+        range_text = self._market_chart_range_text(visible_bars, self._normalize_market_timeframe())
+        at_latest = self.market_chart_offset <= 0
+        at_oldest = self.market_chart_offset >= max_offset
+        screen_index = 1 if max_offset <= 0 else min(self.market_chart_offset, max_offset) + 1
+        screen_total = max_offset + 1 if max_offset > 0 else 1
+
+        prev_button = getattr(self, "market_chart_prev_button", None)
+        next_button = getattr(self, "market_chart_next_button", None)
+        reset_button = getattr(self, "market_chart_reset_button", None)
+        for button, enabled, role, tooltip in [
+            (prev_button, not at_oldest, "ghost" if not at_oldest else "tonal", "继续向左查看更早数据" if not at_oldest else "已经到最左侧边界"),
+            (next_button, not at_latest, "ghost" if not at_latest else "tonal", "向右返回更近数据" if not at_latest else "已经在最新位置"),
+            (reset_button, not at_latest, "tonal", "回到最新窗口" if not at_latest else "当前已经是最新窗口"),
+        ]:
+            if button is None:
+                continue
+            button.setEnabled(enabled)
+            button.setToolTip(tooltip)
+            self._set_button_role(button, role)
+
+        if hasattr(self, "market_status_label"):
+            status_text = self.market_status_label.text()
+            base = status_text.split(" | 区间：", 1)[0].split(" | 视窗：", 1)[0].split(" | 视窗偏移：", 1)[0]
+            if max_offset <= 0:
+                view_text = "第 1 屏 / 共 1 屏"
+            elif at_latest:
+                view_text = f"第 {screen_index} 屏 / 共 {screen_total} 屏 | 已在最新位置"
+            elif at_oldest:
+                view_text = f"第 {screen_index} 屏 / 共 {screen_total} 屏 | 已到最左侧边界"
+            else:
+                view_text = f"第 {screen_index} 屏 / 共 {screen_total} 屏"
+            self._set_label_text_if_changed(self.market_status_label, f"{base} | 区间：{range_text} | 视窗：{view_text}")
+
+    def shift_market_chart_window(self, step_delta: int, *, fine: bool = False) -> None:
+        current_symbol = self._current_market_chart_symbol()
         if not current_symbol:
             return
-        bars = self.universe_bars.get(current_symbol, [])
-        history_sizes = {"近1月": 22, "近3月": 66, "近1年": 250, "全部": len(bars)}
-        target_size = max(20, min(history_sizes.get(self.market_history_window, 250), len(bars))) if bars else 20
-        step = max(10, target_size // 3)
-        max_offset = max((len(bars) - target_size + step - 1) // step, 0) if bars else 0
-        self.market_chart_offset = max(0, min(self.market_chart_offset + step_delta, max_offset))
-        if hasattr(self, "market_status_label"):
-            base = self.market_status_label.text().split(" | 视窗偏移：", 1)[0]
-            suffix = "" if self.market_chart_offset == 0 else f" | 视窗偏移：{self.market_chart_offset}"
-            self._set_label_text_if_changed(self.market_status_label, base + suffix)
+        chart_series = getattr(self.market_screen_result, "chart_series_by_symbol", {}).get(current_symbol)
+        snapshot = getattr(self.market_screen_result, "snapshots", {}).get(current_symbol)
+        _, _, fine_step, coarse_step, max_offset = self._market_chart_navigation_metrics(current_symbol, chart_series, snapshot)
+        step = fine_step if fine else coarse_step
+        previous_offset = getattr(self, "market_chart_offset", 0)
+        self.market_chart_offset = max(0, min(previous_offset + step_delta, max_offset))
         self._render_market_dashboard(current_symbol)
+
+    def keyPressEvent(self, event) -> None:
+        if getattr(self, "tabs", None) is not None and self.tabs.currentWidget() is self.overview_tab:
+            fine = bool(event.modifiers() & Qt.ShiftModifier)
+            if event.key() == Qt.Key_Left:
+                self.shift_market_chart_window(1, fine=fine)
+                event.accept()
+                return
+            if event.key() == Qt.Key_Right:
+                self.shift_market_chart_window(-1, fine=fine)
+                event.accept()
+                return
+            if event.key() == Qt.Key_Home:
+                self.reset_market_chart_window()
+                event.accept()
+                return
+        super().keyPressEvent(event)
 
     def toggle_market_overlay(self, overlay_name: str) -> None:
         if not overlay_name:
@@ -10071,12 +11023,19 @@ QPushButton#accentButton:hover {
             return
 
         recommendation = next((item for item in getattr(self, "daily_pool_rows", []) if getattr(item, "symbol", "") == intent.symbol), None)
-        blockers = list((getattr(self, "last_broker_execution_summary", {}) or {}).get("blockers", []))
-        warnings = list((getattr(self, "last_broker_execution_summary", {}) or {}).get("warnings", []))
+        summary = dict(getattr(self, "last_broker_execution_summary", {}) or {})
+        blockers = list(summary.get("blockers", []))
+        warnings = list(summary.get("warnings", []))
+        portfolio_review = dict(summary.get("portfolio_risk_review", {}) or {})
+        portfolio_rows = list(portfolio_review.get("rows", []))
+        portfolio_row = next((row for row in portfolio_rows if str(row.get("symbol", "")) == str(getattr(intent, "symbol", ""))), {})
         available_qty = next((getattr(item, "available", None) for item in getattr(self, "holdings", []) if getattr(item, "symbol", "") == intent.symbol), None)
         preview_row = {}
         allowed = True
-        if str(getattr(intent, "side", "") or "").upper() in {"SELL", "REDUCE"} and available_qty is not None and int(getattr(intent, "quantity", 0) or 0) > int(available_qty):
+        side = str(getattr(intent, "side", "") or "").upper()
+        quantity = int(getattr(intent, "quantity", 0) or 0)
+        estimated_amount = float(getattr(intent, "price", 0.0) or 0.0) * quantity
+        if side in {"SELL", "REDUCE"} and available_qty is not None and quantity > int(available_qty):
             preview_row = {"status": "超卖"}
             allowed = False
         risk_lamp = self._broker_risk_lamp_for_intent(intent, recommendation=recommendation) if hasattr(self, "_broker_risk_lamp_for_intent") else "黄灯"
@@ -10093,15 +11052,40 @@ QPushButton#accentButton:hover {
         flow_signal = str(getattr(recommendation, "mainline_flow_signal", "") or "待确认")
         stage_label = str(getattr(recommendation, "mainline_stage", "") or "待确认")
         mainline_brief = QuantHunterWindow._position_mainline_brief(self, recommendation) if recommendation is not None else "待确认"
+        portfolio_status = str(portfolio_row.get("status", "") or portfolio_review.get("status", "待评估") or "待评估")
+        portfolio_detail = str(portfolio_row.get("detail", "") or "")
+        loss_ratio = float(portfolio_row.get("loss_ratio", 0.0) or 0.0)
+        asset_usage_ratio = float(portfolio_row.get("asset_usage_ratio", 0.0) or 0.0)
+        cash_usage_ratio = float(portfolio_row.get("cash_usage_ratio", 0.0) or 0.0)
+        side_text = self._display_action(getattr(intent, "side", ""))
+        if side == "BUY":
+            impact_summary = f"组合影响：{portfolio_status} | 单笔止损 {loss_ratio:.1%} 总资产 | 占用 {asset_usage_ratio:.1%} 资产"
+            if cash_usage_ratio > 0:
+                impact_summary += f" / {cash_usage_ratio:.1%} 可用资金"
+            impact_detail = portfolio_detail or "仓位风险可控，可继续结合主线闸门复核。"
+            position_value = f"占用 {estimated_amount:,.0f}"
+            position_accent = impact_summary.replace("组合影响：", "")
+        elif side in {"SELL", "REDUCE"}:
+            impact_summary = f"组合影响：预计释放 {estimated_amount:,.0f} 资金 | 可卖 {available_qty if available_qty is not None else '--'}"
+            impact_detail = "优先确认这是止盈或风控动作，避免误卖仍在主线前排的仓位。"
+            position_value = f"释放 {estimated_amount:,.0f}"
+            position_accent = f"可卖 {available_qty}" if available_qty is not None else "等待持仓同步"
+        else:
+            impact_summary = "组合影响：待结合委托方向继续评估"
+            impact_detail = portfolio_detail or "先完成委托生成，再看仓位与风险预算。"
+            position_value = f"{side_text} {quantity}"
+            position_accent = impact_detail
 
         lines = [
             "当前委托动作面板",
             "",
             f"股票：{self._stock_name_for_symbol(intent.symbol)} ({self._stock_id_for_symbol(intent.symbol)} / {intent.symbol})",
-            f"委托方向：{self._display_action(getattr(intent, 'side', ''))}",
+            f"委托方向：{side_text}",
             f"动作建议：{action_label}",
             f"主线状态：{flow_signal} / {stage_label} | {mainline_brief}",
             f"下一步：{action_hint}",
+            impact_summary,
+            f"缓解动作：{impact_detail}",
             f"阻塞/预警：{risk_summary}",
             f"可卖信息：{'可卖 ' + str(available_qty) if available_qty is not None else '暂无持仓数据'}",
         ]
@@ -10109,19 +11093,17 @@ QPushButton#accentButton:hover {
         if hasattr(self, "orders_focus_label"):
             QuantHunterWindow._set_label_text_if_changed(self, self.orders_focus_label, f"委托动作面板 / 委托焦点：动作建议 {action_label} | 主线 {flow_signal}")
         if hasattr(self, "broker_order_metric_labels"):
-            side_text = self._display_action(getattr(intent, "side", ""))
             QuantHunterWindow._set_label_text_if_changed(self, self.broker_order_metric_labels["symbol"], self._stock_name_for_symbol(intent.symbol))
             QuantHunterWindow._set_label_text_if_changed(self, self.broker_order_metric_accents["symbol"], f"{self._stock_id_for_symbol(intent.symbol)} / {intent.symbol}")
             QuantHunterWindow._set_label_text_if_changed(self, self.broker_order_metric_labels["gate"], mainline_brief)
             QuantHunterWindow._set_label_text_if_changed(self, self.broker_order_metric_accents["gate"], f"{flow_signal} / {stage_label}")
             QuantHunterWindow._set_label_text_if_changed(self, self.broker_order_metric_labels["risk"], risk_lamp)
             QuantHunterWindow._set_label_text_if_changed(self, self.broker_order_metric_accents["risk"], action_hint)
-            quantity = int(getattr(intent, "quantity", 0) or 0)
-            QuantHunterWindow._set_label_text_if_changed(self, self.broker_order_metric_labels["position"], f"{side_text} {quantity}")
+            QuantHunterWindow._set_label_text_if_changed(self, self.broker_order_metric_labels["position"], position_value)
             QuantHunterWindow._set_label_text_if_changed(
                 self,
                 self.broker_order_metric_accents["position"],
-                f"可卖 {available_qty}" if available_qty is not None else "等待持仓同步"
+                position_accent,
             )
 
     def _selected_daily_pool_recommendation(self):
@@ -10743,6 +11725,7 @@ QPushButton#accentButton:hover {
         self._update_daily_chart(symbol)
         self._update_market_text_panels(symbol, snapshot, recommendation)
         self._refresh_overview_focus_cards(symbol, snapshot, recommendation)
+        self._refresh_market_chart_navigation_state(symbol, chart_series, snapshot)
         self._schedule_market_auxiliary_render(symbol)
 
     def _normalize_recommend_workspace_texts(self) -> None:
@@ -10960,7 +11943,7 @@ QPushButton#accentButton:hover {
             ("market_filter_buttons", ["全部", "龙头模型", "主力雷达", "擒龙打板", "价值低吸", "尾盘买入法", "一日持股法", "掘龙决策"], self.set_market_filter),
             ("timeframe_buttons", ["分时", "1分", "5分", "15分", "30分", "60分", "日线", "周线", "月线"], self.set_market_timeframe),
             ("history_window_buttons", ["近1月", "近3月", "近1年", "全部"], self.set_market_history_window),
-            ("secondary_indicator_buttons", ["MACD", "RSI", "KDJ"], self.set_market_secondary_indicator),
+            ("secondary_indicator_buttons", ["MACD", "RSI", "KDJ", "VOL"], self.set_market_secondary_indicator),
         ]
         for attr_name, labels, handler in button_groups:
             current_map = getattr(self, attr_name, None)
@@ -11282,7 +12265,10 @@ QPushButton#accentButton:hover {
                 self._set_label_text_if_changed(self.market_status_label, f"{base_text} | \u89c6\u56fe\uff1a{self.overview_focus_mode}")
 
     def set_market_timeframe(self, timeframe: str) -> None:
-        self.market_timeframe_mode = timeframe or "\u65e5\u7ebf"
+        self._apply_market_timeframe(timeframe)
+
+    def _apply_market_timeframe(self, timeframe: str) -> None:
+        self.market_timeframe_mode = self._normalize_market_timeframe(timeframe)
         matched = False
         for button in getattr(self, "timeframe_buttons", {}).values():
             checked = button.text() == self.market_timeframe_mode
@@ -11295,37 +12281,45 @@ QPushButton#accentButton:hover {
             self.market_timeframe_mode = fallback.text()
             fallback.setChecked(True)
 
-        intraday_height = 300 if self.market_timeframe_mode != "\u65e5\u7ebf" else 250
-        daily_height = 320 if self.market_timeframe_mode != "\u65e5\u7ebf" else 360
+        intraday_mode = self._is_intraday_market_timeframe()
         if hasattr(self, "intraday_chart_view"):
-            self.intraday_chart_view.setMinimumHeight(intraday_height)
+            self.intraday_chart_view.setMinimumHeight(320 if intraday_mode else 250)
             chart = self.intraday_chart_view.chart()
             if chart is not None:
-                title = "\u5e02\u573a\u4ee3\u7406\u8d70\u52bf" if self.market_timeframe_mode == "\u65e5\u7ebf" else f"{self.market_timeframe_mode} \u8d70\u52bf"
+                title = "市场代理走势" if not intraday_mode else f"{self.market_timeframe_mode} 分时走势"
                 if chart.title() != title:
                     chart.setTitle(title)
         if hasattr(self, "daily_chart_view"):
-            self.daily_chart_view.setMinimumHeight(daily_height)
+            self.daily_chart_view.setMinimumHeight(360)
             chart = self.daily_chart_view.chart()
             if chart is not None:
-                title = "\u65e5\u7ebf\u4e3b\u56fe" if self.market_timeframe_mode == "\u65e5\u7ebf" else f"{self.market_timeframe_mode} \u4e3b\u56fe"
+                title = "日线主图" if self.market_timeframe_mode == "日线" else f"{self.market_timeframe_mode} 主图"
                 if chart.title() != title:
                     chart.setTitle(title)
         if hasattr(self, "fund_chart_view"):
             chart = self.fund_chart_view.chart()
             if chart is not None:
-                title = "\u4e3b\u529b\u8d44\u91d1" if self.market_timeframe_mode == "\u65e5\u7ebf" else f"{self.market_timeframe_mode} \u8d44\u91d1"
+                title = (
+                    "主力资金" if intraday_mode and self.market_timeframe_mode == "分时"
+                    else (f"{self.market_timeframe_mode} 资金" if intraday_mode else ("成交量" if self.market_timeframe_mode == "日线" else f"{self.market_timeframe_mode} 成交量"))
+                )
                 if chart.title() != title:
                     chart.setTitle(title)
         if hasattr(self, "momentum_chart_view"):
             chart = self.momentum_chart_view.chart()
             if chart is not None:
-                title = "\u9f99\u5934\u52a8\u80fd" if self.market_timeframe_mode == "\u65e5\u7ebf" else f"{self.market_timeframe_mode} \u52a8\u80fd"
+                title = "龙头动能" if self.market_timeframe_mode == "日线" else f"{self.market_timeframe_mode} 动能"
                 if chart.title() != title:
                     chart.setTitle(title)
+
+        self.market_chart_offset = 0
         if hasattr(self, "market_status_label"):
-            base = self.market_status_label.text().split(" | \u7a97\u53e3\uff1a", 1)[0]
-            self._set_label_text_if_changed(self.market_status_label, f"{base} | \u7a97\u53e3\uff1a{self.market_timeframe_mode}")
+            base = self.market_status_label.text().split(" | \u7a97\u53e3\uff1a", 1)[0].split(" | 区间：", 1)[0].split(" | 视窗：", 1)[0]
+            self._set_label_text_if_changed(self.market_status_label, f"{base} | 窗口：{self.market_timeframe_mode}")
+
+        current_symbol = self._current_market_chart_symbol()
+        if current_symbol:
+            self._render_market_dashboard(current_symbol)
 
     def _normalize_auth_workspace_texts(self) -> None:
         auth_tab = getattr(self, "auth_tab", None)
@@ -12547,7 +13541,14 @@ QPushButton#accentButton:hover {
         config_tab = getattr(self, "config_tab", None)
         if config_tab is None:
             return
+        group_by_name = {
+            "configStrategyBox": "策略参数",
+            "configLicenseBox": "授权与状态",
+            "configRiskSnapshotBox": "风险档位快照",
+            "configNotesBox": "说明",
+        }
         for group in config_tab.findChildren(QGroupBox):
+            object_name = group.objectName().strip() if hasattr(group, "objectName") else ""
             title = (group.title() or "").strip()
             title_map = {
                 "策略参数": "策略参数",
@@ -12555,6 +13556,11 @@ QPushButton#accentButton:hover {
                 "授权与状态": "授权与状态",
                 "风险设置": "风险与仓位",
             }
+            if object_name in group_by_name:
+                normalized = group_by_name[object_name]
+                if title != normalized:
+                    group.setTitle(normalized)
+                continue
             if title in title_map or self._has_mojibake_text(title):
                 normalized = title_map.get(title, title or "配置分组")
                 if title != normalized:
@@ -12586,6 +13592,14 @@ QPushButton#accentButton:hover {
                 "- 关注题材会影响排序、报告和提醒。\n"
                 "- 保存配置后，登录页、推荐页和交易页都会同步刷新说明。"
             )
+        if hasattr(self, "theme_drop_reduce_checkbox"):
+            self.theme_drop_reduce_checkbox.setText("题材掉队时优先减仓")
+        if hasattr(self, "auto_daily_plan_export_checkbox"):
+            self.auto_daily_plan_export_checkbox.setText("启用自动盘前报告")
+        if hasattr(self, "daily_plan_focus_only_checkbox"):
+            self.daily_plan_focus_only_checkbox.setText("仅输出关注题材")
+        if hasattr(self, "risk_snapshot_cards"):
+            self._refresh_risk_snapshot_cards()
 
     def _prime_recommend_workspace_defaults(self) -> None:
         if hasattr(self, "recommend_status_label"):
@@ -15276,6 +16290,10 @@ def _qh_refresh_board_focus_cards(
 
 
 QuantHunterWindow._apply_runtime_font_preferences = _qh_apply_runtime_font_preferences
+if "_qh_complete_post_build_chrome_bootstrap_v29" in globals():
+    QuantHunterWindow._complete_post_build_chrome_bootstrap_v29 = _qh_complete_post_build_chrome_bootstrap_v29
+if "_qh_schedule_post_build_chrome_bootstrap_v29" in globals():
+    QuantHunterWindow._schedule_post_build_chrome_bootstrap_v29 = _qh_schedule_post_build_chrome_bootstrap_v29
 QuantHunterWindow._polish_visual_surfaces = _qh_polish_visual_surfaces
 QuantHunterWindow._qh_visual_surface_palette_v1 = _qh_visual_surface_palette_v1
 QuantHunterWindow._apply_visual_surface_stylesheet_v1 = _qh_apply_visual_surface_stylesheet_v1
@@ -15531,7 +16549,7 @@ def _qh_normalize_overview_builder_texts_v2(self: QuantHunterWindow) -> None:
         ("market_filter_buttons", STRATEGY_FILTER_LABELS, self.set_market_filter),
         ("timeframe_buttons", ["分时", "1分", "5分", "15分", "30分", "60分", "日线", "周线", "月线"], self.set_market_timeframe),
         ("history_window_buttons", ["近1月", "近3月", "近1年", "全部"], self.set_market_history_window),
-        ("secondary_indicator_buttons", ["MACD", "RSI", "KDJ"], self.set_market_secondary_indicator),
+            ("secondary_indicator_buttons", ["MACD", "RSI", "KDJ", "VOL"], self.set_market_secondary_indicator),
     ]
     for attr_name, labels, handler in button_groups:
         current_map = getattr(self, attr_name, None)
@@ -19951,6 +20969,124 @@ for _startup_deferred_method_name in (
             _startup_deferred_method_name,
             _qh_wrap_startup_deferred_refresh_v1(getattr(QuantHunterWindow, _startup_deferred_method_name)),
         )
+
+
+def _qh_recommend_primary_cta_v38(
+    current,
+    *,
+    can_submit: bool,
+    can_open_broker: bool,
+    execution_state: str,
+    verdict: str,
+    execution_summary: str,
+) -> tuple[str, str]:
+    reject_reason = str(getattr(current, "reject_reason", "") or "").strip()
+    next_focus = str(getattr(current, "next_focus", "") or "").strip()
+    if execution_state == "已提交":
+        return ("去交易页盯回执", "这只票已经进入提交/回执阶段，优先确认成交结果、偏差和后续处理。")
+    if execution_state == "已送审":
+        return ("先盯送审结果", "当前已经送审，先确认是否通过，再决定是否切到交易执行。")
+    if execution_state == "提交失败":
+        return ("先回看失败原因", f"先处理失败原因和参数偏差，再决定是否重试。{execution_summary}")
+    if can_submit:
+        return ("推进送审", "当前条件已经比较齐，先送审，再去交易页复核委托和仓位。")
+    if reject_reason:
+        return ("先看暂不执行原因", reject_reason)
+    if can_open_broker:
+        return ("去交易页复核", "虽然未到直接送审状态，但可以先去交易页检查计划、闸门和组合影响。")
+    return ("先补确认信号", next_focus or execution_summary or verdict)
+
+
+_ORIGINAL_QH_REFRESH_RECOMMEND_DECISION_SUMMARY_V38 = QuantHunterWindow._refresh_recommend_decision_summary
+_ORIGINAL_QH_REFRESH_RECOMMENDATION_FOCUS_PANELS_V38 = QuantHunterWindow._refresh_recommendation_focus_panels
+
+
+def _qh_refresh_recommend_decision_summary_v38(self: QuantHunterWindow, row=None) -> None:
+    _ORIGINAL_QH_REFRESH_RECOMMEND_DECISION_SUMMARY_V38(self, row)
+    text_widget = getattr(self, "recommend_decision_summary_text", None)
+    if not isinstance(text_widget, QTextEdit):
+        return
+    current = row or (self._current_recommend_focus() if hasattr(self, "_current_recommend_focus") else None)
+    if current is None:
+        return
+
+    verdict, execution_summary, can_submit, can_open_broker = _qh_recommend_execution_summary_v24(self, current)
+    execution_state = str(getattr(current, "execution_status", "") or "待观察")
+    primary_headline, primary_detail = _qh_recommend_primary_cta_v38(
+        current,
+        can_submit=can_submit,
+        can_open_broker=can_open_broker,
+        execution_state=execution_state,
+        verdict=verdict,
+        execution_summary=execution_summary,
+    )
+    route_detail = "优先点击“进入送审”"
+    if execution_state == "已提交":
+        route_detail = "优先点击“查看交易回执”"
+    elif execution_state == "已送审":
+        route_detail = "优先点击“查看送审中”"
+    elif execution_state == "提交失败":
+        route_detail = "优先点击“重试前复核”或先去复盘页"
+    elif not can_submit and can_open_broker:
+        route_detail = "优先点击“打开交易执行”"
+    elif not can_submit:
+        route_detail = "优先点击“查看复盘证据”"
+
+    lines = [
+        line
+        for line in text_widget.toPlainText().splitlines()
+        if not line.startswith("首选动作：") and not line.startswith("路径建议：")
+    ]
+    insert_at = next((index for index, value in enumerate(lines) if value.startswith("下一步：")), len(lines))
+    lines[insert_at:insert_at] = [
+        f"首选动作：{primary_headline}",
+        f"路径建议：{primary_detail} | {route_detail}",
+    ]
+    self._set_plain_text_if_changed(text_widget, "\n".join(lines))
+
+    push_button = getattr(self, "recommend_push_focus_button", None)
+    if isinstance(push_button, QPushButton):
+        push_tip = str(push_button.toolTip() or "").split("\n首选动作：", 1)[0].strip()
+        push_button.setToolTip((push_tip + "\n" if push_tip else "") + f"首选动作：{primary_headline}")
+    detail_button = getattr(self, "recommend_detail_focus_button", None)
+    if isinstance(detail_button, QPushButton):
+        detail_tip = str(detail_button.toolTip() or "").split("\n首选动作：", 1)[0].strip()
+        detail_button.setToolTip((detail_tip + "\n" if detail_tip else "") + f"首选动作：{primary_headline} | {primary_detail}")
+    broker_button = getattr(self, "recommend_broker_focus_button", None)
+    if isinstance(broker_button, QPushButton):
+        broker_tip = str(broker_button.toolTip() or "").split("\n首选动作：", 1)[0].strip()
+        broker_button.setToolTip((broker_tip + "\n" if broker_tip else "") + f"首选动作：{primary_headline}")
+
+
+def _qh_refresh_recommendation_focus_panels_v38(self: QuantHunterWindow, row=None) -> None:
+    _ORIGINAL_QH_REFRESH_RECOMMENDATION_FOCUS_PANELS_V38(self, row)
+    review_widget = getattr(self, "recommend_focus_review_text", None)
+    if not isinstance(review_widget, QTextEdit):
+        return
+    current = row or (self._current_recommend_focus() if hasattr(self, "_current_recommend_focus") else None)
+    if current is None:
+        return
+    verdict, execution_summary, can_submit, can_open_broker = _qh_recommend_execution_summary_v24(self, current)
+    execution_state = str(getattr(current, "execution_status", "") or "待观察")
+    primary_headline, primary_detail = _qh_recommend_primary_cta_v38(
+        current,
+        can_submit=can_submit,
+        can_open_broker=can_open_broker,
+        execution_state=execution_state,
+        verdict=verdict,
+        execution_summary=execution_summary,
+    )
+    lines = [
+        line
+        for line in review_widget.toPlainText().splitlines()
+        if not line.startswith("首选动作：")
+    ]
+    lines.append(f"首选动作：{primary_headline} | {primary_detail}")
+    self._set_plain_text_if_changed(review_widget, "\n".join(lines))
+
+
+QuantHunterWindow._refresh_recommend_decision_summary = _qh_refresh_recommend_decision_summary_v38
+QuantHunterWindow._refresh_recommendation_focus_panels = _qh_refresh_recommendation_focus_panels_v38
 
 
 def main() -> int:

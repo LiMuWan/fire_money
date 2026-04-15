@@ -258,13 +258,31 @@ $iexpressExe = Join-Path $env:SystemRoot "SysWOW64\iexpress.exe"
 if (-not (Test-Path -LiteralPath $iexpressExe)) {
     $iexpressExe = Join-Path $env:SystemRoot "System32\iexpress.exe"
 }
-& $iexpressExe /N /Q $sedPath
-if ($LASTEXITCODE -ne 0) {
-    Write-Warning "IExpress failed with exit code $LASTEXITCODE"
+if (Test-Path -LiteralPath $iexpressExe) {
+    & $iexpressExe /N /Q $sedPath
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "IExpress failed with exit code $LASTEXITCODE"
+    }
+}
+else {
+    Write-Warning "IExpress is not available on this machine."
 }
 
 if (-not (Test-Path -LiteralPath $installerPath)) {
-    Write-Warning "IExpress did not create the installer EXE. Falling back to self-extracting archive."
+    Write-Warning "IExpress did not create the installer EXE. Falling back to PyInstaller installer stub."
+    $pythonExe = Join-Path $env:LocalAppData "Programs\Python\Python313\python.exe"
+    if (-not (Test-Path -LiteralPath $pythonExe)) {
+        $pythonExe = "python"
+    }
+    $installerStub = Join-Path $projectRoot "tools\install_bundle_stub.py"
+    $installerWorkDir = Join-Path $stageDir "installer_stub"
+    $installerSpecDir = $stageDir
+    $installerBaseName = [System.IO.Path]::GetFileNameWithoutExtension($installerName)
+    $runtimeTmpDir = Join-Path $env:LocalAppData "QuantHunterInstallerTemp"
+    & $pythonExe -m PyInstaller --noconfirm --clean --onefile --runtime-tmpdir $runtimeTmpDir --name $installerBaseName --distpath $releaseDir --workpath $installerWorkDir --specpath $installerSpecDir $installerStub --add-data "${portableZipPath};."
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "PyInstaller installer stub creation failed with exit code $LASTEXITCODE"
+    }
 }
 
 $sevenZip = "C:\Program Files\Tencent\Androws\Application\5.10.5600.5370\7z.exe"

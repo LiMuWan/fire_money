@@ -6,7 +6,7 @@
 - Environment: Windows / PowerShell
 - Main runtime: Python 3.13.12
 - Compatibility runtime: Python 3.12.10
-- Full regression result: 220 tests passed
+- Full regression result: 230 tests passed
 
 The current desktop app, core strategy flow, broker execution checks, report export, paper trading loop, cache handling, and CSV fault tolerance are all passing regression in the main runtime.
 
@@ -33,6 +33,7 @@ The current desktop app, core strategy flow, broker execution checks, report exp
 ## Performance Baseline
 
 See [perf_baseline_2026-04-15.json](/C:/Users/18335/Documents/New%20project/docs/perf_baseline_2026-04-15.json).
+See [PERF_COMPARISON_2026-04-15.md](/C:/Users/18335/Documents/New%20project/docs/PERF_COMPARISON_2026-04-15.md).
 
 Current representative baseline:
 
