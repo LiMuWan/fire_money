@@ -964,8 +964,8 @@ def build_overview_workspace(
     center_layout.addLayout(history_row)
     chart_control_row = QHBoxLayout()
     chart_control_row.setSpacing(8)
-    prev_chart_button = QPushButton("向左看")
-    next_chart_button = QPushButton("向右看")
+    prev_chart_button = QPushButton("向左翻一屏")
+    next_chart_button = QPushButton("向右翻一屏")
     reset_chart_button = QPushButton("回到最新")
     window.market_chart_prev_button = prev_chart_button
     window.market_chart_next_button = next_chart_button
@@ -973,6 +973,9 @@ def build_overview_workspace(
     window._set_button_role(prev_chart_button)
     window._set_button_role(next_chart_button)
     window._set_button_role(reset_chart_button, "tonal")
+    prev_chart_button.setToolTip("向左翻一屏，查看更早的数据。按 PageUp 也可翻屏，Shift+左键 可细步进。")
+    next_chart_button.setToolTip("向右翻一屏，返回更近的数据。按 PageDown 也可翻屏，Shift+右键 可细步进。")
+    reset_chart_button.setToolTip("回到最新窗口。按 Home 可快速重置。")
     prev_chart_button.clicked.connect(lambda: window.shift_market_chart_window(1))
     next_chart_button.clicked.connect(lambda: window.shift_market_chart_window(-1))
     reset_chart_button.clicked.connect(window.reset_market_chart_window)
@@ -980,9 +983,13 @@ def build_overview_workspace(
     chart_control_row.addWidget(next_chart_button)
     chart_control_row.addWidget(reset_chart_button)
     chart_control_row.addSpacing(12)
+    window.market_chart_nav_label = QLabel("K 线导航：日线 | 近1年 | 第 1 屏 / 共 1 屏")
+    window.market_chart_nav_label.setObjectName("inlineHint")
+    chart_control_row.addWidget(window.market_chart_nav_label)
+    chart_control_row.addSpacing(12)
     chart_control_row.addWidget(QLabel("主图叠加"))
     window.market_overlay_buttons = {}
-    for text, checked in [("MA", True), ("BOLL", True)]:
+    for text, checked in [("MA", True), ("BOLL", True), ("HIGHLOW", True), ("BREAK", False)]:
         button = QPushButton(text)
         button.setCheckable(True)
         button.setChecked(checked)

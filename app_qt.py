@@ -8,7 +8,7 @@ from datetime import datetime, time
 from pathlib import Path
 
 from PySide6.QtCore import QDateTime, QModelIndex, QObject, QPointF, QRunnable, Qt, QThreadPool, QTimer, QUrl, Signal, QMargins
-from PySide6.QtGui import QCloseEvent, QColor, QDesktopServices, QFont, QFontDatabase, QMouseEvent, QPen, QWheelEvent
+from PySide6.QtGui import QCloseEvent, QColor, QDesktopServices, QFont, QFontDatabase, QLinearGradient, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap, QWheelEvent
 from PySide6.QtCharts import (
     QBarCategoryAxis,
     QBarSeries,
@@ -19,6 +19,7 @@ from PySide6.QtCharts import (
     QChartView,
     QDateTimeAxis,
     QLineSeries,
+    QScatterSeries,
     QValueAxis,
 )
 from PySide6.QtWidgets import (
@@ -41,6 +42,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QTableWidget,
@@ -1345,6 +1347,58 @@ TERMINAL_WORKSPACE_STYLE = """
     }
     QLabel#shellPulseMeta[pageTone="config"] {
         color: #bfcad4;
+    }
+    QFrame#startupLoadingFrame {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(16, 23, 31, 0.96), stop:1 rgba(12, 18, 25, 0.96));
+        border: 1px solid rgba(118, 140, 168, 0.18);
+        border-radius: 18px;
+    }
+    QLabel#startupLoadingTitle {
+        color: #f6fbff;
+        font-size: 13px;
+        font-weight: 900;
+    }
+    QLabel#startupLoadingLogo {
+        min-width: 52px;
+        max-width: 52px;
+        min-height: 52px;
+        max-height: 52px;
+        border-radius: 16px;
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #66e0a3, stop:0.58 #5fb3ff, stop:1 #7ed7ff);
+        color: #0d1620;
+        font-size: 20px;
+        font-weight: 900;
+        letter-spacing: 1px;
+        padding: 6px;
+    }
+    QLabel#startupLoadingBrand {
+        color: #d7ecff;
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 1px;
+    }
+    QLabel#startupLoadingMeta {
+        color: #a9bfd7;
+        font-size: 11px;
+        font-weight: 700;
+    }
+    QLabel#startupLoadingSkeleton {
+        background: rgba(126, 183, 255, 0.10);
+        color: #d4e7ff;
+        border: 1px solid rgba(126, 183, 255, 0.12);
+        border-radius: 10px;
+        padding: 8px 10px;
+        font-size: 11px;
+        font-weight: 700;
+    }
+    QProgressBar#startupLoadingProgress {
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(118, 140, 168, 0.18);
+        border-radius: 6px;
+    }
+    QProgressBar#startupLoadingProgress::chunk {
+        border-radius: 5px;
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4ecdc4, stop:0.55 #5fb3ff, stop:1 #7ed7ff);
     }
     QWidget#scannerRoot,
     QWidget#recommendRoot,
@@ -2699,15 +2753,443 @@ class BackgroundTask(QRunnable):
 BACKGROUND_TASK_REGISTRY: list[BackgroundTask] = []
 
 
+def build_quant_hunter_logo_pixmap(size: int = 72) -> QPixmap:
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+
+    background = QLinearGradient(0, 0, size, size)
+    background.setColorAt(0.0, QColor("#66e0a3"))
+    background.setColorAt(0.58, QColor("#5fb3ff"))
+    background.setColorAt(1.0, QColor("#7ed7ff"))
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(background)
+    painter.drawRoundedRect(0, 0, size, size, 22, 22)
+
+    inner = QPainterPath()
+    inner.addRoundedRect(8, 8, size - 16, size - 16, 16, 16)
+    painter.fillPath(inner, QColor(11, 20, 31, 168))
+
+    line_pen = QPen(QColor("#effaff"))
+    line_pen.setWidth(4)
+    line_pen.setCapStyle(Qt.RoundCap)
+    line_pen.setJoinStyle(Qt.RoundJoin)
+    painter.setPen(line_pen)
+    signal = QPainterPath()
+    signal.moveTo(size * 0.22, size * 0.66)
+    signal.lineTo(size * 0.38, size * 0.52)
+    signal.lineTo(size * 0.52, size * 0.58)
+    signal.lineTo(size * 0.74, size * 0.34)
+    painter.drawPath(signal)
+
+    painter.setPen(Qt.NoPen)
+    candle_color = QColor("#f8feff")
+    accent_color = QColor("#9af7d2")
+    for x, height, color in (
+        (0.26, 0.18, candle_color),
+        (0.46, 0.26, accent_color),
+        (0.66, 0.34, candle_color),
+    ):
+        center_x = size * x
+        bar_height = size * height
+        top = size * 0.72 - bar_height
+        painter.setBrush(color)
+        painter.drawRoundedRect(center_x - 4, top, 8, bar_height, 4, 4)
+        painter.drawRoundedRect(center_x - 1, top - 8, 2, bar_height + 16, 1, 1)
+
+    painter.end()
+    return pixmap
+
+
+class StartupSplashWindow(QDialog):
+    def __init__(self) -> None:
+        super().__init__(None, Qt.SplashScreen | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setObjectName("startupSplashWindow")
+        self.setModal(False)
+        self.setAttribute(Qt.WA_DeleteOnClose, False)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setFixedSize(780, 440)
+        self._finish_pending = False
+        self.owner_window: QWidget | None = None
+        self._build_ui()
+        self.set_progress(4, "正在点亮机构级交易终端...")
+
+    def _build_stage_card(self, title: str, detail: str) -> tuple[QFrame, QLabel]:
+        card = QFrame()
+        card.setObjectName("startupStageCard")
+        card.setProperty("stageState", "pending")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(6)
+
+        title_label = QLabel(title)
+        title_label.setObjectName("startupStageTitle")
+        detail_label = QLabel(detail)
+        detail_label.setObjectName("startupStageDetail")
+        detail_label.setWordWrap(True)
+        status_label = QLabel("等待接入")
+        status_label.setObjectName("startupStageStatus")
+        status_label.setWordWrap(True)
+
+        layout.addWidget(title_label)
+        layout.addWidget(detail_label)
+        layout.addStretch(1)
+        layout.addWidget(status_label)
+        return card, status_label
+
+    def _set_stage_card_state(self, card: QFrame, label: QLabel, state: str, text: str) -> None:
+        if card.property("stageState") != state:
+            card.setProperty("stageState", state)
+            style = card.style()
+            if style is not None:
+                style.unpolish(card)
+                style.polish(card)
+        label.setText(text)
+
+    def _build_ui(self) -> None:
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(18, 18, 18, 18)
+        root_layout.setSpacing(0)
+
+        panel = QFrame()
+        panel.setObjectName("startupSplashPanel")
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(28, 24, 28, 22)
+        panel_layout.setSpacing(18)
+
+        panel_shadow = QGraphicsDropShadowEffect(panel)
+        panel_shadow.setBlurRadius(42)
+        panel_shadow.setOffset(0, 18)
+        panel_shadow.setColor(QColor(0, 0, 0, 120))
+        panel.setGraphicsEffect(panel_shadow)
+
+        top_row = QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.setSpacing(16)
+
+        self.startup_loading_logo = QLabel()
+        self.startup_loading_logo.setObjectName("startupLoadingLogo")
+        self.startup_loading_logo.setAlignment(Qt.AlignCenter)
+        self.startup_loading_logo.setFixedSize(68, 68)
+        self.startup_loading_logo.setPixmap(build_quant_hunter_logo_pixmap(68))
+        self.startup_loading_logo.setScaledContents(False)
+
+        identity_layout = QVBoxLayout()
+        identity_layout.setContentsMargins(0, 0, 0, 0)
+        identity_layout.setSpacing(4)
+        self.startup_loading_brand = QLabel("QUANT HUNTER PRO")
+        self.startup_loading_brand.setObjectName("startupLoadingBrand")
+        self.startup_loading_title = QLabel("终端正在后台加载资源")
+        self.startup_loading_title.setObjectName("startupSplashTitle")
+        self.startup_loading_label = QLabel("正在初始化工作台...")
+        self.startup_loading_label.setObjectName("startupSplashMessage")
+        self.startup_loading_label.setWordWrap(True)
+        identity_layout.addWidget(self.startup_loading_brand)
+        identity_layout.addWidget(self.startup_loading_title)
+        identity_layout.addWidget(self.startup_loading_label)
+
+        self.startup_loading_meta = QLabel("启动阶段 1 / 4")
+        self.startup_loading_meta.setObjectName("startupLoadingMeta")
+        self.startup_loading_meta.setAlignment(Qt.AlignRight | Qt.AlignTop)
+
+        top_row.addWidget(self.startup_loading_logo)
+        top_row.addLayout(identity_layout, stretch=1)
+        top_row.addWidget(self.startup_loading_meta)
+
+        hero_row = QHBoxLayout()
+        hero_row.setContentsMargins(0, 0, 0, 0)
+        hero_row.setSpacing(14)
+
+        narrative_card = QFrame()
+        narrative_card.setObjectName("startupSplashNarrative")
+        narrative_layout = QVBoxLayout(narrative_card)
+        narrative_layout.setContentsMargins(18, 18, 18, 18)
+        narrative_layout.setSpacing(8)
+
+        narrative_eyebrow = QLabel("INSTITUTIONAL BOOT SEQUENCE")
+        narrative_eyebrow.setObjectName("startupSplashEyebrow")
+        narrative_title = QLabel("行情、策略、工作区正在并行接入")
+        narrative_title.setObjectName("startupSplashHeroTitle")
+        narrative_title.setWordWrap(True)
+        narrative_body = QLabel("启动页会持续回报后台资源加载进度，让用户明确看到终端仍在工作，而不是卡住。")
+        narrative_body.setObjectName("startupSplashHeroBody")
+        narrative_body.setWordWrap(True)
+        narrative_layout.addWidget(narrative_eyebrow)
+        narrative_layout.addWidget(narrative_title)
+        narrative_layout.addWidget(narrative_body)
+        narrative_layout.addStretch(1)
+
+        telemetry_card = QFrame()
+        telemetry_card.setObjectName("startupSplashTelemetry")
+        telemetry_layout = QVBoxLayout(telemetry_card)
+        telemetry_layout.setContentsMargins(18, 18, 18, 18)
+        telemetry_layout.setSpacing(10)
+
+        telemetry_title = QLabel("后台接入")
+        telemetry_title.setObjectName("startupSplashTelemetryTitle")
+        telemetry_note = QLabel("市场快照、本地扫描与图表引擎完成后会自动切入主控台。")
+        telemetry_note.setObjectName("startupSplashTelemetryBody")
+        telemetry_note.setWordWrap(True)
+        telemetry_layout.addWidget(telemetry_title)
+        telemetry_layout.addWidget(telemetry_note)
+
+        self.startup_loading_skeletons = []
+        for text in ("市场快照", "本地股票池", "图表引擎"):
+            skeleton = QLabel(f"加载中 · {text}")
+            skeleton.setObjectName("startupLoadingSkeleton")
+            telemetry_layout.addWidget(skeleton)
+            self.startup_loading_skeletons.append(skeleton)
+        telemetry_layout.addStretch(1)
+
+        hero_row.addWidget(narrative_card, stretch=5)
+        hero_row.addWidget(telemetry_card, stretch=4)
+
+        stage_row = QHBoxLayout()
+        stage_row.setContentsMargins(0, 0, 0, 0)
+        stage_row.setSpacing(10)
+        self.startup_stage_cards: list[dict[str, object]] = []
+        for key, title, detail in (
+            ("workspace", "工作台骨架", "界面框架、主题与终端骨架"),
+            ("local", "本地股票池", "观察池、缓存与数据目录扫描"),
+            ("market", "远程行情", "市场快照、连通性与资源回补"),
+            ("chart", "图表引擎", "K 线渲染、指标层与终端切入"),
+        ):
+            card, status_label = self._build_stage_card(title, detail)
+            stage_row.addWidget(card, stretch=1)
+            self.startup_stage_cards.append(
+                {
+                    "key": key,
+                    "frame": card,
+                    "status": status_label,
+                }
+            )
+
+        progress_box = QFrame()
+        progress_box.setObjectName("startupSplashProgressBox")
+        progress_layout = QVBoxLayout(progress_box)
+        progress_layout.setContentsMargins(18, 16, 18, 16)
+        progress_layout.setSpacing(10)
+
+        progress_caption_row = QHBoxLayout()
+        progress_caption_row.setContentsMargins(0, 0, 0, 0)
+        progress_caption_row.setSpacing(8)
+        progress_caption = QLabel("启动进度")
+        progress_caption.setObjectName("startupSplashProgressCaption")
+        self.startup_loading_percent = QLabel("04%")
+        self.startup_loading_percent.setObjectName("startupSplashPercent")
+        self.startup_loading_percent.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        progress_caption_row.addWidget(progress_caption)
+        progress_caption_row.addStretch(1)
+        progress_caption_row.addWidget(self.startup_loading_percent)
+
+        self.startup_loading_progress = QProgressBar()
+        self.startup_loading_progress.setObjectName("startupLoadingProgress")
+        self.startup_loading_progress.setRange(0, 100)
+        self.startup_loading_progress.setTextVisible(False)
+        self.startup_loading_progress.setFixedHeight(12)
+
+        progress_footnote = QLabel("主窗口创建后会自动接管，启动页随后平滑退出。")
+        progress_footnote.setObjectName("startupSplashTelemetryBody")
+        progress_footnote.setWordWrap(True)
+
+        progress_layout.addLayout(progress_caption_row)
+        progress_layout.addWidget(self.startup_loading_progress)
+        progress_layout.addWidget(progress_footnote)
+
+        panel_layout.addLayout(top_row)
+        panel_layout.addLayout(hero_row)
+        panel_layout.addLayout(stage_row)
+        panel_layout.addWidget(progress_box)
+        root_layout.addWidget(panel)
+
+        self.setStyleSheet(
+            """
+            QDialog#startupSplashWindow {
+                background: transparent;
+            }
+            QFrame#startupSplashPanel {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(12, 19, 27, 0.98), stop:0.58 rgba(15, 24, 35, 0.98), stop:1 rgba(9, 16, 24, 0.99));
+                border: 1px solid rgba(118, 140, 168, 0.22);
+                border-radius: 28px;
+            }
+            QLabel#startupLoadingLogo {
+                background: rgba(255, 255, 255, 0.02);
+                border: 1px solid rgba(126, 183, 255, 0.10);
+                border-radius: 20px;
+                padding: 4px;
+            }
+            QLabel#startupLoadingBrand {
+                color: #93aeca;
+                font-size: 11px;
+                font-weight: 800;
+                letter-spacing: 1px;
+            }
+            QLabel#startupSplashTitle {
+                color: #f6fbff;
+                font-size: 26px;
+                font-weight: 900;
+            }
+            QLabel#startupSplashMessage {
+                color: #d6e7fb;
+                font-size: 14px;
+                font-weight: 600;
+            }
+            QLabel#startupLoadingMeta {
+                color: #a9bfd7;
+                font-size: 12px;
+                font-weight: 700;
+            }
+            QFrame#startupSplashNarrative,
+            QFrame#startupSplashTelemetry,
+            QFrame#startupSplashProgressBox {
+                background: rgba(255, 255, 255, 0.04);
+                border: 1px solid rgba(126, 183, 255, 0.12);
+                border-radius: 20px;
+            }
+            QLabel#startupSplashEyebrow {
+                color: #7fb4de;
+                font-size: 11px;
+                font-weight: 800;
+                letter-spacing: 1px;
+            }
+            QLabel#startupSplashHeroTitle,
+            QLabel#startupSplashTelemetryTitle {
+                color: #f3fbff;
+                font-size: 18px;
+                font-weight: 800;
+            }
+            QLabel#startupSplashHeroBody,
+            QLabel#startupSplashTelemetryBody,
+            QLabel#startupSplashProgressCaption {
+                color: #bfd4ea;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QLabel#startupSplashPercent {
+                color: #f6fbff;
+                font-size: 24px;
+                font-weight: 900;
+            }
+            QFrame#startupStageCard {
+                background: rgba(255, 255, 255, 0.03);
+                border: 1px solid rgba(126, 183, 255, 0.10);
+                border-radius: 16px;
+            }
+            QFrame#startupStageCard[stageState="active"] {
+                background: rgba(95, 179, 255, 0.10);
+                border: 1px solid rgba(95, 179, 255, 0.30);
+            }
+            QFrame#startupStageCard[stageState="done"] {
+                background: rgba(102, 224, 163, 0.10);
+                border: 1px solid rgba(102, 224, 163, 0.26);
+            }
+            QLabel#startupStageTitle {
+                color: #f3fbff;
+                font-size: 13px;
+                font-weight: 800;
+            }
+            QLabel#startupStageDetail {
+                color: #9fb8d1;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            QLabel#startupStageStatus {
+                color: #d7e7f8;
+                font-size: 11px;
+                font-weight: 700;
+            }
+            QLabel#startupLoadingSkeleton {
+                background: rgba(126, 183, 255, 0.10);
+                color: #d4e7ff;
+                border: 1px solid rgba(126, 183, 255, 0.12);
+                border-radius: 12px;
+                padding: 10px 12px;
+                font-size: 12px;
+                font-weight: 700;
+            }
+            QProgressBar#startupLoadingProgress {
+                background: rgba(255, 255, 255, 0.06);
+                border: 1px solid rgba(118, 140, 168, 0.20);
+                border-radius: 6px;
+            }
+            QProgressBar#startupLoadingProgress::chunk {
+                border-radius: 5px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4ecdc4, stop:0.55 #5fb3ff, stop:1 #7ed7ff);
+            }
+            """
+        )
+
+    def attach_owner(self, owner_window: QWidget) -> None:
+        self.owner_window = owner_window
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is None:
+            return
+        geometry = screen.availableGeometry()
+        self.move(
+            geometry.center().x() - self.width() // 2,
+            geometry.center().y() - self.height() // 2,
+        )
+
+    def set_progress(self, value: int, message: str) -> None:
+        progress = max(0, min(int(value), 100))
+        current = self.startup_loading_progress.value()
+        progress = max(current, progress)
+        self.startup_loading_progress.setValue(progress)
+        self.startup_loading_label.setText(message)
+        self.startup_loading_percent.setText(f"{progress:02d}%")
+        stage = 1 if progress < 25 else (2 if progress < 55 else (3 if progress < 85 else 4))
+        self.startup_loading_meta.setText(f"启动阶段 {stage} / 4")
+        thresholds = [20, 58, 88]
+        for index, skeleton in enumerate(self.startup_loading_skeletons):
+            done = progress >= thresholds[index]
+            target = f"{'已就绪' if done else '加载中'} · {skeleton.text().split(' · ', 1)[-1]}"
+            skeleton.setText(target)
+        stage_thresholds = [18, 56, 82, 100]
+        active_stage = 0
+        for index, threshold in enumerate(stage_thresholds):
+            if progress < threshold:
+                active_stage = index
+                break
+        else:
+            active_stage = len(stage_thresholds) - 1
+        for index, item in enumerate(getattr(self, "startup_stage_cards", [])):
+            frame = item["frame"]
+            label = item["status"]
+            if progress >= stage_thresholds[index]:
+                self._set_stage_card_state(frame, label, "done", "已就绪")
+            elif index == active_stage:
+                self._set_stage_card_state(frame, label, "active", message)
+            else:
+                self._set_stage_card_state(frame, label, "pending", "等待接入")
+        QApplication.processEvents()
+
+    def finish(self, message: str = "启动完成") -> None:
+        if self._finish_pending:
+            return
+        self._finish_pending = True
+        self.set_progress(100, message)
+        if self.owner_window is not None:
+            if not self.owner_window.isVisible():
+                self.owner_window.show()
+            self.owner_window.raise_()
+            self.owner_window.activateWindow()
+        QTimer.singleShot(320, self.close)
+
+
 
 
 class QuantHunterWindow(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, startup_splash: StartupSplashWindow | None = None) -> None:
         super().__init__()
         QApplication.setApplicationName("量化猎手")
         self.setWindowTitle("量化猎手")
         self.resize(1380, 880)
         self.setMinimumSize(1200, 760)
+        self.startup_splash = startup_splash
 
         self.state = load_app_state(STATE_FILE)
         self.current_theme = "graphite"
@@ -2782,8 +3264,13 @@ class QuantHunterWindow(QMainWindow):
         self.market_history_window = "近1年"
         self.market_history_date = "最新"
         self.market_chart_offset = 0
-        self.market_overlay_modes: set[str] = {"MA", "BOLL"}
+        self.market_overlay_modes: set[str] = {"MA", "BOLL", "HIGHLOW"}
         self.market_secondary_indicator_mode = "MACD"
+        self.startup_boot_progress = 0
+        self._startup_market_loaded = False
+        self._startup_scan_loaded = False
+        if self.startup_splash is not None:
+            self.startup_splash.set_progress(6, "正在创建主窗口骨架...")
 
         if self.theme_alias_path:
             try:
@@ -2796,15 +3283,22 @@ class QuantHunterWindow(QMainWindow):
         self.refresh_timer.timeout.connect(self.execute_refresh_cycle)
 
         self._build_ui()
+        self._set_startup_progress(8, "正在初始化主界面...")
         self._post_build_ui_tweaks()
+        self._set_startup_progress(22, "正在整理工作区与控件资源...")
         self._apply_dashboard_labels()
+        self._set_startup_progress(32, "正在准备启动任务...")
         QTimer.singleShot(0, self._finish_startup_bootstrap)
 
     def _finish_startup_bootstrap(self) -> None:
+        self._set_startup_progress(42, "正在加载观察池与运行状态...")
         self._refresh_watchlist()
         self._refresh_broker_status()
         if self.state.universe_dir and Path(self.state.universe_dir).exists():
+            self._set_startup_progress(56, "正在后台扫描本地股票数据...")
             QTimer.singleShot(80, lambda: self._scan_universe(Path(self.state.universe_dir), quiet=True, async_mode=True))
+        else:
+            self._startup_scan_loaded = True
         QTimer.singleShot(20, lambda: self.refresh_remote_market(quiet=True, update_chart=True, async_mode=True))
 
     def _build_ui(self) -> None:
@@ -2867,6 +3361,58 @@ class QuantHunterWindow(QMainWindow):
         shell_chip_layout.addStretch(1)
         shell_header_layout.addWidget(shell_chip_rail, stretch=4)
         shell_layout.addWidget(self.shell_header)
+
+        self.startup_loading_frame = QFrame()
+        self.startup_loading_frame.setObjectName("startupLoadingFrame")
+        startup_loading_layout = QVBoxLayout(self.startup_loading_frame)
+        startup_loading_layout.setContentsMargins(16, 12, 16, 12)
+        startup_loading_layout.setSpacing(10)
+        startup_header_row = QHBoxLayout()
+        startup_header_row.setContentsMargins(0, 0, 0, 0)
+        startup_header_row.setSpacing(12)
+        self.startup_loading_logo = QLabel()
+        self.startup_loading_logo.setObjectName("startupLoadingLogo")
+        self.startup_loading_logo.setAlignment(Qt.AlignCenter)
+        self.startup_loading_logo.setPixmap(build_quant_hunter_logo_pixmap(52))
+        self.startup_loading_logo.setScaledContents(False)
+        startup_identity_layout = QVBoxLayout()
+        startup_identity_layout.setContentsMargins(0, 0, 0, 0)
+        startup_identity_layout.setSpacing(2)
+        self.startup_loading_title = QLabel("终端正在后台加载资源")
+        self.startup_loading_title.setObjectName("startupLoadingTitle")
+        self.startup_loading_brand = QLabel("QUANT HUNTER PRO")
+        self.startup_loading_brand.setObjectName("startupLoadingBrand")
+        self.startup_loading_label = QLabel("正在初始化工作台...")
+        self.startup_loading_label.setObjectName("shellPulseHint")
+        self.startup_loading_meta = QLabel("启动阶段 1 / 4")
+        self.startup_loading_meta.setObjectName("startupLoadingMeta")
+        self.startup_loading_meta.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        startup_identity_layout.addWidget(self.startup_loading_brand)
+        startup_identity_layout.addWidget(self.startup_loading_title)
+        startup_identity_layout.addWidget(self.startup_loading_label)
+        startup_header_row.addWidget(self.startup_loading_logo)
+        startup_header_row.addLayout(startup_identity_layout, stretch=4)
+        startup_header_row.addWidget(self.startup_loading_meta, stretch=1)
+        self.startup_loading_progress = QProgressBar()
+        self.startup_loading_progress.setObjectName("startupLoadingProgress")
+        self.startup_loading_progress.setTextVisible(False)
+        self.startup_loading_progress.setRange(0, 100)
+        self.startup_loading_progress.setValue(8)
+        self.startup_loading_progress.setMinimumHeight(10)
+        startup_skeleton_row = QHBoxLayout()
+        startup_skeleton_row.setContentsMargins(0, 0, 0, 0)
+        startup_skeleton_row.setSpacing(8)
+        self.startup_loading_skeletons = []
+        for text in ["市场快照", "本地数据", "图表引擎"]:
+            skeleton = QLabel(f"加载中 · {text}")
+            skeleton.setObjectName("startupLoadingSkeleton")
+            startup_skeleton_row.addWidget(skeleton)
+            self.startup_loading_skeletons.append(skeleton)
+        startup_skeleton_row.addStretch(1)
+        startup_loading_layout.addLayout(startup_header_row)
+        startup_loading_layout.addWidget(self.startup_loading_progress)
+        startup_loading_layout.addLayout(startup_skeleton_row)
+        shell_layout.addWidget(self.startup_loading_frame)
 
         self.shell_pulse_bar = QFrame()
         self.shell_pulse_bar.setObjectName("shellPulseBar")
@@ -2949,6 +3495,39 @@ class QuantHunterWindow(QMainWindow):
         self._apply_theme(self.current_theme)
         self._finalize_workspace_ux()
         self.tabs.setCurrentIndex(0)
+
+    def _set_startup_progress(self, value: int, message: str) -> None:
+        progress = max(getattr(self, "startup_boot_progress", 0), max(0, min(int(value), 100)))
+        self.startup_boot_progress = progress
+        if hasattr(self, "startup_loading_progress"):
+            self.startup_loading_progress.setValue(progress)
+        if hasattr(self, "startup_loading_label"):
+            self._set_label_text_if_changed(self.startup_loading_label, message)
+        if hasattr(self, "startup_loading_meta"):
+            stage = 1 if progress < 25 else (2 if progress < 55 else (3 if progress < 85 else 4))
+            self._set_label_text_if_changed(self.startup_loading_meta, f"启动阶段 {stage} / 4")
+        if hasattr(self, "startup_loading_skeletons"):
+            thresholds = [20, 58, 88]
+            for index, skeleton in enumerate(self.startup_loading_skeletons):
+                done = progress >= thresholds[index]
+                text = str(skeleton.text() or "")
+                target = text.replace("加载中 · ", "已就绪 · ") if done else text.replace("已就绪 · ", "加载中 · ")
+                self._set_label_text_if_changed(skeleton, target)
+        if hasattr(self, "startup_loading_frame"):
+            self.startup_loading_frame.setVisible(progress < 100)
+        if getattr(self, "startup_splash", None) is not None:
+            self.startup_splash.set_progress(progress, message)
+
+    def _finish_startup_loading(self, message: str = "启动完成") -> None:
+        self.startup_boot_progress = 100
+        if hasattr(self, "startup_loading_progress"):
+            self.startup_loading_progress.setValue(100)
+        if hasattr(self, "startup_loading_label"):
+            self._set_label_text_if_changed(self.startup_loading_label, message)
+        if hasattr(self, "startup_loading_frame"):
+            QTimer.singleShot(420, self.startup_loading_frame.hide)
+        if getattr(self, "startup_splash", None) is not None:
+            self.startup_splash.finish(message)
 
     def _build_workspace_hero(
         self,
@@ -6269,7 +6848,7 @@ class QuantHunterWindow(QMainWindow):
             else:
                 self._set_label_text_if_changed(
                     self.market_quote_label,
-                    f"历史窗口 {self.market_history_window} | 周期 {self.market_timeframe_mode} | 叠加 {'/'.join(sorted(self.market_overlay_modes)) or '关闭'}"
+                    f"历史窗口 {self.market_history_window} | 周期 {self.market_timeframe_mode} | 叠加 {'/'.join(self._ordered_market_overlays(self.market_overlay_modes)) or '关闭'}"
                 )
         self._update_intraday_chart(symbol, snapshot, chart_series)
         self._update_daily_chart(symbol)
@@ -6300,6 +6879,203 @@ class QuantHunterWindow(QMainWindow):
     def _normalize_market_timeframe(self, timeframe: str | None = None) -> str:
         value = (timeframe or getattr(self, "market_timeframe_mode", "日线") or "日线").strip()
         return value or "日线"
+
+    @staticmethod
+    def _ordered_market_overlays(overlays: set[str] | list[str] | tuple[str, ...]) -> list[str]:
+        order = ["MA", "BOLL", "HIGHLOW", "BREAK"]
+        overlay_set = {item for item in overlays if item}
+        return [name for name in order if name in overlay_set]
+
+    @staticmethod
+    def _market_breakout_reference(visible_bars: list[PriceBar], index: int, lookback: int = 10) -> float | None:
+        if index < lookback:
+            return None
+        window = visible_bars[index - lookback:index]
+        if len(window) < lookback:
+            return None
+        return max(bar.high for bar in window)
+
+    @staticmethod
+    def _classify_market_breakout(
+        bar: PriceBar,
+        baseline: float | None,
+        previous_close: float | None = None,
+    ) -> tuple[str | None, float | None]:
+        if baseline is None or baseline <= 0:
+            return None, None
+        distance_pct = (bar.close - baseline) / baseline * 100.0
+        tolerance = baseline * 0.003
+        if previous_close is not None and previous_close < baseline - tolerance and bar.close > baseline + tolerance:
+            return "向上突破", distance_pct
+        if bar.low <= baseline <= bar.close and bar.close >= baseline - tolerance:
+            return "回踩站稳", distance_pct
+        if bar.high >= baseline and bar.close < baseline - tolerance:
+            return "冲高回落", distance_pct
+        if abs(bar.close - baseline) <= tolerance:
+            return "临界观察", distance_pct
+        if bar.close > baseline + tolerance:
+            return "强势站上", distance_pct
+        return "未破前高", distance_pct
+
+    @staticmethod
+    def _market_channel_position(bar: PriceBar, channel_high: float | None, channel_low: float | None) -> tuple[str | None, float | None]:
+        if channel_high is None or channel_low is None or channel_high <= channel_low:
+            return None, None
+        ratio = (bar.close - channel_low) / (channel_high - channel_low)
+        ratio = max(0.0, min(ratio, 1.0))
+        if ratio >= 0.8:
+            return "箱体上沿", ratio
+        if ratio <= 0.2:
+            return "箱体下沿", ratio
+        return "箱体中部", ratio
+
+    @staticmethod
+    def _market_structure_summary(visible_bars: list[PriceBar]) -> str:
+        if len(visible_bars) < 6:
+            return "结构 观察样本不足"
+        split_index = max(len(visible_bars) // 2, 1)
+        left = visible_bars[:split_index]
+        right = visible_bars[split_index:]
+        if not left or not right:
+            return "结构 观察样本不足"
+
+        left_high = max(bar.high for bar in left)
+        left_low = min(bar.low for bar in left)
+        right_high = max(bar.high for bar in right)
+        right_low = min(bar.low for bar in right)
+        first_close = visible_bars[0].close
+        last_close = visible_bars[-1].close
+        total_change = ((last_close - first_close) / first_close * 100.0) if abs(first_close) > 1e-9 else 0.0
+
+        midpoint = (right_high + right_low) / 2.0
+        tolerance = max(midpoint * 0.01, 0.03)
+        higher_high = right_high > left_high + tolerance
+        higher_low = right_low > left_low + tolerance
+        lower_high = right_high < left_high - tolerance
+        lower_low = right_low < left_low - tolerance
+
+        if higher_high and higher_low:
+            structure = "抬高上行"
+        elif lower_high and lower_low:
+            structure = "转弱下压"
+        elif abs(right_high - left_high) <= tolerance and abs(right_low - left_low) <= tolerance:
+            structure = "箱体震荡"
+        elif higher_high and not higher_low:
+            structure = "上冲分歧"
+        elif lower_low and not lower_high:
+            structure = "下探承压"
+        else:
+            structure = "震荡整理"
+
+        last_position = "偏强" if last_close >= midpoint + tolerance * 0.4 else ("偏弱" if last_close <= midpoint - tolerance * 0.4 else "中性")
+        return f"结构 {structure} | 收盘位置 {last_position} | 窗口变化 {total_change:+.2f}%"
+
+    @staticmethod
+    def _market_swing_points(
+        visible_bars: list[PriceBar],
+        neighbor_span: int = 0,
+    ) -> list[tuple[int, str, float, str]]:
+        if neighbor_span <= 0:
+            neighbor_span = 1 if len(visible_bars) <= 18 else 2
+        if len(visible_bars) < neighbor_span * 2 + 1:
+            return []
+        swings: list[tuple[int, str, float, str]] = []
+        last_type = ""
+        for index in range(neighbor_span, len(visible_bars) - neighbor_span):
+            bar = visible_bars[index]
+            neighbors = visible_bars[index - neighbor_span:index] + visible_bars[index + 1:index + 1 + neighbor_span]
+            if not neighbors:
+                continue
+            is_high = all(bar.high >= item.high for item in neighbors) and any(bar.high > item.high for item in neighbors)
+            is_low = all(bar.low <= item.low for item in neighbors) and any(bar.low < item.low for item in neighbors)
+            if is_high and last_type != "high":
+                swings.append((index, "high", bar.high, f"摆点高 {bar.high:.2f}"))
+                last_type = "high"
+            elif is_low and last_type != "low":
+                swings.append((index, "low", bar.low, f"摆点低 {bar.low:.2f}"))
+                last_type = "low"
+        return swings
+
+    @staticmethod
+    def _market_rhythm_summary(visible_bars: list[PriceBar]) -> str:
+        if len(visible_bars) < 6:
+            return "节奏 观察样本不足"
+        structure_text = QuantHunterWindow._market_structure_summary(visible_bars)
+        swings = QuantHunterWindow._market_swing_points(visible_bars)
+        recent_window = visible_bars[-6:]
+        recent_high = max(bar.high for bar in recent_window)
+        recent_low = min(bar.low for bar in recent_window)
+        first_close = recent_window[0].close
+        last_close = recent_window[-1].close
+        recent_change = ((last_close - first_close) / first_close * 100.0) if abs(first_close) > 1e-9 else 0.0
+        drawdown_pct = ((recent_high - last_close) / recent_high * 100.0) if recent_high > 1e-9 else 0.0
+        rebound_pct = ((last_close - recent_low) / recent_low * 100.0) if recent_low > 1e-9 else 0.0
+
+        if "抬高上行" in structure_text and recent_change >= 2.0 and drawdown_pct <= 2.5:
+            rhythm = "主升推进"
+        elif "抬高上行" in structure_text and drawdown_pct <= 6.5 and rebound_pct >= 2.0:
+            rhythm = "强势回踩"
+        elif "转弱下压" in structure_text and recent_change <= -2.0:
+            rhythm = "转弱回落"
+        elif "箱体震荡" in structure_text or abs(recent_change) <= 1.2:
+            rhythm = "震荡整理"
+        elif rebound_pct >= 3.0 and drawdown_pct <= 4.0:
+            rhythm = "低位修复"
+        else:
+            rhythm = "切换观察"
+
+        signature = "".join("高" if item[1] == "high" else "低" for item in swings[-4:]) or "不足"
+        last_turn = swings[-1][3] if swings else "最近摆点待确认"
+        return f"节奏 {rhythm} | 摆点序列 {signature} | {last_turn}"
+
+    @staticmethod
+    def _classify_market_candle_tag(
+        bar: PriceBar,
+        previous_bars: list[PriceBar],
+        breakout_value: float | None = None,
+        breakout_state: str | None = None,
+    ) -> tuple[str | None, str | None]:
+        if not previous_bars:
+            return None, None
+        avg_volume = sum(item.volume for item in previous_bars[-5:]) / max(min(len(previous_bars), 5), 1)
+        volume_ratio = (bar.volume / avg_volume) if avg_volume > 1e-9 else 1.0
+        full_range = max(bar.high - bar.low, 1e-9)
+        upper_shadow = bar.high - max(bar.open, bar.close)
+        lower_shadow = min(bar.open, bar.close) - bar.low
+        close_position = (bar.close - bar.low) / full_range
+        prev_close = previous_bars[-1].close
+        pct_change = ((bar.close - prev_close) / prev_close * 100.0) if abs(prev_close) > 1e-9 else 0.0
+
+        if breakout_value is not None and breakout_state in {"向上突破", "强势站上"} and volume_ratio >= 1.15 and pct_change > 1.2:
+            return "放量突破", f"量比 {volume_ratio:.2f} | 突破位上方 {((bar.close - breakout_value) / breakout_value * 100.0):+.2f}%"
+        if breakout_value is not None and breakout_state == "回踩站稳" and volume_ratio <= 1.0 and close_position >= 0.58:
+            return "缩量回踩", f"量比 {volume_ratio:.2f} | 回踩后收于区间上部"
+        if breakout_value is not None and breakout_state in {"未破前高", "临界观察"} and prev_close >= breakout_value * 0.985 and bar.low <= breakout_value * 1.01 and bar.close >= breakout_value * 0.997 and volume_ratio <= 1.0:
+            return "缩量回踩", f"量比 {volume_ratio:.2f} | 临近突破位反复确认"
+        if (breakout_state == "冲高回落" or (upper_shadow / full_range >= 0.32 and close_position <= 0.38)) and pct_change < 1.0:
+            return "冲高回落", f"上影占比 {upper_shadow / full_range * 100:.0f}% | 量比 {volume_ratio:.2f}"
+        if lower_shadow / full_range >= 0.35 and close_position >= 0.65 and pct_change >= -1.2:
+            return "长下影承接", f"下影占比 {lower_shadow / full_range * 100:.0f}% | 收盘位置 {close_position * 100:.0f}%"
+        return None, None
+
+    @staticmethod
+    def _latest_market_candle_tag_summary(
+        visible_bars: list[PriceBar],
+        breakout_values: list[float | None],
+        breakout_states: list[str | None],
+    ) -> str:
+        if not visible_bars:
+            return "关键K线 待识别"
+        for index in range(len(visible_bars) - 1, -1, -1):
+            tag, detail = QuantHunterWindow._classify_market_candle_tag(
+                visible_bars[index],
+                visible_bars[:index],
+                breakout_values[index] if index < len(breakout_values) else None,
+                breakout_states[index] if index < len(breakout_states) else None,
+            )
+            if tag:
+                return f"关键K线 {tag} | {detail or '等待细节补充'}"
+        return "关键K线 待识别"
 
     def _is_intraday_market_timeframe(self, timeframe: str | None = None) -> bool:
         return self._normalize_market_timeframe(timeframe) in {"分时", "1分", "5分", "15分", "30分", "60分"}
@@ -6437,6 +7213,196 @@ class QuantHunterWindow(QMainWindow):
             intraday_bars = self._build_intraday_bars_for_timeframe(symbol, snapshot, chart_series)
             return intraday_bars if intraday_bars else bars[-60:]
         return bars
+
+    @staticmethod
+    def _market_chart_bars_for_timeframe(
+        bars: list[PriceBar],
+        timeframe: str,
+    ) -> list[PriceBar]:
+        normalized = (timeframe or "日线").strip() or "日线"
+        if normalized == "周线":
+            return aggregate_price_bars(bars, "weekly")
+        if normalized == "月线":
+            return aggregate_price_bars(bars, "monthly")
+        return list(bars)
+
+    def _market_multi_timeframe_summary(self, symbol: str) -> str:
+        bars = list(self.universe_bars.get(symbol, []))
+        if not bars:
+            return "多周期共振 待行情接入"
+
+        timeframe_specs = [("日", "日线"), ("周", "周线"), ("月", "月线")]
+        parts: list[str] = []
+        bullish_count = 0
+        weak_count = 0
+        for short_label, timeframe in timeframe_specs:
+            tf_bars = self._market_chart_bars_for_timeframe(bars, timeframe)
+            target_size = self._market_history_target_size(len(tf_bars), timeframe)
+            visible = tf_bars[-target_size:] if target_size > 0 else tf_bars
+            structure = self._market_structure_summary(visible)
+            rhythm = self._market_rhythm_summary(visible)
+            breakout_values = [self._market_breakout_reference(visible, index, lookback=10) for index in range(len(visible))]
+            breakout_states = [
+                self._classify_market_breakout(
+                    bar,
+                    breakout_values[index],
+                    visible[index - 1].close if index > 0 else None,
+                )[0]
+                for index, bar in enumerate(visible)
+            ]
+            candle_tag = self._latest_market_candle_tag_summary(visible, breakout_values, breakout_states)
+
+            structure_brief = structure.replace("结构 ", "").split(" | ", 1)[0]
+            rhythm_brief = rhythm.replace("节奏 ", "").split(" | ", 1)[0]
+            candle_brief = candle_tag.replace("关键K线 ", "").split(" | ", 1)[0]
+            parts.append(f"{short_label}:{structure_brief}/{rhythm_brief}/{candle_brief}")
+
+            if structure_brief in {"抬高上行"} or rhythm_brief in {"主升推进", "强势回踩", "低位修复"}:
+                bullish_count += 1
+            if structure_brief in {"转弱下压"} or rhythm_brief in {"转弱回落"}:
+                weak_count += 1
+
+        if bullish_count >= 2 and weak_count == 0:
+            resonance = "多周期共振 偏强"
+        elif weak_count >= 2 and bullish_count == 0:
+            resonance = "多周期共振 偏弱"
+        elif bullish_count >= 1 and weak_count >= 1:
+            resonance = "多周期共振 分化"
+        else:
+            resonance = "多周期共振 中性"
+        return f"{resonance} | " + " | ".join(parts)
+
+    @staticmethod
+    def _market_chart_score_summary(
+        structure_summary: str,
+        rhythm_summary: str,
+        candle_tag_summary: str,
+        resonance_summary: str,
+    ) -> str:
+        score = 50
+
+        structure_map = {
+            "抬高上行": 18,
+            "上冲分歧": 6,
+            "箱体震荡": 0,
+            "震荡整理": -2,
+            "下探承压": -10,
+            "转弱下压": -18,
+        }
+        rhythm_map = {
+            "主升推进": 18,
+            "强势回踩": 12,
+            "低位修复": 8,
+            "震荡整理": 0,
+            "切换观察": -2,
+            "转弱回落": -16,
+        }
+        candle_map = {
+            "放量突破": 14,
+            "缩量回踩": 8,
+            "长下影承接": 6,
+            "冲高回落": -12,
+            "待识别": 0,
+        }
+        resonance_map = {
+            "多周期共振 偏强": 16,
+            "多周期共振 中性": 0,
+            "多周期共振 分化": -4,
+            "多周期共振 偏弱": -16,
+        }
+
+        structure_key = structure_summary.replace("结构 ", "").split(" | ", 1)[0]
+        rhythm_key = rhythm_summary.replace("节奏 ", "").split(" | ", 1)[0]
+        candle_key = candle_tag_summary.replace("关键K线 ", "").split(" | ", 1)[0]
+        resonance_key = resonance_summary.split(" | ", 1)[0]
+
+        score += structure_map.get(structure_key, 0)
+        score += rhythm_map.get(rhythm_key, 0)
+        score += candle_map.get(candle_key, 0)
+        score += resonance_map.get(resonance_key, 0)
+        score = max(0, min(score, 100))
+
+        if score >= 78:
+            action = "偏进攻"
+            risk = "以回踩确认和量价延续为先"
+        elif score >= 62:
+            action = "积极跟踪"
+            risk = "可顺势观察，不追急拉"
+        elif score >= 45:
+            action = "中性观察"
+            risk = "等待更清晰共振"
+        elif score >= 28:
+            action = "偏谨慎"
+            risk = "先看承接和风险释放"
+        else:
+            action = "以防守为主"
+            risk = "弱共振，避免逆势试错"
+        return f"图表评分 {score} / 100 | 倾向 {action} | 提示 {risk}"
+
+    @staticmethod
+    def _market_chart_score_value(score_summary: str) -> int:
+        import re
+
+        match = re.search(r"图表评分\s+(\d+)", score_summary or "")
+        return int(match.group(1)) if match else 50
+
+    @staticmethod
+    def _market_trade_zone_summary(visible_bars: list[PriceBar], score_summary: str) -> dict[str, float | str] | None:
+        if len(visible_bars) < 6:
+            return None
+        latest = visible_bars[-1]
+        recent = visible_bars[-20:] if len(visible_bars) >= 20 else visible_bars
+        recent_high = max(bar.high for bar in recent)
+        recent_low = min(bar.low for bar in recent)
+        score = QuantHunterWindow._market_chart_score_value(score_summary)
+
+        true_ranges = []
+        previous_close = visible_bars[0].close
+        for bar in visible_bars[-14:]:
+            true_ranges.append(max(bar.high - bar.low, abs(bar.high - previous_close), abs(bar.low - previous_close)))
+            previous_close = bar.close
+        atr = sum(true_ranges) / max(len(true_ranges), 1)
+        atr = max(atr, latest.close * 0.006, 0.01)
+
+        if score >= 70:
+            attack = max(latest.close + atr * 0.35, recent_high * 1.002)
+            watch_low = max(recent_low, latest.close - atr * 1.2)
+            watch_high = max(latest.close, attack)
+            defense = max(recent_low, latest.close - atr * 2.0)
+            mode = "进攻确认"
+        elif score >= 50:
+            attack = max(latest.close + atr * 0.55, recent_high * 1.001)
+            watch_low = max(recent_low, latest.close - atr * 1.0)
+            watch_high = latest.close + atr * 0.8
+            defense = max(recent_low, latest.close - atr * 1.7)
+            mode = "观察等待"
+        else:
+            attack = max(latest.close + atr * 0.9, recent_high * 1.004)
+            watch_low = max(recent_low, latest.close - atr * 0.7)
+            watch_high = latest.close + atr * 0.45
+            defense = min(recent_low, latest.close - atr * 1.2)
+            mode = "防守优先"
+
+        watch_low, watch_high = sorted((watch_low, watch_high))
+        risk_pct = ((latest.close - defense) / latest.close * 100.0) if latest.close > 1e-9 else 0.0
+        return {
+            "mode": mode,
+            "watch_low": watch_low,
+            "watch_high": watch_high,
+            "attack": attack,
+            "defense": defense,
+            "risk_pct": max(risk_pct, 0.0),
+            "atr": atr,
+        }
+
+    @staticmethod
+    def _format_market_trade_zone(zone: dict[str, float | str] | None) -> str:
+        if not zone:
+            return "交易区间 待更多K线确认"
+        return (
+            f"交易区间 {zone['mode']} | 观察 {float(zone['watch_low']):.2f}-{float(zone['watch_high']):.2f} | "
+            f"进攻确认 {float(zone['attack']):.2f} | 防守 {float(zone['defense']):.2f} | 风险 {float(zone['risk_pct']):.1f}%"
+        )
 
     def _market_history_target_size(self, total_bars: int, timeframe: str | None = None) -> int:
         if total_bars <= 0:
@@ -6640,8 +7606,61 @@ class QuantHunterWindow(QMainWindow):
         boll_lower_series = QLineSeries()
         boll_lower_series.setPen(QPen(QColor("#59d998"), 1.1, Qt.DashLine))
         boll_lower_series.setName("BOLL 下轨")
+        high_band_series = QLineSeries()
+        high_band_series.setPen(QPen(QColor("#ff8f6b"), 1.0, Qt.DashLine))
+        high_band_series.setName("20周期高点")
+        low_band_series = QLineSeries()
+        low_band_series.setPen(QPen(QColor("#56d39b"), 1.0, Qt.DashLine))
+        low_band_series.setName("20周期低点")
+        breakout_series = QLineSeries()
+        breakout_series.setPen(QPen(QColor("#7ed7ff"), 1.2, Qt.DotLine))
+        breakout_series.setName("前10周期突破基准")
+        breakout_up_series = QScatterSeries()
+        breakout_up_series.setName("突破信号")
+        breakout_up_series.setColor(QColor("#3fd59a"))
+        breakout_up_series.setBorderColor(QColor("#d8ffe8"))
+        breakout_up_series.setMarkerSize(9.0)
+        breakout_down_series = QScatterSeries()
+        breakout_down_series.setName("回落信号")
+        breakout_down_series.setColor(QColor("#ff7b7b"))
+        breakout_down_series.setBorderColor(QColor("#ffd6d6"))
+        breakout_down_series.setMarkerSize(8.0)
+        swing_high_series = QScatterSeries()
+        swing_high_series.setName("摆点高")
+        swing_high_series.setColor(QColor("#ffb867"))
+        swing_high_series.setBorderColor(QColor("#ffe6bf"))
+        swing_high_series.setMarkerSize(7.5)
+        swing_low_series = QScatterSeries()
+        swing_low_series.setName("摆点低")
+        swing_low_series.setColor(QColor("#59d998"))
+        swing_low_series.setBorderColor(QColor("#d8ffe8"))
+        swing_low_series.setMarkerSize(7.5)
+        watch_low_series = QLineSeries()
+        watch_low_series.setName("观察下沿")
+        watch_low_series.setPen(QPen(QColor("#5fb3ff"), 1.0, Qt.DashLine))
+        watch_high_series = QLineSeries()
+        watch_high_series.setName("观察上沿")
+        watch_high_series.setPen(QPen(QColor("#5fb3ff"), 1.0, Qt.DashLine))
+        attack_series = QLineSeries()
+        attack_series.setName("进攻确认")
+        attack_series.setPen(QPen(QColor("#3fd59a"), 1.2, Qt.DashDotLine))
+        defense_series = QLineSeries()
+        defense_series.setName("防守线")
+        defense_series.setPen(QPen(QColor("#ff6b6b"), 1.2, Qt.DashDotLine))
+        candle_tag_up_series = QScatterSeries()
+        candle_tag_up_series.setName("强势K线")
+        candle_tag_up_series.setColor(QColor("#7ed7ff"))
+        candle_tag_up_series.setBorderColor(QColor("#dff4ff"))
+        candle_tag_up_series.setMarkerSize(8.5)
+        candle_tag_down_series = QScatterSeries()
+        candle_tag_down_series.setName("风险K线")
+        candle_tag_down_series.setColor(QColor("#ff8f6b"))
+        candle_tag_down_series.setBorderColor(QColor("#ffe1d6"))
+        candle_tag_down_series.setMarkerSize(8.5)
 
         visible_bars, _ = self._windowed_market_bars(symbol, bars, [])
+        swing_points = self._market_swing_points(visible_bars)
+        swing_point_by_index = {index: (kind, value, label) for index, kind, value, label in swing_points}
         dates = []
         highs = []
         lows = []
@@ -6651,6 +7670,21 @@ class QuantHunterWindow(QMainWindow):
         boll_mid_values: list[float | None] = []
         boll_upper_values: list[float | None] = []
         boll_lower_values: list[float | None] = []
+        recent_high_values: list[float | None] = []
+        recent_low_values: list[float | None] = []
+        channel_positions: list[str | None] = []
+        channel_position_ratios: list[float | None] = []
+        breakout_values: list[float | None] = []
+        breakout_states: list[str | None] = []
+        breakout_distance_values: list[float | None] = []
+        candle_tags: list[str | None] = []
+        candle_tag_details: list[str | None] = []
+        structure_summary = self._market_structure_summary(visible_bars)
+        rhythm_summary = self._market_rhythm_summary(visible_bars)
+        preliminary_resonance = self._market_multi_timeframe_summary(symbol)
+        preliminary_score = self._market_chart_score_summary(structure_summary, rhythm_summary, "关键K线 待识别", preliminary_resonance)
+        trade_zone = self._market_trade_zone_summary(visible_bars, preliminary_score)
+        trade_zone_text = self._format_market_trade_zone(trade_zone)
         for index, bar in enumerate(visible_bars):
             dt = self._chart_datetime_from_label(bar.date)
             ts = float(dt.toMSecsSinceEpoch())
@@ -6690,6 +7724,60 @@ class QuantHunterWindow(QMainWindow):
                 boll_mid_values.append(None)
                 boll_upper_values.append(None)
                 boll_lower_values.append(None)
+            if len(highs) >= 20:
+                recent_high = max(highs[-20:])
+                recent_low = min(lows[-20:])
+                recent_high_values.append(recent_high)
+                recent_low_values.append(recent_low)
+                channel_position, channel_ratio = self._market_channel_position(bar, recent_high, recent_low)
+                channel_positions.append(channel_position)
+                channel_position_ratios.append(channel_ratio)
+                if "HIGHLOW" in self.market_overlay_modes:
+                    high_band_series.append(ts, recent_high)
+                    low_band_series.append(ts, recent_low)
+            else:
+                recent_high_values.append(None)
+                recent_low_values.append(None)
+                channel_positions.append(None)
+                channel_position_ratios.append(None)
+            breakout_value = self._market_breakout_reference(visible_bars, index, lookback=10)
+            breakout_values.append(breakout_value)
+            if "BREAK" in self.market_overlay_modes and breakout_value is not None:
+                breakout_series.append(ts, breakout_value)
+            previous_close = visible_bars[index - 1].close if index > 0 else None
+            breakout_state, breakout_distance = self._classify_market_breakout(bar, breakout_value, previous_close)
+            breakout_states.append(breakout_state)
+            breakout_distance_values.append(breakout_distance)
+            candle_tag, candle_tag_detail = self._classify_market_candle_tag(
+                bar,
+                visible_bars[:index],
+                breakout_value,
+                breakout_state,
+            )
+            candle_tags.append(candle_tag)
+            candle_tag_details.append(candle_tag_detail)
+            if "BREAK" in self.market_overlay_modes and breakout_value is not None:
+                if breakout_state in {"向上突破", "回踩站稳", "强势站上"}:
+                    breakout_up_series.append(ts, bar.close)
+                elif breakout_state == "冲高回落":
+                    breakout_down_series.append(ts, bar.close)
+            if candle_tag is not None:
+                if candle_tag in {"放量突破", "缩量回踩", "长下影承接"}:
+                    candle_tag_up_series.append(ts, bar.close)
+                else:
+                    candle_tag_down_series.append(ts, bar.close)
+            if "HIGHLOW" in self.market_overlay_modes and index in swing_point_by_index:
+                swing_kind, swing_value, _ = swing_point_by_index[index]
+                if swing_kind == "high":
+                    swing_high_series.append(ts, swing_value)
+                else:
+                    swing_low_series.append(ts, swing_value)
+            if trade_zone is not None:
+                watch_low_series.append(ts, float(trade_zone["watch_low"]))
+                watch_high_series.append(ts, float(trade_zone["watch_high"]))
+                attack_series.append(ts, float(trade_zone["attack"]))
+                defense_series.append(ts, float(trade_zone["defense"]))
+        latest_candle_tag_summary = self._latest_market_candle_tag_summary(visible_bars, breakout_values, breakout_states)
 
         chart.addSeries(candle_series)
         if "MA" in self.market_overlay_modes and ma_fast_series.count():
@@ -6699,6 +7787,28 @@ class QuantHunterWindow(QMainWindow):
             chart.addSeries(boll_mid_series)
             chart.addSeries(boll_upper_series)
             chart.addSeries(boll_lower_series)
+        if "HIGHLOW" in self.market_overlay_modes and high_band_series.count():
+            chart.addSeries(high_band_series)
+            chart.addSeries(low_band_series)
+        if "HIGHLOW" in self.market_overlay_modes and swing_high_series.count():
+            chart.addSeries(swing_high_series)
+        if "HIGHLOW" in self.market_overlay_modes and swing_low_series.count():
+            chart.addSeries(swing_low_series)
+        if trade_zone is not None and watch_low_series.count():
+            chart.addSeries(watch_low_series)
+            chart.addSeries(watch_high_series)
+            chart.addSeries(attack_series)
+            chart.addSeries(defense_series)
+        if candle_tag_up_series.count():
+            chart.addSeries(candle_tag_up_series)
+        if candle_tag_down_series.count():
+            chart.addSeries(candle_tag_down_series)
+        if "BREAK" in self.market_overlay_modes and breakout_series.count():
+            chart.addSeries(breakout_series)
+        if "BREAK" in self.market_overlay_modes and breakout_up_series.count():
+            chart.addSeries(breakout_up_series)
+        if "BREAK" in self.market_overlay_modes and breakout_down_series.count():
+            chart.addSeries(breakout_down_series)
 
         axis_x = QDateTimeAxis()
         axis_x.setFormat(self._market_axis_format(timeframe))
@@ -6710,6 +7820,9 @@ class QuantHunterWindow(QMainWindow):
         if highs and lows:
             low = min(lows)
             high = max(highs)
+            if trade_zone is not None:
+                low = min(low, float(trade_zone["defense"]), float(trade_zone["watch_low"]))
+                high = max(high, float(trade_zone["attack"]), float(trade_zone["watch_high"]))
             padding = max((high - low) * 0.08, 0.05)
             axis_y.setRange(low - padding, high + padding)
 
@@ -6720,6 +7833,24 @@ class QuantHunterWindow(QMainWindow):
             attach_series.extend([ma_fast_series, ma_slow_series])
         if "BOLL" in self.market_overlay_modes and boll_mid_series.count():
             attach_series.extend([boll_mid_series, boll_upper_series, boll_lower_series])
+        if "HIGHLOW" in self.market_overlay_modes and high_band_series.count():
+            attach_series.extend([high_band_series, low_band_series])
+        if "HIGHLOW" in self.market_overlay_modes and swing_high_series.count():
+            attach_series.append(swing_high_series)
+        if "HIGHLOW" in self.market_overlay_modes and swing_low_series.count():
+            attach_series.append(swing_low_series)
+        if trade_zone is not None and watch_low_series.count():
+            attach_series.extend([watch_low_series, watch_high_series, attack_series, defense_series])
+        if candle_tag_up_series.count():
+            attach_series.append(candle_tag_up_series)
+        if candle_tag_down_series.count():
+            attach_series.append(candle_tag_down_series)
+        if "BREAK" in self.market_overlay_modes and breakout_series.count():
+            attach_series.append(breakout_series)
+        if "BREAK" in self.market_overlay_modes and breakout_up_series.count():
+            attach_series.append(breakout_up_series)
+        if "BREAK" in self.market_overlay_modes and breakout_down_series.count():
+            attach_series.append(breakout_down_series)
         for series in attach_series:
             series.attachAxis(axis_x)
             series.attachAxis(axis_y)
@@ -6748,6 +7879,24 @@ class QuantHunterWindow(QMainWindow):
                     lines.append(
                         f"BOLL: {boll_mid_values[index]:.2f} / {boll_upper_values[index]:.2f} / {boll_lower_values[index]:.2f}"
                     )
+                if recent_high_values[index] is not None:
+                    lines.append(f"20周期高低: {recent_high_values[index]:.2f} / {recent_low_values[index]:.2f}")
+                if channel_positions[index] is not None and channel_position_ratios[index] is not None:
+                    lines.append(f"通道位置: {channel_positions[index]} | {channel_position_ratios[index] * 100:.0f}%")
+                if index in swing_point_by_index:
+                    lines.append(swing_point_by_index[index][2])
+                if breakout_values[index] is not None:
+                    lines.append(f"前10周期突破基准: {breakout_values[index]:.2f}")
+                if breakout_states[index] is not None and breakout_distance_values[index] is not None:
+                    lines.append(f"突破状态: {breakout_states[index]} | 偏离 {breakout_distance_values[index]:+.2f}%")
+                if candle_tags[index] is not None:
+                    detail = candle_tag_details[index] or "等待细节补充"
+                    lines.append(f"关键K线: {candle_tags[index]} | {detail}")
+                if index == len(visible_bars) - 1:
+                    lines.append(structure_summary)
+                    lines.append(rhythm_summary)
+                    lines.append(latest_candle_tag_summary)
+                    lines.append(trade_zone_text)
                 hover_payloads.append(lines)
             self.daily_chart_view.set_chart_context(
                 x_label="时间",
@@ -7860,6 +9009,8 @@ QPushButton#accentButton:hover {
     def refresh_remote_market(self, quiet: bool = False, update_chart: bool = False, async_mode: bool = True) -> None:
         if async_mode and hasattr(self, "market_status_label"):
             self._set_label_text_if_changed(self.market_status_label, "总览状态：正在从全市场筛选龙头候选...")
+        if async_mode:
+            self._set_startup_progress(68, "正在后台拉取行情与候选池...")
         refresh_remote_market_controller(
             self,
             quiet,
@@ -8013,6 +9164,11 @@ QPushButton#accentButton:hover {
 
     def _handle_scan_error(self, message: str, quiet: bool) -> None:
         handle_scan_error(self, message, quiet, show_error_dialog_fn=QMessageBox.critical)
+        self._startup_scan_loaded = True
+        if getattr(self, "_startup_market_loaded", False):
+            self._finish_startup_loading("启动完成，可继续使用远程行情")
+        else:
+            self._set_startup_progress(84, "本地扫描未完成，继续加载其他资源...")
 
     def _apply_scan_universe_result(
         self,
@@ -8020,11 +9176,20 @@ QPushButton#accentButton:hover {
         payload: tuple[list[ScanRow], dict[str, list[PriceBar]], dict[str, list[DailyAnalysis]], dict[str, Path], list[SymbolBacktestSummary], list[str]],
     ) -> None:
         self._symbol_data_revision += 1
+        self._startup_scan_loaded = True
+        self._set_startup_progress(82, "本地数据已加载，正在整理图表与策略上下文...")
         apply_scan_universe_result(self, folder, payload)
+        if getattr(self, "_startup_market_loaded", False):
+            self._finish_startup_loading("本地与远程资源已完成加载")
 
     def _handle_market_refresh_error(self, message: str, quiet: bool) -> None:
         handle_market_refresh_error(self, message, quiet, show_error_dialog_fn=QMessageBox.critical)
         self._refresh_shell_header()
+        self._startup_market_loaded = True
+        if getattr(self, "_startup_scan_loaded", False):
+            self._finish_startup_loading("启动完成，可继续离线浏览")
+        else:
+            self._set_startup_progress(86, "远程行情未返回，已切到本地资源模式")
 
     def _apply_market_screen_result(
         self,
@@ -8033,6 +9198,8 @@ QPushButton#accentButton:hover {
         feed_state: dict[str, str] | None = None,
     ) -> None:
         self._symbol_data_revision += 1
+        self._startup_market_loaded = True
+        self._set_startup_progress(92, "行情候选已返回，正在刷新图表与工作台...")
         apply_market_screen_result(
             self,
             result,
@@ -8044,6 +9211,10 @@ QPushButton#accentButton:hover {
             project_root=PROJECT_ROOT,
         )
         self._refresh_shell_header()
+        if getattr(self, "_startup_scan_loaded", False):
+            self._finish_startup_loading("行情与资源加载完成，可以开始使用")
+        else:
+            self._set_startup_progress(96, "行情已加载，正在等待本地资源整理完成...")
 
     def run_parameter_optimization(self) -> None:
         if hasattr(self, "optimization_text"):
@@ -10306,12 +11477,47 @@ QPushButton#accentButton:hover {
             end_text = end
         return start_text if start_text == end_text else f"{start_text} ~ {end_text}"
 
+    @staticmethod
+    def _market_chart_visible_summary(visible_bars: list[PriceBar]) -> str:
+        if not visible_bars:
+            return "可视摘要 --"
+        highs = [bar.high for bar in visible_bars]
+        lows = [bar.low for bar in visible_bars]
+        highest = max(highs)
+        lowest = min(lows)
+        first_close = visible_bars[0].close
+        last_close = visible_bars[-1].close
+        change_pct = ((last_close - first_close) / first_close * 100.0) if abs(first_close) > 1e-9 else 0.0
+        amplitude_pct = ((highest - lowest) / lowest * 100.0) if lowest > 1e-9 else 0.0
+        structure_text = QuantHunterWindow._market_structure_summary(visible_bars)
+        rhythm_text = QuantHunterWindow._market_rhythm_summary(visible_bars)
+        return (
+            f"可视摘要 高 {highest:.2f} / 低 {lowest:.2f} / "
+            f"振幅 {amplitude_pct:.2f}% / 收盘变化 {change_pct:+.2f}% / {structure_text} / {rhythm_text}"
+        )
+
     def _refresh_market_chart_navigation_state(self, symbol: str, chart_series=None, snapshot=None) -> None:
         if not symbol:
             return
         bars, _, _, _, max_offset = self._market_chart_navigation_metrics(symbol, chart_series, snapshot)
         visible_bars, _ = self._windowed_market_bars(symbol, bars, [])
         range_text = self._market_chart_range_text(visible_bars, self._normalize_market_timeframe())
+        summary_text = self._market_chart_visible_summary(visible_bars)
+        resonance_text = self._market_multi_timeframe_summary(symbol)
+        structure_text = self._market_structure_summary(visible_bars)
+        rhythm_text = self._market_rhythm_summary(visible_bars)
+        breakout_values = [self._market_breakout_reference(visible_bars, index, lookback=10) for index in range(len(visible_bars))]
+        breakout_states = [
+            self._classify_market_breakout(
+                bar,
+                breakout_values[index],
+                visible_bars[index - 1].close if index > 0 else None,
+            )[0]
+            for index, bar in enumerate(visible_bars)
+        ]
+        candle_text = self._latest_market_candle_tag_summary(visible_bars, breakout_values, breakout_states)
+        score_text = self._market_chart_score_summary(structure_text, rhythm_text, candle_text, resonance_text)
+        trade_zone_text = self._format_market_trade_zone(self._market_trade_zone_summary(visible_bars, score_text))
         at_latest = self.market_chart_offset <= 0
         at_oldest = self.market_chart_offset >= max_offset
         screen_index = 1 if max_offset <= 0 else min(self.market_chart_offset, max_offset) + 1
@@ -10330,6 +11536,15 @@ QPushButton#accentButton:hover {
             button.setEnabled(enabled)
             button.setToolTip(tooltip)
             self._set_button_role(button, role)
+        if prev_button is not None:
+            self._set_label_text_if_changed(prev_button, "向左翻一屏")
+            prev_button.setToolTip("向左翻一屏，查看更早的数据。按 PageUp 也可翻屏，Shift+左键 可细步进。" if not at_oldest else "已经到最左侧边界")
+        if next_button is not None:
+            self._set_label_text_if_changed(next_button, "向右翻一屏")
+            next_button.setToolTip("向右翻一屏，返回更近的数据。按 PageDown 也可翻屏，Shift+右键 可细步进。" if not at_latest else "已经在最新位置")
+        if reset_button is not None:
+            self._set_label_text_if_changed(reset_button, "回到最新")
+            reset_button.setToolTip("回到最新窗口。按 Home 可快速重置。" if not at_latest else "当前已经是最新窗口")
 
         if hasattr(self, "market_status_label"):
             status_text = self.market_status_label.text()
@@ -10343,6 +11558,34 @@ QPushButton#accentButton:hover {
             else:
                 view_text = f"第 {screen_index} 屏 / 共 {screen_total} 屏"
             self._set_label_text_if_changed(self.market_status_label, f"{base} | 区间：{range_text} | 视窗：{view_text}")
+        if hasattr(self, "market_chart_nav_label"):
+            nav_text = (
+                f"K 线导航：{self._normalize_market_timeframe()} | {self.market_history_window} | "
+                f"第 {screen_index} 屏 / 共 {screen_total} 屏 | 区间 {range_text} | {trade_zone_text} | {score_text} | {summary_text} | {resonance_text} | "
+                f"PageUp/PageDown 翻屏 | Shift+左右细步进 | Home 重置"
+            )
+            self._set_label_text_if_changed(self.market_chart_nav_label, nav_text)
+            pending_feedback = str(getattr(self, "_market_chart_feedback_text", "") or "").strip()
+            if pending_feedback:
+                self._set_label_text_if_changed(self.market_chart_nav_label, f"{nav_text} | {pending_feedback}")
+                self._market_chart_feedback_text = ""
+                timer = getattr(self, "_market_chart_feedback_timer", None)
+                if timer is None:
+                    timer = QTimer(self)
+                    timer.setSingleShot(True)
+                    timer.timeout.connect(self._clear_market_chart_feedback)
+                    self._market_chart_feedback_timer = timer
+                timer.start(1600)
+
+    def _show_market_chart_feedback(self, message: str) -> None:
+        self._market_chart_feedback_text = message or ""
+
+    def _clear_market_chart_feedback(self) -> None:
+        current_symbol = self._current_market_chart_symbol()
+        if current_symbol:
+            chart_series = getattr(self.market_screen_result, "chart_series_by_symbol", {}).get(current_symbol)
+            snapshot = getattr(self.market_screen_result, "snapshots", {}).get(current_symbol)
+            self._refresh_market_chart_navigation_state(current_symbol, chart_series, snapshot)
 
     def shift_market_chart_window(self, step_delta: int, *, fine: bool = False) -> None:
         current_symbol = self._current_market_chart_symbol()
@@ -10354,11 +11597,32 @@ QPushButton#accentButton:hover {
         step = fine_step if fine else coarse_step
         previous_offset = getattr(self, "market_chart_offset", 0)
         self.market_chart_offset = max(0, min(previous_offset + step_delta, max_offset))
+        if max_offset <= 0:
+            feedback = "当前窗口已覆盖全部数据"
+        elif self.market_chart_offset == previous_offset and step_delta > 0:
+            feedback = "已经到最左侧边界"
+        elif self.market_chart_offset == previous_offset and step_delta < 0:
+            feedback = "已经在最新位置"
+        elif fine:
+            feedback = "已细步进到相邻窗口"
+        elif step_delta > 0:
+            feedback = "已向左翻一屏"
+        else:
+            feedback = "已向右翻一屏"
+        self._show_market_chart_feedback(feedback)
         self._render_market_dashboard(current_symbol)
 
     def keyPressEvent(self, event) -> None:
         if getattr(self, "tabs", None) is not None and self.tabs.currentWidget() is self.overview_tab:
             fine = bool(event.modifiers() & Qt.ShiftModifier)
+            if event.key() == Qt.Key_PageUp:
+                self.shift_market_chart_window(1, fine=False)
+                event.accept()
+                return
+            if event.key() == Qt.Key_PageDown:
+                self.shift_market_chart_window(-1, fine=False)
+                event.accept()
+                return
             if event.key() == Qt.Key_Left:
                 self.shift_market_chart_window(1, fine=fine)
                 event.accept()
@@ -10379,8 +11643,12 @@ QPushButton#accentButton:hover {
         if overlay_name in self.market_overlay_modes:
             if len(self.market_overlay_modes) > 1:
                 self.market_overlay_modes.remove(overlay_name)
+                self._show_market_chart_feedback(f"已关闭 {overlay_name} 叠加")
+            else:
+                self._show_market_chart_feedback("至少保留一个主图叠加指标")
         else:
             self.market_overlay_modes.add(overlay_name)
+            self._show_market_chart_feedback(f"已开启 {overlay_name} 叠加")
         for name, button in getattr(self, "market_overlay_buttons", {}).items():
             checked = name in self.market_overlay_modes
             button.blockSignals(True)
@@ -10849,6 +12117,7 @@ QPushButton#accentButton:hover {
 
     def reset_market_chart_window(self) -> None:
         self.market_chart_offset = 0
+        self._show_market_chart_feedback("已回到最新默认视图")
         self.set_market_history_window("近1年")
         self.set_market_timeframe("日线")
         self.set_market_secondary_indicator("MACD")
@@ -11706,21 +12975,55 @@ QPushButton#accentButton:hover {
         snapshot = self.market_snapshots.get(symbol)
         recommendation = next((item for item in self.daily_pool_rows if item.symbol == symbol), None)
         chart_series = getattr(self.market_screen_result, "chart_series_by_symbol", {}).get(symbol)
+        display_bars = self._market_chart_bars(symbol, snapshot, chart_series)
+        visible_bars, _ = self._windowed_market_bars(symbol, display_bars, [])
+        structure_summary = self._market_structure_summary(visible_bars)
+        rhythm_summary = self._market_rhythm_summary(visible_bars)
+        breakout_values = [self._market_breakout_reference(visible_bars, index, lookback=10) for index in range(len(visible_bars))]
+        breakout_states = [
+            self._classify_market_breakout(
+                bar,
+                breakout_values[index],
+                visible_bars[index - 1].close if index > 0 else None,
+            )[0]
+            for index, bar in enumerate(visible_bars)
+        ]
+        latest_candle_tag_summary = self._latest_market_candle_tag_summary(visible_bars, breakout_values, breakout_states)
+        resonance_summary = self._market_multi_timeframe_summary(symbol)
+        score_summary = self._market_chart_score_summary(structure_summary, rhythm_summary, latest_candle_tag_summary, resonance_summary)
+        trade_zone_summary = self._format_market_trade_zone(self._market_trade_zone_summary(visible_bars, score_summary))
+        rhythm_headline = f"{structure_summary} | {rhythm_summary} | {latest_candle_tag_summary} | {resonance_summary} | {score_summary} | {trade_zone_summary}"
         if hasattr(self, "market_header_label"):
             title = symbol if snapshot is None else f"{snapshot.stock_name}  {snapshot.stock_id}  {symbol}"
             self._set_label_text_if_changed(self.market_header_label, title)
         if hasattr(self, "market_subheader_label"):
             sub = "程序自动筛选出的龙头候选"
             if snapshot is not None:
-                sub = f"{snapshot.strategy_tag} | {snapshot.fund_model} | 涨跌幅 {snapshot.pct_change:.2f}% | 换手 {snapshot.turnover:.1f}% | 主力净流入 {snapshot.main_inflow / 1e8:.2f} 亿"
+                sub = (
+                    f"{snapshot.strategy_tag} | {snapshot.fund_model} | 涨跌幅 {snapshot.pct_change:.2f}% | "
+                    f"换手 {snapshot.turnover:.1f}% | 主力净流入 {snapshot.main_inflow / 1e8:.2f} 亿 | {rhythm_headline}"
+                )
+            else:
+                sub = f"{sub} | {rhythm_headline}"
             self._set_label_text_if_changed(self.market_subheader_label, sub)
         if hasattr(self, "market_signal_label") and snapshot is not None:
-            self._set_label_text_if_changed(self.market_signal_label, f"{snapshot.fund_model}   |   {snapshot.strategy_tag}   |   热度 {snapshot.heat_score:.1f}   |   动能 {snapshot.momentum_bias:.1f}")
+            self._set_label_text_if_changed(
+                self.market_signal_label,
+                f"{snapshot.fund_model}   |   {snapshot.strategy_tag}   |   热度 {snapshot.heat_score:.1f}   |   动能 {snapshot.momentum_bias:.1f}   |   {score_summary}",
+            )
         if hasattr(self, "market_quote_label"):
             if snapshot is not None:
-                self._set_label_text_if_changed(self.market_quote_label, f"开 {snapshot.open_price:.2f} / 高 {snapshot.high_price:.2f} / 低 {snapshot.low_price:.2f} / 收 {snapshot.latest_price:.2f} | 涨跌 {snapshot.pct_change:.2f}% | 换手 {snapshot.turnover:.2f}% | 历史窗口 {self.market_history_window}")
+                self._set_label_text_if_changed(
+                    self.market_quote_label,
+                    f"开 {snapshot.open_price:.2f} / 高 {snapshot.high_price:.2f} / 低 {snapshot.low_price:.2f} / 收 {snapshot.latest_price:.2f} | "
+                    f"涨跌 {snapshot.pct_change:.2f}% | 换手 {snapshot.turnover:.2f}% | 历史窗口 {self.market_history_window} | {rhythm_headline}",
+                )
             else:
-                self._set_label_text_if_changed(self.market_quote_label, f"历史窗口 {self.market_history_window} | 周期 {self.market_timeframe_mode} | 叠加 {'/'.join(sorted(self.market_overlay_modes)) or '关闭'}")
+                self._set_label_text_if_changed(
+                    self.market_quote_label,
+                    f"历史窗口 {self.market_history_window} | 周期 {self.market_timeframe_mode} | "
+                    f"叠加 {'/'.join(self._ordered_market_overlays(self.market_overlay_modes)) or '关闭'} | {rhythm_headline}",
+                )
         self._update_intraday_chart(symbol, snapshot, chart_series)
         self._update_daily_chart(symbol)
         self._update_market_text_panels(symbol, snapshot, recommendation)
@@ -16538,11 +17841,17 @@ def _qh_normalize_overview_builder_texts_v2(self: QuantHunterWindow) -> None:
     if hasattr(self, "market_header_label"):
         self._set_label_text_if_changed(self.market_header_label, "市场机会工作台")
     if hasattr(self, "market_subheader_label"):
-        self._set_label_text_if_changed(self.market_subheader_label, "统一查看主线龙头、趋势机会、消息催化、买卖决策和复盘研究。")
+        current = self.market_subheader_label.text().strip()
+        if not current or self._has_mojibake_text(current):
+            self._set_label_text_if_changed(self.market_subheader_label, "统一查看主线龙头、趋势机会、消息催化、买卖决策和复盘研究。")
     if hasattr(self, "market_signal_label"):
-        self._set_label_text_if_changed(self.market_signal_label, "主线强度 / 趋势延续 / 资金承接 / 消息催化 / 买卖节奏")
+        current = self.market_signal_label.text().strip()
+        if not current or self._has_mojibake_text(current):
+            self._set_label_text_if_changed(self.market_signal_label, "主线强度 / 趋势延续 / 资金承接 / 消息催化 / 买卖节奏")
     if hasattr(self, "market_quote_label"):
-        self._set_label_text_if_changed(self.market_quote_label, "价格 / 涨跌幅 / 换手 / 资金流 / 主线位次 / 股票池")
+        current = self.market_quote_label.text().strip()
+        if not current or self._has_mojibake_text(current):
+            self._set_label_text_if_changed(self.market_quote_label, "价格 / 涨跌幅 / 换手 / 资金流 / 主线位次 / 股票池")
 
     button_groups = [
         ("overview_quick_buttons", list(OVERVIEW_QUICK_ROUTE_SPECS.keys()), self.activate_overview_quick_action),
@@ -21093,8 +22402,13 @@ def main() -> int:
     app = QApplication(sys.argv)
     _install_runtime_cjk_font(app)
     app.setApplicationName("量化猎手")
-    window = QuantHunterWindow()
-    window.show()
+    splash = StartupSplashWindow()
+    splash.show()
+    app.processEvents()
+    window = QuantHunterWindow(startup_splash=splash)
+    splash.attach_owner(window)
+    splash.set_progress(window.startup_boot_progress, "主控台已创建，正在接入启动任务...")
+    app.processEvents()
     return app.exec()
 
 

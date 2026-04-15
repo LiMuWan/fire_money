@@ -2809,6 +2809,11 @@ class StrategyWorkflowTests(unittest.TestCase):
                 self.assertTrue(hasattr(window, "paper_to_recommend_button"))
                 self.assertTrue(hasattr(window, "recommend_decision_summary_text"))
                 self.assertTrue(hasattr(window, "recommend_push_focus_button"))
+                self.assertEqual(
+                    set(getattr(window, "market_overlay_buttons", {}).keys()),
+                    {"MA", "BOLL", "HIGHLOW", "BREAK"},
+                )
+                self.assertEqual(window.market_overlay_modes, {"MA", "BOLL", "HIGHLOW"})
             finally:
                 window.close()
                 app.processEvents()
@@ -2830,6 +2835,279 @@ class StrategyWorkflowTests(unittest.TestCase):
                 finally:
                     window.close()
                     app.processEvents()
+
+    def test_market_breakout_classification_helper(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        module = importlib.import_module("app_qt")
+        PriceBar = importlib.import_module("quant_hunter.models").PriceBar
+
+        breakout_bar = PriceBar(date="2026-04-15", symbol="000001", open=9.9, high=10.5, low=9.8, close=10.4, volume=100000)
+        state, distance = module.QuantHunterWindow._classify_market_breakout(breakout_bar, 10.0, 9.8)
+        self.assertEqual(state, "向上突破")
+        self.assertGreater(distance, 0.0)
+
+        retest_bar = PriceBar(date="2026-04-16", symbol="000001", open=10.2, high=10.4, low=9.95, close=10.02, volume=90000)
+        state, distance = module.QuantHunterWindow._classify_market_breakout(retest_bar, 10.0, 10.1)
+        self.assertEqual(state, "回踩站稳")
+        self.assertGreaterEqual(distance, -0.05)
+
+        failed_bar = PriceBar(date="2026-04-17", symbol="000001", open=10.05, high=10.3, low=9.7, close=9.82, volume=95000)
+        state, distance = module.QuantHunterWindow._classify_market_breakout(failed_bar, 10.0, 10.05)
+        self.assertEqual(state, "冲高回落")
+        self.assertLess(distance, 0.0)
+
+    def test_market_channel_position_helper(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        module = importlib.import_module("app_qt")
+        PriceBar = importlib.import_module("quant_hunter.models").PriceBar
+
+        top_bar = PriceBar(date="2026-04-15", symbol="000001", open=10.2, high=10.5, low=10.1, close=10.38, volume=100000)
+        state, ratio = module.QuantHunterWindow._market_channel_position(top_bar, 10.5, 9.5)
+        self.assertEqual(state, "箱体上沿")
+        self.assertGreaterEqual(ratio, 0.8)
+
+        mid_bar = PriceBar(date="2026-04-16", symbol="000001", open=10.0, high=10.2, low=9.9, close=10.0, volume=100000)
+        state, ratio = module.QuantHunterWindow._market_channel_position(mid_bar, 10.5, 9.5)
+        self.assertEqual(state, "箱体中部")
+        self.assertGreater(ratio, 0.2)
+        self.assertLess(ratio, 0.8)
+
+        low_bar = PriceBar(date="2026-04-17", symbol="000001", open=9.7, high=9.8, low=9.5, close=9.62, volume=100000)
+        state, ratio = module.QuantHunterWindow._market_channel_position(low_bar, 10.5, 9.5)
+        self.assertEqual(state, "箱体下沿")
+        self.assertLessEqual(ratio, 0.2)
+
+    def test_market_structure_summary_helper(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        module = importlib.import_module("app_qt")
+        PriceBar = importlib.import_module("quant_hunter.models").PriceBar
+
+        uptrend_bars = [
+            PriceBar(date=f"2026-04-{index:02d}", symbol="000001", open=9.5 + index * 0.1, high=9.7 + index * 0.11, low=9.3 + index * 0.09, close=9.6 + index * 0.1, volume=100000)
+            for index in range(1, 9)
+        ]
+        summary = module.QuantHunterWindow._market_structure_summary(uptrend_bars)
+        self.assertIn("抬高上行", summary)
+
+        weak_bars = [
+            PriceBar(date=f"2026-05-{index:02d}", symbol="000001", open=11.0 - index * 0.1, high=11.1 - index * 0.09, low=10.7 - index * 0.11, close=10.9 - index * 0.1, volume=100000)
+            for index in range(1, 9)
+        ]
+        summary = module.QuantHunterWindow._market_structure_summary(weak_bars)
+        self.assertIn("转弱下压", summary)
+
+    def test_market_rhythm_summary_and_swing_points_helper(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        module = importlib.import_module("app_qt")
+        PriceBar = importlib.import_module("quant_hunter.models").PriceBar
+
+        bars = [
+            PriceBar(date="2026-04-01", symbol="000001", open=9.8, high=10.0, low=9.6, close=9.9, volume=100000),
+            PriceBar(date="2026-04-02", symbol="000001", open=9.9, high=10.4, low=9.8, close=10.3, volume=100000),
+            PriceBar(date="2026-04-03", symbol="000001", open=10.1, high=10.2, low=9.7, close=9.9, volume=100000),
+            PriceBar(date="2026-04-04", symbol="000001", open=10.0, high=10.6, low=9.95, close=10.5, volume=100000),
+            PriceBar(date="2026-04-05", symbol="000001", open=10.3, high=10.35, low=10.0, close=10.1, volume=100000),
+            PriceBar(date="2026-04-06", symbol="000001", open=10.2, high=10.9, low=10.1, close=10.8, volume=100000),
+            PriceBar(date="2026-04-07", symbol="000001", open=10.7, high=10.85, low=10.45, close=10.6, volume=100000),
+            PriceBar(date="2026-04-08", symbol="000001", open=10.65, high=11.1, low=10.55, close=11.0, volume=100000),
+        ]
+        swings = module.QuantHunterWindow._market_swing_points(bars)
+        self.assertGreaterEqual(len(swings), 2)
+        self.assertIn(swings[0][1], {"high", "low"})
+        rhythm = module.QuantHunterWindow._market_rhythm_summary(bars)
+        self.assertIn("节奏", rhythm)
+        self.assertIn("摆点序列", rhythm)
+
+    def test_market_candle_tag_helper(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        module = importlib.import_module("app_qt")
+        PriceBar = importlib.import_module("quant_hunter.models").PriceBar
+
+        previous = [
+            PriceBar(date="2026-04-01", symbol="000001", open=9.8, high=10.0, low=9.7, close=9.9, volume=100000),
+            PriceBar(date="2026-04-02", symbol="000001", open=9.9, high=10.1, low=9.8, close=10.0, volume=105000),
+            PriceBar(date="2026-04-03", symbol="000001", open=10.0, high=10.2, low=9.9, close=10.1, volume=98000),
+            PriceBar(date="2026-04-04", symbol="000001", open=10.1, high=10.25, low=10.0, close=10.05, volume=102000),
+            PriceBar(date="2026-04-05", symbol="000001", open=10.0, high=10.15, low=9.95, close=10.02, volume=101000),
+        ]
+        breakout_bar = PriceBar(date="2026-04-06", symbol="000001", open=10.05, high=10.7, low=10.0, close=10.6, volume=160000)
+        tag, detail = module.QuantHunterWindow._classify_market_candle_tag(breakout_bar, previous, 10.2, "向上突破")
+        self.assertEqual(tag, "放量突破")
+        self.assertIn("量比", detail)
+
+        retest_bar = PriceBar(date="2026-04-07", symbol="000001", open=10.35, high=10.4, low=10.18, close=10.32, volume=90000)
+        tag, detail = module.QuantHunterWindow._classify_market_candle_tag(retest_bar, previous + [breakout_bar], 10.25, "回踩站稳")
+        self.assertEqual(tag, "缩量回踩")
+        self.assertIn("量比", detail)
+
+        shadow_bar = PriceBar(date="2026-04-08", symbol="000001", open=10.0, high=10.15, low=9.5, close=10.08, volume=110000)
+        tag, detail = module.QuantHunterWindow._classify_market_candle_tag(shadow_bar, previous, None, None)
+        self.assertEqual(tag, "长下影承接")
+        self.assertIn("下影占比", detail)
+
+        fallback_retest = PriceBar(date="2026-04-09", symbol="000001", open=10.35, high=10.42, low=10.19, close=10.28, volume=90000)
+        tag, detail = module.QuantHunterWindow._classify_market_candle_tag(fallback_retest, previous + [breakout_bar], 10.25, "未破前高")
+        self.assertEqual(tag, "缩量回踩")
+        self.assertIn("临近突破位", detail)
+
+    def test_qt_window_quote_label_contains_structure_summary(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            PriceBar = importlib.import_module("quant_hunter.models").PriceBar
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                bars = [
+                    PriceBar(date=f"2026-04-{index:02d}", symbol="000001", open=9.5 + index * 0.1, high=9.7 + index * 0.11, low=9.3 + index * 0.09, close=9.6 + index * 0.1, volume=100000)
+                    for index in range(1, 9)
+                ]
+                window.universe_bars["000001"] = bars
+                window._render_market_dashboard("000001")
+                app.processEvents()
+                self.assertIn("结构", window.market_quote_label.text())
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_market_multi_timeframe_summary_helper(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            PriceBar = importlib.import_module("quant_hunter.models").PriceBar
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                bars = [
+                    PriceBar(date=f"2026-01-{index:02d}", symbol="000001", open=9.0 + index * 0.08, high=9.2 + index * 0.09, low=8.9 + index * 0.07, close=9.1 + index * 0.08, volume=100000 + index * 1000)
+                    for index in range(1, 29)
+                ]
+                window.universe_bars["000001"] = bars
+                summary = window._market_multi_timeframe_summary("000001")
+                self.assertIn("多周期共振", summary)
+                self.assertIn("日:", summary)
+                self.assertIn("周:", summary)
+                self.assertIn("月:", summary)
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_market_chart_score_summary_helper(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        module = importlib.import_module("app_qt")
+
+        strong = module.QuantHunterWindow._market_chart_score_summary(
+            "结构 抬高上行 | 收盘位置 偏强 | 窗口变化 +8.00%",
+            "节奏 主升推进 | 摆点序列 高低高 | 摆点高 10.60",
+            "关键K线 放量突破 | 量比 1.50 | 突破位上方 +3.00%",
+            "多周期共振 偏强 | 日:抬高上行/主升推进/放量突破 | 周:抬高上行/强势回踩/缩量回踩 | 月:抬高上行/低位修复/待识别",
+        )
+        weak = module.QuantHunterWindow._market_chart_score_summary(
+            "结构 转弱下压 | 收盘位置 偏弱 | 窗口变化 -7.00%",
+            "节奏 转弱回落 | 摆点序列 低高低 | 摆点低 9.10",
+            "关键K线 冲高回落 | 上影占比 55% | 量比 1.20",
+            "多周期共振 偏弱 | 日:转弱下压/转弱回落/冲高回落 | 周:转弱下压/转弱回落/待识别 | 月:箱体震荡/震荡整理/待识别",
+        )
+        self.assertIn("图表评分", strong)
+        self.assertIn("偏进攻", strong)
+        self.assertIn("以防守为主", weak)
+
+    def test_market_trade_zone_summary_helper(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        module = importlib.import_module("app_qt")
+        PriceBar = importlib.import_module("quant_hunter.models").PriceBar
+
+        bars = [
+            PriceBar(date=f"2026-04-{index:02d}", symbol="000001", open=9.5 + index * 0.1, high=9.75 + index * 0.12, low=9.3 + index * 0.08, close=9.6 + index * 0.1, volume=100000)
+            for index in range(1, 10)
+        ]
+        zone = module.QuantHunterWindow._market_trade_zone_summary(
+            bars,
+            "图表评分 72 / 100 | 倾向 积极跟踪 | 提示 可顺势观察，不追急拉",
+        )
+        self.assertIsNotNone(zone)
+        self.assertGreater(float(zone["attack"]), float(zone["watch_low"]))
+        self.assertLess(float(zone["defense"]), float(zone["attack"]))
+        formatted = module.QuantHunterWindow._format_market_trade_zone(zone)
+        self.assertIn("交易区间", formatted)
+        self.assertIn("防守", formatted)
+
+    def test_qt_window_shows_startup_loading_bar(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                app.processEvents()
+                self.assertTrue(hasattr(window, "startup_loading_progress"))
+                self.assertTrue(hasattr(window, "startup_loading_label"))
+                self.assertTrue(hasattr(window, "startup_loading_title"))
+                self.assertTrue(hasattr(window, "startup_loading_logo"))
+                self.assertFalse(window.startup_loading_logo.pixmap().isNull())
+                self.assertTrue(hasattr(window, "startup_loading_meta"))
+                self.assertFalse(window.startup_loading_frame.isHidden())
+                self.assertGreaterEqual(window.startup_loading_progress.value(), 0)
+                self.assertNotEqual(window.startup_loading_label.text().strip(), "")
+                self.assertEqual(len(getattr(window, "startup_loading_skeletons", [])), 3)
+                window._set_startup_progress(77, "正在验证启动进度")
+                self.assertEqual(window.startup_loading_progress.value(), 77)
+                self.assertIn("启动进度", window.startup_loading_label.text())
+                self.assertIn("启动阶段", window.startup_loading_meta.text())
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_startup_splash_updates_progress(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication, QWidget
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            splash = module.StartupSplashWindow()
+            owner = QWidget()
+            try:
+                splash.show()
+                app.processEvents()
+                splash.set_progress(63, "正在连接远程行情资源")
+                self.assertEqual(splash.startup_loading_progress.value(), 63)
+                self.assertEqual(splash.startup_loading_percent.text(), "63%")
+                self.assertIn("远程行情资源", splash.startup_loading_label.text())
+                self.assertIn("启动阶段", splash.startup_loading_meta.text())
+                self.assertEqual(len(getattr(splash, "startup_loading_skeletons", [])), 3)
+                self.assertFalse(splash.startup_loading_logo.pixmap().isNull())
+                self.assertEqual(len(getattr(splash, "startup_stage_cards", [])), 4)
+                active_labels = [item["status"].text() for item in splash.startup_stage_cards if item["frame"].property("stageState") == "active"]
+                self.assertTrue(any("远程行情资源" in text for text in active_labels))
+                splash.attach_owner(owner)
+                self.assertFalse(owner.isVisible())
+                splash.finish("启动完成，进入主控台")
+                app.processEvents()
+                self.assertTrue(owner.isVisible())
+                self.assertEqual(splash.startup_loading_progress.value(), 100)
+                self.assertTrue(all(item["frame"].property("stageState") == "done" for item in splash.startup_stage_cards))
+            finally:
+                owner.close()
+                splash.close()
+                app.processEvents()
 
     def test_perf_smoke_pipeline_returns_metrics(self) -> None:
         from tools import perf_smoke
