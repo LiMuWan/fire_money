@@ -71,6 +71,7 @@ from quant_hunter.risk import (
     normalize_risk_profile,
     risk_pool_impact_text,
     risk_profile_projection_text,
+    risk_profile_snapshot_card_state,
     risk_profile_snapshot_text,
     risk_profile_comparison_text,
     risk_profile_brief,
@@ -1630,6 +1631,342 @@ class StrategyWorkflowTests(unittest.TestCase):
         )
         self.assertIsNone(low_rr)
 
+    def test_trade_plan_order_intent_chain_computes_missing_risk_reward_ratio(self) -> None:
+        decision = TradeDecision(
+            symbol="SHSE.600009",
+            stock_id="600009",
+            stock_name="链路样本",
+            action="BUY",
+            confidence=0.86,
+            planned_entry=10.0,
+            planned_stop=9.5,
+            planned_target=11.25,
+            suggested_budget=20000.0,
+            rationale="chain demo",
+            risk_reward_ratio=0.0,
+            opportunity_tier="优先处理",
+        )
+
+        intent = build_order_intent_from_trade_decision(decision)
+
+        self.assertIsNotNone(intent)
+        assert intent is not None
+        self.assertAlmostEqual(intent.risk_reward_ratio, 2.5, places=2)
+        self.assertEqual(intent.risk_flag, "低")
+
+        detail = describe_order_intent(intent, available_cash=50000.0, risk_profile="aggressive")
+        self.assertEqual(detail["priority"], "A")
+        self.assertAlmostEqual(detail["risk_reward_ratio"], 2.5, places=2)
+
+        summary = summarize_broker_execution(
+            profile=BrokerProfile(mode="export", export_dir="exports"),
+            env={"direct_ready": False, "bridge_ready": False},
+            order_intents=[intent],
+            holdings=[],
+            cash_snapshot=CashSnapshot(available_cash=50000.0, total_assets=80000.0),
+            risk_profile="aggressive",
+        )
+
+        self.assertEqual(summary["risk_profile"], "aggressive")
+        self.assertAlmostEqual(summary["risk_reward_ratio"], 2.5, places=2)
+        self.assertEqual(summary["side_counts"]["BUY"], 1)
+
+    def test_trade_plan_chain_risk_profile_changes_end_to_end_behavior(self) -> None:
+        recommendations = [
+            RecommendationRow(
+                symbol="SHSE.600100",
+                stock_id="600100",
+                stock_name="链路龙头一号",
+                action="BUY",
+                label="RECLAIM_LONG",
+                signal_date="2026-04-08",
+                close=10.0,
+                entry_price=10.0,
+                stop_price=9.5,
+                target_price=10.625,
+                technical_score=86.0,
+                position_score=84.0,
+                persistence_score=82.0,
+                news_score=78.0,
+                leader_score=88.0,
+                total_score=87.0,
+                theme_name="机器人",
+                theme_rank=1,
+                primary_strategy="龙头模型",
+                stock_pool="龙头股",
+                dragon_decision_score=90.0,
+                risk_reward_ratio=1.4,
+                opportunity_tier="优先处理",
+            ),
+            RecommendationRow(
+                symbol="SZSE.300100",
+                stock_id="300100",
+                stock_name="链路龙头二号",
+                action="BUY",
+                label="RECLAIM_LONG",
+                signal_date="2026-04-08",
+                close=10.0,
+                entry_price=10.0,
+                stop_price=9.5,
+                target_price=10.625,
+                technical_score=84.0,
+                position_score=82.0,
+                persistence_score=80.0,
+                news_score=76.0,
+                leader_score=86.0,
+                total_score=85.0,
+                theme_name="机器人",
+                theme_rank=1,
+                primary_strategy="龙头模型",
+                stock_pool="龙头股",
+                dragon_decision_score=88.0,
+                risk_reward_ratio=1.4,
+                opportunity_tier="优先处理",
+            ),
+        ]
+
+        conservative_plan = DecisionEngine(risk_profile="conservative").build_plan(
+            recommendations, [], available_cash=100000, max_picks=5
+        )
+        standard_plan = DecisionEngine(risk_profile="standard").build_plan(
+            recommendations, [], available_cash=100000, max_picks=5
+        )
+        aggressive_plan = DecisionEngine(risk_profile="aggressive").build_plan(
+            recommendations, [], available_cash=100000, max_picks=5
+        )
+
+        self.assertEqual(len(conservative_plan.decisions), 0)
+        self.assertEqual(len(standard_plan.decisions), 2)
+        self.assertEqual(len(aggressive_plan.decisions), 2)
+
+        standard_intents = [
+            item
+            for item in (build_order_intent_from_trade_decision(decision) for decision in standard_plan.decisions)
+            if item is not None
+        ]
+        aggressive_intents = [
+            item
+            for item in (build_order_intent_from_trade_decision(decision) for decision in aggressive_plan.decisions)
+            if item is not None
+        ]
+
+        self.assertEqual(len(standard_intents), 2)
+        self.assertEqual(len(aggressive_intents), 2)
+        self.assertEqual(standard_intents[0].quantity, 5400)
+        self.assertEqual(aggressive_intents[0].quantity, 6000)
+
+        standard_detail = describe_order_intent(standard_intents[0], available_cash=100000.0, risk_profile="standard")
+        aggressive_detail = describe_order_intent(aggressive_intents[0], available_cash=100000.0, risk_profile="aggressive")
+        self.assertEqual(standard_detail["priority"], "C")
+        self.assertEqual(aggressive_detail["priority"], "B")
+
+        conservative_summary = summarize_broker_execution(
+            profile=BrokerProfile(mode="export", export_dir="exports"),
+            env={"direct_ready": False, "bridge_ready": False},
+            order_intents=[],
+            holdings=[],
+            cash_snapshot=CashSnapshot(available_cash=100000.0, total_assets=100000.0),
+            risk_profile="conservative",
+        )
+        standard_summary = summarize_broker_execution(
+            profile=BrokerProfile(mode="export", export_dir="exports"),
+            env={"direct_ready": False, "bridge_ready": False},
+            order_intents=standard_intents,
+            holdings=[],
+            cash_snapshot=CashSnapshot(available_cash=100000.0, total_assets=100000.0),
+            risk_profile="standard",
+        )
+        aggressive_summary = summarize_broker_execution(
+            profile=BrokerProfile(mode="export", export_dir="exports"),
+            env={"direct_ready": False, "bridge_ready": False},
+            order_intents=aggressive_intents,
+            holdings=[],
+            cash_snapshot=CashSnapshot(available_cash=100000.0, total_assets=100000.0),
+            risk_profile="aggressive",
+        )
+
+        self.assertEqual(conservative_summary["intent_count"], 0)
+        self.assertIn("暂无委托建议", conservative_summary["blockers"])
+        self.assertEqual(standard_summary["portfolio_risk_review"]["status_code"], "BLOCKED")
+        self.assertEqual(aggressive_summary["portfolio_risk_review"]["status_code"], "BLOCKED")
+        self.assertEqual(standard_summary["risk_profile"], "standard")
+        self.assertEqual(aggressive_summary["risk_profile"], "aggressive")
+
+    def test_trade_plan_chain_handles_holdings_and_new_orders_by_risk_profile(self) -> None:
+        recommendations = [
+            RecommendationRow(
+                symbol="SHSE.600500",
+                stock_id="600500",
+                stock_name="持仓切换预警",
+                action="BUY",
+                label="RECLAIM_LONG",
+                signal_date="2026-04-08",
+                close=10.0,
+                entry_price=10.0,
+                stop_price=9.4,
+                target_price=10.9,
+                technical_score=76.0,
+                position_score=74.0,
+                persistence_score=70.0,
+                news_score=68.0,
+                leader_score=78.0,
+                total_score=77.0,
+                theme_name="机器人",
+                theme_rank=2,
+                mainline_tag="机器人",
+                mainline_rank=2,
+                mainline_role="FRONT",
+                mainline_strength_score=74.0,
+                mainline_continuation_score=58.0,
+                mainline_window_score=61.0,
+                theme_divergence_score=63.0,
+                theme_failure_risk=49.0,
+                stock_pool="趋势股",
+                primary_strategy="主力雷达",
+                rationale="阶段 分歧 | 信号 切换预警",
+            ),
+            RecommendationRow(
+                symbol="SHSE.600700",
+                stock_id="600700",
+                stock_name="新仓一号",
+                action="BUY",
+                label="RECLAIM_LONG",
+                signal_date="2026-04-08",
+                close=10.0,
+                entry_price=10.0,
+                stop_price=9.5,
+                target_price=11.25,
+                technical_score=86.0,
+                position_score=84.0,
+                persistence_score=82.0,
+                news_score=78.0,
+                leader_score=88.0,
+                total_score=87.0,
+                theme_name="机器人",
+                theme_rank=1,
+                primary_strategy="龙头模型",
+                stock_pool="龙头股",
+                dragon_decision_score=90.0,
+                risk_reward_ratio=1.4,
+                opportunity_tier="优先处理",
+            ),
+            RecommendationRow(
+                symbol="SZSE.300700",
+                stock_id="300700",
+                stock_name="新仓二号",
+                action="BUY",
+                label="RECLAIM_LONG",
+                signal_date="2026-04-08",
+                close=10.0,
+                entry_price=10.0,
+                stop_price=9.0,
+                target_price=11.25,
+                technical_score=84.0,
+                position_score=82.0,
+                persistence_score=80.0,
+                news_score=76.0,
+                leader_score=86.0,
+                total_score=85.0,
+                theme_name="机器人",
+                theme_rank=1,
+                primary_strategy="龙头模型",
+                stock_pool="龙头股",
+                dragon_decision_score=88.0,
+                risk_reward_ratio=1.4,
+                opportunity_tier="优先处理",
+            ),
+        ]
+        holdings = [
+            HoldingRecord(
+                symbol="SHSE.600500",
+                quantity=1000,
+                available=1000,
+                cost_price=9.0,
+                market_value=10000.0,
+            )
+        ]
+
+        conservative_plan = DecisionEngine(risk_profile="conservative").build_plan(
+            recommendations, holdings, available_cash=90000.0, max_picks=5, max_total_exposure=0.3
+        )
+        standard_plan = DecisionEngine(risk_profile="standard").build_plan(
+            recommendations, holdings, available_cash=90000.0, max_picks=5, max_total_exposure=0.3
+        )
+        aggressive_plan = DecisionEngine(risk_profile="aggressive").build_plan(
+            recommendations, holdings, available_cash=90000.0, max_picks=5, max_total_exposure=0.3
+        )
+
+        self.assertEqual(len(conservative_plan.decisions), 0)
+        self.assertEqual(len(standard_plan.decisions), 1)
+        self.assertEqual(len(aggressive_plan.decisions), 2)
+        self.assertEqual(len(conservative_plan.position_advice), 1)
+        self.assertEqual(len(standard_plan.position_advice), 1)
+        self.assertEqual(len(aggressive_plan.position_advice), 1)
+        self.assertEqual(conservative_plan.position_advice[0].action, "REDUCE")
+
+        reduce_intent = broker_module.OrderIntent(
+            symbol="SHSE.600500",
+            side="REDUCE",
+            price=10.0,
+            quantity=500,
+            stop_price=9.5,
+            target_price=10.8,
+            signal_date="2026-04-08",
+            reason="switch warning",
+        )
+        standard_buy_intents = [
+            item
+            for item in (build_order_intent_from_trade_decision(decision) for decision in standard_plan.decisions)
+            if item is not None
+        ]
+        aggressive_buy_intents = [
+            item
+            for item in (build_order_intent_from_trade_decision(decision) for decision in aggressive_plan.decisions)
+            if item is not None
+        ]
+
+        self.assertEqual([item.quantity for item in standard_buy_intents], [1000])
+        self.assertEqual([item.quantity for item in aggressive_buy_intents], [1200, 700])
+
+        standard_detail = describe_order_intent(standard_buy_intents[0], available_cash=90000.0, risk_profile="standard")
+        aggressive_detail = describe_order_intent(aggressive_buy_intents[0], available_cash=90000.0, risk_profile="aggressive")
+        self.assertEqual(standard_detail["priority"], "A")
+        self.assertEqual(aggressive_detail["priority"], "A")
+
+        conservative_summary = summarize_broker_execution(
+            profile=BrokerProfile(mode="export", export_dir="exports"),
+            env={"direct_ready": False, "bridge_ready": False},
+            order_intents=[reduce_intent],
+            holdings=holdings,
+            cash_snapshot=CashSnapshot(available_cash=90000.0, total_assets=100000.0),
+            risk_profile="conservative",
+        )
+        standard_summary = summarize_broker_execution(
+            profile=BrokerProfile(mode="export", export_dir="exports"),
+            env={"direct_ready": False, "bridge_ready": False},
+            order_intents=[reduce_intent, *standard_buy_intents],
+            holdings=holdings,
+            cash_snapshot=CashSnapshot(available_cash=90000.0, total_assets=100000.0),
+            risk_profile="standard",
+        )
+        aggressive_summary = summarize_broker_execution(
+            profile=BrokerProfile(mode="export", export_dir="exports"),
+            env={"direct_ready": False, "bridge_ready": False},
+            order_intents=[reduce_intent, *aggressive_buy_intents],
+            holdings=holdings,
+            cash_snapshot=CashSnapshot(available_cash=90000.0, total_assets=100000.0),
+            risk_profile="aggressive",
+        )
+
+        self.assertEqual(conservative_summary["side_counts"]["REDUCE"], 1)
+        self.assertEqual(conservative_summary["side_counts"]["BUY"], 0)
+        self.assertFalse(conservative_summary["blockers"])
+        self.assertEqual(standard_summary["side_counts"]["REDUCE"], 1)
+        self.assertEqual(standard_summary["side_counts"]["BUY"], 1)
+        self.assertEqual(standard_summary["portfolio_risk_review"]["status_code"], "PASS")
+        self.assertEqual(aggressive_summary["portfolio_risk_review"]["status_code"], "PASS")
+        self.assertEqual(aggressive_summary["risk_profile"], "aggressive")
+
     def test_summarize_execution_statuses_counts_pipeline_states(self) -> None:
         summary = summarize_execution_statuses(
             ["SHSE.600000", "SHSE.600001", "SHSE.600002", "SHSE.600003"],
@@ -2108,6 +2445,24 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn("可执行 3 只", text)
         self.assertIn("拦截 13 只", text)
 
+    def test_risk_profile_snapshot_card_state_formats_ui_copy(self) -> None:
+        state = risk_profile_snapshot_card_state(
+            "standard",
+            current_profile="standard",
+            meta={
+                "profile_snapshots": {
+                    "standard": {"display_count": 12, "buy_ready_count": 5, "rejected_count": 7},
+                }
+            },
+        )
+
+        self.assertEqual(state["label"], "标准")
+        self.assertEqual(state["flag_text"], "当前启用")
+        self.assertEqual(state["button_text"], "当前档位")
+        self.assertTrue(state["is_current"])
+        self.assertIn("推荐 12 只", str(state["metrics"]))
+        self.assertIn("当前已启用", str(state["button_tooltip"]))
+
     def test_risk_profile_projection_text_describes_other_profiles(self) -> None:
         text = risk_profile_projection_text(
             "standard",
@@ -2393,6 +2748,188 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(len(sdk.calls), 1)
         self.assertEqual(sdk.calls[0]["side"], "SELL_SIDE")
         self.assertEqual(sdk.calls[0]["position_effect"], "CLOSE")
+
+    def test_build_submission_intents_caps_buy_size_in_test_mode(self) -> None:
+        intents = [
+            broker_module.OrderIntent(
+                symbol="SHSE.600000",
+                side="BUY",
+                price=10.0,
+                quantity=1200,
+                stop_price=9.5,
+                target_price=11.2,
+                signal_date="2026-02-24",
+                reason="demo",
+            )
+        ]
+
+        guarded, notes, blockers = broker_module.build_submission_intents(
+            intents,
+            BrokerProfile(test_submit_only=True, test_submit_max_amount=2500.0, test_submit_symbol_whitelist="SHSE.600000"),
+        )
+
+        self.assertEqual(blockers, [])
+        self.assertEqual(len(guarded), 1)
+        self.assertEqual(guarded[0].quantity, 200)
+        self.assertTrue(notes)
+
+    def test_build_submission_intents_blocks_multiple_buy_orders_in_test_mode(self) -> None:
+        intents = [
+            broker_module.OrderIntent(
+                symbol="SHSE.600000",
+                side="BUY",
+                price=10.0,
+                quantity=500,
+                stop_price=9.5,
+                target_price=11.2,
+                signal_date="2026-02-24",
+                reason="demo",
+            ),
+            broker_module.OrderIntent(
+                symbol="SZSE.000001",
+                side="BUY",
+                price=12.0,
+                quantity=400,
+                stop_price=11.4,
+                target_price=13.8,
+                signal_date="2026-02-24",
+                reason="demo",
+            ),
+        ]
+
+        guarded, notes, blockers = broker_module.build_submission_intents(
+            intents,
+            BrokerProfile(test_submit_only=True, test_submit_max_amount=5000.0, test_submit_symbol_whitelist="SHSE.600000,SZSE.000001"),
+        )
+
+        self.assertEqual(guarded, [])
+        self.assertEqual(notes, [])
+        self.assertEqual(len(blockers), 1)
+        self.assertIn("1 笔买入委托", blockers[0])
+
+    def test_build_submission_intents_blocks_missing_whitelist_in_test_mode(self) -> None:
+        intents = [
+            broker_module.OrderIntent(
+                symbol="SHSE.600000",
+                side="BUY",
+                price=10.0,
+                quantity=500,
+                stop_price=9.5,
+                target_price=11.2,
+                signal_date="2026-02-24",
+                reason="demo",
+            )
+        ]
+
+        guarded, notes, blockers = broker_module.build_submission_intents(
+            intents,
+            BrokerProfile(test_submit_only=True, test_submit_max_amount=5000.0, test_submit_symbol_whitelist=""),
+        )
+
+        self.assertEqual(guarded, [])
+        self.assertEqual(notes, [])
+        self.assertEqual(len(blockers), 1)
+        self.assertIn("测试白名单", blockers[0])
+
+    def test_build_submission_intents_blocks_symbols_outside_whitelist(self) -> None:
+        intents = [
+            broker_module.OrderIntent(
+                symbol="SHSE.600001",
+                side="BUY",
+                price=10.0,
+                quantity=500,
+                stop_price=9.5,
+                target_price=11.2,
+                signal_date="2026-02-24",
+                reason="demo",
+            )
+        ]
+
+        guarded, notes, blockers = broker_module.build_submission_intents(
+            intents,
+            BrokerProfile(test_submit_only=True, test_submit_max_amount=5000.0, test_submit_symbol_whitelist="SHSE.600000"),
+        )
+
+        self.assertEqual(guarded, [])
+        self.assertEqual(notes, [])
+        self.assertEqual(len(blockers), 1)
+        self.assertIn("不在测试白名单", blockers[0])
+
+    def test_build_submission_intents_normalizes_shorthand_whitelist_symbols(self) -> None:
+        intents = [
+            broker_module.OrderIntent(
+                symbol="SHSE.600000",
+                side="BUY",
+                price=10.0,
+                quantity=500,
+                stop_price=9.5,
+                target_price=11.2,
+                signal_date="2026-02-24",
+                reason="demo",
+            )
+        ]
+
+        guarded, notes, blockers = broker_module.build_submission_intents(
+            intents,
+            BrokerProfile(test_submit_only=True, test_submit_max_amount=5000.0, test_submit_symbol_whitelist="600000, sz000001"),
+        )
+
+        self.assertEqual(blockers, [])
+        self.assertEqual(len(guarded), 1)
+        self.assertEqual(guarded[0].symbol, "SHSE.600000")
+        self.assertTrue(any("SHSE.600000" in item for item in notes))
+
+    def test_build_submission_intents_accepts_chinese_punctuation_in_whitelist(self) -> None:
+        intents = [
+            broker_module.OrderIntent(
+                symbol="SZSE.000001",
+                side="BUY",
+                price=12.0,
+                quantity=400,
+                stop_price=11.4,
+                target_price=13.8,
+                signal_date="2026-02-24",
+                reason="demo",
+            )
+        ]
+
+        guarded, notes, blockers = broker_module.build_submission_intents(
+            intents,
+            BrokerProfile(test_submit_only=True, test_submit_max_amount=5000.0, test_submit_symbol_whitelist="600000，000001、sh600010"),
+        )
+
+        self.assertEqual(blockers, [])
+        self.assertEqual(len(guarded), 1)
+        self.assertEqual(guarded[0].symbol, "SZSE.000001")
+        self.assertTrue(any("SZSE.000001" in item for item in notes))
+
+    def test_build_submission_intents_accepts_mixed_fullwidth_and_linebreak_whitelist(self) -> None:
+        intents = [
+            broker_module.OrderIntent(
+                symbol="SHSE.600010",
+                side="BUY",
+                price=10.0,
+                quantity=400,
+                stop_price=9.5,
+                target_price=11.0,
+                signal_date="2026-02-24",
+                reason="demo",
+            )
+        ]
+
+        guarded, notes, blockers = broker_module.build_submission_intents(
+            intents,
+            BrokerProfile(
+                test_submit_only=True,
+                test_submit_max_amount=5000.0,
+                test_submit_symbol_whitelist="600000；000001 | \n sh600010",
+            ),
+        )
+
+        self.assertEqual(blockers, [])
+        self.assertEqual(len(guarded), 1)
+        self.assertEqual(guarded[0].symbol, "SHSE.600010")
+        self.assertTrue(any("SHSE.600010" in item for item in notes))
 
     def test_gm_runtime_diagnosis_flags_python_313(self) -> None:
         adapter = EastmoneyBrokerAdapter()
@@ -2690,6 +3227,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertTrue(hasattr(ui_controllers, "run_parameter_optimization_controller"))
         self.assertTrue(hasattr(ui_controllers, "save_broker_profile_controller"))
         self.assertTrue(hasattr(ui_controllers, "create_broker_templates_controller"))
+        self.assertTrue(hasattr(ui_controllers, "validate_broker_connection_controller"))
         self.assertTrue(hasattr(ui_controllers, "generate_order_suggestions_controller"))
         self.assertTrue(hasattr(ui_controllers, "export_order_plan_controller"))
         self.assertTrue(hasattr(ui_controllers, "export_order_result_log_controller"))
@@ -2791,6 +3329,84 @@ class StrategyWorkflowTests(unittest.TestCase):
             seen[node.name] = node.lineno
 
         self.assertEqual(duplicates, [])
+
+    def test_workspace_builder_refresh_config_risk_snapshot_fallback(self) -> None:
+        workspace_builders = importlib.import_module("quant_hunter.workspace_builders")
+
+        class DummyLabel:
+            def __init__(self) -> None:
+                self.value = ""
+                self.tooltip = ""
+
+            def setText(self, value: str) -> None:
+                self.value = value
+
+            def setToolTip(self, value: str) -> None:
+                self.tooltip = value
+
+        class DummyButton(DummyLabel):
+            def __init__(self) -> None:
+                super().__init__()
+                self.enabled = True
+
+            def setEnabled(self, value: bool) -> None:
+                self.enabled = value
+
+        class DummyCard:
+            def __init__(self) -> None:
+                self.tooltip = ""
+                self.props = {}
+
+            def setToolTip(self, value: str) -> None:
+                self.tooltip = value
+
+            def setProperty(self, key: str, value) -> None:
+                self.props[key] = value
+
+        window = SimpleNamespace(
+            state=SimpleNamespace(strategy_risk_profile="standard"),
+            last_daily_pool_meta={
+                "profile_snapshots": {
+                    "conservative": {"display_count": 9, "buy_ready_count": 3, "rejected_count": 13},
+                    "standard": {"display_count": 12, "buy_ready_count": 5, "rejected_count": 7},
+                }
+            },
+            risk_snapshot_cards={
+                "conservative": {
+                    "card": DummyCard(),
+                    "title": DummyLabel(),
+                    "detail": DummyLabel(),
+                    "metrics": DummyLabel(),
+                    "flag": DummyLabel(),
+                    "button": DummyButton(),
+                },
+                "standard": {
+                    "card": DummyCard(),
+                    "title": DummyLabel(),
+                    "detail": DummyLabel(),
+                    "metrics": DummyLabel(),
+                    "flag": DummyLabel(),
+                    "button": DummyButton(),
+                },
+            },
+            _set_button_role=lambda button, role="ghost": setattr(button, "role", role),
+        )
+
+        workspace_builders._refresh_config_risk_snapshot_fallback(window)
+
+        self.assertEqual(window.risk_snapshot_cards["standard"]["flag"].value, "当前启用")
+        self.assertEqual(window.risk_snapshot_cards["standard"]["button"].value, "当前档位")
+        self.assertFalse(window.risk_snapshot_cards["standard"]["button"].enabled)
+        self.assertEqual(window.risk_snapshot_cards["standard"]["button"].role, "accent")
+        self.assertIn("当前已启用", window.risk_snapshot_cards["standard"]["button"].tooltip)
+        self.assertTrue(window.risk_snapshot_cards["standard"]["card"].props["riskActive"])
+        self.assertEqual(window.risk_snapshot_cards["conservative"]["flag"].value, "点击切换")
+        self.assertEqual(window.risk_snapshot_cards["conservative"]["button"].value, "切换到此档")
+        self.assertTrue(window.risk_snapshot_cards["conservative"]["button"].enabled)
+        self.assertEqual(window.risk_snapshot_cards["conservative"]["button"].role, "tonal")
+        self.assertFalse(window.risk_snapshot_cards["conservative"]["card"].props["riskActive"])
+        self.assertIn("点击后将保存配置并刷新推荐池", window.risk_snapshot_cards["conservative"]["button"].tooltip)
+        self.assertIn("推荐 12 只", window.risk_snapshot_cards["standard"]["metrics"].value)
 
     def test_qt_window_smoke_boot(self) -> None:
         if importlib.util.find_spec("PySide6") is None:
@@ -4512,6 +5128,49 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(restored.broker_profile.account_id, "legacy-account")
         self.assertEqual(restored.broker_profile.token, "legacy-token")
         self.assertEqual(restored.broker_profile.password, "legacy-password")
+
+    def test_app_state_persists_submission_history_and_guard_flags(self) -> None:
+        state_path = self._temp_dir() / "app_state_submission_history.json"
+        save_app_state(
+            state_path,
+            AppState(
+                broker_profile=BrokerProfile(
+                    account_id="demo-account",
+                    token="demo-token",
+                    strategy_id="demo-strategy",
+                    test_submit_only=False,
+                    test_submit_max_amount=2500.0,
+                    test_submit_symbol_whitelist="SHSE.600000,SZSE.000001",
+                    auto_export_submission_records=False,
+                ),
+                order_submission_log=["[2026-04-16 09:35:00] SDK 下单完成：共 1 笔"],
+                order_submission_records=[
+                    {
+                        "timestamp": "2026-04-16 09:35:00",
+                        "order_status": "SUBMITTED",
+                        "fill_status": "PENDING",
+                        "symbol": "SHSE.600000",
+                        "side": "BUY",
+                        "price": "10.000",
+                        "quantity": "200",
+                        "failure_reason": "",
+                        "message": "ok",
+                    }
+                ],
+            ),
+        )
+        self.addCleanup(lambda: state_path.unlink(missing_ok=True))
+
+        restored = load_app_state(state_path)
+
+        self.assertFalse(restored.broker_profile.test_submit_only)
+        self.assertAlmostEqual(restored.broker_profile.test_submit_max_amount, 2500.0)
+        self.assertEqual(restored.broker_profile.test_submit_symbol_whitelist, "SHSE.600000,SZSE.000001")
+        self.assertFalse(restored.broker_profile.auto_export_submission_records)
+        self.assertEqual(restored.order_submission_log, ["[2026-04-16 09:35:00] SDK 下单完成：共 1 笔"])
+        self.assertEqual(len(restored.order_submission_records), 1)
+        self.assertEqual(restored.order_submission_records[0]["symbol"], "SHSE.600000")
+        self.assertEqual(restored.order_submission_records[0]["quantity"], "200")
 
     def test_app_state_persists_paper_trading_state(self) -> None:
         state_path = self._temp_dir() / "app_state_paper_trading.json"
@@ -7321,6 +7980,7 @@ class StrategyWorkflowTests(unittest.TestCase):
             broker_status_banner=module.QLabel(),
             broker_execution_text=module.QTextEdit(),
             _stock_name_for_symbol=lambda symbol: "宁德时代" if symbol else "--",
+            _set_button_role=lambda button, role="ghost": setattr(button, "role", role),
             _set_label_text_if_changed=lambda widget, text, tooltip=None: (
                 widget.setText(text) if widget.text() != text else None,
                 widget.setToolTip(tooltip) if tooltip is not None and hasattr(widget, "setToolTip") and widget.toolTip() != tooltip else None,
@@ -7334,10 +7994,966 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(window.broker_focus_priority_button.text(), "定位高优先")
         self.assertEqual(window.generate_order_suggestions_button.text(), "生成委托链路")
         self.assertEqual(window.confirm_submit_orders_button.text(), "确认并提交委托")
+        self.assertEqual(window.generate_order_suggestions_button.role, "accent")
+        self.assertEqual(window.confirm_submit_orders_button.role, "ghost")
         self.assertIn("当前没有阻塞项", window.broker_focus_blocker_button.toolTip())
         self.assertIn("当前没有高优先委托", window.broker_focus_priority_button.toolTip())
         self.assertIn("自动生成委托建议", window.generate_order_suggestions_button.toolTip())
         self.assertIn("请先从推荐池生成委托建议", window.confirm_submit_orders_button.toolTip())
+
+    def test_update_broker_action_flow_promotes_generate_when_focus_symbol_synced(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        focus_row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-15",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.6,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=77.0,
+            persistence_score=82.0,
+            news_score=73.0,
+            leader_score=90.0,
+            total_score=88.0,
+        )
+        window = SimpleNamespace(
+            order_intents=[],
+            order_submission_records=[],
+            active_symbol="",
+            broker_focus_blocker_button=module.QPushButton(),
+            broker_focus_priority_button=module.QPushButton(),
+            confirm_submit_orders_button=module.QPushButton(),
+            generate_order_suggestions_button=module.QPushButton(),
+            broker_status_banner=module.QLabel(),
+            broker_execution_text=module.QTextEdit(),
+            broker_detail_status_label=module.QLabel(),
+            _explicit_recommendation_focus=lambda: focus_row,
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _set_button_role=lambda button, role="ghost": setattr(button, "role", role),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text) if widget.text() != text else None,
+                widget.setToolTip(tooltip) if tooltip is not None and hasattr(widget, "setToolTip") and widget.toolTip() != tooltip else None,
+            ),
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text) if widget.toPlainText() != text else None,
+        )
+
+        module._qh_update_broker_action_flow_v26(window)
+
+        self.assertEqual(window.generate_order_suggestions_button.text(), "为焦点生成委托")
+        self.assertEqual(window.generate_order_suggestions_button.role, "accent")
+        self.assertEqual(window.confirm_submit_orders_button.role, "ghost")
+        self.assertIn("龙头样本", window.generate_order_suggestions_button.toolTip())
+        self.assertIn("已同步 龙头样本", window.broker_status_banner.text())
+        self.assertIn("已同步 龙头样本", window.broker_execution_text.toPlainText())
+        self.assertIn("围绕 龙头样本 生成委托链路", window.broker_detail_status_label.text())
+
+    def test_generate_order_suggestions_selects_focus_symbol_after_build(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+
+        class _BudgetInput:
+            def text(self) -> str:
+                return "30000"
+
+        class _OrdersTable:
+            def __init__(self) -> None:
+                self.selected_row = -1
+
+            def rowCount(self) -> int:
+                return 2
+
+            def selectRow(self, row: int) -> None:
+                self.selected_row = row
+
+        focus_row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-15",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.6,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=77.0,
+            persistence_score=82.0,
+            news_score=73.0,
+            leader_score=90.0,
+            total_score=88.0,
+        )
+        other_intent = OrderIntent(
+            symbol="SZSE.300002",
+            side="BUY",
+            price=11.0,
+            quantity=1000,
+            stop_price=10.4,
+            target_price=12.2,
+            signal_date="2026-04-15",
+            reason="other",
+        )
+        focus_intent = OrderIntent(
+            symbol="SZSE.300001",
+            side="BUY",
+            price=10.0,
+            quantity=1000,
+            stop_price=9.6,
+            target_price=10.8,
+            signal_date="2026-04-15",
+            reason="focus",
+        )
+        calls = {"focus_symbol": "", "status_extra": "", "refresh_focus": 0, "refresh_submission": 0}
+        orders_table = _OrdersTable()
+        window = SimpleNamespace(
+            scan_rows=[SimpleNamespace(symbol="SZSE.300002"), SimpleNamespace(symbol="SZSE.300001")],
+            daily_pool_rows=[focus_row],
+            state=SimpleNamespace(watchlist=[]),
+            per_trade_budget_input=_BudgetInput(),
+            order_intents=[],
+            orders_table=orders_table,
+            orders_focus_label=module.QLabel(),
+            broker_status_banner=module.QLabel(),
+            _selected_daily_pool_recommendation=lambda: focus_row,
+            _fill_orders=lambda: None,
+            _select_order_intent_row_for_symbol=lambda symbol: (
+                calls.__setitem__("focus_symbol", symbol),
+                orders_table.selectRow(1),
+                True,
+            )[-1],
+            _refresh_broker_order_focus=lambda: calls.__setitem__("refresh_focus", calls["refresh_focus"] + 1),
+            _refresh_submission_focus=lambda: calls.__setitem__("refresh_submission", calls["refresh_submission"] + 1),
+            _refresh_broker_status=lambda extra="": calls.__setitem__("status_extra", extra),
+            _stock_name_for_symbol=lambda symbol: {"SZSE.300001": "龙头样本", "SZSE.300002": "跟随样本"}.get(symbol, "--"),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text) if widget.text() != text else None,
+        )
+
+        with patch.object(module.EastmoneyBrokerAdapter, "build_order_intents", return_value=[other_intent, focus_intent]):
+            module.QuantHunterWindow.generate_order_suggestions(window)
+
+        self.assertEqual(calls["focus_symbol"], "SZSE.300001")
+        self.assertEqual(orders_table.selected_row, 1)
+        self.assertEqual(calls["refresh_focus"], 1)
+        self.assertEqual(calls["refresh_submission"], 1)
+        self.assertIn("优先关注 龙头样本", window.orders_focus_label.text())
+        self.assertIn("已围绕 龙头样本 生成 2 笔委托建议", calls["status_extra"])
+
+    def test_update_broker_action_flow_personalizes_confirm_tooltip_with_focus_impact(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        focus_intent = OrderIntent(
+            symbol="SZSE.300001",
+            side="BUY",
+            price=10.0,
+            quantity=1000,
+            stop_price=9.6,
+            target_price=10.8,
+            signal_date="2026-04-15",
+            reason="focus",
+        )
+        window = SimpleNamespace(
+            order_intents=[focus_intent],
+            order_submission_records=[],
+            active_symbol="SZSE.300001",
+            broker_focus_blocker_button=module.QPushButton(),
+            broker_focus_priority_button=module.QPushButton(),
+            confirm_submit_orders_button=module.QPushButton(),
+            generate_order_suggestions_button=module.QPushButton(),
+            broker_status_banner=module.QLabel(),
+            broker_execution_text=module.QTextEdit(),
+            broker_detail_status_label=module.QLabel(),
+            last_broker_execution_summary={
+                "portfolio_risk_review": {
+                    "status": "谨慎",
+                    "rows": [
+                        {
+                            "symbol": "SZSE.300001",
+                            "status": "谨慎",
+                            "detail": "单笔资金占用 20.0%/25.0%",
+                        }
+                    ],
+                }
+            },
+            _selected_order_intent=lambda: focus_intent,
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _set_button_role=lambda button, role="ghost": setattr(button, "role", role),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text) if widget.text() != text else None,
+                widget.setToolTip(tooltip) if tooltip is not None and hasattr(widget, "setToolTip") and widget.toolTip() != tooltip else None,
+            ),
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text) if widget.toPlainText() != text else None,
+        )
+
+        module._qh_update_broker_action_flow_v26(window)
+
+        self.assertEqual(window.confirm_submit_orders_button.role, "accent")
+        self.assertIn("当前焦点：龙头样本", window.confirm_submit_orders_button.toolTip())
+        self.assertIn("单笔资金占用 20.0%/25.0%", window.confirm_submit_orders_button.toolTip())
+        self.assertIn("优先复核 龙头样本", window.broker_status_banner.text())
+
+    def test_update_broker_action_flow_gates_sync_and_validate_buttons(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+
+        window = SimpleNamespace(
+            order_intents=[],
+            order_submission_records=[],
+            active_symbol="",
+            broker_focus_blocker_button=module.QPushButton(),
+            broker_focus_priority_button=module.QPushButton(),
+            confirm_submit_orders_button=module.QPushButton(),
+            generate_order_suggestions_button=module.QPushButton(),
+            sync_broker_button=module.QPushButton(),
+            validate_broker_connection_button=module.QPushButton(),
+            broker_status_banner=module.QLabel(),
+            broker_execution_text=module.QTextEdit(),
+            current_broker_profile=lambda: SimpleNamespace(
+                mode="sdk",
+                account_id="",
+                strategy_id="demo-strategy",
+                token="",
+                test_submit_only=True,
+                test_submit_symbol_whitelist="",
+            ),
+            _stock_name_for_symbol=lambda symbol: "当前焦点" if symbol else "--",
+            _set_button_role=lambda button, role="ghost": setattr(button, "role", role),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text) if widget.text() != text else None,
+                widget.setToolTip(tooltip) if tooltip is not None and hasattr(widget, "setToolTip") and widget.toolTip() != tooltip else None,
+            ),
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text) if widget.toPlainText() != text else None,
+        )
+
+        module._qh_update_broker_action_flow_v26(window)
+
+        self.assertFalse(window.sync_broker_button.isEnabled())
+        self.assertIn("账户 ID", window.sync_broker_button.toolTip())
+        self.assertEqual(window.sync_broker_button.role, "ghost")
+        self.assertTrue(window.validate_broker_connection_button.isEnabled())
+        self.assertIn("账户 ID", window.validate_broker_connection_button.toolTip())
+        self.assertIn("SDK Token", window.validate_broker_connection_button.toolTip())
+        self.assertEqual(window.validate_broker_connection_button.role, "ghost")
+
+    def test_refresh_trade_recap_prefers_focus_symbol_followup(self) -> None:
+        from quant_hunter import ui_refresh
+
+        class _Text:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def toPlainText(self) -> str:
+                return self.value
+
+            def setPlainText(self, value: str) -> None:
+                self.value = value
+
+        focus_row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-15",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.6,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=77.0,
+            persistence_score=82.0,
+            news_score=73.0,
+            leader_score=90.0,
+            total_score=88.0,
+            mainline_tag="机器人",
+            mainline_risk_flag="低",
+        )
+        focus_intent = OrderIntent(
+            symbol="SZSE.300001",
+            side="BUY",
+            price=10.0,
+            quantity=1000,
+            stop_price=9.6,
+            target_price=10.8,
+            signal_date="2026-04-15",
+            reason="focus",
+        )
+        other_intent = OrderIntent(
+            symbol="SZSE.300002",
+            side="BUY",
+            price=11.0,
+            quantity=1000,
+            stop_price=10.5,
+            target_price=12.0,
+            signal_date="2026-04-15",
+            reason="other",
+        )
+        window = SimpleNamespace(
+            broker_recap_text=_Text(),
+            order_submission_records=[
+                {"symbol": "SZSE.300002", "message": "先看跟随样本", "failure_reason": ""},
+                {"symbol": "SZSE.300001", "message": "优先复核龙头样本回执", "failure_reason": ""},
+            ],
+            holdings=[],
+            order_intents=[other_intent, focus_intent],
+            order_submission_log=[],
+            _selected_order_intent=lambda: focus_intent,
+            _stock_name_for_symbol=lambda symbol: {"SZSE.300001": "龙头样本", "SZSE.300002": "跟随样本"}.get(symbol, symbol),
+        )
+
+        ui_refresh.refresh_trade_recap(window)
+
+        self.assertIn("优先复核龙头样本回执", window.broker_recap_text.toPlainText())
+
+    def test_refresh_submission_focus_prefers_focus_symbol_record_when_none_selected(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        focus_row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-15",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.6,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=77.0,
+            persistence_score=82.0,
+            news_score=73.0,
+            leader_score=90.0,
+            total_score=88.0,
+            mainline_tag="机器人",
+            rationale="主线延续",
+        )
+        window = SimpleNamespace(
+            execution_table=SimpleNamespace(currentRow=lambda: -1),
+            order_submission_records=[
+                {
+                    "symbol": "SZSE.300002",
+                    "side": "BUY",
+                    "price": "11.00",
+                    "quantity": "1000",
+                    "order_status": "SUBMITTED",
+                    "fill_status": "PENDING",
+                    "failure_reason": "",
+                    "message": "跟随样本处理中",
+                    "timestamp": "2026-04-16 10:00:00",
+                },
+                {
+                    "symbol": "SZSE.300001",
+                    "side": "BUY",
+                    "price": "10.00",
+                    "quantity": "1000",
+                    "order_status": "SUBMITTED",
+                    "fill_status": "PENDING",
+                    "failure_reason": "",
+                    "message": "龙头样本处理中",
+                    "timestamp": "2026-04-16 10:01:00",
+                },
+            ],
+            daily_pool_rows=[focus_row],
+            order_result_text=module.QTextEdit(),
+            broker_recap_text=module.QTextEdit(),
+            _update_broker_action_flow_v26=lambda: None,
+            _selected_submission_record=lambda: {"symbol": "SZSE.300002"},
+            _selected_order_intent=lambda: None,
+            _explicit_recommendation_focus=lambda: focus_row,
+            _stock_name_for_symbol=lambda symbol: {"SZSE.300001": "龙头样本", "SZSE.300002": "跟随样本"}.get(symbol, symbol),
+            _stock_id_for_symbol=lambda symbol: {"SZSE.300001": "300001", "SZSE.300002": "300002"}.get(symbol, "--"),
+            _recommend_price_snapshot=lambda _rec: {},
+            _recommend_price_brief=lambda _rec: "",
+            _news_digest_lines_for_symbol=lambda _symbol, limit=2: [],
+            _display_order_status=lambda value: value,
+            _display_fill_status=lambda value: value,
+            _display_action=lambda value: {"BUY": "买入", "SELL": "卖出"}.get(value, value),
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text) if widget.toPlainText() != text else None,
+            auth_channel_combo=SimpleNamespace(currentText=lambda: "东方财富"),
+        )
+
+        with patch.object(module, "_ORIGINAL_QH_REFRESH_SUBMISSION_FOCUS_V26", lambda self: None), patch.object(
+            module,
+            "_qh_broker_execution_summary_v41",
+            return_value={
+                "stage": "待成交跟踪",
+                "judgement": "继续跟踪",
+                "next_step": "继续盯回执",
+                "order_status": "SUBMITTED",
+                "fill_status": "PENDING",
+                "tooltip": "待成交跟踪",
+            },
+        ), patch.object(
+            module, "_qh_broker_execution_followup_v42", return_value={"headline": "盯回执", "detail": "继续跟踪", "route": "交易页"}
+        ), patch.object(
+            module, "_qh_broker_repair_hint_v43", return_value={"headline": "先跟踪", "detail": "继续观察", "checkpoint": "等待回执"}
+        ), patch.object(
+            module, "_qh_broker_parameter_alignment_v46", return_value={"headline": "价格贴合计划", "detail": "继续执行", "checkpoint": "核对价格"}
+        ), patch.object(
+            module, "_qh_broker_resolution_action_v47", return_value={"target": "交易页", "detail": "继续跟踪回执"}
+        ), patch.object(
+            module, "_qh_broker_terminal_brief_v48", return_value={"stage": "执行阶段：待成交跟踪", "focus": "执行焦点：龙头样本", "status": "交易状态：龙头样本"}
+        ), patch.object(
+            module, "_qh_broker_panel_conclusion_v49", return_value="结论：待成交跟踪 / 价格贴合计划 / 去交易页"
+        ), patch.object(
+            module,
+            "_qh_broker_execution_deck_v50",
+            return_value={
+                "headline": "当前委托动作面板",
+                "symbol_value": "龙头样本",
+                "symbol_accent": "300001 / SZSE.300001",
+                "gate_value": "继续跟",
+                "gate_accent": "继续跟 / 加速",
+                "risk_value": "黄灯",
+                "risk_accent": "继续观察",
+                "position_value": "占用 10,000",
+                "position_accent": "组合谨慎",
+            },
+        ), patch.object(
+            module, "_qh_broker_focus_shortcuts_v51", return_value={}
+        ), patch.object(
+            module, "_qh_broker_action_strip_labels_v52", return_value={}
+        ):
+            module._qh_refresh_submission_focus_v26(window)
+
+        self.assertIn("龙头样本", window.order_result_text.toPlainText())
+        self.assertIn("龙头样本", window.broker_recap_text.toPlainText())
+
+    def test_refresh_detail_workspace_panels_prefers_order_focus_symbol(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        focus_row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-15",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.6,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=77.0,
+            persistence_score=82.0,
+            news_score=73.0,
+            leader_score=90.0,
+            total_score=88.0,
+            mainline_tag="机器人",
+            rationale="主线延续",
+            next_focus="继续盯量能和承接。",
+        )
+        focus_intent = OrderIntent(
+            symbol="SZSE.300001",
+            side="BUY",
+            price=10.0,
+            quantity=1000,
+            stop_price=9.6,
+            target_price=10.8,
+            signal_date="2026-04-15",
+            reason="focus",
+        )
+        window = SimpleNamespace(
+            metrics_text=module.QTextEdit(),
+            detail_decision_text=module.QTextEdit(),
+            detail_execution_text=module.QTextEdit(),
+            detail_conclusion_text=module.QTextEdit(),
+            active_symbol="SZSE.300002",
+            daily_pool_rows=[focus_row],
+            scan_rows=[],
+            analyses=[],
+            order_intents=[focus_intent],
+            order_submission_records=[
+                {
+                    "symbol": "SZSE.300001",
+                    "order_status": "SUBMITTED",
+                    "fill_status": "PENDING",
+                    "message": "龙头样本处理中",
+                }
+            ],
+            _selected_order_intent=lambda: focus_intent,
+            _explicit_recommendation_focus=lambda: focus_row,
+            _selected_detail_signal_snapshot=lambda: None,
+            _selected_detail_trade_snapshot=lambda: None,
+            _stock_name_for_symbol=lambda symbol: {"SZSE.300001": "龙头样本", "SZSE.300002": "旧焦点"}.get(symbol, symbol),
+            _stock_id_for_symbol=lambda symbol: {"SZSE.300001": "300001", "SZSE.300002": "300002"}.get(symbol, "--"),
+            _theme_for_symbol=lambda symbol, recommendation=None: getattr(recommendation, "mainline_tag", "待确认"),
+            _hype_logic_for_symbol=lambda symbol, recommendation=None, scan_row=None: getattr(recommendation, "rationale", "待确认"),
+            _news_digest_lines_for_symbol=lambda symbol, limit=2: [],
+            _selected_symbol_from_watchlist=lambda: "",
+            _display_action=lambda value: {"BUY": "买入", "WATCH": "观察", "SELL": "卖出"}.get(value, value),
+            _display_label=lambda value: value,
+            _display_order_status=lambda value: value,
+            _display_fill_status=lambda value: value,
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text) if widget.toPlainText() != text else None,
+        )
+
+        module._qh_refresh_detail_workspace_panels(window)
+
+        self.assertIn("龙头样本 (300001 / SZSE.300001)", window.detail_decision_text.toPlainText())
+        self.assertIn("委托焦点：占用 10,000", window.detail_execution_text.toPlainText())
+        self.assertIn("执行状态：SUBMITTED / PENDING | 龙头样本处理中", window.detail_conclusion_text.toPlainText())
+
+    def test_workspace_focus_capsule_uses_same_stage_copy_across_pages(self) -> None:
+        module = importlib.import_module("app_qt")
+        focus_row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-15",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.6,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=77.0,
+            persistence_score=82.0,
+            news_score=73.0,
+            leader_score=90.0,
+            total_score=88.0,
+        )
+        focus_intent = OrderIntent(
+            symbol="SZSE.300001",
+            side="BUY",
+            price=10.0,
+            quantity=1000,
+            stop_price=9.6,
+            target_price=10.8,
+            signal_date="2026-04-15",
+            reason="focus",
+        )
+        window = SimpleNamespace(
+            active_symbol="SZSE.300002",
+            daily_pool_rows=[focus_row],
+            order_submission_records=[
+                {
+                    "symbol": "SZSE.300001",
+                    "order_status": "SUBMITTED",
+                    "fill_status": "PENDING",
+                    "message": "龙头样本处理中",
+                }
+            ],
+            scan_rows=[],
+            _selected_order_intent=lambda: focus_intent,
+            _explicit_recommendation_focus=lambda: focus_row,
+            _selected_symbol_from_watchlist=lambda: "",
+            _selected_board_symbol=lambda: "",
+            _stock_name_for_symbol=lambda symbol: {"SZSE.300001": "龙头样本", "SZSE.300002": "旧焦点"}.get(symbol, symbol),
+            _stock_id_for_symbol=lambda symbol: {"SZSE.300001": "300001", "SZSE.300002": "300002"}.get(symbol, "--"),
+            _display_order_status=lambda value: value,
+            _display_fill_status=lambda value: value,
+            _display_action=lambda value: {"BUY": "买入", "WATCH": "观察", "SELL": "卖出"}.get(value, value),
+            _focus_banner_tone=lambda symbol="", recommendation=None, scan_row=None: "buy",
+        )
+
+        recommend_tone, recommend_text = module._qh_workspace_focus_capsule_v40(window, "recommend")
+        detail_tone, detail_text = module._qh_workspace_focus_capsule_v40(window, "detail")
+
+        self.assertEqual(recommend_tone, "buy")
+        self.assertEqual(detail_tone, "buy")
+        self.assertIn("龙头样本 (300001 / SZSE.300001)", recommend_text)
+        self.assertIn("【待成交】已提交 / 待成交", recommend_text)
+        self.assertIn("下一步 龙头样本处理中", recommend_text)
+        self.assertIn("复盘焦点：龙头样本", detail_text)
+        self.assertIn("【待成交】已提交 / 待成交", detail_text)
+
+    def test_focus_stage_badge_maps_intent_and_recommendation_states(self) -> None:
+        module = importlib.import_module("app_qt")
+        focus_row = SimpleNamespace(action="BUY", execution_status="已送审", opportunity_tier="优先处理")
+        focus_intent = OrderIntent(
+            symbol="SZSE.300001",
+            side="BUY",
+            price=10.0,
+            quantity=1000,
+            stop_price=9.6,
+            target_price=10.8,
+            signal_date="2026-04-15",
+            reason="focus",
+        )
+        window = SimpleNamespace(_display_action=lambda value: {"BUY": "买入", "WATCH": "观察", "SELL": "卖出"}.get(value, value))
+
+        submit_badge = module._qh_focus_stage_badge_v43(window, recommendation=None, intent=focus_intent, execution_row=None)
+        review_badge = module._qh_focus_stage_badge_v43(window, recommendation=focus_row, intent=None, execution_row=None)
+
+        self.assertEqual(submit_badge, ("待提交", "待提交 买入"))
+        self.assertEqual(review_badge, ("送审中", "已送审 / 待确认"))
+
+    def test_workspace_focus_capsule_html_renders_colored_stage_chip(self) -> None:
+        module = importlib.import_module("app_qt")
+        focus_row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-15",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.6,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=77.0,
+            persistence_score=82.0,
+            news_score=73.0,
+            leader_score=90.0,
+            total_score=88.0,
+        )
+        focus_intent = OrderIntent(
+            symbol="SZSE.300001",
+            side="BUY",
+            price=10.0,
+            quantity=1000,
+            stop_price=9.6,
+            target_price=10.8,
+            signal_date="2026-04-15",
+            reason="focus",
+        )
+        window = SimpleNamespace(
+            active_symbol="",
+            daily_pool_rows=[focus_row],
+            order_submission_records=[],
+            scan_rows=[],
+            _selected_order_intent=lambda: focus_intent,
+            _explicit_recommendation_focus=lambda: focus_row,
+            _selected_symbol_from_watchlist=lambda: "",
+            _selected_board_symbol=lambda: "",
+            _stock_name_for_symbol=lambda symbol: "龙头样本",
+            _stock_id_for_symbol=lambda symbol: "300001",
+            _display_action=lambda value: {"BUY": "买入", "WATCH": "观察", "SELL": "卖出"}.get(value, value),
+            _focus_banner_tone=lambda symbol="", recommendation=None, scan_row=None: "buy",
+        )
+
+        tone, html = module._qh_workspace_focus_capsule_html_v44(window, "recommend")
+
+        self.assertEqual(tone, "buy")
+        self.assertIn("<span style=", html)
+        self.assertIn("待提交", html)
+        self.assertIn("风险 待评估", html)
+        self.assertIn("下一步", html)
+        self.assertIn("龙头样本 (300001 / SZSE.300001)", html)
+
+    def test_workspace_focus_capsule_html_uses_page_tinted_chip_styles(self) -> None:
+        module = importlib.import_module("app_qt")
+        focus_row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-15",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.6,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=77.0,
+            persistence_score=82.0,
+            news_score=73.0,
+            leader_score=90.0,
+            total_score=88.0,
+        )
+        focus_intent = OrderIntent(
+            symbol="SZSE.300001",
+            side="BUY",
+            price=10.0,
+            quantity=1000,
+            stop_price=9.6,
+            target_price=10.8,
+            signal_date="2026-04-15",
+            reason="focus",
+        )
+        window = SimpleNamespace(
+            active_symbol="",
+            daily_pool_rows=[focus_row],
+            order_submission_records=[],
+            scan_rows=[],
+            _selected_order_intent=lambda: focus_intent,
+            _explicit_recommendation_focus=lambda: focus_row,
+            _selected_symbol_from_watchlist=lambda: "",
+            _selected_board_symbol=lambda: "",
+            _stock_name_for_symbol=lambda symbol: "龙头样本",
+            _stock_id_for_symbol=lambda symbol: "300001",
+            _display_action=lambda value: {"BUY": "买入", "WATCH": "观察", "SELL": "卖出"}.get(value, value),
+            _focus_banner_tone=lambda symbol="", recommendation=None, scan_row=None: "buy",
+        )
+
+        _, recommend_html = module._qh_workspace_focus_capsule_html_v44(window, "recommend")
+        _, detail_html = module._qh_workspace_focus_capsule_html_v44(window, "detail")
+
+        self.assertIn("rgba(182, 154, 255, 0.22)", recommend_html)
+        self.assertIn("rgba(126, 210, 255, 0.22)", detail_html)
+
+    def test_refresh_shell_header_syncs_focus_stage_chip(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+
+        class _DummyStyle:
+            def unpolish(self, *_args, **_kwargs):
+                return None
+
+            def polish(self, *_args, **_kwargs):
+                return None
+
+        focus_row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-15",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.6,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=77.0,
+            persistence_score=82.0,
+            news_score=73.0,
+            leader_score=90.0,
+            total_score=88.0,
+        )
+        focus_intent = OrderIntent(
+            symbol="SZSE.300001",
+            side="BUY",
+            price=10.0,
+            quantity=1000,
+            stop_price=9.6,
+            target_price=10.8,
+            signal_date="2026-04-15",
+            reason="focus",
+        )
+        shell_focus_chip = module.create_shell_chip("焦点状态", "等待联动")
+        shell_workspace_chip = module.create_shell_chip("当前页面", "推荐")
+        shell_market_chip = module.create_shell_chip("行情通道", "等待")
+        shell_pipeline_chip = module.create_shell_chip("今日流程", "等待")
+        shell_refresh_chip = module.create_shell_chip("自动刷新", "手动")
+        shell_runtime_chip = module.create_shell_chip("运行状态", "空闲")
+        tabs = module.QTabWidget()
+        tabs.addTab(module.QWidget(), "总览")
+        tabs.addTab(module.QWidget(), "扫描")
+        tabs.addTab(module.QWidget(), "推荐")
+        tabs.setCurrentIndex(2)
+        window = SimpleNamespace(
+            tabs=tabs,
+            shell_workspace_chip=shell_workspace_chip,
+            shell_focus_chip=shell_focus_chip,
+            shell_market_chip=shell_market_chip,
+            shell_pipeline_chip=shell_pipeline_chip,
+            shell_refresh_chip=shell_refresh_chip,
+            shell_runtime_chip=shell_runtime_chip,
+            market_data_source="unknown",
+            last_market_success_at="",
+            last_market_error="",
+            last_job_status="idle",
+            last_job_name="",
+            current_trade_plan=SimpleNamespace(decisions=[]),
+            daily_pool_rows=[focus_row],
+            order_intents=[focus_intent],
+            order_submission_records=[],
+            paper_trading_state=PaperTradingState(enabled=False),
+            last_scan_warnings=[],
+            last_broker_execution_summary={},
+            _qh_last_action_feedback_v35="最近动作：机会池 | 复盘页 -> 机会池",
+            _workspace_name_for_index=lambda index: "每日推荐",
+            _is_job_running=lambda name: False,
+            _selected_order_intent=lambda: focus_intent,
+            _explicit_recommendation_focus=lambda: focus_row,
+            _selected_symbol_from_watchlist=lambda: "",
+            _selected_board_symbol=lambda: "",
+            _stock_name_for_symbol=lambda symbol: "龙头样本",
+            _stock_id_for_symbol=lambda symbol: "300001",
+            _display_action=lambda value: {"BUY": "买入", "WATCH": "观察", "SELL": "卖出"}.get(value, value),
+            _focus_banner_tone=lambda symbol="", recommendation=None, scan_row=None: "buy",
+            style=lambda: _DummyStyle(),
+            findChildren=lambda *args, **kwargs: [],
+            setWindowTitle=lambda value: None,
+            _sync_commercial_statusbar_v35=lambda: None,
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text) if widget.text() != text else None,
+                widget.setToolTip(tooltip) if tooltip is not None and hasattr(widget, "setToolTip") and widget.toolTip() != tooltip else None,
+            ),
+        )
+
+        module.QuantHunterWindow._refresh_shell_header(window)
+
+        self.assertIn("龙头样本", shell_focus_chip["value"].text())
+        self.assertIn("待提交", shell_focus_chip["value"].text())
+        self.assertIn("动作 机会池 | 复盘页 ->", shell_focus_chip["value"].text())
+        self.assertIn("推荐焦点：龙头样本", shell_focus_chip["value"].toolTip())
+        self.assertIn("价格计划", shell_focus_chip["value"].toolTip())
+        self.assertIn("委托建议", shell_focus_chip["value"].toolTip())
+        self.assertIn("入场 10.00 | 止损 9.60 | 目标 10.80", shell_focus_chip["value"].toolTip())
+        self.assertIn("委托建议：买入 1000 股 @ 10.00", shell_focus_chip["value"].toolTip())
+        self.assertIn("最近动作：机会池 | 复盘页 -> 机会池", shell_focus_chip["value"].toolTip())
+
+    def test_shell_focus_chip_click_prefers_recent_action_route(self) -> None:
+        module = importlib.import_module("app_qt")
+        focus_row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-15",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.6,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=77.0,
+            persistence_score=82.0,
+            news_score=73.0,
+            leader_score=90.0,
+            total_score=88.0,
+        )
+        calls: list[tuple[str, str]] = []
+        window = SimpleNamespace(
+            _qh_last_action_feedback_v35="最近动作：交易页 | 复盘页 -> 交易执行",
+            _selected_order_intent=lambda: None,
+            _explicit_recommendation_focus=lambda: focus_row,
+            _selected_symbol_from_watchlist=lambda: "",
+            _selected_board_symbol=lambda: "",
+            _focus_symbol_in_broker_workspace=lambda symbol: calls.append(("broker", symbol)),
+            _focus_symbol_in_recommend_workspace=lambda symbol: calls.append(("recommend", symbol)),
+            open_focus_symbol_in_detail=lambda: calls.append(("detail", "SZSE.300001")),
+            _navigate_to_workspace=lambda workspace, widget=None, select_row=None: calls.append((workspace, widget or "")),
+        )
+
+        module._qh_on_shell_chip_clicked_v47(window, "shell_focus_chip")
+
+        self.assertEqual(calls, [("broker", "SZSE.300001")])
+
+    def test_focus_banner_click_routes_to_expected_workspace_focus(self) -> None:
+        module = importlib.import_module("app_qt")
+        focus_row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-15",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.6,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=77.0,
+            persistence_score=82.0,
+            news_score=73.0,
+            leader_score=90.0,
+            total_score=88.0,
+        )
+        calls: list[tuple[str, str]] = []
+        window = SimpleNamespace(
+            active_symbol="",
+            _selected_order_intent=lambda: None,
+            _explicit_recommendation_focus=lambda: focus_row,
+            _selected_symbol_from_watchlist=lambda: "",
+            _selected_board_symbol=lambda: "",
+            _focus_symbol_in_recommend_workspace=lambda symbol: calls.append(("recommend", symbol)),
+            _focus_symbol_in_broker_workspace=lambda symbol: calls.append(("broker", symbol)),
+            open_focus_symbol_in_detail=lambda: calls.append(("detail", "SZSE.300001")),
+        )
+
+        module._qh_on_focus_banner_clicked_v41(window, "overview_focus_banner")
+        module._qh_on_focus_banner_clicked_v41(window, "recommend_focus_banner")
+        module._qh_on_focus_banner_clicked_v41(window, "detail_focus_banner")
+
+        self.assertEqual(
+            calls,
+            [("recommend", "SZSE.300001"), ("broker", "SZSE.300001"), ("detail", "SZSE.300001")],
+        )
+
+    def test_focus_banner_menu_actions_include_execution_when_record_exists(self) -> None:
+        module = importlib.import_module("app_qt")
+        focus_row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-15",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.6,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=77.0,
+            persistence_score=82.0,
+            news_score=73.0,
+            leader_score=90.0,
+            total_score=88.0,
+        )
+        window = SimpleNamespace(
+            active_symbol="",
+            _selected_order_intent=lambda: None,
+            _explicit_recommendation_focus=lambda: focus_row,
+            _selected_symbol_from_watchlist=lambda: "",
+            _selected_board_symbol=lambda: "",
+            order_submission_records=[{"symbol": "SZSE.300001"}],
+        )
+
+        actions = module._qh_focus_banner_menu_actions_v42(window, "recommend_focus_banner")
+
+        self.assertIn(("查看推荐焦点", "recommend"), actions)
+        self.assertIn(("查看交易焦点", "broker"), actions)
+        self.assertIn(("查看复盘焦点", "detail"), actions)
+        self.assertIn(("查看提交回执", "execution"), actions)
+
+    def test_run_focus_banner_action_execution_routes_to_submission_table(self) -> None:
+        module = importlib.import_module("app_qt")
+        focus_row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-15",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.6,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=77.0,
+            persistence_score=82.0,
+            news_score=73.0,
+            leader_score=90.0,
+            total_score=88.0,
+        )
+        calls: list[tuple[str, str]] = []
+        window = SimpleNamespace(
+            active_symbol="",
+            order_submission_records=[{"symbol": "SZSE.300001"}],
+            _selected_order_intent=lambda: None,
+            _explicit_recommendation_focus=lambda: focus_row,
+            _selected_symbol_from_watchlist=lambda: "",
+            _selected_board_symbol=lambda: "",
+            _focus_symbol_in_broker_workspace=lambda symbol: calls.append(("broker", symbol)),
+            _select_execution_row_for_symbol=lambda symbol: calls.append(("execution", symbol)) or True,
+            _navigate_to_workspace=lambda workspace, widget=None, select_row=None: calls.append((workspace, widget or "")),
+        )
+
+        module._qh_run_focus_banner_action_v42(window, "execution")
+
+        self.assertEqual(
+            calls,
+            [("broker", "SZSE.300001"), ("execution", "SZSE.300001"), ("broker", "execution_table")],
+        )
 
     def test_set_aux_stage_visibility_updates_toggle_and_status(self) -> None:
         module = importlib.import_module("app_qt")
@@ -8186,6 +9802,7 @@ class StrategyWorkflowTests(unittest.TestCase):
             _hype_logic_for_symbol=lambda _symbol, recommendation=None: getattr(recommendation, "rationale", ""),
             _news_digest_lines_for_symbol=lambda _symbol, limit=2: ["最近催化：机器人主线延续"],
             _display_action=lambda value: {"BUY": "买入", "WATCH": "观察", "SELL": "卖出"}.get(value, value),
+            _set_button_role=lambda button, role="ghost": setattr(button, "role", role),
             _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text) if widget.text() != text else None,
             _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text) if widget.toPlainText() != text else None,
         )
@@ -8223,7 +9840,12 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn("首选动作：推进送审", text)
         self.assertIn("路径建议：当前条件已经比较齐，先送审，再去交易页复核委托和仓位。", text)
         self.assertIn("实验 主测", window.recommend_decision_summary_label.text())
+        self.assertEqual(window.recommend_push_focus_button.role, "accent")
+        self.assertEqual(window.recommend_detail_focus_button.role, "tonal")
+        self.assertEqual(window.recommend_broker_focus_button.role, "tonal")
+        self.assertEqual(window.recommend_push_focus_button.property("ctaPriority"), "primary")
         self.assertIn("首选动作：推进送审", window.recommend_detail_focus_button.toolTip())
+        self.assertIn("按钮层级：当前主操作", window.recommend_push_focus_button.toolTip())
         self.assertIn("模拟盘：主测 | 龙头模型 | 继续主测", window.recommend_push_focus_button.toolTip())
         self.assertIn("模拟盘：主测 | 龙头模型 | 继续主测", window.recommend_broker_focus_button.toolTip())
 
@@ -8273,6 +9895,7 @@ class StrategyWorkflowTests(unittest.TestCase):
             _hype_logic_for_symbol=lambda _symbol, recommendation=None: getattr(recommendation, "rationale", ""),
             _news_digest_lines_for_symbol=lambda _symbol, limit=2: [],
             _display_action=lambda value: {"BUY": "买入", "WATCH": "观察", "SELL": "卖出"}.get(value, value),
+            _set_button_role=lambda button, role="ghost": setattr(button, "role", role),
             _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text) if widget.text() != text else None,
             _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text) if widget.toPlainText() != text else None,
         )
@@ -8297,8 +9920,13 @@ class StrategyWorkflowTests(unittest.TestCase):
         text = window.recommend_decision_summary_text.toPlainText()
         self.assertIn("首选动作：先看暂不执行原因", text)
         self.assertIn("路径建议：位置不够舒服，先等回踩或确认。", text)
+        self.assertEqual(window.recommend_push_focus_button.role, "ghost")
+        self.assertEqual(window.recommend_detail_focus_button.role, "accent")
+        self.assertEqual(window.recommend_broker_focus_button.role, "ghost")
+        self.assertEqual(window.recommend_detail_focus_button.property("ctaPriority"), "primary")
         self.assertIn("首选动作：先看暂不执行原因", window.recommend_push_focus_button.toolTip())
         self.assertIn("首选动作：先看暂不执行原因", window.recommend_detail_focus_button.toolTip())
+        self.assertIn("按钮层级：当前主操作", window.recommend_detail_focus_button.toolTip())
 
     def test_filtered_daily_pool_rows_supports_tail_buy_priority_view(self) -> None:
         module = importlib.import_module("app_qt")
@@ -9865,15 +11493,18 @@ class StrategyWorkflowTests(unittest.TestCase):
             paper_trading_state=PaperTradingState(enabled=True),
         )
 
-        with patch.object(
-            ui_controllers,
-            "paper_strategy_experiment_bridge_v45",
-            return_value={
-                "badge": "主测",
-                "title": "主测 | 龙头模型 | 继续主测",
-                "detail": "样本 7 | 胜率 62.0% | 平均持有 1.8 天 | 预算 x1.18",
-                "cta": "推荐页优先筛同战法前排，交易页按主测纪律推进。",
-            },
+        with (
+            patch.object(
+                ui_controllers,
+                "paper_strategy_experiment_bridge_v45",
+                return_value={
+                    "badge": "主测",
+                    "title": "主测 | 龙头模型 | 继续主测",
+                    "detail": "样本 7 | 胜率 62.0% | 平均持有 1.8 天 | 预算 x1.18",
+                    "cta": "推荐页优先筛同战法前排，交易页按主测纪律推进。",
+                },
+            ),
+            patch.object(ui_controllers, "build_broker_execution_summary", return_value=({"blockers": []}, {})),
         ):
             prepared = ui_controllers.prepare_order_submission_controller(
                 window,
@@ -9889,6 +11520,269 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(captured["experiment_bridge"]["badge"], "主测")
         self.assertIn("本次提交已取消", status["extra"])
         self.assertTrue(hasattr(window, "last_broker_execution_summary"))
+
+    def test_prepare_order_submission_controller_passes_guarded_test_intents(self) -> None:
+        from quant_hunter import ui_controllers
+        from quant_hunter.models import OrderIntent, PaperTradingState
+
+        captured = {}
+        status = {"extra": ""}
+
+        class DummyAdapter:
+            def diagnose_environment(self, _profile):
+                return {
+                    "python_version": "3.12",
+                    "sdk_module": "gm.api",
+                    "module_installed": True,
+                    "bridge_python": "",
+                    "bridge_module_installed": False,
+                    "bridge_ready": False,
+                    "direct_ready": True,
+                }
+
+        def confirm(**kwargs):
+            captured.update(kwargs)
+            return False
+
+        window = SimpleNamespace(
+            order_intents=[
+                OrderIntent(
+                    symbol="SHSE.600000",
+                    side="BUY",
+                    price=10.0,
+                    quantity=1000,
+                    stop_price=9.5,
+                    target_price=11.2,
+                    signal_date="计划股",
+                    reason="主测验证",
+                )
+            ],
+            generate_order_suggestions=lambda: None,
+            _refresh_broker_status=lambda extra="": status.__setitem__("extra", extra),
+            current_broker_profile=lambda: SimpleNamespace(
+                export_dir="exports",
+                token="demo-token",
+                strategy_id="demo-strategy",
+                account_id="demo-account",
+                mode="sdk",
+                sdk_module="gm.api",
+                test_submit_only=True,
+                test_submit_max_amount=2500.0,
+                test_submit_symbol_whitelist="SHSE.600000",
+                auto_export_submission_records=True,
+            ),
+            holdings=[],
+            cash_snapshot=None,
+            daily_pool_rows=[SimpleNamespace(symbol="SHSE.600000", primary_strategy="龙头模型")],
+            paper_trading_state=PaperTradingState(enabled=True),
+        )
+
+        with (
+            patch.object(
+                ui_controllers,
+                "paper_strategy_experiment_bridge_v45",
+                return_value={
+                    "badge": "主测",
+                    "title": "主测 | 龙头模型 | 继续主测",
+                    "detail": "样本 7 | 胜率 62.0% | 平均持有 1.8 天 | 预算 x1.18",
+                    "cta": "推荐页优先筛同战法前排，交易页按主测纪律推进。",
+                },
+            ),
+            patch.object(ui_controllers, "build_broker_execution_summary", return_value=({"blockers": []}, {})),
+        ):
+            prepared = ui_controllers.prepare_order_submission_controller(
+                window,
+                adapter_cls=DummyAdapter,
+                confirmation_dialog_cls=SimpleNamespace(confirm=confirm),
+            )
+
+        self.assertIsNone(prepared)
+        self.assertEqual(len(captured["intents"]), 1)
+        self.assertEqual(captured["intents"][0].quantity, 200)
+        self.assertTrue(captured["guard_notes"])
+        self.assertIn("测试单买入金额", captured["guard_notes"][0])
+
+    def test_validate_broker_connection_controller_reports_bridge_ready_state(self) -> None:
+        from quant_hunter import ui_controllers
+
+        dialogs = {}
+        window = SimpleNamespace(
+            state=SimpleNamespace(broker_profile=None),
+            current_broker_profile=lambda: SimpleNamespace(
+                mode="sdk",
+                account_id="demo-account",
+                token="demo-token",
+                strategy_id="demo-strategy",
+                test_submit_only=True,
+                test_submit_max_amount=2500.0,
+                test_submit_symbol_whitelist="SHSE.600000",
+                auto_export_submission_records=True,
+            ),
+            save_state=lambda: dialogs.__setitem__("saved", dialogs.get("saved", 0) + 1),
+            _refresh_broker_status=lambda extra="": dialogs.__setitem__("status", extra),
+        )
+
+        class DummyAdapter:
+            def diagnose_environment(self, _profile):
+                return {
+                    "python_version": "3.13.12",
+                    "sdk_module": "gm.api",
+                    "module_installed": False,
+                    "bridge_python": r"C:\\Python312\\python.exe",
+                    "bridge_module_installed": True,
+                    "bridge_ready": True,
+                    "direct_ready": False,
+                }
+
+        ready = ui_controllers.validate_broker_connection_controller(
+            window,
+            adapter_cls=DummyAdapter,
+            info_dialog_fn=lambda _parent, title, message: dialogs.__setitem__("info", (title, message)),
+            warning_dialog_fn=lambda _parent, title, message: dialogs.__setitem__("warning", (title, message)),
+        )
+
+        self.assertTrue(ready)
+        self.assertEqual(dialogs.get("saved"), 1)
+        self.assertIn("测试白名单：SHSE.600000", dialogs["status"])
+        self.assertIn("桥接 SDK 调用条件", dialogs["info"][1])
+        self.assertNotIn("warning", dialogs)
+
+    def test_validate_broker_connection_controller_warns_on_missing_whitelist(self) -> None:
+        from quant_hunter import ui_controllers
+
+        dialogs = {}
+        window = SimpleNamespace(
+            state=SimpleNamespace(broker_profile=None),
+            current_broker_profile=lambda: SimpleNamespace(
+                mode="sdk",
+                account_id="demo-account",
+                token="demo-token",
+                strategy_id="demo-strategy",
+                test_submit_only=True,
+                test_submit_max_amount=2500.0,
+                test_submit_symbol_whitelist="",
+                auto_export_submission_records=True,
+            ),
+            save_state=lambda: dialogs.__setitem__("saved", dialogs.get("saved", 0) + 1),
+            _refresh_broker_status=lambda extra="": dialogs.__setitem__("status", extra),
+        )
+
+        class DummyAdapter:
+            def diagnose_environment(self, _profile):
+                return {
+                    "python_version": "3.13.12",
+                    "sdk_module": "gm.api",
+                    "module_installed": False,
+                    "bridge_python": r"C:\\Python312\\python.exe",
+                    "bridge_module_installed": True,
+                    "bridge_ready": True,
+                    "direct_ready": False,
+                }
+
+        ready = ui_controllers.validate_broker_connection_controller(
+            window,
+            adapter_cls=DummyAdapter,
+            info_dialog_fn=lambda _parent, title, message: dialogs.__setitem__("info", (title, message)),
+            warning_dialog_fn=lambda _parent, title, message: dialogs.__setitem__("warning", (title, message)),
+        )
+
+        self.assertFalse(ready)
+        self.assertIn("测试白名单未填写", dialogs["warning"][1])
+        self.assertIn("待修复", dialogs["status"])
+        self.assertNotIn("info", dialogs)
+
+    def test_current_broker_profile_falls_back_to_login_inputs_for_shared_fields(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+
+        window = SimpleNamespace(
+            state=SimpleNamespace(broker_profile=BrokerProfile()),
+            broker_inputs={
+                "account_name": module.QLineEdit("东方财富账户"),
+                "account_id": module.QLineEdit(""),
+                "export_dir": module.QLineEdit("exports"),
+                "sdk_module": module.QLineEdit("gm.api"),
+                "sdk_python_path": module.QLineEdit(""),
+                "token": module.QLineEdit(""),
+                "strategy_id": module.QLineEdit(""),
+            },
+            login_inputs={
+                "username": module.QLineEdit("demo-user"),
+                "password": module.QLineEdit("demo-password"),
+                "account_id": module.QLineEdit("demo-account"),
+                "token": module.QLineEdit("demo-token"),
+                "strategy_id": module.QLineEdit("demo-strategy"),
+            },
+            mode_combo=SimpleNamespace(currentData=lambda: "sdk"),
+            auth_channel_combo=SimpleNamespace(currentData=lambda: "gm"),
+            test_submit_only_checkbox=SimpleNamespace(isChecked=lambda: True),
+            test_submit_max_amount_input=module.QLineEdit("2500"),
+            test_submit_symbol_whitelist_input=module.QLineEdit("600000"),
+            auto_export_submission_records_checkbox=SimpleNamespace(isChecked=lambda: True),
+        )
+        window._input_mapping_value = lambda mapping, key: module.QuantHunterWindow._input_mapping_value(window, mapping, key)
+        window._shared_broker_field_value = lambda key: module.QuantHunterWindow._shared_broker_field_value(window, key)
+
+        profile = module.QuantHunterWindow.current_broker_profile(window)
+
+        self.assertEqual(profile.account_id, "demo-account")
+        self.assertEqual(profile.token, "demo-token")
+        self.assertEqual(profile.strategy_id, "demo-strategy")
+        self.assertEqual(profile.username, "demo-user")
+        self.assertEqual(profile.auth_channel, "gm")
+
+    def test_save_login_profile_syncs_shared_fields_into_broker_inputs(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+
+        calls = {"saved": 0, "login": 0, "broker": 0}
+        window = SimpleNamespace(
+            state=SimpleNamespace(broker_profile=BrokerProfile()),
+            broker_inputs={
+                "account_name": module.QLineEdit("东方财富账户"),
+                "account_id": module.QLineEdit(""),
+                "export_dir": module.QLineEdit("exports"),
+                "sdk_module": module.QLineEdit("gm.api"),
+                "sdk_python_path": module.QLineEdit(""),
+                "token": module.QLineEdit(""),
+                "strategy_id": module.QLineEdit(""),
+            },
+            login_inputs={
+                "username": module.QLineEdit("demo-user"),
+                "password": module.QLineEdit("demo-password"),
+                "account_id": module.QLineEdit("demo-account"),
+                "token": module.QLineEdit("demo-token"),
+                "strategy_id": module.QLineEdit("demo-strategy"),
+            },
+            mode_combo=SimpleNamespace(currentData=lambda: "sdk"),
+            auth_channel_combo=SimpleNamespace(currentData=lambda: "gm"),
+            test_submit_only_checkbox=SimpleNamespace(isChecked=lambda: True),
+            test_submit_max_amount_input=module.QLineEdit("2500"),
+            test_submit_symbol_whitelist_input=module.QLineEdit("600000"),
+            auto_export_submission_records_checkbox=SimpleNamespace(isChecked=lambda: True),
+            save_state=lambda: calls.__setitem__("saved", calls["saved"] + 1),
+            _refresh_login_status=lambda: calls.__setitem__("login", calls["login"] + 1),
+            _refresh_broker_status=lambda extra="": calls.__setitem__("broker", calls["broker"] + 1),
+        )
+        window._input_mapping_value = lambda mapping, key: module.QuantHunterWindow._input_mapping_value(window, mapping, key)
+        window._shared_broker_field_value = lambda key: module.QuantHunterWindow._shared_broker_field_value(window, key)
+        window._sync_shared_broker_fields = lambda source: module.QuantHunterWindow._sync_shared_broker_fields(window, source)
+        window.current_broker_profile = lambda: module.QuantHunterWindow.current_broker_profile(window)
+
+        with patch.object(module.QMessageBox, "information", return_value=0):
+            module.QuantHunterWindow.save_login_profile(window)
+
+        self.assertEqual(window.broker_inputs["account_id"].text(), "demo-account")
+        self.assertEqual(window.broker_inputs["token"].text(), "demo-token")
+        self.assertEqual(window.broker_inputs["strategy_id"].text(), "demo-strategy")
+        self.assertEqual(window.state.broker_profile.account_id, "demo-account")
+        self.assertEqual(window.state.broker_profile.token, "demo-token")
+        self.assertEqual(window.state.broker_profile.strategy_id, "demo-strategy")
+        self.assertEqual(calls["saved"], 1)
+        self.assertEqual(calls["login"], 1)
+        self.assertEqual(calls["broker"], 1)
 
     def test_save_strategy_preferences_controller_persists_risk_profile(self) -> None:
         from quant_hunter import ui_controllers
@@ -10148,6 +12042,110 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(groups[1].title(), "授权与状态")
         self.assertEqual(groups[2].title(), "风险档位快照")
         self.assertEqual(groups[3].title(), "说明")
+
+    def test_normalize_config_workspace_texts_cleans_checkbox_and_button_copy(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        class DummyCheckbox:
+            def __init__(self, text: str) -> None:
+                self._text = text
+
+            def text(self) -> str:
+                return self._text
+
+            def setText(self, value: str) -> None:
+                self._text = value
+
+        class DummyButton:
+            def __init__(self, text: str) -> None:
+                self._text = text
+                self._tooltip = ""
+                self._enabled = True
+
+            def text(self) -> str:
+                return self._text
+
+            def setText(self, value: str) -> None:
+                self._text = value
+
+            def isEnabled(self) -> bool:
+                return self._enabled
+
+            def toolTip(self) -> str:
+                return self._tooltip
+
+            def setToolTip(self, value: str) -> None:
+                self._tooltip = value
+
+        class DummyGroup:
+            def __init__(self, name: str, buttons: list[DummyButton] | None = None) -> None:
+                self._name = name
+                self._buttons = buttons or []
+
+            def objectName(self) -> str:
+                return self._name
+
+            def title(self) -> str:
+                return ""
+
+            def setTitle(self, _value: str) -> None:
+                return None
+
+            def findChildren(self, cls):
+                if cls is DummyButton:
+                    return self._buttons
+                return []
+
+        checkboxes = [
+            DummyCheckbox("??"),
+            DummyCheckbox("??"),
+            DummyCheckbox("??"),
+        ]
+        buttons = [
+            DummyButton("??"),
+            DummyButton("??"),
+            DummyButton("??"),
+            DummyButton("??"),
+        ]
+        groups = [DummyGroup("configLicenseBox", buttons)]
+        config_tab = SimpleNamespace(
+            findChildren=lambda cls: groups if cls.__name__ == "QGroupBox" else (checkboxes if cls.__name__ == "QCheckBox" else buttons)
+        )
+        window = SimpleNamespace(
+            config_tab=config_tab,
+            _has_mojibake_text=lambda _text: True,
+            _set_plain_text_if_changed=lambda *_args, **_kwargs: None,
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+            _license_capabilities=lambda: {
+                "plan": "TRIAL",
+                "focus_theme_boost": 0.0,
+                "daily_plan_export_limit": 10,
+                "market_history_limit": 120,
+                "monitor_summary_limit": 8,
+                "auto_daily_plan_export": False,
+            },
+            state=SimpleNamespace(
+                strategy_risk_profile="standard",
+                auto_daily_plan_export=False,
+                focus_themes=[],
+                strategy_top_theme_limit=3,
+                daily_plan_template="balanced",
+            ),
+            license_status_text=None,
+            config_notes_text=None,
+            theme_drop_reduce_checkbox=checkboxes[0],
+            auto_daily_plan_export_checkbox=checkboxes[1],
+            daily_plan_focus_only_checkbox=checkboxes[2],
+            risk_snapshot_cards=None,
+            strategy_risk_profile_combo=None,
+        )
+
+        module.QuantHunterWindow._normalize_config_workspace_texts(window)
+
+        self.assertEqual(checkboxes[0].text(), "题材掉队时优先减仓")
+        self.assertEqual(checkboxes[1].text(), "启用自动盘前报告")
+        self.assertEqual(checkboxes[2].text(), "仅输出关注题材")
+        self.assertEqual([button.text() for button in buttons], ["切换试用版", "切换专业版", "切换企业版", "保存当前配置"])
 
     def test_apply_daily_pool_rows_surfaces_risk_profile_in_status(self) -> None:
         class DummyLabel:

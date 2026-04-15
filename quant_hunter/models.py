@@ -249,6 +249,10 @@ class BrokerProfile:
     username: str = ""
     password: str = ""
     auth_channel: str = "eastmoney"
+    test_submit_only: bool = True
+    test_submit_max_amount: float = 10000.0
+    test_submit_symbol_whitelist: str = ""
+    auto_export_submission_records: bool = True
 
 
 @dataclass(frozen=True)

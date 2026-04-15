@@ -26,7 +26,7 @@ SourceFiles=SourceFiles
 InstallPrompt=
 DisplayLicense=
 FinishMessage=Quant Hunter installation is complete.
-TargetName=C:\Users\18335\Documents\NEWPRO~1\releases\quant_hunter_setup_20260415_120215.exe
+TargetName=C:\Users\18335\DOCUME~1\NEWPRO~1\releases\quant_hunter_setup_20260415_223351.exe
 FriendlyName=Quant Hunter Installer
 AppLaunched=cmd /c InstallQuantHunter.cmd
 PostInstallCmd=<None>
@@ -255,7 +255,7 @@ FILE219="QuantHunter\quant_hunter.exe"
 FILE220="README.txt"
 
 [SourceFiles]
-SourceFiles0=C:\Users\18335\Documents\NEWPRO~1\.installer_build\payload\
+SourceFiles0=C:\Users\18335\DOCUME~1\NEWPRO~1\.installer_build\payload\
 
 [SourceFiles0]
 %FILE0%=

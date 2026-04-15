@@ -6,6 +6,26 @@ set "PYTHON_EXE=%LocalAppData%\Programs\Python\Python313\python.exe"
 set "WORK_DIR=%SCRIPT_DIR%.pyinstaller_build"
 set "DIST_DIR=%SCRIPT_DIR%dist"
 set "ALT_DIST_DIR=%SCRIPT_DIR%dist_latest"
+set "MODE=app"
+
+if /I "%~1"=="--installer" (
+  set "MODE=installer"
+) else if /I "%~1"=="--app-only" (
+  set "MODE=app"
+) else if not "%~1"=="" (
+  echo Unsupported argument: %~1
+  echo.
+  echo Usage:
+  echo     build_exe.bat
+  echo     build_exe.bat --app-only
+  echo     build_exe.bat --installer
+  exit /b 1
+)
+
+if /I "%MODE%"=="installer" (
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%tools\build_release_package.ps1"
+  exit /b %ERRORLEVEL%
+)
 
 if not exist "%PYTHON_EXE%" (
   set "PYTHON_EXE=python"

@@ -130,6 +130,67 @@ QToolTip {
     padding: 8px 10px;
     border-radius: 10px;
 }
+QWidget#overviewRoot {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #121821, stop:0.48 #0e141b, stop:1 #101722);
+    color: #eef5fd;
+}
+QWidget#overviewRoot QLabel {
+    background-color: transparent;
+    color: #eef5fd;
+}
+QWidget#overviewRoot QGroupBox {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(19, 27, 36, 0.98), stop:1 rgba(13, 19, 27, 0.98));
+    color: #eef5fd;
+    border: 1px solid rgba(123, 145, 170, 0.18);
+    border-radius: 18px;
+}
+QWidget#overviewRoot QGroupBox::title {
+    color: #eef5fd;
+    font-weight: 800;
+}
+QWidget#overviewRoot QLabel#heroTitle {
+    color: #fbfdff;
+}
+QWidget#overviewRoot QLabel#heroSubtitle,
+QWidget#overviewRoot QLabel#inlineHint {
+    color: #bfd0e0;
+}
+QWidget#overviewRoot QLabel#statusBanner,
+QWidget#overviewRoot QLabel#focusStateLabel,
+QWidget#overviewRoot QLabel#workspaceFocusBanner {
+    color: #f7fbff;
+}
+QWidget#overviewRoot QTextEdit#marketNotePanel,
+QWidget#overviewRoot QTextEdit#terminalConsole {
+    background: rgba(12, 17, 24, 0.98);
+    color: #eef5fd;
+    border: 1px solid rgba(120, 142, 166, 0.18);
+}
+QWidget#overviewRoot QTableWidget#marketPoolTable,
+QWidget#overviewRoot QTableWidget#terminalTable {
+    background: rgba(11, 16, 22, 0.98);
+    color: #eef5fd;
+    border: 1px solid rgba(120, 142, 166, 0.18);
+}
+QWidget#overviewRoot QLineEdit,
+QWidget#overviewRoot QComboBox {
+    background: rgba(13, 19, 27, 0.98);
+    color: #eef5fd;
+    border: 1px solid rgba(126, 151, 179, 0.18);
+    border-radius: 14px;
+    padding: 8px 12px;
+}
+QWidget#overviewRoot QLineEdit:focus,
+QWidget#overviewRoot QComboBox:focus {
+    border-color: rgba(126, 183, 255, 0.30);
+}
+QWidget#overviewRoot QPushButton {
+    color: #eef5fd;
+}
+QWidget#overviewRoot QCheckBox {
+    color: #d9e6f2;
+    spacing: 8px;
+}
 """
         )
         self._qh_brand_polish_applied_v34 = True
@@ -279,7 +340,7 @@ QToolTip {
                 self.style().unpolish(bar)
                 self.style().polish(bar)
                 bar.update()
-        for chip_name in ["shell_workspace_chip", "shell_market_chip", "shell_pipeline_chip", "shell_refresh_chip", "shell_runtime_chip"]:
+        for chip_name in ["shell_workspace_chip", "shell_focus_chip", "shell_market_chip", "shell_pipeline_chip", "shell_refresh_chip", "shell_runtime_chip"]:
             chip = getattr(self, chip_name, None)
             if isinstance(chip, dict):
                 for key in ("frame", "label", "value"):

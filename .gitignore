@@ -24,6 +24,8 @@ dist/
 dist_latest/
 .pyinstaller_build/
 .pyinstaller_build_latest/
+.installer_build/
+releases/
 *.spec.bak
 
 # Runtime exports and generated reports

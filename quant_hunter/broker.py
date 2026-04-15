@@ -7,7 +7,7 @@ import json
 import platform
 import subprocess
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -37,6 +37,16 @@ def _is_trade_plan_viable(price: float, stop_price: float, target_price: float, 
     return (estimated_profit / estimated_loss) >= min_ratio
 
 
+def _trade_plan_risk_reward_ratio(price: float, stop_price: float, target_price: float) -> float:
+    if price <= 0 or stop_price <= 0 or target_price <= 0:
+        return 0.0
+    estimated_loss = price - stop_price
+    estimated_profit = target_price - price
+    if estimated_loss <= 0 or estimated_profit <= 0:
+        return 0.0
+    return estimated_profit / estimated_loss
+
+
 def _display_mainline_role(value: str) -> str:
     return {
         "CORE": "核心龙头",
@@ -48,25 +58,109 @@ def _display_mainline_role(value: str) -> str:
     }.get(value or "", value or "--")
 
 
-def _apply_portfolio_risk_status_codes(
-    rows: list[dict[str, Any]],
+def _normalize_test_submit_max_amount(value: float | int | None, default: float = 10000.0) -> float:
+    try:
+        amount = float(value or default)
+    except (TypeError, ValueError):
+        amount = default
+    return round(max(amount, 100.0), 2)
+
+
+
+def _parse_test_submit_symbol_whitelist(value: str | None) -> list[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    for token in ["\r", "\n", "\t", ";", "\uff1b", ",", "\uff0c", "\u3001", "|", " "]:
+        text = text.replace(token, ",")
+    items = [item.strip().upper() for item in text.split(",") if item.strip()]
+    normalized: list[str] = []
+    for item in items:
+        compact = item.replace("-", "").replace("_", "")
+        if compact.startswith("SHSE.") or compact.startswith("SZSE."):
+            normalized.append(compact)
+            continue
+        if compact.startswith("SH") and len(compact) == 8 and compact[2:].isdigit():
+            normalized.append(f"SHSE.{compact[2:]}")
+            continue
+        if compact.startswith("SZ") and len(compact) == 8 and compact[2:].isdigit():
+            normalized.append(f"SZSE.{compact[2:]}")
+            continue
+        digits = "".join(ch for ch in compact if ch.isdigit())
+        if len(digits) == 6:
+            if digits[0] in {"5", "6", "9"}:
+                normalized.append(f"SHSE.{digits}")
+                continue
+            if digits[0] in {"0", "1", "2", "3"}:
+                normalized.append(f"SZSE.{digits}")
+                continue
+        normalized.append(compact)
+    return list(dict.fromkeys(normalized))
+
+
+def build_submission_intents(
+    intents: list[OrderIntent],
+    profile: BrokerProfile,
     *,
-    warn_single_loss_ratio: float,
-    block_single_loss_ratio: float,
-    warn_single_position_asset_ratio: float,
-    block_single_position_asset_ratio: float,
-    warn_single_position_cash_ratio: float,
-    block_single_position_cash_ratio: float,
-) -> None:
-    _apply_portfolio_risk_status_codes(
-        rows,
-        warn_single_loss_ratio=warn_single_loss_ratio,
-        block_single_loss_ratio=block_single_loss_ratio,
-        warn_single_position_asset_ratio=warn_single_position_asset_ratio,
-        block_single_position_asset_ratio=block_single_position_asset_ratio,
-        warn_single_position_cash_ratio=warn_single_position_cash_ratio,
-        block_single_position_cash_ratio=block_single_position_cash_ratio,
-    )
+    lot_size: int = 100,
+) -> tuple[list[OrderIntent], list[str], list[str]]:
+    prepared = [replace(item) for item in list(intents or [])]
+    if not getattr(profile, "test_submit_only", False):
+        return prepared, [], []
+
+    notes: list[str] = []
+    blockers: list[str] = []
+    lot_size = max(int(lot_size or 100), 1)
+    max_buy_amount = _normalize_test_submit_max_amount(getattr(profile, "test_submit_max_amount", 10000.0), 10000.0)
+    whitelist = _parse_test_submit_symbol_whitelist(getattr(profile, "test_submit_symbol_whitelist", ""))
+    buy_intents = [item for item in prepared if str(getattr(item, "side", "") or "").upper() == "BUY"]
+
+    if not whitelist:
+        blockers.append("测试单模式要求先填写测试白名单股票代码。")
+        return [], [], blockers
+
+    blocked_symbols = [
+        str(getattr(item, "symbol", "") or "").upper()
+        for item in prepared
+        if str(getattr(item, "symbol", "") or "").upper() not in whitelist
+    ]
+    if blocked_symbols:
+        blockers.append(f"以下股票不在测试白名单内：{', '.join(blocked_symbols)}。")
+        return [], [], blockers
+
+    if len(buy_intents) > 1:
+        blockers.append(f"测试单模式一次只允许提交 1 笔买入委托，当前有 {len(buy_intents)} 笔。")
+        return [], [], blockers
+
+    guarded: list[OrderIntent] = []
+    for item in prepared:
+        side = str(getattr(item, "side", "") or "").upper()
+        if side != "BUY":
+            guarded.append(item)
+            continue
+        if item.price <= 0:
+            blockers.append(f"{item.symbol} 的委托价格无效，无法按测试单模式换算数量。")
+            continue
+        max_quantity = int(max_buy_amount / float(item.price))
+        max_quantity = (max_quantity // lot_size) * lot_size
+        if max_quantity <= 0:
+            blockers.append(f"{item.symbol} 当前价格约 {item.price:.3f}，测试单上限 {max_buy_amount:,.0f} 不足以下 1 手。")
+            continue
+        safe_quantity = min(int(item.quantity), max_quantity)
+        if safe_quantity <= 0:
+            blockers.append(f"{item.symbol} 的测试单数量换算后为 0，请检查预算和价格。")
+            continue
+        if safe_quantity < int(item.quantity):
+            notes.append(
+                f"{item.symbol} 买入数量已从 {int(item.quantity)} 调整为 {safe_quantity}，测试单买入金额不超过 {max_buy_amount:,.0f}。"
+            )
+        guarded.append(replace(item, quantity=safe_quantity))
+
+    if buy_intents and not notes and not blockers:
+        notes.append(f"测试单模式已开启，买入金额上限为 {max_buy_amount:,.0f}。")
+    notes.append(f"测试白名单：{', '.join(whitelist)}")
+    return guarded, notes, blockers
+
 
 
 def _priority_for_order(risk_reward_ratio: float, checks: list[str], risk_profile: str | None = None) -> str:
@@ -1124,6 +1218,13 @@ def build_order_intent_from_trade_decision(
     quantity = (quantity // lot_size) * lot_size
     if quantity < lot_size or decision.planned_stop <= 0 or decision.planned_target <= 0:
         return None
+    computed_risk_reward_ratio = float(getattr(decision, "risk_reward_ratio", 0.0) or 0.0)
+    if computed_risk_reward_ratio <= 0:
+        computed_risk_reward_ratio = _trade_plan_risk_reward_ratio(
+            decision.planned_entry,
+            decision.planned_stop,
+            decision.planned_target,
+        )
     return OrderIntent(
         symbol=decision.symbol,
         side="BUY",
@@ -1136,11 +1237,11 @@ def build_order_intent_from_trade_decision(
         opportunity_tier=getattr(decision, "opportunity_tier", ""),
         risk_flag=(
             "高"
-            if float(getattr(decision, "risk_reward_ratio", 0.0) or 0.0) < DEFAULT_RISK_CONTROLS.execution_low_risk_reward_ratio
+            if computed_risk_reward_ratio < DEFAULT_RISK_CONTROLS.execution_low_risk_reward_ratio
             else "低"
         ),
         signal_source="trade_plan",
-        risk_reward_ratio=float(getattr(decision, "risk_reward_ratio", 0.0) or 0.0),
+        risk_reward_ratio=computed_risk_reward_ratio,
     )
 
 

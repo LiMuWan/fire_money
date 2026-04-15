@@ -2755,6 +2755,15 @@ def refresh_intraday_monitor(window) -> None:
 def refresh_trade_recap(window) -> None:
     if not hasattr(window, "broker_recap_text"):
         return
+    focus_symbol = ""
+    selected_intent = window._selected_order_intent() if hasattr(window, "_selected_order_intent") else None
+    if selected_intent is not None:
+        focus_symbol = str(getattr(selected_intent, "symbol", "") or "")
+    if not focus_symbol and hasattr(window, "_explicit_recommendation_focus"):
+        focus_recommend = window._explicit_recommendation_focus()
+        focus_symbol = str(getattr(focus_recommend, "symbol", "") or "") if focus_recommend is not None else ""
+    if not focus_symbol:
+        focus_symbol = str(getattr(window, "active_symbol", "") or "")
     summary = summarize_trade_recap(
         submission_records=window.order_submission_records,
         holdings=window.holdings,
@@ -2772,6 +2781,21 @@ def refresh_trade_recap(window) -> None:
         if summary["latest_messages"]
         else (f"跟踪 {', '.join(summary['focus_symbols'][:3])}" if summary["focus_symbols"] else "继续跟踪成交与主线是否延续")
     )
+    if focus_symbol:
+        matching_record = next(
+            (
+                item
+                for item in reversed(list(getattr(window, "order_submission_records", []) or []))
+                if str(item.get("symbol", "") or "") == focus_symbol
+            ),
+            None,
+        )
+        focus_name = window._stock_name_for_symbol(focus_symbol) if hasattr(window, "_stock_name_for_symbol") else focus_symbol
+        if matching_record is not None:
+            record_message = str(matching_record.get("message", "") or "").strip()
+            record_failure = str(matching_record.get("failure_reason", "") or "").strip()
+            next_step = record_message or record_failure or f"优先复核 {focus_name} 的成交回执与执行偏差"
+            risk = record_failure or risk
     if hasattr(window, "order_intents") and hasattr(window, "daily_pool_rows"):
         recommendation_map = {getattr(item, "symbol", ""): item for item in getattr(window, "daily_pool_rows", [])}
         gated = []
@@ -2780,7 +2804,18 @@ def refresh_trade_recap(window) -> None:
             if recommendation is not None:
                 gated.append(f"{getattr(recommendation, 'stock_name', item.symbol)} {_report_mainline_followup_text(recommendation)}")
         if gated:
-            next_step = gated[0]
+            if focus_symbol:
+                focused_gate = next(
+                    (
+                        f"{getattr(recommendation_map.get(focus_symbol), 'stock_name', focus_symbol)} {_report_mainline_followup_text(recommendation_map.get(focus_symbol))}"
+                        for _ in [0]
+                        if recommendation_map.get(focus_symbol) is not None
+                    ),
+                    "",
+                )
+                next_step = focused_gate or gated[0]
+            else:
+                next_step = gated[0]
     _set_plain_text_if_changed(window.broker_recap_text, _brief_panel_text("成交回顾", conclusion, risk, next_step))
 
 

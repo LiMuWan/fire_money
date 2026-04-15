@@ -39,6 +39,7 @@ from quant_hunter.risk import (
     RISK_PROFILE_LABELS,
     RISK_PROFILE_STANDARD,
     risk_profile_brief,
+    risk_profile_snapshot_card_state,
     risk_profile_snapshot_text,
 )
 
@@ -324,6 +325,24 @@ def build_broker_workspace(window, build_table, adapter_factory, project_root: P
     profile_grid.addWidget(QLabel("单笔预算"), mode_row, 2)
     window.per_trade_budget_input = QLineEdit("30000")
     profile_grid.addWidget(window.per_trade_budget_input, mode_row, 3)
+    guard_row = mode_row + 1
+    profile_grid.addWidget(QLabel("提交安全"), guard_row, 0)
+    window.test_submit_only_checkbox = QCheckBox("仅允许测试单")
+    window.test_submit_only_checkbox.setChecked(bool(getattr(profile, "test_submit_only", True)))
+    profile_grid.addWidget(window.test_submit_only_checkbox, guard_row, 1)
+    profile_grid.addWidget(QLabel("测试单上限"), guard_row, 2)
+    window.test_submit_max_amount_input = QLineEdit(f"{float(getattr(profile, 'test_submit_max_amount', 10000.0) or 10000.0):.0f}")
+    profile_grid.addWidget(window.test_submit_max_amount_input, guard_row, 3)
+    whitelist_row = guard_row + 1
+    profile_grid.addWidget(QLabel("测试白名单"), whitelist_row, 0)
+    window.test_submit_symbol_whitelist_input = QLineEdit(str(getattr(profile, "test_submit_symbol_whitelist", "") or ""))
+    window.test_submit_symbol_whitelist_input.setPlaceholderText("例如：SHSE.600000,SZSE.000001")
+    profile_grid.addWidget(window.test_submit_symbol_whitelist_input, whitelist_row, 1, 1, 3)
+    export_row = whitelist_row + 1
+    profile_grid.addWidget(QLabel("回执持久化"), export_row, 0)
+    window.auto_export_submission_records_checkbox = QCheckBox("提交后自动导出回放")
+    window.auto_export_submission_records_checkbox.setChecked(bool(getattr(profile, "auto_export_submission_records", True)))
+    profile_grid.addWidget(window.auto_export_submission_records_checkbox, export_row, 1, 1, 3)
 
     choose_export_button = QPushButton("选择导出目录")
     save_profile_button = QPushButton("保存账户配置")
@@ -340,6 +359,13 @@ def build_broker_workspace(window, build_table, adapter_factory, project_root: P
     profile_grid.addWidget(choose_export_button, 0, 4)
     profile_grid.addWidget(save_profile_button, 1, 4)
     profile_grid.addWidget(create_templates_button, 2, 4)
+    validate_profile_button = QPushButton("校验连接")
+    window._set_button_role(validate_profile_button)
+    validate_profile_button.setMinimumHeight(38)
+    validate_profile_button.setMinimumWidth(150)
+    validate_profile_button.clicked.connect(window.validate_broker_connection)
+    window.validate_broker_connection_button = validate_profile_button
+    profile_grid.addWidget(validate_profile_button, 3, 4)
 
     action_box = QGroupBox("快速执行")
     window._style_terminal_panel(action_box)
@@ -367,6 +393,8 @@ def build_broker_workspace(window, build_table, adapter_factory, project_root: P
         elif label == "确认提交":
             window.confirm_submit_orders_button = button
         action_grid.addWidget(button, index // 4, index % 4)
+        if handler == window.sync_broker_via_sdk:
+            window.sync_broker_button = button
 
     broker_metrics_box = QGroupBox("执行指标")
     window._style_terminal_panel(broker_metrics_box)
@@ -727,8 +755,11 @@ def build_overview_workspace(
     controls_splitter.setObjectName("workspaceControlSplit")
     controls_splitter.setChildrenCollapsible(False)
     overview_view_box = QGroupBox("投资视图")
+    overview_view_box.setObjectName("overviewViewBox")
     overview_search_box = QGroupBox("搜索与刷新")
+    overview_search_box.setObjectName("overviewSearchBox")
     overview_tag_box = QGroupBox("策略快筛")
+    overview_tag_box.setObjectName("overviewTagBox")
     window._style_terminal_panel(overview_view_box, overview_search_box, overview_tag_box)
     overview_view_box.setProperty("pageTone", "overview")
     overview_search_box.setProperty("pageTone", "overview")
@@ -745,6 +776,7 @@ def build_overview_workspace(
     window._configure_splitter(controls_splitter, [420, 520, 560])
     layout.addWidget(controls_splitter)
     dashboard_metrics_box = QGroupBox("核心指标带")
+    dashboard_metrics_box.setObjectName("dashboardMetricsBox")
     window._style_terminal_panel(dashboard_metrics_box)
     dashboard_metrics_box.setProperty("pageTone", "overview")
     dashboard_metrics_box.setProperty("surfaceRole", "metric-band")
@@ -765,6 +797,7 @@ def build_overview_workspace(
         metrics_row.addWidget(card)
     layout.addWidget(dashboard_metrics_box)
     cockpit_box = QGroupBox("市场驾驶舱")
+    cockpit_box.setObjectName("cockpitBox")
     window._style_terminal_panel(cockpit_box)
     cockpit_box.setProperty("pageTone", "overview")
     cockpit_box.setProperty("surfaceRole", "spotlight")
@@ -801,6 +834,7 @@ def build_overview_workspace(
     layout.addWidget(cockpit_box)
 
     playbook_box = QGroupBox("行动剧本")
+    playbook_box.setObjectName("playbookBox")
     window._style_terminal_panel(playbook_box)
     playbook_box.setProperty("pageTone", "overview")
     playbook_box.setProperty("surfaceRole", "spotlight")
@@ -846,6 +880,7 @@ def build_overview_workspace(
     detail_stage_layout.setContentsMargins(0, 8, 0, 0)
     detail_stage_layout.setSpacing(14)
     overview_priority_box = QGroupBox("盘前优先级")
+    overview_priority_box.setObjectName("overviewPriorityBox")
     window._style_terminal_panel(overview_priority_box)
     overview_priority_box.setProperty("pageTone", "overview")
     overview_priority_box.setProperty("surfaceRole", "priority-rail")
@@ -877,10 +912,13 @@ def build_overview_workspace(
     _configure_chart_view(window.intraday_chart_view, min_height=260)
     left_layout.addWidget(window.intraday_chart_view, stretch=5)
     left_notes = QWidget()
+    left_notes.setObjectName("overviewLeftNotes")
     left_notes_layout = QVBoxLayout(left_notes)
     left_notes_layout.setContentsMargins(0, 0, 0, 0)
     left_notes_layout.setSpacing(10)
     buy_box = QGroupBox("今天能不能买")
+    buy_box.setObjectName("buySignalBox")
+    buy_box.setProperty("pageTone", "overview")
     buy_layout = QVBoxLayout(buy_box)
     window.market_buy_text = QTextEdit()
     window.market_buy_text.setReadOnly(True)
@@ -889,6 +927,8 @@ def build_overview_workspace(
     window.market_buy_text.setMinimumHeight(140)
     buy_layout.addWidget(window.market_buy_text)
     risk_box = QGroupBox("减仓和卖点")
+    risk_box.setObjectName("riskSignalBox")
+    risk_box.setProperty("pageTone", "overview")
     risk_layout = QVBoxLayout(risk_box)
     window.market_sell_text = QTextEdit()
     window.market_sell_text.setReadOnly(True)
@@ -897,6 +937,8 @@ def build_overview_workspace(
     window.market_sell_text.setMinimumHeight(140)
     risk_layout.addWidget(window.market_sell_text)
     breadth_box = QGroupBox("消息面")
+    breadth_box.setObjectName("breadthSignalBox")
+    breadth_box.setProperty("pageTone", "overview")
     breadth_layout = QVBoxLayout(breadth_box)
     window.market_news_group = breadth_box
     window.market_breadth_text = QTextEdit()
@@ -1034,6 +1076,7 @@ def build_overview_workspace(
     window.price_chart_view = window.daily_chart_view
     window.volume_chart_view = window.fund_chart_view
     pool_box = QGroupBox("机会股票池")
+    pool_box.setObjectName("opportunityPoolBox")
     pool_box.setProperty("pageTone", "overview")
     pool_layout = QVBoxLayout(pool_box)
     window.market_pool_table = build_table(["序", "股票", "资金标签", "策略标签", "涨跌幅", "最新价"])
@@ -1063,6 +1106,7 @@ def build_overview_workspace(
     right_layout.setContentsMargins(0, 0, 0, 0)
     right_layout.setSpacing(10)
     leaderboard_box = QGroupBox("掘龙榜")
+    leaderboard_box.setObjectName("leaderboardBox")
     leaderboard_box.setProperty("pageTone", "overview")
     leaderboard_box.setProperty("surfaceRole", "analysis")
     leaderboard_layout = QVBoxLayout(leaderboard_box)
@@ -1078,6 +1122,7 @@ def build_overview_workspace(
         leaderboard_layout.addWidget(card)
     right_layout.addWidget(leaderboard_box, stretch=5)
     overview_summary_box = QGroupBox("主控摘要")
+    overview_summary_box.setObjectName("overviewSummaryBox")
     window._style_terminal_panel(overview_summary_box)
     overview_summary_box.setProperty("pageTone", "overview")
     overview_summary_box.setProperty("surfaceRole", "metric-band")
@@ -1094,11 +1139,13 @@ def build_overview_workspace(
         overview_summary_layout.addWidget(window.overview_summary_cards[key])
     right_layout.addWidget(overview_summary_box, stretch=2)
     right_notes = QWidget()
+    right_notes.setObjectName("overviewRightNotes")
     right_notes_layout = QVBoxLayout(right_notes)
     right_notes_layout.setContentsMargins(0, 0, 0, 0)
     right_notes_layout.setSpacing(10)
     right_layout.addWidget(right_notes, stretch=4)
     right_summary_box = QGroupBox("主题摘要")
+    right_summary_box.setObjectName("themeSummaryBox")
     right_summary_box.setProperty("pageTone", "overview")
     right_summary_box.setProperty("surfaceRole", "analysis")
     right_summary_layout = QVBoxLayout(right_summary_box)
@@ -1131,6 +1178,7 @@ def build_overview_workspace(
     right_summary_layout.addWidget(window.market_source_status_text, stretch=1)
     right_notes_layout.addWidget(right_summary_box, stretch=1)
     capital_box = QGroupBox("持仓与大盘")
+    capital_box.setObjectName("capitalBox")
     capital_box.setProperty("pageTone", "overview")
     capital_box.setProperty("surfaceRole", "analysis")
     capital_layout = QVBoxLayout(capital_box)
@@ -1154,6 +1202,7 @@ def build_overview_workspace(
     capital_layout.addLayout(capital_action_row)
     right_notes_layout.addWidget(capital_box, stretch=1)
     decision_box = QGroupBox("买卖点结论")
+    decision_box.setObjectName("decisionBox")
     decision_box.setProperty("pageTone", "overview")
     decision_box.setProperty("surfaceRole", "analysis")
     decision_layout = QVBoxLayout(decision_box)
@@ -2004,7 +2053,7 @@ def build_board_workspace(window, build_table, header_view_cls) -> None:
     monitor_layout.addWidget(window.board_monitor_text)
     layout.addWidget(monitor_box, stretch=1)
 
-def build_config_workspace(window) -> None:
+def _build_config_workspace_core(window) -> None:
     layout = QVBoxLayout(window.config_tab)
     layout.setContentsMargins(16, 16, 16, 16)
     layout.setSpacing(12)
@@ -2012,17 +2061,17 @@ def build_config_workspace(window) -> None:
 
     layout.addWidget(
         window._build_workspace_hero(
-            "策略配置 / 商业化",
-            "策略参数与授权状态",
-            "集中管理主线阈值、题材权重、盘前模板和版本能力边界。",
-            [("策略", "主线优先"), ("授权", window.state.license_plan or "TRIAL")],
+            "\u7b56\u7565\u914d\u7f6e / \u5546\u4e1a\u5316",
+            "\u7b56\u7565\u53c2\u6570\u4e0e\u6388\u6743\u72b6\u6001",
+            "\u96c6\u4e2d\u7ba1\u7406\u4e3b\u7ebf\u9608\u503c\u3001\u9898\u6750\u6743\u91cd\u3001\u76d8\u524d\u6a21\u677f\u548c\u7248\u672c\u80fd\u529b\u8fb9\u754c\u3002",
+            [("\u7b56\u7565", "\u4e3b\u7ebf\u4f18\u5148"), ("\u6388\u6743", window.state.license_plan or "TRIAL")],
         )
     )
 
     top = QSplitter(Qt.Horizontal)
     top.setChildrenCollapsible(False)
 
-    strategy_box = QGroupBox("策略参数")
+    strategy_box = QGroupBox("\u7b56\u7565\u53c2\u6570")
     strategy_box.setObjectName("configStrategyBox")
     window._style_terminal_panel(strategy_box)
     strategy_layout = QFormLayout(strategy_box)
@@ -2039,18 +2088,18 @@ def build_config_workspace(window) -> None:
         if window.strategy_risk_profile_combo.itemData(index) == window.state.strategy_risk_profile:
             window.strategy_risk_profile_combo.setCurrentIndex(index)
             break
-    window.theme_drop_reduce_checkbox = QCheckBox("题材掉队时优先减仓")
+    window.theme_drop_reduce_checkbox = QCheckBox("\u9898\u6750\u6389\u961f\u65f6\u4f18\u5148\u51cf\u4ed3")
     window.theme_drop_reduce_checkbox.setChecked(window.state.strategy_theme_drop_reduce)
-    window.auto_daily_plan_export_checkbox = QCheckBox("启用自动盘前报告")
+    window.auto_daily_plan_export_checkbox = QCheckBox("\u542f\u7528\u81ea\u52a8\u76d8\u524d\u62a5\u544a")
     window.auto_daily_plan_export_checkbox.setChecked(window.state.auto_daily_plan_export)
-    window.daily_plan_focus_only_checkbox = QCheckBox("仅输出关注题材")
+    window.daily_plan_focus_only_checkbox = QCheckBox("\u4ec5\u8f93\u51fa\u5173\u6ce8\u9898\u6750")
     window.daily_plan_focus_only_checkbox.setChecked(window.state.daily_plan_focus_only)
     window.daily_plan_template_combo = QComboBox()
     for key, label in [
-        ("balanced", "均衡模板"),
-        ("focus", "关注题材"),
-        ("mainline", "主线优先"),
-        ("compact", "紧凑模板"),
+        ("balanced", "\u5747\u8861\u6a21\u677f"),
+        ("focus", "\u5173\u6ce8\u9898\u6750"),
+        ("mainline", "\u4e3b\u7ebf\u4f18\u5148"),
+        ("compact", "\u7d27\u51d1\u6a21\u677f"),
     ]:
         window.daily_plan_template_combo.addItem(label, key)
     for index in range(window.daily_plan_template_combo.count()):
@@ -2058,18 +2107,18 @@ def build_config_workspace(window) -> None:
             window.daily_plan_template_combo.setCurrentIndex(index)
             break
 
-    strategy_layout.addRow("主线前排 N", window.config_inputs["top_theme_limit"])
-    strategy_layout.addRow("风险档位", window.strategy_risk_profile_combo)
-    strategy_layout.addRow("总仓位上限", window.config_inputs["max_total_exposure"])
-    strategy_layout.addRow("盘前候选上限", window.config_inputs["daily_plan_candidate_limit"])
-    strategy_layout.addRow("关注题材", window.focus_themes_input)
-    strategy_layout.addRow("盘前模板", window.daily_plan_template_combo)
+    strategy_layout.addRow("\u4e3b\u7ebf\u524d\u6392 N", window.config_inputs["top_theme_limit"])
+    strategy_layout.addRow("\u98ce\u9669\u6863\u4f4d", window.strategy_risk_profile_combo)
+    strategy_layout.addRow("\u603b\u4ed3\u4f4d\u4e0a\u9650", window.config_inputs["max_total_exposure"])
+    strategy_layout.addRow("\u76d8\u524d\u5019\u9009\u4e0a\u9650", window.config_inputs["daily_plan_candidate_limit"])
+    strategy_layout.addRow("\u5173\u6ce8\u9898\u6750", window.focus_themes_input)
+    strategy_layout.addRow("\u76d8\u524d\u6a21\u677f", window.daily_plan_template_combo)
     strategy_layout.addRow("", window.daily_plan_focus_only_checkbox)
     strategy_layout.addRow("", window.theme_drop_reduce_checkbox)
     strategy_layout.addRow("", window.auto_daily_plan_export_checkbox)
     top.addWidget(strategy_box)
 
-    license_box = QGroupBox("授权与状态")
+    license_box = QGroupBox("\u6388\u6743\u4e0e\u72b6\u6001")
     license_box.setObjectName("configLicenseBox")
     window._style_terminal_panel(license_box)
     license_layout = QVBoxLayout(license_box)
@@ -2081,10 +2130,10 @@ def build_config_workspace(window) -> None:
     license_buttons = QGridLayout()
     license_buttons.setHorizontalSpacing(10)
     license_buttons.setVerticalSpacing(10)
-    trial_button = QPushButton("切换试用版")
-    pro_button = QPushButton("切换专业版")
-    enterprise_button = QPushButton("切换企业版")
-    save_button = QPushButton("保存当前配置")
+    trial_button = QPushButton("\u5207\u6362\u8bd5\u7528\u7248")
+    pro_button = QPushButton("\u5207\u6362\u4e13\u4e1a\u7248")
+    enterprise_button = QPushButton("\u5207\u6362\u4f01\u4e1a\u7248")
+    save_button = QPushButton("\u4fdd\u5b58\u5f53\u524d\u914d\u7f6e")
     window._set_button_role(trial_button)
     window._set_button_role(pro_button)
     window._set_button_role(enterprise_button)
@@ -2106,7 +2155,7 @@ def build_config_workspace(window) -> None:
     window._configure_splitter(top, [620, 620])
     layout.addWidget(top, stretch=2)
 
-    snapshot_box = QGroupBox("风险档位快照")
+    snapshot_box = QGroupBox("\u98ce\u9669\u6863\u4f4d\u5feb\u7167")
     snapshot_box.setObjectName("configRiskSnapshotBox")
     window._style_terminal_panel(snapshot_box)
     snapshot_layout = QGridLayout(snapshot_box)
@@ -2127,18 +2176,20 @@ def build_config_workspace(window) -> None:
         metrics = QLabel(risk_profile_snapshot_text(profile_key, getattr(window, "last_daily_pool_meta", {})))
         metrics.setObjectName("workspaceEyebrow")
         metrics.setWordWrap(True)
-        flag = QLabel("当前" if getattr(window.state, "strategy_risk_profile", "standard") == profile_key else "对比")
+        flag = QLabel("\u5f53\u524d\u542f\u7528" if getattr(window.state, "strategy_risk_profile", "standard") == profile_key else "\u70b9\u51fb\u5207\u6362")
         flag.setObjectName("workspaceHeroStamp")
-        action_button = QPushButton("切换到此档")
+        action_button = QPushButton("\u5207\u6362\u5230\u6b64\u6863")
         window._set_button_role(action_button, "accent" if getattr(window.state, "strategy_risk_profile", "standard") == profile_key else "tonal")
         action_button.clicked.connect(lambda checked=False, current=profile_key: window.switch_strategy_risk_profile(current))
-        detail_tooltip = f"{RISK_PROFILE_LABELS.get(profile_key, profile_key)}档：{risk_profile_brief(profile_key)}"
+        detail_tooltip = f"{RISK_PROFILE_LABELS.get(profile_key, profile_key)}\u6863\uff1a{risk_profile_brief(profile_key)}"
         card.setToolTip(detail_tooltip)
         title.setToolTip(detail_tooltip)
         detail.setToolTip(detail_tooltip)
         metrics.setToolTip(detail_tooltip)
         flag.setToolTip(detail_tooltip)
-        action_button.setToolTip(f"切换到{RISK_PROFILE_LABELS.get(profile_key, profile_key)}档并立即刷新推荐池")
+        action_button.setToolTip(
+            f"\u5207\u6362\u5230{RISK_PROFILE_LABELS.get(profile_key, profile_key)}\u6863\u5e76\u7acb\u5373\u5237\u65b0\u63a8\u8350\u6c60"
+        )
         card_layout.addWidget(title)
         card_layout.addWidget(detail)
         card_layout.addWidget(metrics)
@@ -2156,7 +2207,7 @@ def build_config_workspace(window) -> None:
         }
     layout.addWidget(snapshot_box, stretch=1)
 
-    notes_box = QGroupBox("说明")
+    notes_box = QGroupBox("\u8bf4\u660e")
     notes_box.setObjectName("configNotesBox")
     window._style_terminal_panel(notes_box)
     notes_layout = QVBoxLayout(notes_box)
@@ -2164,13 +2215,74 @@ def build_config_workspace(window) -> None:
     window.config_notes_text.setReadOnly(True)
     window._style_terminal_console(window.config_notes_text)
     window.config_notes_text.setPlainText(
-        "配置说明\n\n"
-        "- 当前配置会直接影响每日推荐、盘前计划、盘中监控和版本能力边界。\n"
-        "- 主线阈值越高，开仓越偏向龙头和前排。\n"
-        "- 关注题材会影响排序、报告和提醒。\n"
-        "- 自动盘前报告会在刷新后同步生成。"
+        "\u914d\u7f6e\u8bf4\u660e\n\n"
+        "- \u5f53\u524d\u914d\u7f6e\u4f1a\u76f4\u63a5\u5f71\u54cd\u6bcf\u65e5\u63a8\u8350\u3001\u76d8\u524d\u8ba1\u5212\u3001\u76d8\u4e2d\u76d1\u63a7\u548c\u7248\u672c\u80fd\u529b\u8fb9\u754c\u3002\n"
+        "- \u4e3b\u7ebf\u9608\u503c\u8d8a\u9ad8\uff0c\u5f00\u4ed3\u8d8a\u504f\u5411\u9f99\u5934\u548c\u524d\u6392\u3002\n"
+        "- \u5173\u6ce8\u9898\u6750\u4f1a\u5f71\u54cd\u6392\u5e8f\u3001\u62a5\u544a\u548c\u63d0\u9192\u3002\n"
+        "- \u81ea\u52a8\u76d8\u524d\u62a5\u544a\u4f1a\u5728\u5237\u65b0\u540e\u540c\u6b65\u751f\u6210\u3002"
     )
     notes_layout.addWidget(window.config_notes_text)
     layout.addWidget(notes_box, stretch=1)
 
     window._refresh_license_status_view()
+
+
+
+
+
+
+
+def _refresh_config_risk_snapshot_fallback(window) -> None:
+    current_profile = getattr(getattr(window, "state", None), "strategy_risk_profile", RISK_PROFILE_STANDARD)
+    meta = getattr(window, "last_daily_pool_meta", {}) or {}
+
+    if not hasattr(window, "risk_snapshot_cards"):
+        return
+
+    for profile_key, labels in getattr(window, "risk_snapshot_cards", {}).items():
+        card = labels.get("card")
+        title = labels.get("title")
+        detail = labels.get("detail")
+        metrics = labels.get("metrics")
+        flag = labels.get("flag")
+        button = labels.get("button")
+        card_state = risk_profile_snapshot_card_state(
+            profile_key,
+            current_profile=current_profile,
+            meta=meta,
+        )
+        label = str(card_state["label"])
+        brief = str(card_state["brief"])
+        tooltip = str(card_state["tooltip"])
+        is_current = bool(card_state["is_current"])
+        if card is not None and hasattr(card, "setToolTip"):
+            card.setToolTip(tooltip)
+        if card is not None and hasattr(card, "setProperty"):
+            card.setProperty("riskActive", is_current)
+        if title is not None:
+            title.setText(label)
+            title.setToolTip(tooltip)
+        if detail is not None:
+            detail.setText(brief)
+            detail.setToolTip(tooltip)
+        if metrics is not None:
+            metrics.setText(str(card_state["metrics"]))
+            metrics.setToolTip(tooltip)
+        if flag is not None:
+            flag.setText(str(card_state["flag_text"]))
+            flag.setToolTip(tooltip)
+        if button is not None:
+            button.setText(str(card_state["button_text"]))
+            if hasattr(window, "_set_button_role"):
+                window._set_button_role(button, "accent" if is_current else "tonal")
+            button.setToolTip(str(card_state["button_tooltip"]))
+            button.setEnabled(not is_current)
+
+def build_config_workspace(window) -> None:
+    _build_config_workspace_core(window)
+
+    if hasattr(window, "_refresh_risk_snapshot_cards"):
+        window._refresh_risk_snapshot_cards()
+        return
+
+    _refresh_config_risk_snapshot_fallback(window)

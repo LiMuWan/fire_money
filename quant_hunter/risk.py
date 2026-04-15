@@ -133,6 +133,30 @@ def risk_profile_snapshot_text(profile: str | None, meta: dict[str, object] | No
     )
 
 
+def risk_profile_snapshot_card_state(
+    profile: str | None,
+    *,
+    current_profile: str | None,
+    meta: dict[str, object] | None,
+) -> dict[str, object]:
+    normalized = normalize_risk_profile(profile)
+    label = RISK_PROFILE_LABELS.get(normalized, normalized)
+    brief = risk_profile_brief(normalized)
+    tooltip = f"{label}\u6863\uff1a{brief}"
+    is_current = normalize_risk_profile(current_profile) == normalized
+    return {
+        "profile_key": normalized,
+        "label": label,
+        "brief": brief,
+        "metrics": risk_profile_snapshot_text(normalized, meta),
+        "flag_text": "\u5f53\u524d\u542f\u7528" if is_current else "\u70b9\u51fb\u5207\u6362",
+        "button_text": "\u5f53\u524d\u6863\u4f4d" if is_current else "\u5207\u6362\u5230\u6b64\u6863",
+        "tooltip": tooltip,
+        "button_tooltip": f"{tooltip} | {'\u5f53\u524d\u5df2\u542f\u7528' if is_current else '\u70b9\u51fb\u540e\u5c06\u4fdd\u5b58\u914d\u7f6e\u5e76\u5237\u65b0\u63a8\u8350\u6c60'}",
+        "is_current": is_current,
+    }
+
+
 def _risk_strictness_score(controls: RiskControls) -> float:
     stop_tightness = max(0.0, (0.12 - controls.max_plan_stop_loss_pct) / 0.12)
     return (

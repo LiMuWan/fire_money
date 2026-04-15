@@ -71,6 +71,21 @@ class AppState:
     market_review_date: str = _DEFAULT_MARKET_REVIEW_DATE
     broker_profile: BrokerProfile = field(default_factory=BrokerProfile)
     paper_trading_state: PaperTradingState = field(default_factory=PaperTradingState)
+    order_submission_log: list[str] = field(default_factory=list)
+    order_submission_records: list[dict[str, str]] = field(default_factory=list)
+
+
+_SUBMISSION_RECORD_FIELDS = (
+    "timestamp",
+    "order_status",
+    "fill_status",
+    "symbol",
+    "side",
+    "price",
+    "quantity",
+    "failure_reason",
+    "message",
+)
 
 
 def _decode_broker_profile(broker_data: object) -> BrokerProfile:
@@ -87,7 +102,22 @@ def _decode_broker_profile(broker_data: object) -> BrokerProfile:
         username=payload.get("username", ""),
         password=reveal_secret(payload.get("password", "")),
         auth_channel=payload.get("auth_channel", "eastmoney"),
+        test_submit_only=bool(payload.get("test_submit_only", True)),
+        test_submit_max_amount=_safe_float(payload.get("test_submit_max_amount", 10000.0) or 10000.0, 10000.0),
+        test_submit_symbol_whitelist=str(payload.get("test_submit_symbol_whitelist", "") or ""),
+        auto_export_submission_records=bool(payload.get("auto_export_submission_records", True)),
     )
+
+
+def _decode_submission_records(value: object) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[dict[str, str]] = []
+    for item in value[:500]:
+        if not isinstance(item, dict):
+            continue
+        rows.append({field: str(item.get(field, "") or "") for field in _SUBMISSION_RECORD_FIELDS})
+    return rows
 
 
 def _serialize_state(state: AppState) -> dict[str, object]:
@@ -96,6 +126,8 @@ def _serialize_state(state: AppState) -> dict[str, object]:
     for field_name in _SENSITIVE_BROKER_FIELDS:
         broker_payload[field_name] = protect_secret(str(broker_payload.get(field_name, "")))
     payload["broker_profile"] = broker_payload
+    payload["order_submission_log"] = [str(item or "") for item in list(payload.get("order_submission_log", []) or [])[:200] if str(item or "").strip()]
+    payload["order_submission_records"] = _decode_submission_records(payload.get("order_submission_records", []))
     return payload
 
 
@@ -237,6 +269,8 @@ def load_app_state(path: str | Path) -> AppState:
         market_review_date=data.get("market_review_date", _DEFAULT_MARKET_REVIEW_DATE),
         broker_profile=_decode_broker_profile(data.get("broker_profile", {})),
         paper_trading_state=_decode_paper_trading_state(data.get("paper_trading_state", {})),
+        order_submission_log=_as_string_list(data.get("order_submission_log", []))[:200],
+        order_submission_records=_decode_submission_records(data.get("order_submission_records", [])),
     )
 
 

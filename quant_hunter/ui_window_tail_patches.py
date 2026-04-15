@@ -227,6 +227,8 @@ def apply_window_tail_patches(
             current_meta = self.shell_pulse_meta.text() if hasattr(self.shell_pulse_meta, "text") else ""
             meta_text = f"{current_meta} | 动作 {destination}" if current_meta else f"动作 {destination}"
             self._set_label_text_if_changed(self.shell_pulse_meta, meta_text, tooltip=meta_text)
+        if hasattr(self, "_refresh_shell_header"):
+            self._refresh_shell_header()
         self._sync_commercial_statusbar_v35()
 
     def _refresh_shell_header_v35(self) -> None:

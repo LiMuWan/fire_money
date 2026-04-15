@@ -3,6 +3,7 @@
 from pathlib import Path
 
 project_root = Path.cwd()
+version_file = project_root / 'tools' / 'file_version_info.txt'
 
 a = Analysis(
     ['app_qt.py'],
@@ -32,6 +33,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
+    version=str(version_file),
 )
 
 coll = COLLECT(

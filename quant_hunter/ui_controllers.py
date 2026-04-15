@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from quant_hunter.broker import build_submission_intents
 from quant_hunter.broker_status import build_broker_execution_summary
 from quant_hunter.models import OrderIntent, PaperTradingState
 from quant_hunter.paper_trading import build_strategy_rotation_snapshot
@@ -70,6 +71,70 @@ def save_broker_profile_controller(window, *, info_dialog_fn) -> None:
 def create_broker_templates_controller(window, *, adapter_cls) -> None:
     files = adapter_cls().create_templates(window.current_broker_profile().export_dir)
     window._refresh_broker_status(extra="\n".join(f"已生成模板：{item}" for item in files))
+
+
+def validate_broker_connection_controller(window, *, adapter_cls, info_dialog_fn, warning_dialog_fn) -> bool:
+    profile = window.current_broker_profile()
+    if hasattr(window, "state"):
+        window.state.broker_profile = profile
+    if hasattr(window, "save_state"):
+        window.save_state()
+
+    adapter = adapter_cls()
+    env = adapter.diagnose_environment(profile)
+    issues: list[str] = []
+    checks: list[str] = []
+
+    if str(getattr(profile, "mode", "") or "") == "sdk":
+        if not str(getattr(profile, "account_id", "") or "").strip():
+            issues.append("缺少账户 ID。")
+        if not str(getattr(profile, "token", "") or "").strip():
+            issues.append("缺少 SDK Token。")
+        if not str(getattr(profile, "strategy_id", "") or "").strip():
+            issues.append("缺少策略 ID。")
+        if env.get("direct_ready"):
+            checks.append("当前环境已满足直接 SDK 调用条件。")
+        elif env.get("bridge_ready"):
+            checks.append("当前环境已满足桥接 SDK 调用条件，可通过 Python 3.12 + GM SDK 执行。")
+        else:
+            issues.append("GM SDK 当前未就绪，请先检查桥接 Python 和 gm.api 环境。")
+    else:
+        checks.append("当前为导出模式，不会直接触发实盘下单。")
+
+    if getattr(profile, "test_submit_only", False):
+        whitelist = str(getattr(profile, "test_submit_symbol_whitelist", "") or "").strip()
+        checks.append(f"测试单买入上限：{float(getattr(profile, 'test_submit_max_amount', 10000.0) or 10000.0):,.0f}")
+        if whitelist:
+            checks.append(f"测试白名单：{whitelist}")
+        else:
+            issues.append("测试单模式已开启，但测试白名单未填写。")
+    else:
+        checks.append("测试单模式：已关闭。")
+
+    checks.append(f"提交回放自动导出：{'开启' if getattr(profile, 'auto_export_submission_records', True) else '关闭'}")
+
+    lines = [
+        "联调预检",
+        f"- 交易模式：{getattr(profile, 'mode', '') or '--'}",
+        f"- SDK 模块：{env.get('sdk_module', '--')}",
+        f"- 主程序 Python：{env.get('python_version', '--')}",
+    ]
+    if env.get("bridge_python"):
+        lines.append(f"- 桥接 Python：{env.get('bridge_python')}")
+    if checks:
+        lines.extend(["", "通过项"])
+        lines.extend(f"- {item}" for item in checks)
+    if issues:
+        lines.extend(["", "待修复"])
+        lines.extend(f"- {item}" for item in issues)
+
+    summary = "\n".join(lines)
+    window._refresh_broker_status(extra=summary)
+    if issues:
+        warning_dialog_fn(window, "连接校验未通过", summary)
+        return False
+    info_dialog_fn(window, "连接校验通过", summary)
+    return True
 
 
 def generate_order_suggestions_controller(window, *, adapter_cls, info_dialog_fn, error_dialog_fn) -> None:
@@ -303,6 +368,190 @@ def confirm_and_submit_orders_controller(
         submit_time=submit_time,
         info_dialog_fn=info_dialog_fn,
     )
+
+
+def prepare_order_submission_controller(window, *, adapter_cls, confirmation_dialog_cls):
+    if not window.order_intents:
+        window.generate_order_suggestions()
+    if not window.order_intents:
+        return None
+    profile = window.current_broker_profile()
+    adapter = adapter_cls()
+    state = getattr(window, "state", None)
+    summary, _env = build_broker_execution_summary(
+        profile=profile,
+        adapter=adapter,
+        order_intents=window.order_intents,
+        holdings=window.holdings,
+        cash_snapshot=window.cash_snapshot,
+        recommendations=getattr(window, "daily_pool_rows", []),
+        risk_profile=getattr(state, "strategy_risk_profile", "standard"),
+    )
+    window.last_broker_execution_summary = summary
+    blockers = list(summary.get("blockers", []))
+    if blockers:
+        window._refresh_broker_status(extra="提交前硬拦截：\n" + "\n".join(f"- {item}" for item in blockers[:4]))
+        return None
+
+    submission_intents, guard_notes, guard_blockers = build_submission_intents(window.order_intents, profile)
+    if guard_blockers:
+        window._refresh_broker_status(extra="测试单闸门拦截：\n" + "\n".join(f"- {item}" for item in guard_blockers[:4]))
+        return None
+
+    setattr(window, "last_submission_guard_notes", list(guard_notes))
+    if guard_notes:
+        window._refresh_broker_status(extra="测试单闸门：\n" + "\n".join(f"- {item}" for item in guard_notes[:4]))
+
+    experiment_context = build_order_submission_experiment_context(window)
+    confirmed = confirmation_dialog_cls.confirm(
+        profile=profile,
+        intents=submission_intents,
+        adapter=adapter,
+        holdings=window.holdings,
+        cash_snapshot=window.cash_snapshot,
+        recommendations=getattr(window, "daily_pool_rows", []),
+        strategy_name=experiment_context["strategy_name"],
+        experiment_bridge=experiment_context["experiment_bridge"],
+        guard_notes=guard_notes,
+        parent=window,
+    )
+    if not confirmed:
+        window._refresh_broker_status(extra="本次提交已取消，仍保留委托建议供你继续复核。")
+        return None
+    return profile, adapter, submission_intents, guard_notes
+
+
+def handle_order_submission_failure_controller(
+    window,
+    *,
+    adapter,
+    profile,
+    submitted_intents: list[OrderIntent],
+    submit_time: str,
+    exc: Exception,
+    warning_dialog_fn,
+) -> None:
+    fallback_path = adapter.export_order_plan(submitted_intents, profile.export_dir)
+    failure_lines = [
+        f"[{submit_time}] SDK 下单失败：{exc}",
+        f"[{submit_time}] 已回退导出 CSV：{fallback_path}",
+    ]
+    for item in submitted_intents:
+        window._append_submission_record(
+            timestamp=submit_time,
+            order_status="FAILED",
+            fill_status="REJECTED",
+            symbol=item.symbol,
+            side=item.side,
+            price=f"{item.price:.3f}",
+            quantity=str(item.quantity),
+            failure_reason=str(exc),
+            message=str(exc),
+        )
+    for line in failure_lines:
+        window._append_order_result(line)
+    window._refresh_broker_status(extra="\n".join(failure_lines))
+    warning_dialog_fn(window, "下单失败", f"{exc}\n\n已回退导出 CSV：\n{fallback_path}")
+
+
+def handle_order_submission_success_controller(
+    window,
+    *,
+    submitted_intents: list[OrderIntent],
+    results: list[str],
+    submit_time: str,
+    guard_notes: list[str] | None,
+    info_dialog_fn,
+) -> None:
+    success_lines = [f"[{submit_time}] SDK 下单完成：共 {len(results)} 笔"]
+    success_lines.extend(f"[{submit_time}] {note}" for note in list(guard_notes or []))
+    success_lines.extend(f"[{submit_time}] {item}" for item in results)
+    for item, result in zip(submitted_intents, results):
+        window._append_submission_record(
+            timestamp=submit_time,
+            order_status="SUBMITTED",
+            fill_status="PENDING",
+            symbol=item.symbol,
+            side=item.side,
+            price=f"{item.price:.3f}",
+            quantity=str(item.quantity),
+            failure_reason="",
+            message=result,
+        )
+    for line in success_lines:
+        window._append_order_result(line)
+    window.sync_broker_via_sdk(quiet=True)
+    window._refresh_broker_status(extra="\n".join(success_lines))
+    info_dialog_fn(window, "下单完成", "\n".join(results))
+
+
+def persist_submission_artifacts_controller(window, *, adapter_cls, datetime_cls) -> str:
+    if hasattr(window, "save_state"):
+        window.save_state()
+    profile = window.current_broker_profile()
+    if not getattr(profile, "auto_export_submission_records", True):
+        return ""
+    records = list(getattr(window, "order_submission_records", []) or [])
+    if not records:
+        return ""
+    try:
+        output = adapter_cls().export_submission_records(records, profile.export_dir)
+    except Exception as exc:
+        if hasattr(window, "_append_order_result"):
+            line = f"[{datetime_cls.now().strftime('%Y-%m-%d %H:%M:%S')}] 自动导出提交回放失败：{exc}"
+            window._append_order_result(line)
+        if hasattr(window, "save_state"):
+            window.save_state()
+        return ""
+    if hasattr(window, "_append_order_result"):
+        line = f"[{datetime_cls.now().strftime('%Y-%m-%d %H:%M:%S')}] 已自动导出提交回放：{output}"
+        window._append_order_result(line)
+    if hasattr(window, "save_state"):
+        window.save_state()
+    return str(output)
+
+
+def confirm_and_submit_orders_controller(
+    window,
+    *,
+    adapter_cls,
+    confirmation_dialog_cls,
+    datetime_cls,
+    info_dialog_fn,
+    warning_dialog_fn,
+) -> None:
+    prepared = prepare_order_submission_controller(
+        window,
+        adapter_cls=adapter_cls,
+        confirmation_dialog_cls=confirmation_dialog_cls,
+    )
+    if prepared is None:
+        return
+    profile, adapter, submitted_intents, guard_notes = prepared
+    submit_time = datetime_cls.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        results = adapter.submit_order_intents(profile, submitted_intents)
+    except Exception as exc:
+        handle_order_submission_failure_controller(
+            window,
+            adapter=adapter,
+            profile=profile,
+            submitted_intents=submitted_intents,
+            submit_time=submit_time,
+            exc=exc,
+            warning_dialog_fn=warning_dialog_fn,
+        )
+        persist_submission_artifacts_controller(window, adapter_cls=adapter_cls, datetime_cls=datetime_cls)
+        return
+    handle_order_submission_success_controller(
+        window,
+        submitted_intents=submitted_intents,
+        results=results,
+        submit_time=submit_time,
+        guard_notes=guard_notes,
+        info_dialog_fn=info_dialog_fn,
+    )
+    persist_submission_artifacts_controller(window, adapter_cls=adapter_cls, datetime_cls=datetime_cls)
 
 
 def run_background_job_controller(

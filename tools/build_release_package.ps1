@@ -13,6 +13,72 @@ function New-Directory([string]$Path) {
     }
 }
 
+function Copy-LatestArtifact([string]$SourcePath, [string]$LatestFileName) {
+    if (-not (Test-Path -LiteralPath $SourcePath)) {
+        return
+    }
+
+    $latestPath = Join-Path (Split-Path -Parent $SourcePath) $LatestFileName
+    Copy-Item -LiteralPath $SourcePath -Destination $latestPath -Force
+}
+
+function Find-SevenZipExecutable {
+    $candidates = @(
+        "C:\Program Files\7-Zip\7z.exe",
+        "C:\Program Files (x86)\7-Zip\7z.exe",
+        "C:\Program Files\Tencent\Androws\Application\5.10.5600.5370\7z.exe"
+    )
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate) {
+            return $candidate
+        }
+    }
+
+    $command = Get-Command 7z.exe -ErrorAction SilentlyContinue
+    if ($command -and $command.Source) {
+        return $command.Source
+    }
+
+    return $null
+}
+
+function Find-SevenZipSfxModule([string]$SevenZipExe) {
+    if (-not $SevenZipExe) {
+        return $null
+    }
+
+    $baseDir = Split-Path -Parent $SevenZipExe
+    foreach ($name in @("7zCon.sfx", "7z.sfx", "7zS.sfx")) {
+        $candidate = Join-Path $baseDir $name
+        if (Test-Path -LiteralPath $candidate) {
+            return $candidate
+        }
+    }
+
+    return $null
+}
+
+function Find-InnoSetupCompiler {
+    $candidates = @(
+        "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+        "C:\Program Files\Inno Setup 6\ISCC.exe"
+    )
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate) {
+            return $candidate
+        }
+    }
+
+    $command = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+    if ($command -and $command.Source) {
+        return $command.Source
+    }
+
+    return $null
+}
+
 function Get-ShortPath([string]$Path) {
     $result = cmd /c "for %I in (""$Path"") do @echo %~sI" 2>$null
     if (-not $result) {
@@ -34,7 +100,7 @@ if (-not $SkipBuild) {
         throw "Build script not found: $buildScript"
     }
     Write-Host "Building application with PyInstaller..."
-    & $buildScript
+    & $buildScript --app-only
     if ($LASTEXITCODE -ne 0) {
         throw "build_exe.bat failed with exit code $LASTEXITCODE"
     }
@@ -59,6 +125,7 @@ $installerPath = Join-Path $releaseDir $installerName
 $sfxName = "quant_hunter_self_extract_$timestamp.exe"
 $sfxPath = Join-Path $releaseDir $sfxName
 $sedPath = Join-Path $stageDir "quant_hunter_installer.sed"
+$issPath = Join-Path $stageDir "quant_hunter_installer.iss"
 $installScriptPath = Join-Path $stageDir "install_quant_hunter.cmd"
 $readmePath = Join-Path $stageDir "README.txt"
 
@@ -68,6 +135,7 @@ if (Test-Path -LiteralPath $portableZipPath) {
 
 Write-Host "Creating portable ZIP..."
 Compress-Archive -Path (Join-Path $appDir "*") -DestinationPath $portableZipPath -CompressionLevel Optimal
+Copy-LatestArtifact -SourcePath $portableZipPath -LatestFileName "quant_hunter_portable_latest.zip"
 
 $installScript = @'
 @echo off
@@ -194,6 +262,7 @@ if (Test-Path -LiteralPath $bundleZipPath) {
 }
 Write-Host "Creating release bundle ZIP..."
 Compress-Archive -Path (Join-Path $payloadDir "*") -DestinationPath $bundleZipPath -CompressionLevel Optimal
+Copy-LatestArtifact -SourcePath $bundleZipPath -LatestFileName "quant_hunter_bundle_latest.zip"
 
 $shortProjectRoot = Get-ShortPath $projectRoot
 $payloadDirForSed = "$shortProjectRoot\.installer_build\payload\"
@@ -253,19 +322,90 @@ $($sourceFileLines -join "`r`n")
 "@
 Set-Content -LiteralPath $sedPath -Value $sed -Encoding ASCII
 
-Write-Host "Creating installer EXE with IExpress..."
-$iexpressExe = Join-Path $env:SystemRoot "SysWOW64\iexpress.exe"
-if (-not (Test-Path -LiteralPath $iexpressExe)) {
-    $iexpressExe = Join-Path $env:SystemRoot "System32\iexpress.exe"
-}
-if (Test-Path -LiteralPath $iexpressExe) {
-    & $iexpressExe /N /Q $sedPath
+$escapedAppDir = $appDir -replace "'", "''"
+$escapedReleaseDir = $releaseDir -replace "'", "''"
+$escapedInstallerBaseName = [System.IO.Path]::GetFileNameWithoutExtension($installerName) -replace "'", "''"
+$escapedAppExePath = (Join-Path $appDir "quant_hunter.exe") -replace "'", "''"
+$escapedProjectRoot = $projectRoot -replace "'", "''"
+
+$iss = @"
+#define MyAppName "Quant Hunter"
+#define MyAppVersion "$timestamp"
+#define MyAppPublisher "Quant Hunter"
+#define MyAppExeName "quant_hunter.exe"
+#define MyBuildRoot "$escapedAppDir"
+#define MyOutputDir "$escapedReleaseDir"
+#define MyOutputBaseName "$escapedInstallerBaseName"
+#define MySetupIconFile "$escapedAppExePath"
+
+[Setup]
+AppId={{9C7D2A28-B8F5-4D1A-BF3A-A0CB0B3F6D21}
+AppName={#MyAppName}
+AppVersion={#MyAppVersion}
+AppPublisher={#MyAppPublisher}
+DefaultDirName={autopf}\Quant Hunter
+DefaultGroupName=Quant Hunter
+AllowNoIcons=yes
+DisableProgramGroupPage=yes
+OutputDir={#MyOutputDir}
+OutputBaseFilename={#MyOutputBaseName}
+Compression=lzma
+SolidCompression=yes
+WizardStyle=modern
+PrivilegesRequired=lowest
+ArchitecturesInstallIn64BitMode=x64compatible
+UninstallDisplayIcon={app}\{#MyAppExeName}
+SetupIconFile={#MySetupIconFile}
+
+[Languages]
+Name: "chinesesimp"; MessagesFile: "compiler:Default.isl"
+Name: "english"; MessagesFile: "compiler:Languages\English.isl"
+
+[Tasks]
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+
+[Files]
+Source: "{#MyBuildRoot}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[Icons]
+Name: "{group}\Quant Hunter"; Filename: "{app}\{#MyAppExeName}"
+Name: "{autodesktop}\Quant Hunter"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+
+[Run]
+Filename: "{app}\{#MyAppExeName}"; Description: "Launch Quant Hunter"; Flags: nowait postinstall skipifsilent
+
+[UninstallDelete]
+Type: filesandordirs; Name: "{localappdata}\QuantHunterInstallerTemp"
+"@
+Set-Content -LiteralPath $issPath -Value $iss -Encoding ASCII
+
+$innoCompiler = Find-InnoSetupCompiler
+if ($innoCompiler) {
+    Write-Host "Creating installer EXE with Inno Setup..."
+    & $innoCompiler "/Qp" $issPath
     if ($LASTEXITCODE -ne 0) {
-        Write-Warning "IExpress failed with exit code $LASTEXITCODE"
+        Write-Warning "Inno Setup failed with exit code $LASTEXITCODE"
     }
 }
 else {
-    Write-Warning "IExpress is not available on this machine."
+    Write-Warning "Inno Setup compiler not found. Falling back to legacy installer builders."
+}
+
+if (-not (Test-Path -LiteralPath $installerPath)) {
+    Write-Host "Creating installer EXE with IExpress..."
+    $iexpressExe = Join-Path $env:SystemRoot "SysWOW64\iexpress.exe"
+    if (-not (Test-Path -LiteralPath $iexpressExe)) {
+        $iexpressExe = Join-Path $env:SystemRoot "System32\iexpress.exe"
+    }
+    if (Test-Path -LiteralPath $iexpressExe) {
+        & $iexpressExe /N /Q $sedPath
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "IExpress failed with exit code $LASTEXITCODE"
+        }
+    }
+    else {
+        Write-Warning "IExpress is not available on this machine."
+    }
 }
 
 if (-not (Test-Path -LiteralPath $installerPath)) {
@@ -285,24 +425,39 @@ if (-not (Test-Path -LiteralPath $installerPath)) {
     }
 }
 
-$sevenZip = "C:\Program Files\Tencent\Androws\Application\5.10.5600.5370\7z.exe"
-if (-not (Test-Path -LiteralPath $sevenZip)) {
-    throw "7-Zip executable not found: $sevenZip"
+if (Test-Path -LiteralPath $installerPath) {
+    Copy-LatestArtifact -SourcePath $installerPath -LatestFileName "quant_hunter_setup_latest.exe"
 }
-if (Test-Path -LiteralPath $sfxPath) {
-    Remove-Item -LiteralPath $sfxPath -Force
+else {
+    throw "Installer EXE was not created: $installerPath"
 }
 
-Write-Host "Creating self-extracting EXE..."
-Push-Location $payloadDir
-try {
-    & $sevenZip a -t7z -mx=9 -sfx $sfxPath *
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning "7-Zip SFX creation failed with exit code $LASTEXITCODE"
+$sevenZip = Find-SevenZipExecutable
+$sevenZipSfxModule = Find-SevenZipSfxModule -SevenZipExe $sevenZip
+if ($sevenZip -and $sevenZipSfxModule) {
+    if (Test-Path -LiteralPath $sfxPath) {
+        Remove-Item -LiteralPath $sfxPath -Force
+    }
+    Write-Host "Creating self-extracting EXE..."
+    Push-Location $payloadDir
+    try {
+        & $sevenZip a -t7z -mx=9 "-sfx$sevenZipSfxModule" $sfxPath *
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "7-Zip SFX creation failed with exit code $LASTEXITCODE"
+        }
+        elseif (Test-Path -LiteralPath $sfxPath) {
+            Copy-LatestArtifact -SourcePath $sfxPath -LatestFileName "quant_hunter_self_extract_latest.exe"
+        }
+    }
+    finally {
+        Pop-Location
     }
 }
-finally {
-    Pop-Location
+elseif ($sevenZip) {
+    Write-Warning "7-Zip was found, but no SFX module was available. Skipping self-extracting EXE."
+}
+else {
+    Write-Warning "7-Zip was not found. Skipping self-extracting EXE."
 }
 
 Write-Host ""
