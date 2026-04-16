@@ -797,36 +797,32 @@ def refresh_recommend_summary_cards(window, plan) -> None:
     )
     window.recommend_summary_cards["logic"].set_data(
         top_flow,
-        _compact_mainline_text(top_pick) if top_pick else "等待主线、位次与风险画像同步",
+        _compact_mainline_text(top_pick) if top_pick else "等待主线同步",
     )
+    plan_detail = "等待交易计划生成"
+    if plan.decisions:
+        plan_detail_parts = [f"焦点 {plan.decisions[0].stock_name}"]
+        if top_tail_phase:
+            plan_detail_parts.append(f"尾盘 {top_tail_phase}")
+        elif top_grade:
+            plan_detail_parts.append(f"隔日 {top_grade}")
+        plan_detail_parts.append(f"复核 {execution_summary['reviewing']}")
+        plan_detail_parts.append(f"失败 {execution_summary['failed']}")
+        plan_detail = " | ".join(plan_detail_parts)
     window.recommend_summary_cards["plan"].set_data(
         f"计划 {len(plan.decisions)} / 送审 {execution_summary['submitted']}",
-        (
-            f"主线 {top_flow} | 焦点 {plan.decisions[0].stock_name} | 尾盘 {top_tail_phase} | 待复核 {execution_summary['reviewing']} | 失败 {execution_summary['failed']}"
-            if plan.decisions and top_tail_phase
-            else
-            f"主线 {top_flow} | 焦点 {plan.decisions[0].stock_name} | 隔日 {top_grade} | 待复核 {execution_summary['reviewing']} | 失败 {execution_summary['failed']}"
-            if plan.decisions and top_grade
-            else f"主线 {top_flow} | 焦点 {plan.decisions[0].stock_name} | 待复核 {execution_summary['reviewing']} | 失败 {execution_summary['failed']}"
-            if plan.decisions
-            else "等待交易计划与送审优先级生成"
-        ),
+        plan_detail,
     )
     window.recommend_summary_cards["pulse"].set_data(
         f"{plan.market_pulse.sentiment_score:.1f}",
-        f"{plan.market_pulse.sentiment_label} / {plan.market_pulse.market_regime} / 风险灯 {plan.market_pulse.risk_level}",
+        f"{plan.market_pulse.sentiment_label} | {plan.market_pulse.market_regime} | 风险 {plan.market_pulse.risk_level}",
     )
     window.recommend_summary_cards["holding"].set_data(
         f"待执行 {execution_summary['pending']}",
         (
-            f"状态 {top_flow} | 尾盘 {top_tail_phase} | 复核 {execution_summary['reviewing']} | 送审 {execution_summary['submitted']} | {top_note}"
-            if plan.decisions and top_tail_phase
-            else
-            f"状态 {top_flow} | 隔日 {top_grade} | 复核 {execution_summary['reviewing']} | 送审 {execution_summary['submitted']} | {top_note}"
-            if plan.decisions and top_grade
-            else f"状态 {top_flow} | 复核 {execution_summary['reviewing']} | 送审 {execution_summary['submitted']} | {top_note}"
+            f"{top_flow} | {(f'尾盘 {top_tail_phase}' if top_tail_phase else (f'隔日 {top_grade}' if top_grade else '盘中跟踪'))} | 送审 {execution_summary['submitted']}"
             if plan.decisions
-            else "等待持仓导入后生成处理建议"
+            else "等待持仓建议生成"
         ),
     )
 
@@ -835,28 +831,16 @@ def refresh_strategy_path_panel(window, plan, top_theme, top_strategy_name, top_
     if not hasattr(window, "strategy_path_text"):
         return
     if not top_pick:
-        _set_plain_text_if_changed(window.strategy_path_text, "等待机会池同步后更新主线推演路径。")
+        _set_plain_text_if_changed(window.strategy_path_text, "主线推演\n结论：等待主线确认\n风险：暂无主线风险\n下一步：先确认主线。")
         return
     lines = [
-        "题材 -> 龙头 -> 个股 -> 动作",
-        "",
-        f"1. 市场温度：{plan.market_pulse.sentiment_label} / {plan.market_pulse.market_regime}",
-        f"2. 主线题材：{top_theme.theme_name if top_theme else '暂无'}",
-        f"3. 高优先策略：{top_strategy_name or '掘龙决策'}",
-        f"4. 龙头焦点：{top_pick.stock_name} ({top_pick.stock_id}) / {window._display_leader_level(top_pick.leader_level)}",
-        f"5. 主线角色：{_display_mainline_role(getattr(top_pick, 'mainline_role', ''))} / 窗口 {getattr(top_pick, 'mainline_window_score', 0.0):.1f}",
-        f"6. 当前动作：{window._display_action(top_pick.action)}",
-        "",
-        "推演摘要",
-        f"- {top_pick.mainline_tag or top_pick.theme_name or '未分类'} 当前处于第 {getattr(top_pick, 'mainline_rank', getattr(top_pick, 'theme_rank', 0))} 主线位，"
-        f"{_display_mainline_role(getattr(top_pick, 'mainline_role', ''))} 优先级更高。",
-        f"- 个股综合分 {top_pick.total_score:.1f}，决策分 {getattr(top_pick, 'dragon_decision_score', top_pick.total_score):.1f}，"
-        f"主线风险 {getattr(top_pick, 'mainline_risk_flag', '--')}。",
-        f"- 催化：{top_pick.catalyst or '量价共振'}。",
+        "主线推演",
+        f"结论：{top_theme.theme_name if top_theme else '暂无'} | {window._display_action(top_pick.action)} | {top_pick.stock_name}",
+        f"风险：窗口 {getattr(top_pick, 'mainline_window_score', 0.0):.1f} | {getattr(top_pick, 'mainline_risk_flag', '--')}",
+        f"下一步：{(top_pick.next_focus or top_pick.catalyst or '继续盯主线与量价')[:22]}",
     ]
     if window.market_path_alert_history:
-        lines.extend(["", "最近提示"])
-        lines.extend(f"- {item}" for item in window.market_path_alert_history[-4:])
+        lines.append(f"提示：{window.market_path_alert_history[-1][:22]}")
     _set_plain_text_if_changed(window.strategy_path_text, "\n".join(lines))
 
 
@@ -877,19 +861,18 @@ def build_recommend_dispatch_snapshot(
     failed_rows = [item for item in rows if execution_status_by_symbol.get(getattr(item, "symbol", ""), "") == "提交失败"]
     pending_review = [item for item in buy_rows if execution_status_by_symbol.get(getattr(item, "symbol", ""), "待观察") == "待观察"]
 
-    headline = _brief_panel_text(
-        "今日分发",
-        f"{top_flow} | 主线: {top_theme} | 总池 {len(rows)} | 可买 {len(buy_rows)} | 观察 {len(watch_rows)}",
-        f"待复核 {len(pending_review)} | 送审 {len(queued_rows)} | 提交 {len(submitted_rows)} | 失败 {len(failed_rows)}",
-        (
-            f"先复核 {pending_review[0].stock_name}"
-            if pending_review
-            else (
-                f"跟踪失败单 {failed_rows[0].stock_name}"
-                if failed_rows
-                else (f"已提交 {len(submitted_rows)} 只，可转交易台" if submitted_rows else "先审查，再执行")
-            )
-        ),
+    next_step = (
+        f"先复核 {pending_review[0].stock_name}"
+        if pending_review
+        else (
+            f"跟踪失败单 {failed_rows[0].stock_name}"
+            if failed_rows
+            else (f"已提交 {len(submitted_rows)} 只，可转交易台" if submitted_rows else "先审查，再执行")
+        )
+    )
+    headline = (
+        f"今日分发 | {top_flow} | 主线: {top_theme} | 总池 {len(rows)} | 买 {len(buy_rows)} | 观 {len(watch_rows)} | "
+        f"待复核 {len(pending_review)} | 送审 {len(queued_rows)} | 提交 {len(submitted_rows)} | 失败 {len(failed_rows)} | {next_step}"
     )
 
     selected = selected_row or top_pick
@@ -914,13 +897,14 @@ def build_recommend_dispatch_snapshot(
         elif execution_status == "提交失败":
             next_step = "提交失败，先复核风控。"
         focus = _brief_panel_text(
-            "焦点审查",
-            f"{selected.stock_name} | {_mainline_flow_brief(selected)} | 动作/状态 {action_text} / {execution_status}",
-            f"主线/位次/角色 {(getattr(selected, 'mainline_tag', '') or selected.theme_name or '未分类')} / "
-            f"{getattr(selected, 'mainline_rank', getattr(selected, 'theme_rank', 0)) or '--'} / "
+            "单票审查",
+            f"{selected.stock_name} | {_mainline_flow_brief(selected)} | {action_text} / {execution_status}",
+            f"主线/位次/角色：{(getattr(selected, 'mainline_tag', '') or selected.theme_name or '未分类')} | "
+            f"第 {getattr(selected, 'mainline_rank', getattr(selected, 'theme_rank', 0)) or '--'} 位 | "
             f"{_display_mainline_role(getattr(selected, 'mainline_role', ''))} | 风险 {getattr(selected, 'mainline_risk_flag', '--')} | 盈亏比 {rr_text}",
             next_step,
         )
+        focus = focus.replace(f"{action_text} / {execution_status}", f"动作/状态：{action_text} / {execution_status}")
 
     queue = _brief_panel_text(
         "执行队列概览",
@@ -1567,38 +1551,38 @@ def refresh_overview_priority_cards(window, pool: list, recommendations: list, t
 
     window.overview_priority_cards["market"].set_data(
         f"建仓 {len(buy_rows)}" if recommendations else "--",
-        f"{top_buy.stock_name if top_buy else '暂无标的'} | {market_text}",
+        f"{market_text} | {top_buy.stock_name if top_buy else '暂无标的'}",
         (
-            f"{getattr(top_buy, 'buy_point', '') or '等待突破确认后再买'} | 主线 {getattr(top_buy, 'theme_name', '') or top_theme_name}"
+            f"买点 {getattr(top_buy, 'buy_point', '') or '等待突破确认'} | 主线 {getattr(top_buy, 'theme_name', '') or top_theme_name}"
             if top_buy
-            else f"市场节奏 {market_text} | 暂无明确新开仓票。"
+            else f"市场节奏 {market_text} | 暂无明确新开仓票"
         ),
     )
     window.overview_priority_cards["theme"].set_data(
         f"持有 {len(hold_rows) or len(watch_rows)}" if recommendations else "--",
-        f"{top_hold.stock_name if top_hold else '暂无标的'} | 跟踪位",
+        f"跟踪位 | {top_hold.stock_name if top_hold else '暂无标的'}",
         (
-            f"{getattr(top_hold, 'add_point', '') or '沿趋势持有，放量再加'} | {getattr(top_hold, 'stock_pool', '') or '趋势股'}"
+            f"加点 {getattr(top_hold, 'add_point', '') or '沿趋势持有'} | {getattr(top_hold, 'stock_pool', '') or '趋势股'}"
             if top_hold
             else hold_note
         ),
     )
     window.overview_priority_cards["strategy"].set_data(
         f"减仓 {len(reduce_rows)}" if recommendations else "--",
-        f"{top_reduce.stock_name if top_reduce else '暂无标的'} | 风险回收",
+        f"风险回收 | {top_reduce.stock_name if top_reduce else '暂无标的'}",
         (
-            f"{getattr(top_reduce, 'sell_point', '') or '冲高乏力先减一半'} | 控回撤"
+            f"减点 {getattr(top_reduce, 'sell_point', '') or '冲高乏力先减一半'} | 控回撤"
             if top_reduce
             else "暂无明显减仓票，持仓仍以跟踪为主。"
         ),
     )
     window.overview_priority_cards["focus"].set_data(
         f"离场 {len(sell_rows)}" if recommendations else "--",
-        f"{top_sell.stock_name if top_sell else '暂无标的'} | 防守位",
+        f"防守位 | {top_sell.stock_name if top_sell else '暂无标的'}",
         (
-            f"{getattr(top_sell, 'risk_line', '') or '跌破防守线直接离场'} | 主线 {top_theme_name}"
+            f"风控 {getattr(top_sell, 'risk_line', '') or '跌破防守线直接离场'} | 主线 {top_theme_name}"
             if top_sell
-            else f"暂无明确清仓票 | 主线仍看 {top_theme_name}。"
+            else f"暂无明确清仓票 | 主线仍看 {top_theme_name}"
         ),
     )
 
@@ -1689,10 +1673,6 @@ def refresh_strategy_focus_detail(window, strategy_score_fields) -> None:
     execution_summary = _strategy_execution_summary(window, focus_row)
     attention_focus = _strategy_attention_focus(focus_row)
     lines = [
-        f"战法名称：{canonical_strategy_name}",
-        f"主线概况：{mainline_summary}",
-        f"执行建议：{execution_summary}",
-        "",
         "战法定位",
         f"- 产品定位：{_strategy_product_positioning(canonical_strategy_name)}",
         f"- 风险等级：{_strategy_risk_level(canonical_strategy_name, focus_row)}",
@@ -1706,37 +1686,27 @@ def refresh_strategy_focus_detail(window, strategy_score_fields) -> None:
         f"- 标准动作：{_strategy_standard_action(canonical_strategy_name, focus_row)}",
         f"- 失败样本：{_strategy_failure_sample_text(canonical_strategy_name, focus_row)}",
         "",
-        "今天怎么用",
-        f"- 适配场景：{_strategy_scene_copy(canonical_strategy_name)}",
-        f"- 确认信号：{_strategy_confirm_signal_text(focus_row)}",
-        f"- 失效信号：{_strategy_invalidation_signal_text(focus_row)}",
-        f"- 代表性标的：{example_names}",
-        f"- 今日优先级：{priority_text}",
-        "",
         "当前动作",
-        f"- 建议动作：{window._display_action(focus_row.action)}",
-        f"- 买点：{getattr(focus_row, 'buy_point', '') or '等待入场确认后再动手。'}",
-        f"- 止损 / 卖点：{getattr(focus_row, 'sell_point', '') or '按计划目标分批处理。'}",
-        f"- 下一步行动：{attention_focus}",
+        f"- 结论：{priority_text}",
+        f"- 主线：{mainline_summary}",
+        f"- 动作：{execution_summary}",
         "",
-        "入选原因",
-        f"- 主策略：{_canonical_strategy_name(getattr(focus_row, 'primary_strategy', '') or '掘龙决策')}",
-        f"- 为什么是它：{_strategy_reason_copy(focus_row, canonical_strategy_name)}",
+        "怎么用",
+        f"- 场景：{_strategy_scene_copy(canonical_strategy_name)}",
+        f"- 确认：{_strategy_confirm_signal_text(focus_row)}",
+        f"- 失效：{_strategy_invalidation_signal_text(focus_row)}",
+        f"- 仓位：{_strategy_position_hint(canonical_strategy_name, focus_row)}",
+        "",
+        "为什么是它",
+        f"- 焦点：{example_names}",
+        f"- 归因：{_strategy_reason_copy(focus_row, canonical_strategy_name)}",
         f"- 催化：{focus_row.catalyst or '量价共振'}",
-        f"- 当前分数：战法 {strategy_score:.1f} / 综合 {focus_row.total_score:.1f} / 窗口 {getattr(focus_row, 'mainline_window_score', 0.0):.1f}",
+        f"- 风险：{getattr(focus_row, 'mainline_risk_flag', '--')} | {focus_row.rationale or '暂无附加说明'}",
         "",
-        "失效条件",
-        f"- {_strategy_invalidation_signal_text(focus_row)}",
-        f"- 风险提示：{getattr(focus_row, 'mainline_risk_flag', '--')} | {focus_row.rationale or '暂无附加说明'}",
-        "",
-        "分数参考",
-        f"- 龙头模型：{getattr(focus_row, 'leader_model_score', 0.0):.1f}",
-        f"- 主力雷达：{getattr(focus_row, 'main_force_score', 0.0):.1f}",
-        f"- 擒龙打板：{getattr(focus_row, 'board_attack_score', 0.0):.1f}",
-        f"- 价值低吸：{getattr(focus_row, 'value_recovery_score', 0.0):.1f}",
-        f"- 尾盘买入法：{getattr(focus_row, 'tail_buy_score', 0.0):.1f}",
-        f"- 一日持股法：{getattr(focus_row, 'one_day_hold_score', 0.0):.1f}",
-        f"- 掘龙决策：{getattr(focus_row, 'dragon_decision_score', focus_row.total_score):.1f}",
+        "评分板",
+        f"- 战法 {strategy_score:.1f} | 综合 {focus_row.total_score:.1f} | 窗口 {getattr(focus_row, 'mainline_window_score', 0.0):.1f}",
+        f"- 龙头 {getattr(focus_row, 'leader_model_score', 0.0):.1f} | 主力 {getattr(focus_row, 'main_force_score', 0.0):.1f} | 打板 {getattr(focus_row, 'board_attack_score', 0.0):.1f}",
+        f"- 低吸 {getattr(focus_row, 'value_recovery_score', 0.0):.1f} | 尾盘 {getattr(focus_row, 'tail_buy_score', 0.0):.1f} | 一日 {getattr(focus_row, 'one_day_hold_score', 0.0):.1f}",
         "",
     ]
     tripwire_metrics = one_day_hold_tripwire_metrics(focus_row)
@@ -2192,7 +2162,7 @@ def populate_filtered_daily_pool_table(window) -> None:
             price_item = _ensure_table_item(
                 window.daily_pool_table,
                 row_index,
-                22,
+                23,
                 f"买 {entry_text} / 卖 {target_text}\n盈亏比 {rr_ratio:.2f}" if rr_ratio else f"买 {entry_text} / 卖 {target_text}",
             )
             price_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -2250,9 +2220,11 @@ def _build_market_identity_item(row, *, background, foreground) -> QTableWidgetI
         "SELL": "离场",
     }
     action_label = action_label_map.get(action, "跟踪")
-    item = QTableWidgetItem(f"{stock_name}  {stock_id}\n{action_label} | 热度 {heat_score:.1f} | 决策 {decision_score:.1f}")
-    item.setBackground(background)
-    item.setForeground(foreground)
+    stock_line = f"{stock_name}  {stock_id}"
+    detail_line = f"{action_label} · 热 {heat_score:.1f} · 评 {decision_score:.1f}"
+    item = QTableWidgetItem(f"{stock_line}\n{detail_line}")
+    item.setBackground(QColor("#111A24"))
+    item.setForeground(QColor("#F3F7FC"))
     item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
     item.setToolTip(
         "\n".join(
@@ -2272,6 +2244,9 @@ def _build_market_identity_item(row, *, background, foreground) -> QTableWidgetI
             "symbol": symbol,
             "stock_name": stock_name,
             "stock_id": stock_id,
+            "stock_line": stock_line,
+            "detail_line": detail_line,
+            "action_label": action_label,
             "heat_score": heat_score,
             "decision_score": decision_score,
         },
@@ -2285,7 +2260,9 @@ def _build_daily_pool_identity_item(window, row, execution_status: str) -> QTabl
     symbol = row.symbol or "--"
     heat_score = float(getattr(row, "mainline_strength_score", getattr(row, "theme_score", row.total_score)) or 0.0)
     badge = execution_status if execution_status != "待观察" else window._display_action(row.action)
-    item = QTableWidgetItem(f"{stock_name}  {stock_id}\n{badge} | 主线热度 {heat_score:.1f}")
+    action_text = window._display_action(getattr(row, "action", "") or "WATCH")
+    decision_score = float(getattr(row, "dragon_decision_score", getattr(row, "total_score", 0.0)) or 0.0)
+    item = QTableWidgetItem(f"{stock_name}  {stock_id}\n{badge} | {action_text} | 评 {decision_score:.1f}")
     item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
     item.setToolTip(
         "\n".join(
@@ -2319,6 +2296,35 @@ def _build_status_badge_item(primary: str, secondary: str) -> QTableWidgetItem:
     item.setForeground(QColor("#7ED7FF"))
     item.setToolTip(f"动作：{primary or '--'}\n成交：{secondary or '--'}")
     return item
+
+
+def _decision_tone(decision_score: float) -> tuple[str, QColor, QColor]:
+    if decision_score >= 85:
+        return "高优", QColor("#173323"), QColor("#71F0A7")
+    if decision_score >= 72:
+        return "跟踪", QColor("#3A3018"), QColor("#FFD36B")
+    return "谨慎", QColor("#321C1F"), QColor("#FF9E9E")
+
+
+def _fund_model_tone(row) -> tuple[str, QColor, QColor]:
+    main_inflow = float(getattr(row, "main_inflow", 0.0) or 0.0)
+    turnover = float(getattr(row, "turnover", 0.0) or 0.0)
+    fund_model = str(getattr(row, "fund_model", "") or "待同步")
+    if main_inflow >= 1.5e8:
+        return fund_model, QColor("#133225"), QColor("#66E3A4")
+    if turnover >= 10:
+        return fund_model, QColor("#3A3018"), QColor("#FFD36B")
+    return fund_model, QColor("#18222C"), QColor("#A7B9CA")
+
+
+def _strategy_tone(row, theme_name: str, signal_text: str) -> tuple[str, str, QColor, QColor]:
+    strategy_name = str(getattr(row, "strategy_tag", "") or "待同步")
+    action = str(getattr(row, "action", "") or "").upper()
+    if action == "BUY":
+        return strategy_name, f"{theme_name} · {signal_text}", QColor("#2B181B"), QColor("#FF9D9D")
+    if action in {"HOLD", "WATCH"}:
+        return strategy_name, f"{theme_name} · {signal_text}", QColor("#1A2330"), QColor("#7ED7FF")
+    return strategy_name, f"{theme_name} · {signal_text}", QColor("#2A2417"), QColor("#E5C47A")
 
 
 def apply_market_filters(window) -> None:
@@ -2383,55 +2389,64 @@ def apply_market_filters(window) -> None:
                 continue
             theme_name = getattr(row, "theme_name", "") or "未分类"
             background, foreground = market_pool_colors(row)
+            rank_background = QColor("#141D28")
+            rank_foreground = QColor("#8EA4BB")
+            pct_background = background
+            pct_foreground = foreground
+            decision_score = float(getattr(row, "decision_score", 0.0) or 0.0)
+            decision_label, price_background, price_foreground = _decision_tone(decision_score)
 
             rank_item = _ensure_table_item(window.market_pool_table, row_index, 0, str(row_index + 1))
             rank_item.setData(QT_USER_ROLE, row.symbol)
-            rank_item.setBackground(background)
-            rank_item.setForeground(foreground)
+            rank_item.setBackground(rank_background)
+            rank_item.setForeground(rank_foreground)
             rank_item.setTextAlignment(Qt.AlignCenter)
             identity_item = _build_market_identity_item(row, background=background, foreground=foreground)
             window.market_pool_table.setItem(row_index, 1, identity_item)
 
+            fund_model_label, fund_background, fund_foreground = _fund_model_tone(row)
             fund_tooltip = f"资金模型：{row.fund_model}\n主力净流入：{row.main_inflow / 1e8:.2f} 亿"
-            fund_item = _ensure_table_item(window.market_pool_table, row_index, 2, f"{row.fund_model}\n流入 {row.main_inflow / 1e8:.2f} 亿")
+            fund_item = _ensure_table_item(window.market_pool_table, row_index, 2, f"{fund_model_label}\n流入 {row.main_inflow / 1e8:.2f} 亿")
             fund_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            fund_item.setBackground(QColor("#17212B"))
-            fund_item.setForeground(QColor("#9CB9D7"))
+            fund_item.setBackground(fund_background)
+            fund_item.setForeground(fund_foreground)
             if fund_item.toolTip() != fund_tooltip:
                 fund_item.setToolTip(fund_tooltip)
 
+            signal_text = window._display_label(row.signal_label)
+            strategy_name, strategy_detail, strategy_background, strategy_foreground = _strategy_tone(row, theme_name, signal_text)
             strategy_tooltip = (
                 f"策略：{row.strategy_tag}\n"
                 f"题材：{theme_name}\n"
-                f"信号：{window._display_label(row.signal_label)}"
+                f"信号：{signal_text}"
             )
             strategy_item = _ensure_table_item(
                 window.market_pool_table,
                 row_index,
                 3,
-                f"{row.strategy_tag}\n{theme_name} · {window._display_label(row.signal_label)}",
+                f"{strategy_name}\n{strategy_detail}",
             )
             strategy_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            strategy_item.setBackground(QColor("#202933"))
-            strategy_item.setForeground(QColor("#D7C18E"))
+            strategy_item.setBackground(strategy_background)
+            strategy_item.setForeground(strategy_foreground)
             if strategy_item.toolTip() != strategy_tooltip:
                 strategy_item.setToolTip(strategy_tooltip)
 
             pct_item = _ensure_table_item(window.market_pool_table, row_index, 4, f"{row.pct_change:.2f}%")
-            pct_item.setBackground(background)
-            pct_item.setForeground(foreground)
+            pct_item.setBackground(pct_background)
+            pct_item.setForeground(pct_foreground)
             pct_item.setTextAlignment(Qt.AlignCenter)
             price_item = _ensure_table_item(
                 window.market_pool_table,
                 row_index,
                 5,
-                f"{row.latest_price:.2f}\n评分 {getattr(row, 'decision_score', 0.0):.1f}",
+                f"{row.latest_price:.2f}\n{decision_label} {decision_score:.1f}",
             )
-            price_tooltip = f"决策分 {getattr(row, 'decision_score', 0.0):.1f} | 题材 {theme_name}"
+            price_tooltip = f"决策分 {decision_score:.1f} | 分级 {decision_label} | 题材 {theme_name}"
             if price_item.toolTip() != price_tooltip:
                 price_item.setToolTip(price_tooltip)
-            price_item.setBackground(background)
-            price_item.setForeground(foreground)
+            price_item.setBackground(price_background)
+            price_item.setForeground(price_foreground)
             price_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
     window._market_pool_table_signature = market_signature

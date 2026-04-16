@@ -2,8 +2,8 @@
 
 ## Summary
 
-- 3.13 full tests: 231 (OK)
-- 3.12 compatibility subset: 173 (OK)
+- 3.13 full tests: 292 (FAIL)
+- 3.12 compatibility subset: 140 (FAIL)
 - Perf regressions: 0
 
 ## Outputs

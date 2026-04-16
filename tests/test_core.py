@@ -2030,7 +2030,14 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn("巨潮资讯", descriptor.description)
 
     def test_news_source_registry_loads_cninfo_announcements(self) -> None:
-        payload = {
+        top_search_payload = [
+            {
+                "code": "600000",
+                "orgId": "gssh0600000",
+                "zwjc": "浦发银行",
+            }
+        ]
+        notice_payload = {
             "announcements": [
                 {
                     "announcementTitle": "<em>年度报告</em>",
@@ -2050,9 +2057,19 @@ class StrategyWorkflowTests(unittest.TestCase):
                 return False
 
             def read(self):
-                return json.dumps(payload).encode("utf-8")
+                return json.dumps(self.payload).encode("utf-8")
 
-        with patch("quant_hunter.news_sources.urllib.request.urlopen", return_value=_FakeResponse()):
+        def _fake_urlopen(request, timeout=0):
+            url = request.full_url if hasattr(request, "full_url") else str(request)
+            if "topSearch/query" in url:
+                response = _FakeResponse()
+                response.payload = top_search_payload
+                return response
+            response = _FakeResponse()
+            response.payload = notice_payload
+            return response
+
+        with patch("quant_hunter.news_sources.urllib.request.urlopen", side_effect=_fake_urlopen):
             result = load_news_from_source(
                 NewsSourceConfig(
                     provider="cninfo_api",
@@ -2066,7 +2083,324 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(item.source, "巨潮资讯")
         self.assertEqual(item.title, "年度报告")
         self.assertIn("定期报告", item.summary)
+        self.assertIn("业绩确认型催化", item.summary)
         self.assertTrue(item.url.startswith("https://static.cninfo.com.cn/"))
+
+    def test_news_source_registry_cninfo_filters_low_signal_items(self) -> None:
+        top_search_payload = [{"code": "000001", "orgId": "gszx0000001", "zwjc": "平安银行"}]
+        notice_payload = {
+            "announcements": [
+                {
+                    "announcementTitle": "投资者关系管理信息",
+                    "announcementTime": 1770936600000,
+                    "adjunctUrl": "finalpage/2026-04-16/irm.PDF",
+                    "announcementType": "012001",
+                    "secName": "平安银行",
+                },
+                {
+                    "announcementTitle": "2025年度利润分配预案公告",
+                    "announcementTime": 1770936600000,
+                    "adjunctUrl": "finalpage/2026-04-16/dividend.PDF",
+                    "announcementType": "011301",
+                    "secName": "平安银行",
+                },
+            ]
+        }
+
+        class _FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(self.payload).encode("utf-8")
+
+        def _fake_urlopen(request, timeout=0):
+            url = request.full_url if hasattr(request, "full_url") else str(request)
+            response = _FakeResponse()
+            response.payload = top_search_payload if "topSearch/query" in url else notice_payload
+            return response
+
+        with patch("quant_hunter.news_sources.urllib.request.urlopen", side_effect=_fake_urlopen):
+            result = load_news_from_source(
+                NewsSourceConfig(
+                    provider="cninfo_api",
+                    symbols=("SZSE.000001",),
+                    symbol_names={"SZSE.000001": "平安银行"},
+                    limit_per_symbol=2,
+                )
+            )
+
+        items = result.news_map["SZSE.000001"]
+        self.assertEqual(len(items), 1)
+        self.assertIn("利润分配", items[0].title)
+        self.assertIn("分红预案", items[0].summary)
+        self.assertIn("偏稳健催化", items[0].summary)
+
+    def test_news_source_registry_cninfo_merges_same_day_attachments(self) -> None:
+        top_search_payload = [{"code": "600000", "orgId": "gssh0600000", "zwjc": "浦发银行"}]
+        notice_payload = {
+            "announcements": [
+                {
+                    "announcementTitle": "上海浦东发展银行股份有限公司2025年度利润分配方案公告",
+                    "announcementTime": 1770936600000,
+                    "adjunctUrl": "finalpage/2026-04-16/dividend.PDF",
+                    "announcementType": "011301",
+                    "secName": "浦发银行",
+                },
+                {
+                    "announcementTitle": "上海浦东发展银行股份有限公司2025年年度报告",
+                    "announcementTime": 1770936600000,
+                    "adjunctUrl": "finalpage/2026-04-16/report.PDF",
+                    "announcementType": "010301",
+                    "secName": "浦发银行",
+                },
+                {
+                    "announcementTitle": "上海浦东发展银行股份有限公司2025年年度报告摘要",
+                    "announcementTime": 1770936600000,
+                    "adjunctUrl": "finalpage/2026-04-16/summary.PDF",
+                    "announcementType": "010301",
+                    "secName": "浦发银行",
+                },
+            ]
+        }
+
+        class _FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(self.payload).encode("utf-8")
+
+        def _fake_urlopen(request, timeout=0):
+            url = request.full_url if hasattr(request, "full_url") else str(request)
+            response = _FakeResponse()
+            response.payload = top_search_payload if "topSearch/query" in url else notice_payload
+            return response
+
+        with patch("quant_hunter.news_sources.urllib.request.urlopen", side_effect=_fake_urlopen):
+            result = load_news_from_source(
+                NewsSourceConfig(
+                    provider="cninfo_api",
+                    symbols=("SHSE.600000",),
+                    symbol_names={"SHSE.600000": "浦发银行"},
+                    limit_per_symbol=5,
+                )
+            )
+
+        titles = [item.title for item in result.news_map["SHSE.600000"]]
+        self.assertIn("2025年度利润分配方案公告", titles)
+        self.assertIn("年报季配套公告（2条）", titles)
+        merged_item = next(item for item in result.news_map["SHSE.600000"] if item.title == "年报季配套公告（2条）")
+        self.assertIn("年度报告", merged_item.summary)
+
+    def test_news_source_registry_mixed_api_prioritizes_a_tier_announcements(self) -> None:
+        temp_dir = self._temp_dir()
+        news_path = temp_dir / "mixed_news.csv"
+        news_path.write_text(
+            "symbol,title,summary,published_at,source,heat\n"
+            "SHSE.600000,浦发银行媒体追踪,媒体继续讨论银行修复,2026-04-16 09:30:00,示例消息源,3.0\n"
+            "SHSE.600000,2025年度利润分配方案公告,媒体重复转述,2026-04-16 09:35:00,示例消息源,4.0\n",
+            encoding="utf-8-sig",
+        )
+        self.addCleanup(lambda: news_path.unlink(missing_ok=True))
+
+        top_search_payload = [{"code": "600000", "orgId": "gssh0600000", "zwjc": "浦发银行"}]
+        notice_payload = {
+            "announcements": [
+                {
+                    "announcementTitle": "上海浦东发展银行股份有限公司2025年度利润分配方案公告",
+                    "announcementTime": "2026-04-16 00:00:00",
+                    "adjunctUrl": "finalpage/2026-04-16/dividend.PDF",
+                    "announcementType": "011301",
+                    "secName": "浦发银行",
+                }
+            ]
+        }
+
+        class _FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(self.payload).encode("utf-8")
+
+        def _fake_urlopen(request, timeout=0):
+            url = request.full_url if hasattr(request, "full_url") else str(request)
+            response = _FakeResponse()
+            response.payload = top_search_payload if "topSearch/query" in url else notice_payload
+            return response
+
+        with patch("quant_hunter.news_sources.urllib.request.urlopen", side_effect=_fake_urlopen):
+            result = load_news_from_source(
+                NewsSourceConfig(
+                    provider="mixed_api",
+                    path=str(news_path),
+                    symbols=("SHSE.600000",),
+                    symbol_names={"SHSE.600000": "浦发银行"},
+                    limit_per_symbol=5,
+                )
+            )
+
+        items = result.news_map["SHSE.600000"]
+        self.assertEqual(items[0].source, "巨潮资讯")
+        self.assertIn("分红预案", items[0].summary)
+        self.assertTrue(any(item.title == "浦发银行媒体追踪" for item in items))
+        self.assertEqual(sum(1 for item in items if "利润分配方案公告" in item.title), 1)
+
+    def test_open_news_item_url_opens_browser_when_url_exists(self) -> None:
+        module = importlib.import_module("app_qt")
+        window = SimpleNamespace()
+        item = SimpleNamespace(url="https://example.com/news.pdf")
+
+        with patch.object(module.QDesktopServices, "openUrl", return_value=True) as open_url, patch.object(
+            module.QMessageBox, "information", return_value=0
+        ) as info_box:
+            opened = module.QuantHunterWindow._open_news_item_url(window, item, empty_title="提示")
+
+        self.assertTrue(opened)
+        open_url.assert_called_once()
+        info_box.assert_not_called()
+
+    def test_open_news_item_url_shows_hint_when_missing_url(self) -> None:
+        module = importlib.import_module("app_qt")
+        window = SimpleNamespace()
+        item = SimpleNamespace(url="")
+
+        with patch.object(module.QDesktopServices, "openUrl", return_value=True) as open_url, patch.object(
+            module.QMessageBox, "information", return_value=0
+        ) as info_box:
+            opened = module.QuantHunterWindow._open_news_item_url(window, item, empty_title="提示")
+
+        self.assertFalse(opened)
+        open_url.assert_not_called()
+        info_box.assert_called_once()
+
+    def test_update_news_action_button_reflects_news_tier_and_tooltip(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        button = module.QPushButton()
+        item = SimpleNamespace(
+            source="巨潮资讯",
+            published_at="2026-04-17 09:31:00",
+            title="2025年度利润分配方案公告",
+            summary="分红预案 | 偏稳健催化",
+            url="https://static.cninfo.com.cn/finalpage/2026-04-17/demo.PDF",
+        )
+        window = SimpleNamespace(
+            _set_button_role=lambda target, role="ghost": setattr(target, "role", role),
+            _news_action_label=lambda current: module.QuantHunterWindow._news_action_label(SimpleNamespace(), current),
+            _news_item_tooltip=lambda current: module.QuantHunterWindow._news_item_tooltip(SimpleNamespace(), current),
+        )
+
+        module.QuantHunterWindow._update_news_action_button(window, button, item)
+
+        self.assertEqual(button.text(), "查看公告原文")
+        self.assertTrue(button.isEnabled())
+        self.assertIn("分层：已公告", button.toolTip())
+        self.assertIn("可直接打开原文链接", button.toolTip())
+        self.assertEqual(button.role, "accent")
+
+        media_button = module.QPushButton()
+        media_item = SimpleNamespace(
+            source="财联社",
+            published_at="2026-04-17 10:12:00",
+            title="机器人主线继续扩散",
+            summary="媒体催化 | 关注板块扩散",
+            url="https://example.com/media",
+        )
+        module.QuantHunterWindow._update_news_action_button(window, media_button, media_item)
+        self.assertEqual(media_button.text(), "查看媒体原文")
+        self.assertEqual(media_button.role, "tonal")
+
+    def test_update_news_detail_button_reflects_news_tier_and_tooltip(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        button = module.QPushButton()
+        item = SimpleNamespace(
+            source="巨潮资讯",
+            published_at="2026-04-17 09:31:00",
+            title="2025年度利润分配方案公告",
+            summary="分红预案 | 偏稳健催化",
+            url="https://static.cninfo.com.cn/finalpage/2026-04-17/demo.PDF",
+        )
+        window = SimpleNamespace(
+            _set_button_role=lambda target, role="ghost": setattr(target, "role", role),
+            _news_detail_label=lambda current: module.QuantHunterWindow._news_detail_label(SimpleNamespace(), current),
+            _news_item_tooltip=lambda current: module.QuantHunterWindow._news_item_tooltip(SimpleNamespace(), current),
+        )
+
+        module.QuantHunterWindow._update_news_detail_button(window, button, item)
+
+        self.assertEqual(button.text(), "查看公告详情")
+        self.assertTrue(button.isEnabled())
+        self.assertIn("分层：已公告", button.toolTip())
+        self.assertIn("点击查看详情弹窗", button.toolTip())
+        self.assertEqual(button.role, "tonal")
+
+    def test_news_detail_lines_include_source_time_summary_and_url(self) -> None:
+        module = importlib.import_module("app_qt")
+        item = SimpleNamespace(
+            source="财联社",
+            published_at="2026-04-17 10:12:00",
+            title="机器人主线继续扩散",
+            summary="媒体催化 | 关注板块扩散",
+            url="https://example.com/media",
+        )
+
+        lines = module.QuantHunterWindow._news_detail_lines(SimpleNamespace(), item)
+
+        self.assertIn("分层：媒体催化 / 可信度 B级", lines[0])
+        self.assertIn("来源：财联社", lines[1])
+        self.assertIn("时间：2026-04-17 10:12:00", lines[2])
+        self.assertIn("标题：机器人主线继续扩散", lines[3])
+        self.assertIn("摘要：媒体催化 | 关注板块扩散", lines[4])
+        self.assertIn("原文：https://example.com/media", lines[5])
+
+    def test_news_related_notice_lines_parse_merged_summary(self) -> None:
+        module = importlib.import_module("app_qt")
+        item = SimpleNamespace(
+            summary="年报季 | 同日合并 4 条：2025年年度报告摘要 / 2025年年度报告 / 董事会决议公告 | 适合一起看业绩、分红和审计口径，判断资金会不会继续做估值修复。"
+        )
+
+        lines = module.QuantHunterWindow._news_related_notice_lines(SimpleNamespace(), item)
+
+        self.assertEqual(lines, ["2025年年度报告摘要", "2025年年度报告", "董事会决议公告"])
+
+    def test_route_news_item_to_workspace_focuses_symbol_before_navigation(self) -> None:
+        module = importlib.import_module("app_qt")
+        focus_calls: list[tuple[str, str]] = []
+        recommend_calls: list[str] = []
+        window = SimpleNamespace(
+            _focus_symbol_everywhere=lambda symbol, origin="": focus_calls.append((symbol, origin)),
+            _focus_symbol_in_recommend_workspace=lambda symbol: recommend_calls.append(symbol),
+        )
+        item = SimpleNamespace(symbol="SZSE.300001")
+
+        module.QuantHunterWindow._route_news_item_to_workspace(window, item, "recommend")
+
+        self.assertEqual(focus_calls, [("SZSE.300001", "news")])
+        self.assertEqual(recommend_calls, ["SZSE.300001"])
+
+    def test_route_news_item_to_workspace_shows_hint_when_symbol_missing(self) -> None:
+        module = importlib.import_module("app_qt")
+        window = SimpleNamespace()
+        item = SimpleNamespace(symbol="")
+
+        with patch.object(module.QMessageBox, "information", return_value=0) as info_box:
+            module.QuantHunterWindow._route_news_item_to_workspace(window, item, "recommend")
+
+        info_box.assert_called_once()
 
     def test_daily_pool_builder_ranks_reclaim_candidate(self) -> None:
         sample_dir = self._temp_dir() / "daily_pool_universe"
@@ -3494,6 +3828,14 @@ class StrategyWorkflowTests(unittest.TestCase):
                 self.assertTrue(hasattr(window, "paper_to_recommend_button"))
                 self.assertTrue(hasattr(window, "recommend_decision_summary_text"))
                 self.assertTrue(hasattr(window, "recommend_push_focus_button"))
+                self.assertTrue(hasattr(window, "right_intel_tabs"))
+                self.assertEqual(window.right_intel_tabs.count(), 3)
+                self.assertTrue(hasattr(window, "left_signal_tabs"))
+                self.assertEqual(window.left_signal_tabs.count(), 3)
+                self.assertTrue(hasattr(window, "overview_chart_controls_tabs"))
+                self.assertEqual(window.overview_chart_controls_tabs.count(), 2)
+                self.assertTrue(hasattr(window, "overview_mini_chart_tabs"))
+                self.assertEqual(window.overview_mini_chart_tabs.count(), 3)
                 self.assertEqual(
                     set(getattr(window, "market_overlay_buttons", {}).keys()),
                     {"MA", "BOLL", "HIGHLOW", "BREAK"},
@@ -3520,6 +3862,53 @@ class StrategyWorkflowTests(unittest.TestCase):
                 finally:
                     window.close()
                     app.processEvents()
+
+    def test_qt_window_compacts_overview_panels_for_short_height(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.resize(1600, 900)
+                window._apply_layout_polish_v19()
+                app.processEvents()
+                self.assertLessEqual(window.shell_header.maximumHeight(), 122)
+                self.assertLessEqual(window.shell_pulse_bar.maximumHeight(), 62)
+                self.assertLessEqual(window.overview_command_text.maximumHeight(), 170)
+                self.assertLessEqual(window.overview_execution_text.maximumHeight(), 170)
+                self.assertLessEqual(window.overview_playbook_text.maximumHeight(), 130)
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_relayouts_overview_controls_into_two_rows_on_small_viewport(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.resize(1400, 900)
+                window._apply_layout_polish_v19()
+                app.processEvents()
+                layout = window.overview_controls_layout
+                self.assertEqual(layout.indexOf(window.overview_view_box), layout.indexOf(window.overview_view_box))
+                row0, col0, row_span0, col_span0 = layout.getItemPosition(layout.indexOf(window.overview_view_box))
+                row1, col1, _row_span1, _col_span1 = layout.getItemPosition(layout.indexOf(window.overview_search_box))
+                row2, col2, _row_span2, _col_span2 = layout.getItemPosition(layout.indexOf(window.overview_tag_box))
+                self.assertEqual((row0, col0, row_span0, col_span0), (0, 0, 1, 2))
+                self.assertEqual((row1, col1), (1, 0))
+                self.assertEqual((row2, col2), (1, 1))
+            finally:
+                window.close()
+                app.processEvents()
 
     def test_market_breakout_classification_helper(self) -> None:
         if importlib.util.find_spec("PySide6") is None:
@@ -6272,6 +6661,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         lines = ui_helpers.build_news_digest_lines(news_items, limit=1)
 
         self.assertEqual(len(lines), 2)
+        self.assertIn("[媒体催化]", lines[0])
         self.assertIn("可信度 B级", lines[0])
         self.assertIn("财联社", lines[0])
         self.assertIn("板块催化开始扩散", lines[1])
@@ -6331,20 +6721,33 @@ class StrategyWorkflowTests(unittest.TestCase):
             overview_execution_text=module.QTextEdit(),
             market_capital_text=module.QTextEdit(),
             market_decision_text=module.QTextEdit(),
+            market_open_news_button=module.QPushButton(),
             news_catalysts={"SZSE.300001": [news_item]},
             _stock_name_for_symbol=lambda symbol: "龙头样本",
             _stock_profile_for_symbol=lambda symbol: SimpleNamespace(notes="公告驱动后转成主线博弈"),
             _news_digest_lines_for_symbol=lambda symbol, limit=2: [f"- {news_item.title} (财联社 / 可信度 B级)"],
+            _update_news_action_button=lambda button, item: module.QuantHunterWindow._update_news_action_button(
+                SimpleNamespace(
+                    _news_action_label=lambda current: module.QuantHunterWindow._news_action_label(SimpleNamespace(), current),
+                    _news_item_tooltip=lambda current: module.QuantHunterWindow._news_item_tooltip(SimpleNamespace(), current),
+                ),
+                button,
+                item,
+            ),
             _set_note_panel_tone_v5=lambda widget, tone: None,
             _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
         )
 
         module.QuantHunterWindow._update_market_text_panels(window, "SZSE.300001", None, row)
 
+        self.assertIn("媒体催化", window.overview_command_text.toPlainText())
         self.assertIn("可信度 B级", window.overview_command_text.toPlainText())
         self.assertIn("订单超预期", window.overview_execution_text.toPlainText())
+        self.assertIn("消息层级：媒体催化", window.market_capital_text.toPlainText())
         self.assertIn("财联社", window.market_capital_text.toPlainText())
         self.assertIn("炒作逻辑", window.market_decision_text.toPlainText())
+        self.assertEqual(window.market_open_news_button.text(), "查看媒体原文")
+        self.assertIn("分层：媒体催化", window.market_open_news_button.toolTip())
 
     def test_refresh_news_source_status_panel_renders_provider_runtime(self) -> None:
         module = importlib.import_module("app_qt")
@@ -9388,13 +9791,36 @@ class StrategyWorkflowTests(unittest.TestCase):
         window = SimpleNamespace(
             recommend_dispatch_text=module.QTextEdit(),
             recommend_focus_review_text=module.QTextEdit(),
+            recommend_news_source_button=module.QPushButton(),
+            recommend_news_detail_button=module.QPushButton(),
             recommend_queue_text=module.QTextEdit(),
             daily_pool_rows=[waiting, row],
+            news_catalysts={"SZSE.300001": [SimpleNamespace(source="巨潮资讯", published_at="2026-04-17 09:31:00", title="利润分配方案公告", summary="分红预案", url="https://example.com/notice.pdf")]},
             execution_status_by_symbol={"SZSE.300001": "待观察", "SZSE.300002": "待观察"},
             _current_recommend_focus=lambda: row,
             _selected_daily_pool_recommendation=lambda: row,
             _display_action=lambda value: {"BUY": "买入", "WATCH": "观察", "SELL": "卖出"}.get(value, value),
             _display_mainline_role=lambda value: value or "主升",
+            _stock_profile_for_symbol=lambda symbol: None,
+            _news_digest_lines_for_symbol=lambda symbol, limit=2: [f"- [已公告] 利润分配方案公告 (巨潮资讯 / 2026-04-17 09:31:00 / 可信度 A级)"],
+            _update_news_action_button=lambda button, item: module.QuantHunterWindow._update_news_action_button(
+                SimpleNamespace(
+                    _set_button_role=lambda target, role="ghost": setattr(target, "role", role),
+                    _news_action_label=lambda current: module.QuantHunterWindow._news_action_label(SimpleNamespace(), current),
+                    _news_item_tooltip=lambda current: module.QuantHunterWindow._news_item_tooltip(SimpleNamespace(), current),
+                ),
+                button,
+                item,
+            ),
+            _update_news_detail_button=lambda button, item: module.QuantHunterWindow._update_news_detail_button(
+                SimpleNamespace(
+                    _set_button_role=lambda target, role="ghost": setattr(target, "role", role),
+                    _news_detail_label=lambda current: module.QuantHunterWindow._news_detail_label(SimpleNamespace(), current),
+                    _news_item_tooltip=lambda current: module.QuantHunterWindow._news_item_tooltip(SimpleNamespace(), current),
+                ),
+                button,
+                item,
+            ),
             _refresh_recommend_story_panels=lambda current=None: None,
             _refresh_recommend_focus_status=lambda current=None: None,
             _refresh_recommend_focus_cards=lambda current=None: None,
@@ -9409,6 +9835,10 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn("确认信号：", window.recommend_focus_review_text.toPlainText())
         self.assertIn("机器人 | 主升", window.recommend_focus_review_text.toPlainText())
         self.assertIn("当前优先：排队样本", window.recommend_queue_text.toPlainText())
+        self.assertEqual(window.recommend_news_source_button.text(), "查看公告原文")
+        self.assertIn("分层：已公告", window.recommend_news_source_button.toolTip())
+        self.assertEqual(window.recommend_news_detail_button.text(), "查看公告详情")
+        self.assertIn("点击查看详情弹窗", window.recommend_news_detail_button.toolTip())
 
     def test_refresh_broker_order_focus_uses_recommendation_when_intent_missing(self) -> None:
         module = importlib.import_module("app_qt")

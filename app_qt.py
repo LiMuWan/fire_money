@@ -8,7 +8,7 @@ from datetime import datetime, time
 from pathlib import Path
 
 from PySide6.QtCore import QDateTime, QModelIndex, QObject, QPointF, QRunnable, Qt, QThreadPool, QTimer, QUrl, Signal, QMargins, QEvent
-from PySide6.QtGui import QCloseEvent, QColor, QDesktopServices, QFont, QFontDatabase, QLinearGradient, QMouseEvent, QPainter, QPainterPath, QPalette, QPen, QPixmap, QWheelEvent
+from PySide6.QtGui import QCloseEvent, QColor, QDesktopServices, QFont, QFontDatabase, QLinearGradient, QMouseEvent, QPainter, QPainterPath, QPalette, QPen, QPixmap, QTextOption, QWheelEvent
 from PySide6.QtCharts import (
     QBarCategoryAxis,
     QBarSeries,
@@ -158,6 +158,8 @@ from quant_hunter.ui_helpers import (
     create_shell_chip,
     news_confidence_label,
     news_source_tier,
+    news_source_visual_label,
+    news_source_visual_tone,
     one_day_hold_phase_labels,
     one_day_hold_grade,
     position_advice_check_item,
@@ -244,15 +246,74 @@ STATE_FILE = PROJECT_ROOT / ".quant_hunter" / "app_state.json"
 REPORT_DIR = PROJECT_ROOT / "reports"
 
 TERMINAL_THEME_OPTIONS = [
-    ("graphite", "专业终端"),
-    ("cerulean", "钛蓝终端"),
-    ("ember", "琥珀终端"),
+    ("light", "明"),
+    ("dark", "暗"),
+    ("gold", "流金"),
 ]
+
+DEFAULT_TERMINAL_THEME = "dark"
+TERMINAL_THEME_ALIASES = {
+    "light": "light",
+    "ming": "light",
+    "明": "light",
+    "明亮": "light",
+    "sunrise": "light",
+    "ocean": "light",
+    "dark": "dark",
+    "an": "dark",
+    "暗": "dark",
+    "暗色": "dark",
+    "graphite": "dark",
+    "cerulean": "dark",
+    "gold": "gold",
+    "golden": "gold",
+    "liujin": "gold",
+    "流金": "gold",
+    "ember": "gold",
+}
+
+
+def _normalize_terminal_theme_key(theme_key: str) -> str:
+    normalized = str(theme_key or "").strip().lower()
+    mapped = TERMINAL_THEME_ALIASES.get(normalized, normalized)
+    valid_keys = {key for key, _label in TERMINAL_THEME_OPTIONS}
+    return mapped if mapped in valid_keys else DEFAULT_TERMINAL_THEME
 
 
 def _terminal_theme_tokens(theme_key: str) -> dict[str, str]:
+    theme_key = _normalize_terminal_theme_key(theme_key)
     presets = {
-        "graphite": {
+        "light": {
+            "shell_bg_0": "#f7f3eb",
+            "shell_bg_1": "#efe8dc",
+            "shell_bg_2": "#e7ddcc",
+            "panel_0": "#fffdf8",
+            "panel_1": "#f7efdf",
+            "panel_2": "#ffffff",
+            "border": "#d8cab4",
+            "border_soft": "rgba(118, 96, 64, 0.16)",
+            "text": "#2f2417",
+            "text_soft": "#6e604d",
+            "primary": "#92652b",
+            "secondary": "#1f7a91",
+            "success": "#2f8b5d",
+            "warning": "#b17b22",
+            "danger": "#af4f45",
+            "selection": "#b8842f",
+            "selection_text": "#fffaf2",
+            "button_tonal": "#f0e3ce",
+            "button_ghost": "#f8efe1",
+            "accent_0": "#cb9032",
+            "accent_1": "#e0b15c",
+            "tab_bg": "#eadcc7",
+            "tab_fg": "#5d4931",
+            "tab_selected_bg": "#fffdf8",
+            "tab_selected_fg": "#92652b",
+            "input_bg": "#fffdfa",
+            "input_fg": "#2f2417",
+            "button_accent_text": "#fffaf2",
+        },
+        "dark": {
             "shell_bg_0": "#0b0f14",
             "shell_bg_1": "#111821",
             "shell_bg_2": "#0f151c",
@@ -260,7 +321,7 @@ def _terminal_theme_tokens(theme_key: str) -> dict[str, str]:
             "panel_1": "#18222d",
             "panel_2": "#0b1016",
             "border": "#253445",
-            "border_soft": "rgba(123,145,170,0.18)",
+            "border_soft": "rgba(123, 145, 170, 0.18)",
             "text": "#f5f7fa",
             "text_soft": "#c7d0db",
             "primary": "#5ea7ff",
@@ -269,57 +330,168 @@ def _terminal_theme_tokens(theme_key: str) -> dict[str, str]:
             "warning": "#c99a47",
             "danger": "#c45b5b",
             "selection": "#2f6ea8",
+            "selection_text": "#f8fbff",
             "button_tonal": "#1f2b36",
             "button_ghost": "#141c24",
             "accent_0": "#4a92e2",
             "accent_1": "#5ea7ff",
+            "tab_bg": "#313943",
+            "tab_fg": "#cbd5e1",
+            "tab_selected_bg": "#2d3640",
+            "tab_selected_fg": "#ffd48a",
+            "input_bg": "#0f1319",
+            "input_fg": "#e9f2fb",
+            "button_accent_text": "#081019",
         },
-        "cerulean": {
-            "shell_bg_0": "#071019",
-            "shell_bg_1": "#0d1824",
-            "shell_bg_2": "#0d1520",
-            "panel_0": "#10202e",
-            "panel_1": "#142838",
-            "panel_2": "#0a131c",
-            "border": "#29465f",
-            "border_soft": "rgba(108,156,201,0.18)",
-            "text": "#f2f8ff",
-            "text_soft": "#c1d6ea",
-            "primary": "#67bbff",
-            "secondary": "#8fd3ff",
-            "success": "#4cbf98",
-            "warning": "#d2ae68",
-            "danger": "#d06969",
-            "selection": "#2b78b7",
-            "button_tonal": "#173346",
-            "button_ghost": "#102331",
-            "accent_0": "#3f99de",
-            "accent_1": "#67bbff",
-        },
-        "ember": {
-            "shell_bg_0": "#120d0b",
-            "shell_bg_1": "#1a1411",
-            "shell_bg_2": "#14100d",
-            "panel_0": "#241914",
-            "panel_1": "#2d1f18",
-            "panel_2": "#16110d",
-            "border": "#5a3b2d",
-            "border_soft": "rgba(171,116,82,0.20)",
-            "text": "#fff6ef",
-            "text_soft": "#e6cfc0",
-            "primary": "#ffb067",
-            "secondary": "#ffd27d",
-            "success": "#6bc08d",
-            "warning": "#d9a35f",
-            "danger": "#d36e5f",
-            "selection": "#8a4d2f",
-            "button_tonal": "#3a261d",
-            "button_ghost": "#241914",
-            "accent_0": "#d97f42",
-            "accent_1": "#ffb067",
+        "gold": {
+            "shell_bg_0": "#15110b",
+            "shell_bg_1": "#1d1710",
+            "shell_bg_2": "#120e08",
+            "panel_0": "#251c13",
+            "panel_1": "#302418",
+            "panel_2": "#18120c",
+            "border": "#73562a",
+            "border_soft": "rgba(193, 153, 90, 0.20)",
+            "text": "#fff3dd",
+            "text_soft": "#d8c6aa",
+            "primary": "#d4a447",
+            "secondary": "#f1d18a",
+            "success": "#6fb184",
+            "warning": "#e0b85b",
+            "danger": "#c86d58",
+            "selection": "#6b5121",
+            "selection_text": "#fff7ea",
+            "button_tonal": "#3c2b18",
+            "button_ghost": "#251c13",
+            "accent_0": "#b9882f",
+            "accent_1": "#e0b85b",
+            "tab_bg": "#382a17",
+            "tab_fg": "#e0c48b",
+            "tab_selected_bg": "#261d13",
+            "tab_selected_fg": "#fff1d1",
+            "input_bg": "#18120c",
+            "input_fg": "#fff3dd",
+            "button_accent_text": "#1a130b",
         },
     }
-    return presets.get(theme_key, presets["graphite"])
+    return presets.get(theme_key, presets[DEFAULT_TERMINAL_THEME])
+
+
+def _build_terminal_base_style(theme_key: str) -> str:
+    token = _terminal_theme_tokens(theme_key)
+    return f"""
+        QMainWindow, QWidget {{
+            background: {token["shell_bg_1"]};
+            color: {token["text"]};
+            font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", "PingFang SC", "Source Han Sans SC", sans-serif;
+            font-size: 13px;
+        }}
+        QTabWidget::pane {{
+            border: 1px solid {token["border"]};
+            border-radius: 18px;
+            background: {token["panel_0"]};
+            top: -1px;
+        }}
+        QTabBar::tab {{
+            background: {token["tab_bg"]};
+            color: {token["tab_fg"]};
+            border: 1px solid {token["border"]};
+            padding: 10px 18px;
+            margin-right: 6px;
+            border-top-left-radius: 12px;
+            border-top-right-radius: 12px;
+            min-width: 108px;
+            min-height: 22px;
+        }}
+        QTabBar::tab:hover {{
+            border-color: {token["primary"]};
+        }}
+        QTabBar::tab:selected {{
+            background: {token["tab_selected_bg"]};
+            color: {token["tab_selected_fg"]};
+            font-weight: 800;
+        }}
+        QGroupBox {{
+            border: 1px solid {token["border"]};
+            border-radius: 16px;
+            margin-top: 14px;
+            padding: 18px 14px 14px 14px;
+            background: {token["panel_0"]};
+            font-weight: 700;
+        }}
+        QGroupBox::title {{
+            subcontrol-origin: margin;
+            left: 12px;
+            padding: 0 6px;
+            color: {token["primary"]};
+        }}
+        QPushButton {{
+            background: {token["accent_0"]};
+            color: {token["button_accent_text"]};
+            border: 1px solid {token["accent_1"]};
+            border-radius: 12px;
+            padding: 9px 16px;
+            font-weight: 800;
+        }}
+        QPushButton:hover {{
+            background: {token["accent_1"]};
+            border-color: {token["primary"]};
+        }}
+        QPushButton:pressed {{
+            background: {token["accent_0"]};
+        }}
+        QLineEdit,
+        QComboBox,
+        QListWidget,
+        QTextEdit,
+        QTableWidget {{
+            background: {token["input_bg"]};
+            color: {token["input_fg"]};
+            border: 1px solid {token["border"]};
+            border-radius: 12px;
+            padding: 6px;
+            selection-background-color: {token["selection"]};
+            selection-color: {token["selection_text"]};
+        }}
+        QComboBox QAbstractItemView,
+        QListWidget {{
+            background: {token["input_bg"]};
+            color: {token["text"]};
+            selection-background-color: {token["selection"]};
+            selection-color: {token["selection_text"]};
+        }}
+        QTableWidget {{
+            gridline-color: {token["border"]};
+            alternate-background-color: {token["panel_1"]};
+        }}
+        QHeaderView::section {{
+            background: {token["panel_1"]};
+            color: {token["tab_selected_fg"]};
+            border: none;
+            border-bottom: 1px solid {token["border"]};
+            padding: 8px;
+            font-weight: 700;
+        }}
+        QCheckBox {{
+            spacing: 8px;
+        }}
+        QLabel#heroTitle {{
+            color: {token["primary"]};
+            font-size: 26px;
+            font-weight: 800;
+            padding: 6px 0;
+        }}
+        QLabel#heroSubtitle {{
+            color: {token["text_soft"]};
+            font-size: 14px;
+            padding-bottom: 4px;
+        }}
+        QLabel#topBadge {{
+            color: {token["primary"]};
+            font-weight: 700;
+            padding-right: 8px;
+        }}
+    """
 
 
 def _overview_action_row_fallbacks() -> dict[str, list[str]]:
@@ -616,287 +788,7 @@ class _ShellChipClickFilter(QObject):
                 index = max(0, min(int(round(x_value)), len(labels) - 1))
                 return str(labels[index])
         return f"{x_value:.2f}"
-THEME_STYLES = {
-    "sunrise": """
-        QMainWindow, QWidget {
-            background: #f7f1e7;
-            color: #2d261f;
-            font-family: "Microsoft YaHei UI", "Segoe UI";
-            font-size: 13px;
-        }
-        QTabWidget::pane {
-            border: 1px solid #decdb6;
-            border-radius: 18px;
-            background: #fbf7f1;
-            top: -1px;
-        }
-        QTabBar::tab {
-            background: #eadbc7;
-            color: #5b4730;
-            border: 1px solid #d5c1a9;
-            padding: 10px 18px;
-            margin-right: 6px;
-            border-top-left-radius: 12px;
-            border-top-right-radius: 12px;
-        }
-        QTabBar::tab:selected {
-            background: #fff8ee;
-            color: #8a5a10;
-            font-weight: 700;
-        }
-        QGroupBox {
-            border: 1px solid #dcc8a7;
-            border-radius: 16px;
-            margin-top: 14px;
-            padding: 18px 14px 14px 14px;
-            background: #fffaf3;
-            font-weight: 700;
-        }
-        QGroupBox::title {
-            subcontrol-origin: margin;
-            left: 12px;
-            padding: 0 6px;
-            color: #8a5a10;
-        }
-        QPushButton {
-            background: #c98b2e;
-            color: #fffaf5;
-            border: none;
-            border-radius: 12px;
-            padding: 9px 16px;
-            font-weight: 700;
-        }
-        QPushButton:hover {
-            background: #b7771e;
-        }
-        QPushButton:pressed {
-            background: #9f6518;
-        }
-        QLineEdit, QComboBox, QListWidget, QTextEdit, QTableWidget {
-            background: #fffdf9;
-            border: 1px solid #d6c4aa;
-            border-radius: 12px;
-            padding: 6px;
-            selection-background-color: #d79b3d;
-            selection-color: #ffffff;
-        }
-        QTableWidget {
-            gridline-color: #eadfce;
-            alternate-background-color: #f8f1e6;
-        }
-        QHeaderView::section {
-            background: #f0dfc6;
-            color: #6f4a11;
-            border: none;
-            border-bottom: 1px solid #dcc8a7;
-            padding: 8px;
-            font-weight: 700;
-        }
-        QCheckBox {
-            spacing: 8px;
-        }
-        QLabel#heroTitle {
-            color: #6d4711;
-            font-size: 26px;
-            font-weight: 800;
-            padding: 6px 0;
-        }
-        QLabel#heroSubtitle {
-            color: #7d6a54;
-            font-size: 14px;
-            padding-bottom: 4px;
-        }
-        QLabel#topBadge {
-            color: #8a5a10;
-            font-weight: 700;
-            padding-right: 8px;
-        }
-    """,
-    "ocean": """
-        QMainWindow, QWidget {
-            background: #edf4f7;
-            color: #1d3340;
-            font-family: "Microsoft YaHei UI", "Segoe UI";
-            font-size: 13px;
-        }
-        QTabWidget::pane {
-            border: 1px solid #bfd2db;
-            border-radius: 18px;
-            background: #f7fbfd;
-            top: -1px;
-        }
-        QTabBar::tab {
-            background: #d4e4ea;
-            color: #28556b;
-            border: 1px solid #c1d5dc;
-            padding: 10px 18px;
-            margin-right: 6px;
-            border-top-left-radius: 12px;
-            border-top-right-radius: 12px;
-        }
-        QTabBar::tab:selected {
-            background: #ffffff;
-            color: #0d5e7a;
-            font-weight: 700;
-        }
-        QGroupBox {
-            border: 1px solid #c9dbe2;
-            border-radius: 16px;
-            margin-top: 14px;
-            padding: 18px 14px 14px 14px;
-            background: #ffffff;
-            font-weight: 700;
-        }
-        QGroupBox::title {
-            subcontrol-origin: margin;
-            left: 12px;
-            padding: 0 6px;
-            color: #0d5e7a;
-        }
-        QPushButton {
-            background: #227c9d;
-            color: #f5fcff;
-            border: none;
-            border-radius: 12px;
-            padding: 9px 16px;
-            font-weight: 700;
-        }
-        QPushButton:hover {
-            background: #16637f;
-        }
-        QPushButton:pressed {
-            background: #114f67;
-        }
-        QLineEdit, QComboBox, QListWidget, QTextEdit, QTableWidget {
-            background: #ffffff;
-            border: 1px solid #c7d9e0;
-            border-radius: 12px;
-            padding: 6px;
-            selection-background-color: #2b8dad;
-            selection-color: #ffffff;
-        }
-        QTableWidget {
-            gridline-color: #dde8ec;
-            alternate-background-color: #f2f8fa;
-        }
-        QHeaderView::section {
-            background: #d9e9ef;
-            color: #1f5168;
-            border: none;
-            border-bottom: 1px solid #c7d9e0;
-            padding: 8px;
-            font-weight: 700;
-        }
-        QLabel#heroTitle {
-            color: #14536d;
-            font-size: 26px;
-            font-weight: 800;
-            padding: 6px 0;
-        }
-        QLabel#heroSubtitle {
-            color: #5b7785;
-            font-size: 14px;
-            padding-bottom: 4px;
-        }
-        QLabel#topBadge {
-            color: #14536d;
-            font-weight: 700;
-            padding-right: 8px;
-        }
-    """,
-    "graphite": """
-        QMainWindow, QWidget {
-            background: #1f2329;
-            color: #e8ecf1;
-            font-family: "Microsoft YaHei UI", "Segoe UI";
-            font-size: 13px;
-        }
-        QTabWidget::pane {
-            border: 1px solid #38414d;
-            border-radius: 18px;
-            background: #242b33;
-            top: -1px;
-        }
-        QTabBar::tab {
-            background: #313943;
-            color: #cbd5e1;
-            border: 1px solid #43505f;
-            padding: 10px 18px;
-            margin-right: 6px;
-            border-top-left-radius: 12px;
-            border-top-right-radius: 12px;
-        }
-        QTabBar::tab:selected {
-            background: #2d3640;
-            color: #ffd48a;
-            font-weight: 700;
-        }
-        QGroupBox {
-            border: 1px solid #3c4652;
-            border-radius: 16px;
-            margin-top: 14px;
-            padding: 18px 14px 14px 14px;
-            background: #262e37;
-            font-weight: 700;
-        }
-        QGroupBox::title {
-            subcontrol-origin: margin;
-            left: 12px;
-            padding: 0 6px;
-            color: #ffd48a;
-        }
-        QPushButton {
-            background: #d18f35;
-            color: #1f2329;
-            border: none;
-            border-radius: 12px;
-            padding: 9px 16px;
-            font-weight: 700;
-        }
-        QPushButton:hover {
-            background: #e2a64e;
-        }
-        QPushButton:pressed {
-            background: #b9781f;
-        }
-        QLineEdit, QComboBox, QListWidget, QTextEdit, QTableWidget {
-            background: #20262d;
-            border: 1px solid #465262;
-            border-radius: 12px;
-            padding: 6px;
-            selection-background-color: #d18f35;
-            selection-color: #12161b;
-        }
-        QTableWidget {
-            gridline-color: #33404c;
-            alternate-background-color: #252d36;
-        }
-        QHeaderView::section {
-            background: #2d3640;
-            color: #ffd48a;
-            border: none;
-            border-bottom: 1px solid #465262;
-            padding: 8px;
-            font-weight: 700;
-        }
-        QLabel#heroTitle {
-            color: #ffd48a;
-            font-size: 26px;
-            font-weight: 800;
-            padding: 6px 0;
-        }
-        QLabel#heroSubtitle {
-            color: #9faab6;
-            font-size: 14px;
-            padding-bottom: 4px;
-        }
-        QLabel#topBadge {
-            color: #ffd48a;
-            font-weight: 700;
-            padding-right: 8px;
-        }
-    """,
-}
+THEME_STYLES = {key: _build_terminal_base_style(key) for key, _label in TERMINAL_THEME_OPTIONS}
 
 TERMINAL_DASHBOARD_STYLE = """
     QWidget#shellRoot {
@@ -2720,7 +2612,7 @@ GRAPHITE_COMMERCIAL_STYLE = """
     QGroupBox#capitalBox::title,
     QGroupBox#decisionBox::title {
         color: #f3f8ff;
-        font-size: 13px;
+        font-size: 12px;
         font-weight: 900;
         padding-left: 4px;
     }
@@ -2730,6 +2622,7 @@ GRAPHITE_COMMERCIAL_STYLE = """
         border-radius: 18px;
         padding: 14px 16px;
         font-size: 12px;
+        line-height: 1.45;
     }
     QGroupBox#overviewSummaryBox QFrame#metricCard {
         border-radius: 18px;
@@ -2740,6 +2633,11 @@ GRAPHITE_COMMERCIAL_STYLE = """
         background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(17, 24, 33, 0.98), stop:0.58 rgba(12, 17, 24, 0.98), stop:1 rgba(9, 14, 20, 0.99));
         border: 1px solid rgba(110, 129, 151, 0.16);
         border-radius: 16px;
+    }
+    QGroupBox#overviewPriorityBox QFrame#actionFlowCard {
+        border-radius: 14px;
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(19, 27, 37, 0.98), stop:0.42 rgba(13, 19, 27, 0.98), stop:1 rgba(10, 15, 22, 0.99));
+        border: 1px solid rgba(110, 129, 151, 0.12);
     }
     QGroupBox#overviewPriorityBox QFrame#actionFlowCard:hover,
     QGroupBox#leaderboardBox QFrame#leaderboardCard:hover,
@@ -2759,7 +2657,7 @@ GRAPHITE_COMMERCIAL_STYLE = """
     }
     QLabel#actionFlowCount {
         color: #f4f8fc;
-        font-size: 18px;
+        font-size: 16px;
         font-weight: 900;
     }
     QLabel#actionFlowFocus,
@@ -2778,7 +2676,7 @@ GRAPHITE_COMMERCIAL_STYLE = """
     QLabel#compactSummaryTitle,
     QLabel#actionFlowTitle {
         color: #7f95ab;
-        font-size: 10px;
+        font-size: 9px;
         font-weight: 900;
     }
     QTableWidget#marketPoolTable {
@@ -2798,10 +2696,19 @@ GRAPHITE_COMMERCIAL_STYLE = """
         padding-bottom: 10px;
         border-bottom: 1px solid rgba(110, 129, 151, 0.10);
     }
+    QTableWidget#marketPoolTable::item:hover {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(22, 34, 48, 0.98), stop:1 rgba(18, 27, 38, 0.96));
+    }
+    QTableWidget#marketPoolTable::item:selected {
+        border-bottom: 1px solid rgba(126, 183, 255, 0.18);
+    }
     QTableWidget#marketPoolTable::item:selected,
     QTableWidget#recommendPoolTable::item:selected,
     QTableWidget#terminalTable::item:selected {
         background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(33, 65, 97, 0.98), stop:1 rgba(22, 34, 47, 0.98));
+        color: #f8fbff;
+    }
+    QTableWidget#marketPoolTable::item:selected:active {
         color: #f8fbff;
     }
     QTableWidget#recommendPoolTable[pageTone="recommend"]::item:selected,
@@ -3456,8 +3363,7 @@ class QuantHunterWindow(QMainWindow):
         self.startup_splash = startup_splash
 
         self.state = load_app_state(STATE_FILE)
-        valid_themes = {key for key, _label in TERMINAL_THEME_OPTIONS}
-        self.current_theme = self.state.ui_theme if self.state.ui_theme in valid_themes else "graphite"
+        self.current_theme = _normalize_terminal_theme_key(self.state.ui_theme)
 
         self.scan_rows: list[ScanRow] = []
         self.backtest_summaries: list[SymbolBacktestSummary] = []
@@ -3640,13 +3546,18 @@ class QuantHunterWindow(QMainWindow):
             self.shell_runtime_chip,
         ):
             frame = chip.get("frame") if isinstance(chip, dict) else None
+            label_widget = chip.get("label") if isinstance(chip, dict) else None
             value_label = chip.get("value") if isinstance(chip, dict) else None
             if isinstance(frame, QWidget):
-                frame.setMinimumWidth(self._scaled_int(96, minimum=92))
-                frame.setMaximumWidth(self._scaled_int(172, minimum=156))
-                frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+                frame.setMinimumWidth(self._scaled_int(104, minimum=96))
+                frame.setMaximumWidth(self._scaled_int(220, minimum=180))
+                frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+            if isinstance(label_widget, QLabel):
+                label_widget.setWordWrap(False)
+                label_widget.setMinimumWidth(0)
             if isinstance(value_label, QLabel):
-                value_label.setWordWrap(False)
+                value_label.setWordWrap(True)
+                value_label.setMinimumWidth(0)
                 value_label.setTextInteractionFlags(Qt.NoTextInteraction)
             shell_chip_layout.addWidget(chip["frame"])
         shell_chip_layout.addStretch(1)
@@ -6251,6 +6162,285 @@ class QuantHunterWindow(QMainWindow):
         items = list(getattr(self, "news_catalysts", {}).get(symbol, []) or [])
         return build_news_digest_lines(items, limit=limit)
 
+    def _latest_news_item_for_symbol(self, symbol: str):
+        if not symbol:
+            return None
+        items = list(getattr(self, "news_catalysts", {}).get(symbol, []) or [])
+        return items[0] if items else None
+
+    def _news_action_label(self, item) -> str:
+        source = str(getattr(item, "source", "") or "") if item is not None else ""
+        visual = news_source_visual_label(source)
+        return {
+            "已公告": "查看公告原文",
+            "媒体催化": "查看媒体原文",
+            "传闻线索": "查看线索来源",
+        }.get(visual, "查看原文")
+
+    def _news_detail_label(self, item) -> str:
+        source = str(getattr(item, "source", "") or "") if item is not None else ""
+        visual = news_source_visual_label(source)
+        return {
+            "已公告": "公告详情",
+            "媒体催化": "媒体详情",
+            "传闻线索": "线索详情",
+        }.get(visual, "消息详情")
+
+    def _news_item_tooltip(self, item) -> str:
+        if item is None:
+            return "当前焦点还没有可查看的消息原文。"
+        source = str(getattr(item, "source", "") or "来源未知")
+        published = str(getattr(item, "published_at", "") or "时间未知")
+        visual = news_source_visual_label(source)
+        title = str(getattr(item, "title", "") or "消息标题未填写")
+        summary = str(getattr(item, "summary", "") or "暂无补充说明")
+        url = str(getattr(item, "url", "") or "").strip()
+        availability = "可直接打开原文链接。" if url else "当前这条消息还没有稳定原文链接。"
+        return "\n".join(
+            [
+                f"分层：{visual}",
+                f"来源：{source}",
+                f"时间：{published}",
+                f"标题：{title}",
+                f"摘要：{summary}",
+                availability,
+            ]
+        )
+
+    def _news_detail_lines(self, item) -> list[str]:
+        if item is None:
+            return ["当前焦点还没有可查看的消息详情。"]
+        source = str(getattr(item, "source", "") or "来源未知")
+        published = str(getattr(item, "published_at", "") or "时间未知")
+        visual = news_source_visual_label(source)
+        confidence = news_source_tier(source)
+        title = str(getattr(item, "title", "") or "消息标题未填写")
+        summary = str(getattr(item, "summary", "") or "暂无补充说明")
+        url = str(getattr(item, "url", "") or "").strip()
+        availability = "可直接打开原文链接。" if url else "当前这条消息还没有稳定原文链接。"
+        return [
+            f"分层：{visual} / 可信度 {confidence}",
+            f"来源：{source}",
+            f"时间：{published}",
+            f"标题：{title}",
+            f"摘要：{summary}",
+            f"原文：{url or '暂无稳定原文链接'}",
+            availability,
+        ]
+
+    def _news_related_notice_lines(self, item) -> list[str]:
+        if item is None:
+            return []
+        summary = str(getattr(item, "summary", "") or "")
+        if "同日合并" not in summary or "：" not in summary:
+            return []
+        tail = summary.split("：", 1)[-1]
+        if " | " in tail:
+            tail = tail.split(" | ", 1)[0]
+        return [part.strip() for part in tail.split(" / ") if part.strip()]
+
+    def _news_recommended_action(self, item) -> tuple[str, str, str]:
+        if item is None:
+            return ("overview", "先看总览", "当前消息还没绑定清晰股票上下文，先回到总览确认焦点。")
+        summary = str(getattr(item, "summary", "") or "")
+        title = str(getattr(item, "title", "") or "")
+        combined = f"{title} {summary}"
+        if any(token in combined for token in ("分红预案", "资本动作", "订单催化")):
+            return ("recommend", "先看推荐页", "这类催化更适合先看机会分层、题材位置和后续承接。")
+        if any(token in combined for token in ("定期报告", "业绩快报", "年报季")):
+            return ("detail", "先看复盘页", "这类催化更适合先核对业绩兑现、预期差和历史信号回放。")
+        if any(token in combined for token in ("治理动作", "审计安排")):
+            return ("broker", "先看交易页", "这类公告偏中性，先确认有没有足够执行价值再推进交易。")
+        if any(token in combined for token in ("交流信息", "媒体催化", "传闻线索")):
+            return ("overview", "先看总览", "先回到总览看它是否已经被主线资金放大，再决定要不要深入。")
+        return ("overview", "先看总览", "先回到总览确认主线和量价，再决定往哪个工作流继续。")
+
+    def _update_news_action_button(self, button, item) -> None:
+        if button is None:
+            return
+        if item is None:
+            button.setText("查看原文")
+            button.setEnabled(False)
+            button.setToolTip("当前焦点还没有可查看的消息原文。")
+            if hasattr(self, "_set_button_role"):
+                self._set_button_role(button, "ghost")
+            return
+        source = str(getattr(item, "source", "") or "")
+        visual = news_source_visual_label(source)
+        button.setText(self._news_action_label(item))
+        button.setEnabled(True)
+        button.setToolTip(self._news_item_tooltip(item))
+        if hasattr(self, "_set_button_role"):
+            role = "ghost"
+            if visual == "已公告":
+                role = "accent"
+            elif visual == "媒体催化":
+                role = "tonal"
+            self._set_button_role(button, role)
+
+    def _update_news_detail_button(self, button, item) -> None:
+        if button is None:
+            return
+        if item is None:
+            button.setText("消息详情")
+            button.setEnabled(False)
+            button.setToolTip("当前焦点还没有可查看的消息详情。")
+            if hasattr(self, "_set_button_role"):
+                self._set_button_role(button, "ghost")
+            return
+        source = str(getattr(item, "source", "") or "")
+        visual = news_source_visual_label(source)
+        button.setText(f"查看{self._news_detail_label(item)}")
+        button.setEnabled(True)
+        button.setToolTip(self._news_item_tooltip(item) + "\n点击查看详情弹窗。")
+        if hasattr(self, "_set_button_role"):
+            role = "ghost"
+            if visual == "已公告":
+                role = "tonal"
+            elif visual == "媒体催化":
+                role = "ghost"
+            self._set_button_role(button, role)
+
+    def _show_news_detail_dialog(self, item, *, title: str = "消息详情") -> None:
+        if item is None:
+            QMessageBox.information(self, "提示", "当前焦点还没有可查看的消息详情。")
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.resize(720, 440)
+        layout = QVBoxLayout(dialog)
+
+        title_label = QLabel(str(getattr(item, "title", "") or "消息标题未填写"))
+        title_label.setObjectName("workspaceTitle")
+        title_label.setWordWrap(True)
+        layout.addWidget(title_label)
+
+        meta_label = QLabel(self._news_detail_lines(item)[0])
+        meta_label.setObjectName("inlineHint")
+        meta_label.setWordWrap(True)
+        layout.addWidget(meta_label)
+
+        action_target, action_headline, action_detail = self._news_recommended_action(item)
+        action_label = QLabel(f"建议动作：{action_headline} | {action_detail}")
+        action_label.setObjectName("inlineHint")
+        action_label.setWordWrap(True)
+        layout.addWidget(action_label)
+
+        body = QTextEdit(dialog)
+        body.setReadOnly(True)
+        self._style_terminal_console(body)
+        self._set_plain_text_if_changed(body, "\n".join(self._news_detail_lines(item)[1:]))
+        layout.addWidget(body, stretch=1)
+
+        related_lines = self._news_related_notice_lines(item)
+        if related_lines:
+            related_title = QLabel("配套公告")
+            related_title.setObjectName("inlineHint")
+            layout.addWidget(related_title)
+            related_text = QTextEdit(dialog)
+            related_text.setReadOnly(True)
+            self._style_terminal_console(related_text)
+            self._set_plain_text_if_changed(related_text, "\n".join(f"- {line}" for line in related_lines))
+            related_text.setMaximumHeight(120)
+            layout.addWidget(related_text)
+
+        button_row = QHBoxLayout()
+        open_button = QPushButton(self._news_action_label(item))
+        recommend_button = QPushButton("查看推荐")
+        detail_button = QPushButton("查看复盘")
+        broker_button = QPushButton("去交易页")
+        close_button = QPushButton("关闭")
+        self._set_button_role(open_button, "accent" if str(getattr(item, "url", "") or "").strip() else "ghost")
+        self._set_button_role(recommend_button, "accent" if action_target == "recommend" else "tonal")
+        self._set_button_role(detail_button, "accent" if action_target == "detail" else "ghost")
+        self._set_button_role(broker_button, "accent" if action_target == "broker" else "tonal")
+        self._set_button_role(close_button, "ghost")
+        open_button.setEnabled(bool(str(getattr(item, "url", "") or "").strip()))
+        open_button.setToolTip(self._news_item_tooltip(item))
+        open_button.clicked.connect(lambda: self._open_news_item_url(item, empty_title="提示"))
+        symbol = str(getattr(item, "symbol", "") or "")
+        recommend_button.setEnabled(bool(symbol))
+        detail_button.setEnabled(bool(symbol))
+        broker_button.setEnabled(bool(symbol))
+        recommend_button.setToolTip("带着当前消息对应的股票跳到推荐页。\n建议动作：" + ("是" if action_target == "recommend" else "否"))
+        detail_button.setToolTip("带着当前消息对应的股票跳到复盘页。\n建议动作：" + ("是" if action_target == "detail" else "否"))
+        broker_button.setToolTip("带着当前消息对应的股票跳到交易执行页。\n建议动作：" + ("是" if action_target == "broker" else "否"))
+        recommend_button.clicked.connect(lambda: (dialog.accept(), self._route_news_item_to_workspace(item, "recommend")) if symbol else None)
+        detail_button.clicked.connect(lambda: (dialog.accept(), self._route_news_item_to_workspace(item, "detail")) if symbol else None)
+        broker_button.clicked.connect(lambda: (dialog.accept(), self._route_news_item_to_workspace(item, "broker")) if symbol else None)
+        close_button.clicked.connect(dialog.accept)
+        button_row.addStretch(1)
+        button_row.addWidget(open_button)
+        button_row.addWidget(recommend_button)
+        button_row.addWidget(detail_button)
+        button_row.addWidget(broker_button)
+        button_row.addWidget(close_button)
+        layout.addLayout(button_row)
+        dialog.exec()
+
+    def _open_news_item_url(self, item, *, empty_title: str = "提示") -> bool:
+        url = str(getattr(item, "url", "") or "").strip() if item is not None else ""
+        if not url:
+            QMessageBox.information(self, empty_title, "当前焦点消息还没有可打开的原文链接。")
+            return False
+        QDesktopServices.openUrl(QUrl(url))
+        return True
+
+    def open_overview_focus_news_source(self) -> None:
+        symbol = getattr(self, "active_symbol", "") or ""
+        item = self._latest_news_item_for_symbol(symbol)
+        if item is None:
+            QMessageBox.information(self, "提示", "当前焦点还没有可查看的消息原文。")
+            return
+        self._open_news_item_url(item, empty_title="提示")
+
+    def open_overview_focus_news_detail(self) -> None:
+        symbol = getattr(self, "active_symbol", "") or ""
+        item = self._latest_news_item_for_symbol(symbol)
+        self._show_news_detail_dialog(item, title="消息详情")
+
+    def open_selected_recommend_news_source(self) -> None:
+        current = self._selected_daily_pool_recommendation() if hasattr(self, "_selected_daily_pool_recommendation") else None
+        symbol = getattr(current, "symbol", "") if current is not None else (getattr(self, "active_symbol", "") or "")
+        item = self._latest_news_item_for_symbol(symbol)
+        if item is None:
+            QMessageBox.information(self, "提示", "当前焦点还没有可查看的消息原文。")
+            return
+        self._open_news_item_url(item, empty_title="提示")
+
+    def open_selected_recommend_news_detail(self) -> None:
+        current = self._selected_daily_pool_recommendation() if hasattr(self, "_selected_daily_pool_recommendation") else None
+        symbol = getattr(current, "symbol", "") if current is not None else (getattr(self, "active_symbol", "") or "")
+        item = self._latest_news_item_for_symbol(symbol)
+        self._show_news_detail_dialog(item, title="焦点消息详情")
+
+    def _route_news_item_to_workspace(self, item, target: str) -> None:
+        symbol = str(getattr(item, "symbol", "") or "") if item is not None else ""
+        if not symbol:
+            QMessageBox.information(self, "提示", "当前消息还没有绑定股票代码，暂时无法跳转到工作流。")
+            return
+        if hasattr(self, "_focus_symbol_everywhere"):
+            self._focus_symbol_everywhere(symbol, origin="news")
+        elif hasattr(self, "select_symbol") and symbol in getattr(self, "universe_bars", {}):
+            self.select_symbol(symbol, origin="news")
+        if target == "recommend":
+            self._focus_symbol_in_recommend_workspace(symbol)
+            return
+        if target == "broker":
+            self._focus_symbol_in_broker_workspace(symbol)
+            return
+        if target == "detail":
+            if hasattr(self, "open_focus_symbol_in_detail"):
+                self.active_symbol = symbol
+                self.open_focus_symbol_in_detail()
+            else:
+                self._navigate_to_workspace("detail", "metrics_text")
+            return
+        if target == "overview":
+            if symbol in getattr(self, "universe_bars", {}):
+                self.select_symbol(symbol, origin="news")
+            self._navigate_to_workspace("overview", "market_pool_table")
+
     def _compact_news_badge(self, symbol: str) -> str:
         items = list(getattr(self, "news_catalysts", {}).get(symbol, []) or [])
         if not items:
@@ -6258,7 +6448,7 @@ class QuantHunterWindow(QMainWindow):
         item = items[0]
         title = (getattr(item, "title", "") or "消息标题未填写")[:16]
         source = getattr(item, "source", "") or "来源未知"
-        return f"消息：{title} | {news_source_tier(source)}"
+        return f"消息：{news_source_visual_label(source)} | {title}"
 
     def _recommend_price_snapshot(self, recommendation) -> dict[str, float | None]:
         close_price = float(getattr(recommendation, "close", 0.0) or 0.0)
@@ -6309,6 +6499,7 @@ class QuantHunterWindow(QMainWindow):
         return DISPLAY_TEXT["mode"].get(value, value)
 
     def _set_theme_combo_value(self, theme_key: str) -> None:
+        theme_key = _normalize_terminal_theme_key(theme_key)
         for index in range(self.theme_combo.count()):
             if self.theme_combo.itemData(index) == theme_key:
                 self.theme_combo.setCurrentIndex(index)
@@ -6316,7 +6507,7 @@ class QuantHunterWindow(QMainWindow):
         self.theme_combo.setCurrentIndex(0)
 
     def change_theme(self, *_args: object) -> None:
-        theme_key = str(self.theme_combo.currentData() or "graphite")
+        theme_key = _normalize_terminal_theme_key(str(self.theme_combo.currentData() or DEFAULT_TERMINAL_THEME))
         self.current_theme = theme_key
         app = QApplication.instance()
         if app is not None:
@@ -6863,16 +7054,15 @@ class QuantHunterWindow(QMainWindow):
                     self.daily_pool_text,
                     "\n".join(
                         [
-                            "今日算法优先候选",
-                            f"股票：{top.stock_name} ({top.stock_id} / {top.symbol})",
-                            f"总分：{top.total_score:.1f}",
-                            f"催化：{top.catalyst or '量价共振 + 主力净流入'}",
-                            f"逻辑：{top.rationale}",
+                            "综合机会池",
+                            f"结论：{top.stock_name} | 总分 {top.total_score:.1f}",
+                            f"风险：{getattr(top, 'mainline_risk_flag', '--')} | {top.theme_name or '未分类'}",
+                            f"下一步：{(top.next_focus or top.rationale or '继续盯主线与量价')[:22]}",
                         ]
                     )
                 )
             else:
-                self._set_plain_text_if_changed(self.daily_pool_text, "当前没有筛出满足条件的股票。")
+                self._set_plain_text_if_changed(self.daily_pool_text, "综合机会池\n结论：当前没有焦点票\n风险：暂无清晰主线\n下一步：继续等待。")
         self._refresh_trade_plan()
         self._refresh_board_mode()
         self._refresh_intraday_monitor()
@@ -7234,9 +7424,9 @@ class QuantHunterWindow(QMainWindow):
         current = row or self._selected_daily_pool_recommendation()
         if current is None:
             if hasattr(self, "daily_pool_text") and not self.daily_pool_text.toPlainText().strip():
-                self._set_plain_text_if_changed(self.daily_pool_text, "每日推荐池将在刷新后生成，默认最多展示 5 只可执行候选。")
+                self._set_plain_text_if_changed(self.daily_pool_text, "综合机会池\n结论：等待机会池生成\n风险：暂无焦点风险\n下一步：先刷新市场。")
             if hasattr(self, "strategy_path_text") and not self.strategy_path_text.toPlainText().strip():
-                self._set_plain_text_if_changed(self.strategy_path_text, "等待生成推荐池后更新主线推演路径。")
+                self._set_plain_text_if_changed(self.strategy_path_text, "主线推演\n结论：等待主线确认\n风险：暂无主线风险\n下一步：先确认主线。")
             self._refresh_recommend_bucket_panels(None)
             return
 
@@ -7253,24 +7443,19 @@ class QuantHunterWindow(QMainWindow):
 
         if hasattr(self, "daily_pool_text"):
             lines = [
-                "今日优先候选",
-                f"焦点标的：{current.stock_name} ({current.stock_id} / {current.symbol})",
-                f"主线：{theme_name} | 阶段：{stage_name} | 角色：{self._display_mainline_role(role_name)}",
-                f"动作：{self._display_action(getattr(current, 'action', 'WATCH'))} | 总分 {current.total_score:.1f}",
-                f"执行准备：{readiness:.1f} | 置信：{confidence:.1f} | 股票池：{stock_pool}",
-                f"催化：{catalyst}",
-                f"逻辑：{getattr(current, 'rationale', '') or '等待更清晰的主线与量价确认。'}",
+                "综合机会池",
+                f"结论：{current.stock_name} | {self._display_action(getattr(current, 'action', 'WATCH'))} | 总分 {current.total_score:.1f}",
+                f"风险：{theme_name} | {stage_name} | {getattr(current, 'mainline_risk_flag', '--') or '--'}",
+                f"下一步：{(next_focus or catalyst or '继续盯主线与量价')[:22]}",
             ]
             self._set_plain_text_if_changed(self.daily_pool_text, "\n".join(lines))
 
         if hasattr(self, "strategy_path_text"):
             lines = [
-                f"主线推演：{current.stock_name}",
-                f"第一步：主线 {theme_name} 目前处于 {stage_name}，信号为 {flow_signal}。",
-                f"第二步：当前角色是 {self._display_mainline_role(role_name)}，先看是否继续维持前排强度。",
-                f"第三步：若执行准备 {readiness:.1f} 持续抬升，可考虑按 {getattr(current, 'primary_strategy', '') or '掘龙决策'} 计划推进。",
-                f"第四步：重点观察 {next_focus}",
-                f"失效条件：{invalidation}",
+                "主线推演",
+                f"结论：{theme_name} | {self._display_mainline_role(role_name)} | {flow_signal}",
+                f"风险：窗口 {readiness:.1f} | {invalidation[:18]}",
+                f"下一步：{next_focus[:22]}",
             ]
             self._set_plain_text_if_changed(self.strategy_path_text, "\n".join(lines))
         self._refresh_recommend_bucket_panels(current)
@@ -9226,9 +9411,8 @@ class QuantHunterWindow(QMainWindow):
         self._refresh_shell_header()
 
     def _apply_theme(self, theme_key: str) -> None:
-        if theme_key not in {key for key, _label in TERMINAL_THEME_OPTIONS}:
-            theme_key = "graphite"
-        base_style = THEME_STYLES["graphite"]
+        theme_key = _normalize_terminal_theme_key(theme_key)
+        base_style = THEME_STYLES.get(theme_key, THEME_STYLES[DEFAULT_TERMINAL_THEME])
         extra_style = TERMINAL_DASHBOARD_STYLE + TERMINAL_WORKSPACE_STYLE + GRAPHITE_COMMERCIAL_STYLE
         extra_style += """
 QTableWidget {
@@ -9315,6 +9499,8 @@ QPushButton#accentButton:hover {
 """
         self.setStyleSheet(base_style + extra_style)
         self._qh_visual_surface_stylesheet_applied_v1 = False
+        self._qh_readability_override_applied_v29 = False
+        self._qh_unified_color_system_applied_v31 = False
         if hasattr(self, "_qh_visual_surface_stylesheet_timer_v1"):
             self._qh_visual_surface_stylesheet_timer_v1.stop()
         if hasattr(self, "_schedule_visual_surface_stylesheet_v1"):
@@ -9399,10 +9585,10 @@ QPushButton#accentButton:hover {
 
         quick_row = QHBoxLayout()
         quick_row.setSpacing(8)
-        scanner_overview_button = QPushButton("回到总览")
-        scanner_recommend_button = QPushButton("查看推荐")
-        scanner_detail_button = QPushButton("查看复盘")
-        scanner_board_button = QPushButton("查看打板")
+        scanner_overview_button = QPushButton("看总览")
+        scanner_recommend_button = QPushButton("看机会")
+        scanner_detail_button = QPushButton("看复盘")
+        scanner_board_button = QPushButton("看打板")
         self._set_button_role(scanner_overview_button, "ghost")
         self._set_button_role(scanner_recommend_button, "tonal")
         self._set_button_role(scanner_detail_button, "accent")
@@ -9427,6 +9613,7 @@ QPushButton#accentButton:hover {
         self.universe_label.setObjectName("inlineHint")
         self.scan_summary_label.setObjectName("inlineHint")
         info_panel = QFrame()
+        info_panel.setObjectName("scannerInfoPanel")
         info_panel.setProperty("actionRow", True)
         info_layout = QVBoxLayout(info_panel)
         info_layout.setContentsMargins(12, 10, 12, 10)
@@ -9479,10 +9666,10 @@ QPushButton#accentButton:hover {
         self._set_plain_text_if_changed(self.monitor_summary_text, "等待监控链路同步。")
         monitor_layout.addWidget(self.monitor_summary_text)
         monitor_action_row = QHBoxLayout()
-        monitor_overview_button = QPushButton("查看首页")
-        monitor_recommend_button = QPushButton("查看推荐")
-        monitor_broker_button = QPushButton("查看交易")
-        monitor_board_button = QPushButton("查看打板")
+        monitor_overview_button = QPushButton("看总览")
+        monitor_recommend_button = QPushButton("看机会")
+        monitor_broker_button = QPushButton("去交易")
+        monitor_board_button = QPushButton("看打板")
         self._set_button_role(monitor_overview_button, "ghost")
         self._set_button_role(monitor_recommend_button, "tonal")
         self._set_button_role(monitor_broker_button, "accent")
@@ -10284,6 +10471,35 @@ QPushButton#accentButton:hover {
         for column in range(columns):
             layout.setColumnStretch(column, 1)
 
+    def _relayout_overview_controls_v54(self, *, two_rows: bool) -> None:
+        layout = getattr(self, "overview_controls_layout", None)
+        view_box = getattr(self, "overview_view_box", None)
+        search_box = getattr(self, "overview_search_box", None)
+        tag_box = getattr(self, "overview_tag_box", None)
+        if not isinstance(layout, QGridLayout):
+            return
+        boxes = [box for box in (view_box, search_box, tag_box) if isinstance(box, QWidget)]
+        if len(boxes) != 3:
+            return
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                layout.removeWidget(widget)
+        if two_rows:
+            layout.addWidget(view_box, 0, 0, 1, 2)
+            layout.addWidget(search_box, 1, 0, 1, 1)
+            layout.addWidget(tag_box, 1, 1, 1, 1)
+            layout.setColumnStretch(0, 1)
+            layout.setColumnStretch(1, 1)
+        else:
+            layout.addWidget(view_box, 0, 0)
+            layout.addWidget(search_box, 0, 1)
+            layout.addWidget(tag_box, 0, 2)
+            layout.setColumnStretch(0, 3)
+            layout.setColumnStretch(1, 4)
+            layout.setColumnStretch(2, 3)
+
     def _ensure_metric_row(
         self,
         target_widget: QWidget | None,
@@ -10570,12 +10786,13 @@ QPushButton#accentButton:hover {
         panel = QGroupBox("配置总控")
         panel.setObjectName("configToolPanel")
         panel.setProperty("actionRow", True)
+        panel.setProperty("pageTone", "config")
         panel_layout = QHBoxLayout(panel)
         panel_layout.setContentsMargins(14, 10, 14, 10)
         panel_layout.setSpacing(16)
 
-        summary = QLabel("参数、模板和授权会直接影响推荐池、盘前计划、盘中提醒和交易审查。")
-        summary.setObjectName("inlineHint")
+        summary = QLabel("配置总控：参数、模板和授权会直接影响推荐池、盘前计划、盘中提醒和交易审查。")
+        summary.setObjectName("workspaceSummaryHeadline")
         summary.setWordWrap(True)
 
         quick = QLabel("建议顺序：先定模板与题材，再看总仓位，最后保存并刷新推荐链路。")
@@ -10601,7 +10818,7 @@ QPushButton#accentButton:hover {
         layout.setSpacing(5)
 
         title_label = QLabel(title)
-        title_label.setObjectName("inlineHint")
+        title_label.setObjectName("sectionTitle")
         headline_label = QLabel("--")
         headline_label.setObjectName("workspaceSummaryHeadline")
         detail_label = QLabel("--")
@@ -11338,7 +11555,7 @@ QPushButton#accentButton:hover {
             button.clicked.connect(lambda checked=False, current=name: self.toggle_market_overlay(current))
 
         if hasattr(self, "market_pool_table"):
-            self.market_pool_table.setHorizontalHeaderLabels(["代码", "股票", "资金标签", "策略标签", "涨跌幅", "最新价"])
+            self.market_pool_table.setHorizontalHeaderLabels(["层级", "标的 / 代码", "资金画像", "策略归因", "涨跌", "价格 / 评分"])
 
         if hasattr(self, "right_intel_tabs"):
             self.right_intel_tabs.setTabText(0, "主题摘要")
@@ -11681,31 +11898,22 @@ QPushButton#accentButton:hover {
         if hasattr(self, "recommend_dispatch_text"):
             self._set_plain_text_if_changed(
                 self.recommend_dispatch_text,
-                "盘中分发节奏\n\n"
-                "1. 先确认主线是否延续，再决定今天有没有必要送审。\n"
-                "2. 分发顺序优先看前排龙头、容量核心和低风险承接。\n"
-                "3. 真正送往交易页的候选，应该同时满足位置、量能和风险灯。 "
+                "盘中分发\n结论：先看主线，再排送审\n风险：位置、量能、风险灯未共振时不推进\n下一步：先复核前排票。"
             )
         if hasattr(self, "recommend_focus_review_text"):
             self._set_plain_text_if_changed(
                 self.recommend_focus_review_text,
-                "单票审查台\n\n"
-                "这里会按焦点标的展开主线地位、买卖节奏、风险点和下一步动作。\n"
-                "先选一只票，再看它值不值得进入今日 5 只计划。 "
+                "单票审查\n结论：先判是否值得进计划\n风险：主线、价位、失效条件未清晰前不送审\n下一步：先选中一只票。"
             )
         if hasattr(self, "recommend_queue_text"):
             self._set_plain_text_if_changed(
                 self.recommend_queue_text,
-                "执行队列\n\n"
-                "待审、已审和失败队列会在这里集中展示。\n"
-                "真正进入前排的标的，应该具备更强的持续性、流动性和执行确定性。 "
+                "执行队列\n结论：只盯待复核、已送审、失败单\n风险：失败单不复核会拖慢链路\n下一步：先处理最靠前的一只。"
             )
         if hasattr(self, "strategy_path_text"):
             self._set_plain_text_if_changed(
                 self.strategy_path_text,
-                "主线推演\n\n"
-                "先确认市场主线，再确认龙头位次，最后决定采用打板、低吸还是观察。\n"
-                "推荐池生成后，这里会把焦点票的推进路径、失效条件和下一步观察点展开。 "
+                "主线推演\n结论：先主线，再龙头，再动作\n风险：主线切换时原路径失效\n下一步：等推荐池生成后再细化。"
             )
 
     def _prime_broker_workspace_defaults(self) -> None:
@@ -13227,19 +13435,39 @@ QPushButton#accentButton:hover {
 
     def _polish_workspace_density(self) -> None:
         if hasattr(self, "shell_header"):
-            self.shell_header.setMaximumHeight(self._scaled_int(112, minimum=112))
-            self.shell_header.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            self.shell_header.setMinimumHeight(self._scaled_int(118, minimum=112))
+            self.shell_header.setMaximumHeight(16777215)
+            self.shell_header.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         if hasattr(self, "shell_pulse_bar"):
             self.shell_pulse_bar.setMaximumHeight(self._scaled_int(62, minimum=62))
             self.shell_pulse_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         for hero in self.findChildren(QFrame, "workspaceHero"):
-            hero.setMaximumHeight(self._scaled_int(108, minimum=108))
-            hero.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            hero.setMinimumHeight(self._scaled_int(108, minimum=108))
+            hero.setMaximumHeight(16777215)
+            hero.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
         for badge in self.findChildren(QFrame, "workspaceBadge"):
-            badge.setMaximumHeight(self._scaled_int(54, minimum=54))
-            badge.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            badge.setMinimumHeight(self._scaled_int(54, minimum=54))
+            badge.setMaximumHeight(16777215)
+            badge.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+
+        for label in self.findChildren(QLabel):
+            if label.objectName() in {
+                "workspaceTitle",
+                "workspaceSubtitle",
+                "workspaceBadgeValue",
+                "workspaceBadgeCaption",
+                "workspaceEyebrow",
+                "shellChipValue",
+                "workspaceSummaryHeadline",
+                "focusStateLabel",
+                "workspaceFocusBanner",
+                "statusBanner",
+                "inlineHint",
+            }:
+                label.setMinimumWidth(0)
+                label.setWordWrap(True)
 
         for action_row in self.findChildren(QFrame, "scannerTopActionRow"):
             action_row.setMaximumHeight(self._scaled_int(58, minimum=58))
@@ -13837,7 +14065,7 @@ QPushButton#accentButton:hover {
             table.setAlternatingRowColors(False)
             table.setSelectionBehavior(QTableWidget.SelectRows)
             table.setSelectionMode(QTableWidget.SingleSelection)
-            table.verticalHeader().setDefaultSectionSize(max(table.verticalHeader().defaultSectionSize(), 72))
+            table.verticalHeader().setDefaultSectionSize(max(table.verticalHeader().defaultSectionSize(), 78))
             table.setWordWrap(True)
             table.setTextElideMode(Qt.ElideNone)
             header = table.horizontalHeader()
@@ -13929,12 +14157,11 @@ QPushButton#accentButton:hover {
             setattr(self, attr_name, normalized)
 
         if hasattr(self, "market_pool_table"):
-            self.market_pool_table.setHorizontalHeaderLabels(["序", "股票标识", "资金标签", "策略标签", "涨跌幅", "最新价"])
+            self.market_pool_table.setHorizontalHeaderLabels(["层级", "标的 / 代码", "资金画像", "策略归因", "涨跌", "价格 / 评分"])
         if hasattr(self, "right_intel_tabs"):
-            if self.right_intel_tabs.count() > 0:
-                self.right_intel_tabs.setTabText(0, "主题摘要")
-            if self.right_intel_tabs.count() > 1:
-                self.right_intel_tabs.setTabText(1, "资金决策")
+            for index, label in enumerate(["主题摘要", "资金画像", "交易决策"]):
+                if index < self.right_intel_tabs.count():
+                    self.right_intel_tabs.setTabText(index, label)
         if hasattr(self, "market_news_group") and hasattr(self.market_news_group, "setTitle"):
             self.market_news_group.setTitle("消息面")
 
@@ -13996,7 +14223,7 @@ QPushButton#accentButton:hover {
                     if self.recommend_stage_tabs.tabText(index) != label:
                         self.recommend_stage_tabs.setTabText(index, label)
         if hasattr(self, "right_intel_tabs"):
-            labels = ["主题摘要", "资金决策"]
+            labels = ["主题摘要", "资金画像", "交易决策"]
             for index, label in enumerate(labels):
                 if index < self.right_intel_tabs.count():
                     if self.right_intel_tabs.tabText(index) != label:
@@ -15451,7 +15678,7 @@ QPushButton#accentButton:hover {
                     if self.recommend_stage_tabs.tabText(index) != label:
                         self.recommend_stage_tabs.setTabText(index, label)
         if hasattr(self, "right_intel_tabs"):
-            for index, label in enumerate(["主题摘要", "资金决策"]):
+            for index, label in enumerate(["主题摘要", "资金画像", "交易决策"]):
                 if index < self.right_intel_tabs.count():
                     if self.right_intel_tabs.tabText(index) != label:
                         self.right_intel_tabs.setTabText(index, label)
@@ -16462,37 +16689,16 @@ def _qh_polish_visual_surfaces(self: QuantHunterWindow) -> None:
 
 
 def _qh_visual_surface_palette_v1(self: QuantHunterWindow) -> dict[str, str]:
-    theme_key = str(getattr(self, "current_theme", "graphite") or "graphite")
-    palettes = {
-        "sunrise": {
-            "shell_bg": "#f7f1e7",
-            "pane_bg": "#fbf7f1",
-            "panel_bg": "#fffaf3",
-            "hint_bg": "#fffdf9",
-            "hint_fg": "#6d573c",
-            "border": "#decdb6",
-            "hint_border": "#e5d8c6",
-        },
-        "ocean": {
-            "shell_bg": "#edf4f7",
-            "pane_bg": "#f7fbfd",
-            "panel_bg": "#ffffff",
-            "hint_bg": "#ffffff",
-            "hint_fg": "#4d697c",
-            "border": "#bfd2db",
-            "hint_border": "#d2e0e6",
-        },
-        "graphite": {
-            "shell_bg": "#0f151c",
-            "pane_bg": "#121a23",
-            "panel_bg": "#18222d",
-            "hint_bg": "#1a2531",
-            "hint_fg": "#a4b6c9",
-            "border": "rgba(122, 146, 173, 0.18)",
-            "hint_border": "rgba(122, 146, 173, 0.24)",
-        },
+    token = _terminal_theme_tokens(str(getattr(self, "current_theme", DEFAULT_TERMINAL_THEME) or DEFAULT_TERMINAL_THEME))
+    return {
+        "shell_bg": token["shell_bg_2"],
+        "pane_bg": token["shell_bg_1"],
+        "panel_bg": token["panel_0"],
+        "hint_bg": token["button_ghost"],
+        "hint_fg": token["text_soft"],
+        "border": token["border"],
+        "hint_border": token["border_soft"],
     }
-    return palettes.get(theme_key, palettes["graphite"])
 
 
 def _qh_apply_visual_surface_stylesheet_v1(self: QuantHunterWindow) -> None:
@@ -16614,6 +16820,7 @@ def _qh_upgrade_auth_workspace(self: QuantHunterWindow) -> None:
         panel = QFrame()
         panel.setObjectName("authEntryPanel")
         panel.setProperty("actionRow", True)
+        panel.setProperty("pageTone", "auth")
         panel_layout = QHBoxLayout(panel)
         panel_layout.setContentsMargins(14, 12, 14, 12)
         panel_layout.setSpacing(10)
@@ -16625,7 +16832,9 @@ def _qh_upgrade_auth_workspace(self: QuantHunterWindow) -> None:
         ]
         for title, desc in cards:
             card = QFrame()
+            card.setObjectName("authEntryCard")
             card.setProperty("actionRow", True)
+            card.setProperty("pageTone", "auth")
             card_layout = QVBoxLayout(card)
             card_layout.setContentsMargins(12, 10, 12, 10)
             card_layout.setSpacing(4)
@@ -16647,14 +16856,15 @@ def _qh_upgrade_auth_workspace(self: QuantHunterWindow) -> None:
         panel = QFrame()
         panel.setObjectName("authActionRowPanel")
         panel.setProperty("actionRow", True)
+        panel.setProperty("pageTone", "auth")
         panel_layout = QHBoxLayout(panel)
         panel_layout.setContentsMargins(12, 10, 12, 10)
         panel_layout.setSpacing(10)
 
         actions = [
-            ("保存登录配置", "accent", self.save_login_profile),
-            ("前往交易执行", "tonal", lambda: self._navigate_to_workspace("broker", "orders_table")),
-            ("前往配置页", "ghost", lambda: self._navigate_to_workspace("config")),
+            ("保存配置", "accent", self.save_login_profile),
+            ("去交易", "tonal", lambda: self._navigate_to_workspace("broker", "orders_table")),
+            ("去配置", "ghost", lambda: self._navigate_to_workspace("config")),
         ]
         for text, role, handler in actions:
             button = QPushButton(text)
@@ -16874,7 +17084,7 @@ def _qh_apply_identity_table_headers(self: QuantHunterWindow) -> None:
         self.daily_pool_table.setHorizontalHeaderLabels(DAILY_POOL_TABLE_HEADERS)
         self.daily_pool_table.setColumnHidden(2, False)
     if hasattr(self, "market_pool_table"):
-        self.market_pool_table.setHorizontalHeaderLabels(["序", "股票标识", "资金标签", "策略标签", "涨跌幅", "最新价"])
+        self.market_pool_table.setHorizontalHeaderLabels(["层级", "标的 / 代码", "资金画像", "策略归因", "涨跌", "价格 / 评分"])
 
 
 def _qh_force_identity_columns_visible(self: QuantHunterWindow) -> None:
@@ -18665,9 +18875,9 @@ def _qh_normalize_overview_builder_texts_v2(self: QuantHunterWindow) -> None:
         setattr(self, attr_name, normalized)
 
     if hasattr(self, "market_pool_table"):
-        self.market_pool_table.setHorizontalHeaderLabels(["层级", "股票标识", "资金标签", "策略标签", "涨跌幅", "最新价"])
+        self.market_pool_table.setHorizontalHeaderLabels(["层级", "标的 / 代码", "资金画像", "策略归因", "涨跌", "价格 / 评分"])
     if hasattr(self, "right_intel_tabs"):
-        labels = ["主线摘要", "资金与决策"]
+        labels = ["主题摘要", "资金画像", "交易决策"]
         for index, label in enumerate(labels):
             if index < self.right_intel_tabs.count():
                 if self.right_intel_tabs.tabText(index) != label:
@@ -18738,7 +18948,7 @@ def _qh_normalize_aux_workspace_texts_v2(self: QuantHunterWindow) -> None:
             if index < self.recommend_stage_tabs.count():
                 self.recommend_stage_tabs.setTabText(index, label)
     if hasattr(self, "right_intel_tabs"):
-        for index, label in enumerate(["主线摘要", "资金与决策"]):
+        for index, label in enumerate(["主题摘要", "资金画像", "交易决策"]):
             if index < self.right_intel_tabs.count():
                 self.right_intel_tabs.setTabText(index, label)
 
@@ -18789,31 +18999,22 @@ def _qh_prime_recommend_workspace_defaults_v2(self: QuantHunterWindow) -> None:
     if hasattr(self, "recommend_dispatch_text"):
         self._set_plain_text_if_changed(
             self.recommend_dispatch_text,
-            "待送审\n\n"
-            "1. 先确认主线是否延续，再看趋势是否共振、消息是否强化。\n"
-            "2. 这里只保留待复核标的、送审节奏和当前优先链路。\n"
-            "3. 只有主线、位置、量能和风险灯同时通过的标的，才送入交易执行。"
+            "盘中分发\n结论：先看主线，再排送审\n风险：未共振前不推进\n下一步：先复核前排票。"
         )
     if hasattr(self, "recommend_focus_review_text"):
         self._set_plain_text_if_changed(
             self.recommend_focus_review_text,
-            "焦点复核\n\n"
-            "这里会汇总主线地位、趋势状态、消息催化、买卖点和失效条件。\n"
-            "先确认它为什么值得送审，再确认什么时候能做、什么时候应该放弃。"
+            "单票审查\n结论：先判是否值得进计划\n风险：主线与价位未清晰前不送审\n下一步：先选中一只票。"
         )
     if hasattr(self, "recommend_queue_text"):
         self._set_plain_text_if_changed(
             self.recommend_queue_text,
-            "已提交与失败\n\n"
-            "这里集中显示已送审、已提交和失败记录，不让盘中视线被杂讯打散。\n"
-            "优先跟踪最新回执、失败原因和需要重新处理的异常单。"
+            "执行队列\n结论：只盯待复核、已送审、失败单\n风险：失败单会拖慢链路\n下一步：先处理最靠前的一只。"
         )
     if hasattr(self, "strategy_path_text"):
         self._set_plain_text_if_changed(
             self.strategy_path_text,
-            "主线推演\n\n"
-            "这里会把主线强弱、趋势延续、消息催化和风险切换串成一条路径。\n"
-            "用户看到的应该是结论先行，而不是一堆指标孤立堆在一起。"
+            "主线推演\n结论：先主线，再龙头，再动作\n风险：主线切换时原路径失效\n下一步：等推荐池生成后细化。"
         )
 
 
@@ -18910,41 +19111,68 @@ def _qh_hydrate_empty_workspace_panels_v2(self: QuantHunterWindow) -> None:
 
 def _qh_normalize_action_row_texts_v2(self: QuantHunterWindow) -> None:
     label_map = {
-        "去看推荐": "查看机会池",
-        "查看推荐": "查看机会池",
-        "去看交易": "前往交易执行",
-        "去交易页": "前往交易执行",
-        "看观察池": "查看观察池",
-        "看消息催化": "查看消息催化",
-        "回到总览": "回到市场总览",
-        "看总览": "回到市场总览",
-        "定位推荐池": "定位机会池",
-        "重算计划": "重算交易计划",
-        "查看风险池": "查看风险池",
-        "刷新监控": "刷新专项监控",
+        "去看推荐": "看机会",
+        "查看推荐": "看机会",
+        "查看推荐池": "看机会",
+        "查看机会池": "看机会",
+        "去看交易": "去交易",
+        "去交易页": "去交易",
+        "前往交易执行": "去交易",
+        "看观察池": "看观察",
+        "查看观察池": "看观察",
+        "看消息催化": "看消息",
+        "查看消息催化": "看消息",
+        "回到总览": "看总览",
+        "看总览": "看总览",
+        "回到市场总览": "看总览",
+        "定位推荐池": "定位机会",
+        "定位机会池": "定位机会",
+        "重算交易计划": "重算计划",
+        "查看风险池": "看风险",
+        "刷新专项监控": "刷新监控",
         "定位委托": "定位委托",
-        "查看委托": "查看委托",
-        "查看成交": "查看成交",
+        "查看委托": "看委托",
+        "查看成交": "看成交",
         "刷新诊断": "刷新诊断",
         "导出日志": "导出日志",
-        "查看复盘": "查看复盘研究",
+        "查看复盘": "看复盘",
+        "查看复盘研究": "看复盘",
+        "前往配置页": "去配置",
+        "前往登录配置": "去登录",
+        "前往推荐池": "去推荐",
     }
     tooltip_map = {
+        "看机会": "跳转到推荐页，继续查看高优先池、趋势机会和综合评分。",
         "查看机会池": "跳转到推荐页，继续查看高优先池、趋势机会和综合评分。",
+        "看消息": "切到消息催化视图，查看新闻、主题驱动和异动线索。",
         "查看消息催化": "切到消息催化视图，查看新闻、主题驱动和异动线索。",
+        "看总览": "回到总览页，继续查看市场结构、主线和趋势全景。",
         "回到市场总览": "回到总览页，继续查看市场结构、主线和趋势全景。",
+        "去交易": "跳转到交易页，查看委托建议、执行回放和提交入口。",
         "前往交易执行": "跳转到交易页，查看委托建议、执行回放和提交入口。",
+        "定位机会": "把焦点定位到机会池表格，方便继续筛选和对比。",
         "定位机会池": "把焦点定位到机会池表格，方便继续筛选和对比。",
-        "重算交易计划": "重新生成今日交易计划、仓位预算和盘中节奏。",
+        "重算计划": "重新生成今日交易计划、仓位预算和盘中节奏。",
+        "看观察": "跳到观察池，查看仍在等待确认的标的。",
         "查看观察池": "跳到观察池，查看仍在等待确认的标的。",
+        "看风险": "查看高风险、减仓和退出建议。",
         "查看风险池": "查看高风险、减仓和退出建议。",
-        "刷新专项监控": "刷新打板专项监控与回封观察焦点。",
+        "刷新监控": "刷新打板专项监控与回封观察焦点。",
         "定位委托": "定位到委托建议列表，优先检查待提交订单。",
+        "看委托": "查看委托表格和当前执行建议。",
         "查看委托": "查看委托表格和当前执行建议。",
+        "看成交": "查看提交记录、执行结果和成交回放。",
         "查看成交": "查看提交记录、执行结果和成交回放。",
         "刷新诊断": "刷新运行日志、任务状态和诊断面板。",
         "导出日志": "导出当前运行日志，便于排查问题。",
-        "查看复盘研究": "跳到复盘页，查看单票信号、成交和复盘结论。",
+        "看复盘": "跳到复盘页，查看单票信号、成交和复盘结论。",
+        "查看复盘": "跳到复盘页，查看单票信号、成交和复盘结论。",
+        "去配置": "跳转到配置页，调整参数、模板和授权设置。",
+        "前往配置页": "跳转到配置页，调整参数、模板和授权设置。",
+        "去登录": "跳转到统一登录页，检查账户与接入配置。",
+        "前往登录配置": "跳转到统一登录页，检查账户与接入配置。",
+        "去推荐": "跳转到推荐页，继续查看机会池与候选节奏。",
+        "前往推荐池": "跳转到推荐页，继续查看机会池与候选节奏。",
     }
     for row_name in [
         "overviewThemeActionRow",
@@ -19009,6 +19237,19 @@ def _qh_normalize_action_row_texts_v2(self: QuantHunterWindow) -> None:
             tip = tooltip_map.get(label)
             if tip:
                 buttons[index].setToolTip(tip)
+
+    for row_name in ["authActionRowPanel"]:
+        row = self.findChild(QWidget, row_name)
+        if row is None:
+            continue
+        for button in row.findChildren(QPushButton):
+            text = (button.text() or "").strip()
+            normalized = label_map.get(text, text)
+            if normalized and normalized != text:
+                self._set_label_text_if_changed(button, normalized)
+            tip = tooltip_map.get(normalized)
+            if tip:
+                button.setToolTip(tip)
 
 
 def _qh_apply_scroll_and_table_focus_v2(self: QuantHunterWindow) -> None:
@@ -19077,15 +19318,18 @@ def _qh_compact_overview_and_recommend_v3(self: QuantHunterWindow) -> None:
     for attr_name, max_height in {
         "overview_command_text": 118,
         "overview_execution_text": 118,
+        "overview_playbook_text": 114,
         "market_buy_text": 110,
         "market_sell_text": 110,
         "market_breadth_text": 118,
         "market_theme_brief_text": 118,
+        "market_source_status_text": 118,
         "market_capital_text": 140,
         "market_decision_text": 140,
     }.items():
         widget = getattr(self, attr_name, None)
         if isinstance(widget, QTextEdit):
+            widget.setMinimumHeight(min(widget.minimumHeight(), max_height))
             widget.setMaximumHeight(max_height)
 
     if hasattr(self, "market_source_status_text"):
@@ -19112,7 +19356,7 @@ def _qh_compact_overview_and_recommend_v3(self: QuantHunterWindow) -> None:
     if hasattr(self, "trade_plan_table"):
         self.trade_plan_table.setColumnCount(16)
         self.trade_plan_table.setHorizontalHeaderLabels(
-            ["状态", "标的", "ID", "交易码", "动作", "股票池", "分层", "准备度", "置信", "买点", "止损", "目标", "资金", "观察点", "执行提示", "说明"]
+            ["状态", "标的 / 代码", "ID", "交易码", "动作", "机会池", "分层", "准备度", "置信", "买点", "止损", "目标", "资金", "观察点", "执行提示", "策略说明"]
         )
 
     if hasattr(self, "position_advice_table"):
@@ -19369,8 +19613,9 @@ def _qh_refresh_overview_focus_cards_v4(self: QuantHunterWindow, symbol: str, sn
         risk_flag = getattr(recommendation, "mainline_risk_flag", "") or "待评估"
         confidence = news_confidence_label(symbol_news)
         source = getattr(latest_news, "source", "") or "来源待接入"
+        visual = news_source_visual_label(source)
         self.overview_summary_cards["theme"].set_data(signal, f"{theme_name} | {role_name} | 位次 {getattr(recommendation, 'mainline_rank', '--')}")
-        self.overview_summary_cards["source"].set_data("消息/逻辑", f"{catalyst[:12]} | {confidence} | {source[:8]}")
+        self.overview_summary_cards["source"].set_data("消息分层", f"{visual} | {catalyst[:12]} | {source[:8]}")
         self.overview_summary_cards["capital"].set_data("窗口/总分", f"窗口 {float(getattr(recommendation, 'mainline_window_score', 0.0) or 0.0):.1f} | 总分 {float(getattr(recommendation, 'total_score', 0.0) or 0.0):.1f}")
         self.overview_summary_cards["decision"].set_data(action_text, f"下一步 {next_focus[:20]}")
         return
@@ -19449,7 +19694,8 @@ def _qh_populate_market_depth_texts_v5(self: QuantHunterWindow, rows: list) -> N
                     [
                         "买点信号",
                         f"结论：{_qh_signal_action_text_v4(top_row)}",
-                        f"焦点：{top_row.stock_name} | {_qh_mainline_signal_brief_v4(top_row)}",
+                        f"焦点：{top_row.stock_name}",
+                        f"主线：{_qh_mainline_signal_brief_v4(top_row)}",
                         f"观察：{getattr(top_row, 'next_focus', '') or '量能、承接、窗口是否继续抬升'}",
                     ]
                 ),
@@ -19467,7 +19713,7 @@ def _qh_populate_market_depth_texts_v5(self: QuantHunterWindow, rows: list) -> N
                 "\n".join(
                     [
                         "卖点/防守",
-                        f"风险：{risk_text}",
+                        f"结论：{risk_text}",
                         f"焦点：{weak_row.stock_name} | {float(getattr(weak_row, 'pct_change', 0.0) or 0.0):.2f}%",
                         "动作：若主线切换或跌破防守位，优先减仓。",
                     ]
@@ -19477,10 +19723,17 @@ def _qh_populate_market_depth_texts_v5(self: QuantHunterWindow, rows: list) -> N
             self._set_plain_text_if_changed(self.market_sell_text, "卖点/防守\n结论：暂无明显卖点\n先盯主线是否出现切换。")
 
     if hasattr(self, "market_breadth_text"):
-        self._set_note_panel_tone_v5(self.market_breadth_text, "watch" if top_row is not None else "idle")
+        panel_tone = "idle"
         if top_row is not None:
             symbol_news = self.news_catalysts.get(top_row.symbol, [])
+            if symbol_news:
+                panel_tone = news_source_visual_tone(getattr(symbol_news[0], "source", "") or "")
+            else:
+                panel_tone = "watch"
+        self._set_note_panel_tone_v5(self.market_breadth_text, panel_tone)
+        if top_row is not None:
             confidence = news_confidence_label(symbol_news)
+            tier_label = news_source_visual_label(getattr(symbol_news[0], "source", "") or "") if symbol_news else "消息线索"
             logic_lines = build_hype_logic_lines(
                 theme_name=getattr(top_row, "mainline_tag", "") or getattr(top_row, "theme_name", "") or getattr(top_row, "strategy_tag", ""),
                 catalyst=getattr(top_row, "catalyst", "") or "",
@@ -19494,7 +19747,7 @@ def _qh_populate_market_depth_texts_v5(self: QuantHunterWindow, rows: list) -> N
             self._set_plain_text_if_changed(
                 self.market_breadth_text,
                 "\n".join(
-                    ["消息催化", f"焦点：{top_row.stock_name} | {confidence}", *digest_lines[:4], *logic_lines[:2]]
+                    ["消息催化", f"结论：{tier_label} | {confidence}", f"焦点：{top_row.stock_name}", *digest_lines[:2], *logic_lines[:2]]
                 ),
             )
         else:
@@ -19519,9 +19772,10 @@ def _qh_refresh_overview_side_panels_v5(self: QuantHunterWindow, rows: list) -> 
                 "\n".join(
                     [
                         "主线摘要",
-                        f"主线：{top_theme} | 前排 {top_count} 只",
-                        f"焦点：{rows[0].stock_name} | 跟踪：{follow_text}",
                         f"结论：{_qh_mainline_signal_brief_v4(rows[0])}",
+                        f"主线：{top_theme}",
+                        f"前排：{top_count} 只 | 焦点 {rows[0].stock_name}",
+                        f"跟踪：{follow_text}",
                     ]
                 ),
             )
@@ -19539,6 +19793,7 @@ def _qh_update_market_text_panels_v5(self: QuantHunterWindow, symbol: str, snaps
     symbol_news = list(getattr(self, "news_catalysts", {}).get(symbol, []) or [])
     latest_news = symbol_news[0] if symbol_news else None
     confidence = news_confidence_label(symbol_news)
+    visual = news_source_visual_label(getattr(latest_news, "source", "") or "") if latest_news is not None else "消息线索"
     profile_loader = getattr(self, "_stock_profile_for_symbol", None)
     profile = profile_loader(symbol) if callable(profile_loader) and symbol else None
     theme_name = (
@@ -19579,11 +19834,15 @@ def _qh_update_market_text_panels_v5(self: QuantHunterWindow, symbol: str, snaps
                     "盘前指挥",
                     f"焦点：{stock_name}",
                     f"主线：{theme_name} | 信号：{signal}",
-                    f"催化：{catalyst[:24]} | {confidence}",
+                    f"催化：{visual} | {catalyst[:24]} | {confidence}",
                     f"动作：{action_text}",
                 ]
             ),
         )
+    if hasattr(self, "market_open_news_button"):
+        self._update_news_action_button(getattr(self, "market_open_news_button", None), latest_news)
+    if hasattr(self, "market_news_detail_button"):
+        self._update_news_detail_button(getattr(self, "market_news_detail_button", None), latest_news)
 
     if hasattr(self, "overview_execution_text"):
         self._set_note_panel_tone_v5(self.overview_execution_text, tone)
@@ -19608,8 +19867,10 @@ def _qh_update_market_text_panels_v5(self: QuantHunterWindow, symbol: str, snaps
                 [
                     "资金画像",
                     f"结论：{signal}",
-                    f"风险：{capital_line}",
-                    f"消息：{news_lines[0] if news_lines else catalyst[:28] or '等待消息与资金共振'}",
+                    capital_line,
+                    f"价格：{price_line.split('：', 1)[-1]}",
+                    f"消息层级：{visual}",
+                    f"催化：{news_lines[0] if news_lines else catalyst[:28] or '等待消息与资金共振'}",
                 ]
             ),
         )
@@ -19624,7 +19885,7 @@ def _qh_update_market_text_panels_v5(self: QuantHunterWindow, symbol: str, snaps
                     "买卖决策",
                     f"结论：{action_text}",
                     f"炒作逻辑：{hype_logic}",
-                    f"风险/可信度：{logic_lines[2].split('：', 1)[-1]}",
+                    f"风险/可信度：{risk_flag} | {logic_lines[2].split('：', 1)[-1]}",
                     f"下一步：{getattr(recommendation, 'next_focus', '') or '是否继续维持主线前排'}",
                 ]
             ),
@@ -19855,13 +20116,13 @@ def _qh_refresh_recommend_story_panels_v7(self: QuantHunterWindow, row=None) -> 
             self._set_note_panel_tone_v5(self.daily_pool_text, "idle")
             self._set_plain_text_if_changed(
                 self.daily_pool_text,
-                "综合机会池\n结论：等待机会池生成\n风险：暂无焦点风险\n下一步：先刷新市场，再生成机会池。",
+                "综合机会池\n结论：等待机会池生成\n风险：暂无焦点风险\n下一步：先刷新市场。",
             )
         if hasattr(self, "strategy_path_text"):
             self._set_note_panel_tone_v5(self.strategy_path_text, "idle")
             self._set_plain_text_if_changed(
                 self.strategy_path_text,
-                "主线推演\n结论：等待主线确认\n风险：暂无主线风险\n下一步：先确认主线，再决定动作。",
+                "主线推演\n结论：等待主线确认\n风险：暂无主线风险\n下一步：先确认主线。",
             )
         self._refresh_recommend_bucket_panels(None)
         self._sync_signal_panel_tones_v6()
@@ -19886,9 +20147,8 @@ def _qh_refresh_recommend_story_panels_v7(self: QuantHunterWindow, row=None) -> 
                 [
                     "综合机会池",
                     f"结论：{current.stock_name} | {verdict}",
-                    f"主线/动作：{signal} | {execution_summary}",
-                    f"风险：{theme_name} | {risk_flag} | {invalidation[:18]}",
-                    f"下一步：{focus_reason[:18]} | {next_focus[:18]}",
+                    f"风险：{theme_name} | {risk_flag} | {invalidation[:16]}",
+                    f"下一步：{signal} | {execution_summary[:16]} | {next_focus[:16]}",
                 ]
             ),
         )
@@ -19900,9 +20160,9 @@ def _qh_refresh_recommend_story_panels_v7(self: QuantHunterWindow, row=None) -> 
             "\n".join(
                 [
                     "主线推演",
-                    f"结论：{theme_name} | {role_name} | 第 {getattr(current, 'mainline_rank', '--')} 位",
+                    f"结论：{theme_name} | {role_name} | 位 {getattr(current, 'mainline_rank', '--')}",
                     f"风险：窗口 {float(getattr(current, 'mainline_window_score', 0.0) or 0.0):.1f} | {risk_flag}",
-                    f"下一步：{next_focus[:28]}",
+                    f"下一步：{next_focus[:22]}",
                 ]
             ),
         )
@@ -20145,14 +20405,14 @@ def _qh_apply_commercial_table_layout_v8(self: QuantHunterWindow) -> None:
     table_specs = {
         "daily_pool_table": {
             "hidden": [20],
-            "widths": {0: 74, 1: 164, 2: 88, 3: 112, 4: 128, 5: 84, 6: 92, 7: 96, 8: 84, 9: 84, 18: 84, 19: 210, 22: 128},
-            "stretch_column": 19,
+            "widths": {0: 72, 1: 188, 2: 88, 3: 112, 4: 152, 5: 72, 6: 84, 7: 88, 8: 94, 9: 128, 18: 82, 19: 122, 21: 132, 22: 96, 23: 146},
+            "stretch_column": 4,
             "min_height": 320,
         },
         "trade_plan_table": {
             "hidden": [13],
-            "widths": {0: 74, 1: 164, 2: 88, 3: 112, 4: 84, 5: 128, 6: 92, 7: 92, 8: 84, 9: 92, 10: 92, 11: 92, 12: 92, 14: 280},
-            "stretch_column": 14,
+            "widths": {0: 78, 1: 184, 2: 88, 3: 112, 4: 86, 5: 108, 6: 88, 7: 90, 8: 82, 9: 92, 10: 92, 11: 92, 12: 96, 14: 164, 15: 260},
+            "stretch_column": 15,
             "min_height": 280,
         },
         "orders_table": {
@@ -20310,7 +20570,7 @@ def _qh_rebind_detail_routes_v9(self: QuantHunterWindow) -> None:
             continue
         for button in row.findChildren(QPushButton):
             text = (button.text() or "").strip()
-            if text not in {"查看复盘", "查看复盘研究"}:
+            if text not in {"查看复盘", "查看复盘研究", "看复盘"}:
                 continue
             try:
                 button.clicked.disconnect()
@@ -20462,35 +20722,59 @@ def _qh_install_paper_trading_workspace_v17(self: QuantHunterWindow) -> None:
 
     self.paper_trading_box = QGroupBox("AI 模拟盘")
     self._style_terminal_panel(self.paper_trading_box)
+    self.paper_trading_box.setProperty("pageTone", "broker")
     paper_layout = QVBoxLayout(self.paper_trading_box)
     paper_layout.setContentsMargins(12, 12, 12, 12)
     paper_layout.setSpacing(10)
 
     self.paper_trading_status_label = QLabel("模拟盘状态：等待初始化")
     self.paper_trading_status_label.setObjectName("statusBanner")
+    self.paper_trading_status_label.setProperty("pageTone", "broker")
     self.paper_trading_status_label.setWordWrap(True)
     paper_layout.addWidget(self.paper_trading_status_label)
 
-    settings_row = QHBoxLayout()
-    settings_row.setSpacing(8)
-    settings_row.addWidget(QLabel("初始资金"))
+    settings_panel = QFrame()
+    settings_panel.setObjectName("paperSettingsPanel")
+    settings_panel.setProperty("actionRow", True)
+    settings_panel.setProperty("pageTone", "broker")
+    settings_layout = QVBoxLayout(settings_panel)
+    settings_layout.setContentsMargins(12, 10, 12, 10)
+    settings_layout.setSpacing(10)
+
+    settings_grid = QGridLayout()
+    self.paper_settings_grid = settings_grid
+    settings_grid.setHorizontalSpacing(10)
+    settings_grid.setVerticalSpacing(8)
+    self.paper_initial_cash_label = QLabel("资金")
+    settings_grid.addWidget(self.paper_initial_cash_label, 0, 0)
     self.paper_initial_cash_input = QLineEdit()
     self.paper_initial_cash_input.setMaximumWidth(120)
-    settings_row.addWidget(self.paper_initial_cash_input)
-    settings_row.addWidget(QLabel("单票上限"))
+    settings_grid.addWidget(self.paper_initial_cash_input, 0, 1)
+    self.paper_max_position_label = QLabel("上限")
+    settings_grid.addWidget(self.paper_max_position_label, 0, 2)
     self.paper_max_position_input = QLineEdit()
     self.paper_max_position_input.setMaximumWidth(100)
-    settings_row.addWidget(self.paper_max_position_input)
-    settings_row.addWidget(QLabel("巡航间隔(分钟)"))
+    settings_grid.addWidget(self.paper_max_position_input, 0, 3)
+    self.paper_auto_interval_label = QLabel("间隔(分)")
+    settings_grid.addWidget(self.paper_auto_interval_label, 1, 0)
     self.paper_auto_interval_input = QLineEdit()
     self.paper_auto_interval_input.setMaximumWidth(88)
-    settings_row.addWidget(self.paper_auto_interval_input)
-    self.paper_auto_run_checkbox = QCheckBox("推荐刷新后自动跟跑")
-    settings_row.addWidget(self.paper_auto_run_checkbox)
-    self.paper_initialize_button = QPushButton("初始化模拟盘")
-    self.paper_run_button = QPushButton("AI 自主运行一轮")
-    self.paper_export_button = QPushButton("导出模拟盘报告")
-    self.paper_reset_button = QPushButton("重置模拟盘")
+    settings_grid.addWidget(self.paper_auto_interval_input, 1, 1)
+    self.paper_auto_run_checkbox = QCheckBox("自动跟跑")
+    settings_grid.addWidget(self.paper_auto_run_checkbox, 1, 2, 1, 2)
+    settings_layout.addLayout(settings_grid)
+
+    action_row = QFrame()
+    action_row.setObjectName("paperActionRow")
+    action_row.setProperty("actionRow", True)
+    action_row.setProperty("pageTone", "broker")
+    action_layout = QHBoxLayout(action_row)
+    action_layout.setContentsMargins(0, 0, 0, 0)
+    action_layout.setSpacing(8)
+    self.paper_initialize_button = QPushButton("初始化")
+    self.paper_run_button = QPushButton("执行一轮")
+    self.paper_export_button = QPushButton("导出报告")
+    self.paper_reset_button = QPushButton("重置")
     self._set_button_role(self.paper_initialize_button, "ghost")
     self._set_button_role(self.paper_run_button, "accent")
     self._set_button_role(self.paper_export_button, "ghost")
@@ -20505,23 +20789,29 @@ def _qh_install_paper_trading_workspace_v17(self: QuantHunterWindow) -> None:
         self.paper_max_position_input.editingFinished.connect(settings_changed_handler)
         self.paper_auto_interval_input.editingFinished.connect(settings_changed_handler)
         self.paper_auto_run_checkbox.toggled.connect(settings_changed_handler)
-    settings_row.addWidget(self.paper_initialize_button)
-    settings_row.addWidget(self.paper_run_button)
-    settings_row.addWidget(self.paper_export_button)
-    settings_row.addWidget(self.paper_reset_button)
-    settings_row.addStretch(1)
-    paper_layout.addLayout(settings_row)
+    action_layout.addWidget(self.paper_initialize_button)
+    action_layout.addWidget(self.paper_run_button)
+    action_layout.addWidget(self.paper_export_button)
+    action_layout.addWidget(self.paper_reset_button)
+    action_layout.addStretch(1)
+    settings_layout.addWidget(action_row)
+    paper_layout.addWidget(settings_panel)
 
-    metrics_row = QHBoxLayout()
+    metrics_panel = QFrame()
+    metrics_panel.setObjectName("paperMetricsPanel")
+    metrics_panel.setProperty("actionRow", True)
+    metrics_panel.setProperty("pageTone", "broker")
+    metrics_row = QHBoxLayout(metrics_panel)
+    metrics_row.setContentsMargins(12, 10, 12, 10)
     metrics_row.setSpacing(12)
     self.paper_metric_labels = {}
     for key, title in [
         ("cash", "可用资金"),
         ("equity", "总权益"),
-        ("realized", "累计已实现"),
-        ("return", "累计收益率"),
-        ("win_rate", "闭环胜率"),
-        ("closed", "闭环单"),
+        ("realized", "已实现"),
+        ("return", "收益率"),
+        ("win_rate", "胜率"),
+        ("closed", "闭环数"),
         ("positions", "持仓"),
         ("fills", "交割单"),
     ]:
@@ -20539,23 +20829,29 @@ def _qh_install_paper_trading_workspace_v17(self: QuantHunterWindow) -> None:
         card_layout.addWidget(value_label)
         self.paper_metric_labels[key] = value_label
         metrics_row.addWidget(card)
-    paper_layout.addLayout(metrics_row)
+    paper_layout.addWidget(metrics_panel)
 
     self.paper_equity_chart_view = QChartView()
     self.paper_equity_chart_view.setObjectName("marketChartPanel")
+    self.paper_equity_chart_view.setProperty("pageTone", "broker")
     self.paper_equity_chart_view.setMinimumHeight(220)
     paper_layout.addWidget(self.paper_equity_chart_view)
 
     paper_splitter = QSplitter(Qt.Horizontal)
     self.paper_trading_splitter = paper_splitter
+    paper_splitter.setObjectName("paperTradingSplit")
     paper_splitter.setChildrenCollapsible(False)
 
     position_box = QGroupBox("模拟持仓")
     ledger_box = QGroupBox("模拟交割单")
     self._style_terminal_panel(position_box, ledger_box)
+    position_box.setProperty("pageTone", "broker")
+    ledger_box.setProperty("pageTone", "broker")
 
     position_layout = QVBoxLayout(position_box)
     self.paper_positions_table = QTableWidget()
+    self.paper_positions_table.setObjectName("terminalTable")
+    self.paper_positions_table.setProperty("pageTone", "broker")
     self.paper_positions_table.setColumnCount(10)
     self.paper_positions_table.setHorizontalHeaderLabels(["名称", "代码", "战法", "数量", "成本", "现价", "市值", "浮盈", "收益率", "买卖点"])
     self.paper_positions_table.verticalHeader().setVisible(False)
@@ -20569,6 +20865,8 @@ def _qh_install_paper_trading_workspace_v17(self: QuantHunterWindow) -> None:
 
     ledger_layout = QVBoxLayout(ledger_box)
     self.paper_ledger_table = QTableWidget()
+    self.paper_ledger_table.setObjectName("terminalTable")
+    self.paper_ledger_table.setProperty("pageTone", "broker")
     self.paper_ledger_table.setColumnCount(12)
     self.paper_ledger_table.setHorizontalHeaderLabels(["编号", "时间", "代码", "动作", "价格", "数量", "金额", "战法", "仓位", "已实现", "累计", "备注"])
     self.paper_ledger_table.verticalHeader().setVisible(False)
@@ -20588,13 +20886,18 @@ def _qh_install_paper_trading_workspace_v17(self: QuantHunterWindow) -> None:
     analytics_splitter = QSplitter(Qt.Horizontal)
     analytics_splitter.setChildrenCollapsible(False)
     self.paper_analytics_splitter = analytics_splitter
+    analytics_splitter.setObjectName("paperAnalyticsSplit")
 
     strategy_box = QGroupBox("战法收益拆解")
     patrol_box = QGroupBox("巡航日志")
     self._style_terminal_panel(strategy_box, patrol_box)
+    strategy_box.setProperty("pageTone", "broker")
+    patrol_box.setProperty("pageTone", "broker")
 
     strategy_layout = QVBoxLayout(strategy_box)
     self.paper_strategy_table = QTableWidget()
+    self.paper_strategy_table.setObjectName("terminalTable")
+    self.paper_strategy_table.setProperty("pageTone", "broker")
     self.paper_strategy_table.setColumnCount(11)
     self.paper_strategy_table.setHorizontalHeaderLabels(
         ["战法", "角色", "样本", "胜率", "胜率差", "平均持有", "持有差", "已实现", "预算", "倾向", "当前决策"]
@@ -20610,6 +20913,8 @@ def _qh_install_paper_trading_workspace_v17(self: QuantHunterWindow) -> None:
 
     patrol_layout = QVBoxLayout(patrol_box)
     self.paper_patrol_table = QTableWidget()
+    self.paper_patrol_table.setObjectName("terminalTable")
+    self.paper_patrol_table.setProperty("pageTone", "broker")
     self.paper_patrol_table.setColumnCount(5)
     self.paper_patrol_table.setHorizontalHeaderLabels(["时间", "类型", "摘要", "权益", "持仓"])
     self.paper_patrol_table.verticalHeader().setVisible(False)
@@ -20631,9 +20936,12 @@ def _qh_install_paper_trading_workspace_v17(self: QuantHunterWindow) -> None:
     self.paper_trading_text.setMinimumHeight(140)
     self.paper_trading_text.setMaximumHeight(190)
     self._style_terminal_console(self.paper_trading_text)
+    self.paper_trading_text.setProperty("pageTone", "broker")
     paper_layout.addWidget(self.paper_trading_text)
 
     experiment_box = QGroupBox("策略实验洞察")
+    self._style_terminal_panel(experiment_box)
+    experiment_box.setProperty("pageTone", "broker")
     experiment_layout = QVBoxLayout(experiment_box)
     experiment_box.setObjectName("paperExperimentPanel")
     self.paper_experiment_text = QTextEdit()
@@ -20641,6 +20949,7 @@ def _qh_install_paper_trading_workspace_v17(self: QuantHunterWindow) -> None:
     self.paper_experiment_text.setMinimumHeight(120)
     self.paper_experiment_text.setMaximumHeight(200)
     self._style_terminal_console(self.paper_experiment_text)
+    self.paper_experiment_text.setProperty("pageTone", "broker")
     experiment_layout.addWidget(self.paper_experiment_text)
     paper_layout.addWidget(experiment_box)
 
@@ -21380,12 +21689,19 @@ def _qh_apply_layout_polish_v19(self: QuantHunterWindow) -> None:
         self.setMinimumSize(max(self.minimumWidth(), minimum_width), max(self.minimumHeight(), minimum_height))
 
         available_width = 1920
+        available_height = 1080
         screen = self.screen()
         if screen is not None:
             available_width = max(screen.availableGeometry().width(), self.width())
+            available_height = min(screen.availableGeometry().height(), self.height() or screen.availableGeometry().height())
+        else:
+            available_height = self.height() or 1080
         compact_overview = available_width <= 1920
         narrow_overview = available_width <= 1440
+        compact_height = available_height <= 980
+        ultra_compact_height = available_height <= 860
         zoomed_layout = self._ui_scale_factor() >= 1.20
+        overview_controls_two_rows = narrow_overview or compact_height
 
         def _compact_label(label: QLabel | None, *, max_segments: int = 2, max_height: int = 54) -> None:
             if not isinstance(label, QLabel):
@@ -21409,10 +21725,21 @@ def _qh_apply_layout_polish_v19(self: QuantHunterWindow) -> None:
             if tooltip and tooltip != label.text().strip():
                     self._set_label_text_if_changed(label, tooltip, tooltip=tooltip)
 
-        if zoomed_layout and hasattr(self, "shell_header"):
-            self.shell_header.setMaximumHeight(self._scaled_int(148, minimum=132))
-        if zoomed_layout and hasattr(self, "shell_pulse_bar"):
-            self.shell_pulse_bar.setMaximumHeight(self._scaled_int(92, minimum=76))
+        if hasattr(self, "shell_header"):
+            shell_header_height = 108 if ultra_compact_height else (122 if compact_height else self._scaled_int(162 if zoomed_layout else 126, minimum=116))
+            self.shell_header.setMaximumHeight(shell_header_height)
+        if hasattr(self, "shell_pulse_bar"):
+            shell_pulse_height = 52 if ultra_compact_height else (58 if compact_height else self._scaled_int(92 if zoomed_layout else 62, minimum=52))
+            self.shell_pulse_bar.setMaximumHeight(shell_pulse_height)
+        for attr_name, max_height, max_segments in (
+            ("shell_product_subtitle", 40 if ultra_compact_height else (48 if compact_height else 64), 2 if ultra_compact_height else 3),
+            ("shell_pulse_label", 34 if ultra_compact_height else (40 if compact_height else 56), 2),
+            ("shell_pulse_hint", 30 if ultra_compact_height else (36 if compact_height else 52), 2),
+            ("shell_pulse_meta", 28 if ultra_compact_height else (32 if compact_height else 44), 2),
+        ):
+            label = getattr(self, attr_name, None)
+            if isinstance(label, QLabel):
+                _compact_label(label, max_segments=max_segments, max_height=max_height)
 
         for chip_name in (
             "shell_workspace_chip",
@@ -21428,10 +21755,13 @@ def _qh_apply_layout_polish_v19(self: QuantHunterWindow) -> None:
             frame = chip.get("frame")
             value_label = chip.get("value")
             if isinstance(frame, QWidget):
-                frame.setMinimumWidth(self._scaled_int(108 if zoomed_layout else 96, minimum=96))
-                frame.setMaximumWidth(self._scaled_int(220 if zoomed_layout else 172, minimum=172))
+                min_chip_width = 96 if ultra_compact_height else (104 if compact_height else self._scaled_int(116 if zoomed_layout else 104, minimum=100))
+                max_chip_width = 188 if ultra_compact_height else (208 if compact_height else self._scaled_int(256 if zoomed_layout else 220, minimum=192))
+                frame.setMinimumWidth(min_chip_width)
+                frame.setMaximumWidth(max_chip_width)
+                frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
             if isinstance(value_label, QLabel):
-                value_label.setWordWrap(zoomed_layout)
+                value_label.setWordWrap(True)
 
         splitter_specs = {
             "overview_main_splitter": (
@@ -21480,6 +21810,8 @@ def _qh_apply_layout_polish_v19(self: QuantHunterWindow) -> None:
                     sizes = [300, 430, 320] if narrow_overview else ([360, 620, 460] if compact_overview else [420, 520, 560])
                     self._configure_splitter(splitter, sizes)
                     splitter.setSizes(sizes)
+        if hasattr(self, "_relayout_overview_controls_v54"):
+            self._relayout_overview_controls_v54(two_rows=overview_controls_two_rows)
 
         recommend_tab = getattr(self, "recommend_tab", None)
         if isinstance(recommend_tab, QWidget):
@@ -21528,15 +21860,60 @@ def _qh_apply_layout_polish_v19(self: QuantHunterWindow) -> None:
                 self._apply_splitter_layout_v19(self.overview_main_splitter, [260, 1180, 360], [240, 640, 300])
 
         for attr_name, height in (
-            ("market_theme_brief_text", 148 if narrow_overview else 160),
-            ("market_source_status_text", 132 if narrow_overview else 144),
-            ("market_capital_text", 160 if narrow_overview else 176),
-            ("market_decision_text", 188 if narrow_overview else 204),
+            ("market_theme_brief_text", 112 if ultra_compact_height else (128 if compact_height else (148 if narrow_overview else 160))),
+            ("market_source_status_text", 104 if ultra_compact_height else (118 if compact_height else (132 if narrow_overview else 144))),
+            ("market_capital_text", 126 if ultra_compact_height else (146 if compact_height else (160 if narrow_overview else 176))),
+            ("market_decision_text", 140 if ultra_compact_height else (166 if compact_height else (188 if narrow_overview else 204))),
         ):
             widget = getattr(self, attr_name, None)
             if isinstance(widget, QTextEdit):
                 widget.setMinimumHeight(height)
                 widget.setMaximumHeight(max(height + 26, widget.minimumHeight()))
+
+        for attr_name, height in (
+            ("overview_command_text", 126 if ultra_compact_height else (148 if compact_height else 180)),
+            ("overview_execution_text", 126 if ultra_compact_height else (148 if compact_height else 180)),
+            ("overview_playbook_text", 96 if ultra_compact_height else (108 if compact_height else 128)),
+            ("market_buy_text", 98 if ultra_compact_height else (112 if compact_height else 140)),
+            ("market_sell_text", 98 if ultra_compact_height else (112 if compact_height else 140)),
+            ("market_breadth_text", 110 if ultra_compact_height else (126 if compact_height else 150)),
+        ):
+            widget = getattr(self, attr_name, None)
+            if isinstance(widget, QTextEdit):
+                widget.setMinimumHeight(height)
+                widget.setMaximumHeight(height + (18 if ultra_compact_height else 22))
+
+        if hasattr(self, "overview_stage_container") and isinstance(self.overview_stage_container, QWidget):
+            stage_layout = self.overview_stage_container.layout()
+            if isinstance(stage_layout, QVBoxLayout):
+                stage_layout.setSpacing(8 if compact_height else 12)
+        for box_name, max_height in (
+            ("dashboardMetricsBox", 132 if ultra_compact_height else (148 if compact_height else 16777215)),
+            ("overviewPriorityBox", 124 if ultra_compact_height else (142 if compact_height else 16777215)),
+            ("cockpitBox", 210 if ultra_compact_height else (244 if compact_height else 16777215)),
+            ("playbookBox", 156 if ultra_compact_height else (184 if compact_height else 16777215)),
+            ("leaderboardBox", 290 if ultra_compact_height else (340 if compact_height else 16777215)),
+        ):
+            box = self.findChild(QGroupBox, box_name)
+            if isinstance(box, QGroupBox):
+                box.setMaximumHeight(max_height)
+        if hasattr(self, "right_intel_tabs") and isinstance(self.right_intel_tabs, QTabWidget):
+            self.right_intel_tabs.setMaximumHeight(280 if ultra_compact_height else (340 if compact_height else 16777215))
+        if hasattr(self, "market_pool_table") and isinstance(self.market_pool_table, QTableWidget):
+            pool_height = 190 if ultra_compact_height else (220 if compact_height else 260)
+            self.market_pool_table.setMinimumHeight(pool_height)
+            self.market_pool_table.setMaximumHeight(pool_height + 30)
+            self.market_pool_table.verticalHeader().setDefaultSectionSize(68 if compact_height else 82)
+        if hasattr(self, "intraday_chart_view"):
+            self.intraday_chart_view.setMinimumHeight(170 if ultra_compact_height else (210 if compact_height else 260))
+        if hasattr(self, "daily_chart_view"):
+            self.daily_chart_view.setMinimumHeight(240 if ultra_compact_height else (280 if compact_height else 320))
+        for attr_name in ("fund_chart_view", "momentum_chart_view", "indicator_chart_view"):
+            widget = getattr(self, attr_name, None)
+            if isinstance(widget, QChartView):
+                widget.setMinimumHeight(118 if ultra_compact_height else (140 if compact_height else 156))
+        if hasattr(self, "overview_mini_chart_tabs") and isinstance(self.overview_mini_chart_tabs, QTabWidget):
+            self.overview_mini_chart_tabs.setMaximumHeight(178 if ultra_compact_height else (206 if compact_height else 238))
 
         for box_name in ("themeSummaryBox", "capitalBox", "decisionBox"):
             box = self.findChild(QGroupBox, box_name)
@@ -21545,7 +21922,7 @@ def _qh_apply_layout_polish_v19(self: QuantHunterWindow) -> None:
             layout = box.layout()
             if isinstance(layout, (QVBoxLayout, QGridLayout)):
                 inner = self._scaled_int(14 if not narrow_overview else 12, minimum=10)
-                gap = self._scaled_int(12 if not narrow_overview else 10, minimum=8)
+                gap = self._scaled_int(10 if not narrow_overview else 8, minimum=8)
                 layout.setContentsMargins(inner, inner, inner, inner)
                 layout.setSpacing(gap)
 
@@ -21554,7 +21931,7 @@ def _qh_apply_layout_polish_v19(self: QuantHunterWindow) -> None:
             "overviewCapitalActionRow",
             "overviewDecisionActionRow",
         )
-        overview_button_height = self._scaled_int(38 if zoomed_layout else 36, minimum=36)
+        overview_button_height = self._scaled_int(34 if compact_height else (38 if zoomed_layout else 36), minimum=32)
         overview_margin_h = self._scaled_int(10 if zoomed_layout else 8, minimum=8)
         overview_margin_v = self._scaled_int(8 if zoomed_layout else 6, minimum=6)
         for row_name in overview_action_rows:
@@ -21842,21 +22219,57 @@ def _qh_apply_visual_polish_v21(self: QuantHunterWindow) -> None:
         self.setStyleSheet(
             self.styleSheet()
             + """
-QGroupBox#workspaceToolPanel,
-QGroupBox#terminalPanel {
-    border-radius: 20px;
-}
-QGroupBox#workspaceToolPanel {
-    padding: 18px 16px 14px 16px;
-}
+    QGroupBox#workspaceToolPanel,
+    QGroupBox#configToolPanel,
+    QGroupBox#paperExperimentPanel,
+    QGroupBox#terminalPanel {
+        border-radius: 20px;
+    }
+    QGroupBox#workspaceToolPanel,
+    QGroupBox#configToolPanel,
+    QGroupBox#paperExperimentPanel {
+        padding: 18px 16px 14px 16px;
+    }
 QGroupBox#terminalPanel {
     padding: 18px 16px 14px 16px;
 }
 QFrame#metricCard {
     border-radius: 18px;
 }
+QFrame#authEntryCard,
+QFrame#scannerInfoPanel,
+QFrame#boardMetaPanel,
+QFrame#detailHintPanel,
+QFrame#riskSnapshotCard,
+QFrame#paperSettingsPanel,
+QFrame#paperMetricsPanel,
+QFrame#scannerLiveSummaryPanel,
+QFrame#boardLiveSummaryPanel,
+QFrame#detailLiveSummaryPanel,
+QFrame#configLiveSummaryPanel {
+    border-radius: 18px;
+    padding: 10px;
+}
 QFrame#metricCard:hover {
     border: 1px solid rgba(150, 184, 219, 0.34);
+}
+QFrame#authEntryCard QLabel#inlineHint,
+QFrame#scannerInfoPanel QLabel#inlineHint,
+QFrame#boardMetaPanel QLabel#inlineHint,
+QFrame#detailHintPanel QLabel#inlineHint,
+QFrame#paperSettingsPanel QLabel,
+QFrame#paperMetricsPanel QLabel,
+QFrame#riskSnapshotCard QLabel#workspaceSubtitle,
+QFrame#riskSnapshotCard QLabel#workspaceEyebrow {
+    font-size: 12px;
+    line-height: 1.4;
+}
+QFrame#riskSnapshotCard QLabel#workspaceTitle,
+QFrame#scannerLiveSummaryPanel QLabel#workspaceSummaryHeadline,
+QFrame#boardLiveSummaryPanel QLabel#workspaceSummaryHeadline,
+QFrame#detailLiveSummaryPanel QLabel#workspaceSummaryHeadline,
+QFrame#configLiveSummaryPanel QLabel#workspaceSummaryHeadline {
+    font-weight: 900;
 }
 QLabel#metricCardTitle {
     color: #92a6bb;
@@ -22079,17 +22492,597 @@ def _qh_apply_toolbar_density_v22(self: QuantHunterWindow) -> None:
     self._qh_toolbar_density_applied_v22 = True
 
 
+def _qh_apply_recommend_page_polish_v32(self: QuantHunterWindow, *, narrow_overview: bool = False, zoomed_layout: bool = False) -> None:
+    recommend_tab = getattr(self, "recommend_tab", None)
+    if not isinstance(recommend_tab, QWidget):
+        return
+
+    for box in recommend_tab.findChildren(QGroupBox):
+        if box.objectName() == "workspaceToolPanel" or str(box.property("pageTone") or "") == "recommend":
+            inner_layout = box.layout()
+            if inner_layout is not None:
+                margin = self._scaled_int(14 if not narrow_overview else 12, minimum=10)
+                gap = self._scaled_int(10 if not narrow_overview else 8, minimum=8)
+                inner_layout.setContentsMargins(margin, margin, margin, margin)
+                inner_layout.setSpacing(gap)
+
+    status_label = getattr(self, "recommend_status_label", None)
+    if isinstance(status_label, QLabel):
+        status_label.setWordWrap(True)
+        status_label.setMinimumHeight(self._scaled_int(54 if zoomed_layout else 46, minimum=42))
+
+    for attr_name in ("daily_pool_focus_label", "recommend_decision_summary_label", "recommend_stage_status_label"):
+        label = getattr(self, attr_name, None)
+        if isinstance(label, QLabel):
+            label.setWordWrap(True)
+            label.setMinimumHeight(max(label.minimumHeight(), self._scaled_int(50 if zoomed_layout else 42, minimum=40)))
+
+    for attr_name in ("trade_plan_focus_label", "trade_plan_empty_hint"):
+        label = getattr(self, attr_name, None)
+        if isinstance(label, QLabel):
+            label.setWordWrap(True)
+            label.setMinimumHeight(max(label.minimumHeight(), self._scaled_int(42 if zoomed_layout else 36, minimum=34)))
+
+    action_buttons = [
+        getattr(self, "recommend_to_broker_button", None),
+        getattr(self, "plan_to_broker_button", None),
+        getattr(self, "focus_pending_button", None),
+        getattr(self, "retry_failed_button", None),
+        getattr(self, "push_priority_button", None),
+    ]
+    action_box = None
+    for candidate in recommend_tab.findChildren(QGroupBox, "workspaceToolPanel"):
+        if (candidate.title() or "").strip() == "送审动作":
+            action_box = candidate
+            break
+    if isinstance(action_box, QGroupBox):
+        action_grid = action_box.layout()
+        valid_buttons = [button for button in action_buttons if isinstance(button, QPushButton)]
+        if isinstance(action_grid, QGridLayout) and valid_buttons:
+            columns = 1 if narrow_overview else 2
+            self._relayout_button_grid(action_grid, valid_buttons, columns)
+            for button in valid_buttons:
+                button.setMinimumHeight(self._scaled_int(40 if zoomed_layout else 38, minimum=38))
+                button.setMinimumWidth(self._scaled_int(160 if narrow_overview else 132, minimum=120))
+                button.setMaximumWidth(16777215)
+                button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+    for row_name in ("trade_plan_empty_actions",):
+        row = getattr(self, row_name, None)
+        if not isinstance(row, QWidget):
+            continue
+        layout = row.layout()
+        if isinstance(layout, QHBoxLayout):
+            layout.setContentsMargins(10, 8, 10, 8)
+            layout.setSpacing(8 if narrow_overview else 10)
+        buttons = row.findChildren(QPushButton)
+        for button in buttons:
+            button.setMinimumHeight(self._scaled_int(40 if zoomed_layout else 38, minimum=38))
+            button.setMinimumWidth(self._scaled_int(126 if narrow_overview else 120, minimum=110))
+            button.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+
+    for attr_name, (min_height, max_height) in {
+        "recommend_dispatch_text": (164, 260),
+        "recommend_focus_review_text": (180, 286),
+        "recommend_queue_text": (164, 260),
+        "recommend_decision_summary_text": (214, 320),
+        "recommend_core_bucket_text": (178, 248),
+        "recommend_watch_bucket_text": (178, 248),
+        "recommend_risk_bucket_text": (178, 248),
+        "strategy_detail_text": (96, 132),
+        "strategy_path_text": (172, 244),
+        "daily_pool_text": (220, 304),
+        "trade_plan_text": (168, 232),
+        "market_pulse_text": (176, 244),
+        "position_advice_text": (170, 244),
+        "recommend_review_text": (198, 272),
+        "recommend_next_day_text": (198, 272),
+    }.items():
+        text = getattr(self, attr_name, None)
+        if not isinstance(text, QTextEdit):
+            continue
+        text.setLineWrapMode(QTextEdit.WidgetWidth)
+        text.setWordWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+        text.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        text.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        text.setMinimumHeight(self._scaled_int(min_height if not narrow_overview else max(min_height - 12, 144), minimum=132))
+        text.setMaximumHeight(self._scaled_int(max_height if not narrow_overview else max(max_height - 28, min_height), minimum=min_height))
+        text.document().setDocumentMargin(self._scaled_int(10 if not narrow_overview else 8, minimum=8))
+
+    for attr_name in ("recommend_dispatch_splitter", "recommend_summary_splitter"):
+        splitter = getattr(self, attr_name, None)
+        if isinstance(splitter, QSplitter):
+            splitter.setChildrenCollapsible(False)
+
+    dispatch_splitter = getattr(self, "recommend_dispatch_splitter", None)
+    if isinstance(dispatch_splitter, QSplitter) and dispatch_splitter.count() == 3:
+        if narrow_overview:
+            self._apply_splitter_layout_v19(dispatch_splitter, [320, 420, 240], [240, 280, 200])
+        else:
+            self._apply_splitter_layout_v19(dispatch_splitter, [420, 760, 340], [320, 420, 260])
+
+    summary_splitter = getattr(self, "recommend_summary_splitter", None)
+    if isinstance(summary_splitter, QSplitter) and summary_splitter.count() == 2:
+        if narrow_overview:
+            self._apply_splitter_layout_v19(summary_splitter, [360, 640], [260, 320])
+        else:
+            self._apply_splitter_layout_v19(summary_splitter, [440, 980], [320, 480])
+
+    for attr_name in ("recommend_recap_middle_splitter", "recommend_recap_bottom_splitter"):
+        splitter = getattr(self, attr_name, None)
+        if isinstance(splitter, QSplitter) and splitter.count() == 2:
+            if narrow_overview:
+                self._apply_splitter_layout_v19(splitter, [360, 620], [260, 320])
+            else:
+                self._apply_splitter_layout_v19(splitter, [420, 980], [320, 460])
+
+    review_splitter = getattr(self, "recommend_review_splitter", None)
+    if isinstance(review_splitter, QSplitter) and review_splitter.count() == 2:
+        if narrow_overview:
+            self._apply_splitter_layout_v19(review_splitter, [420, 420], [260, 260])
+        else:
+            self._apply_splitter_layout_v19(review_splitter, [760, 560], [420, 320])
+
+    for splitter_name in ("recommend_dispatch_splitter", "recommend_summary_splitter", "recommend_recap_middle_splitter", "recommend_recap_bottom_splitter", "recommend_review_splitter"):
+        splitter = getattr(self, splitter_name, None)
+        if isinstance(splitter, QSplitter):
+            splitter.setChildrenCollapsible(False)
+
+    for attr_name in ("theme_heat_table", "leader_table", "daily_pool_table"):
+        table = getattr(self, attr_name, None)
+        if isinstance(table, QTableWidget):
+            table.setMinimumHeight(max(table.minimumHeight(), self._scaled_int(300 if attr_name != "daily_pool_table" else 360, minimum=280)))
+            table.verticalHeader().setDefaultSectionSize(max(table.verticalHeader().defaultSectionSize(), self._scaled_int(46 if zoomed_layout else 44, minimum=42)))
+
+    for attr_name in ("trade_plan_table", "position_advice_table"):
+        table = getattr(self, attr_name, None)
+        if isinstance(table, QTableWidget):
+            table.setMinimumHeight(max(table.minimumHeight(), self._scaled_int(320 if attr_name == "trade_plan_table" else 280, minimum=260)))
+            table.verticalHeader().setDefaultSectionSize(max(table.verticalHeader().defaultSectionSize(), self._scaled_int(44 if zoomed_layout else 42, minimum=40)))
+
+
 def _qh_apply_layout_polish_v21(self: QuantHunterWindow) -> None:
     _ORIGINAL_QH_APPLY_LAYOUT_POLISH_V21(self)
     self._apply_visual_polish_v21()
     self._apply_terminal_table_governance_v22()
     self._apply_toolbar_density_v22()
+    self._apply_recommend_page_polish_v32(
+        narrow_overview=(self.screen().availableGeometry().width() if self.screen() is not None else self.width()) <= 1440,
+        zoomed_layout=self._ui_scale_factor() >= 1.20,
+    )
+
+
+def _qh_reflow_items_in_container_v34(
+    self: QuantHunterWindow,
+    container: QWidget | None,
+    widgets: list[QWidget],
+    columns: int,
+    *,
+    min_height: int = 0,
+    min_width: int = 0,
+) -> None:
+    if not isinstance(container, QWidget):
+        return
+    items = [widget for widget in widgets if isinstance(widget, QWidget)]
+    if not items:
+        return
+    outer_layout = container.layout()
+    if outer_layout is None:
+        return
+
+    grid_host = getattr(container, "_qh_grid_host_v34", None)
+    grid_layout = getattr(container, "_qh_grid_layout_v34", None)
+    if not isinstance(grid_host, QWidget) or not isinstance(grid_layout, QGridLayout):
+        while outer_layout.count():
+            item = outer_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                outer_layout.removeWidget(widget)
+        grid_host = QWidget(container)
+        grid_host.setObjectName(f"{container.objectName() or 'denseLayout'}GridHost")
+        grid_host.setProperty("pageTone", str(container.property("pageTone") or ""))
+        grid_layout = QGridLayout(grid_host)
+        grid_layout.setContentsMargins(0, 0, 0, 0)
+        grid_layout.setHorizontalSpacing(8)
+        grid_layout.setVerticalSpacing(8)
+        if isinstance(outer_layout, QGridLayout):
+            outer_layout.addWidget(grid_host, 0, 0)
+        else:
+            outer_layout.addWidget(grid_host)
+        container._qh_grid_host_v34 = grid_host
+        container._qh_grid_layout_v34 = grid_layout
+
+    while grid_layout.count():
+        grid_layout.takeAt(0)
+
+    column_count = max(1, min(columns, len(items)))
+    for index, widget in enumerate(items):
+        if min_height and hasattr(widget, "setMinimumHeight"):
+            widget.setMinimumHeight(max(widget.minimumHeight(), min_height))
+        if min_width and hasattr(widget, "setMinimumWidth"):
+            widget.setMinimumWidth(min_width)
+        if isinstance(widget, QPushButton):
+            widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        else:
+            widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        row, column = divmod(index, column_count)
+        grid_layout.addWidget(widget, row, column)
+
+    for column in range(column_count):
+        grid_layout.setColumnStretch(column, 1)
+
+
+def _qh_refine_dense_workspace_layouts_v34(self: QuantHunterWindow) -> None:
+    available_width = self.width() or 1600
+    screen = self.screen()
+    if screen is not None:
+        available_width = min(available_width, screen.availableGeometry().width()) if self.width() else screen.availableGeometry().width()
+    narrow_width = available_width <= 1480
+    medium_width = available_width <= 1720
+
+    auth_entry_panel = getattr(self, "auth_entry_panel", None)
+    if isinstance(auth_entry_panel, QWidget):
+        auth_cards = list(auth_entry_panel.findChildren(QFrame, "authEntryCard"))
+        self._qh_reflow_items_in_container_v34(
+            auth_entry_panel,
+            auth_cards,
+            1 if narrow_width else (2 if medium_width else 3),
+        )
+
+    action_row_specs = [
+        (getattr(self, "auth_action_row_panel", None), 1 if narrow_width else (2 if medium_width else 3)),
+        (self.findChild(QWidget, "scannerTopActionRow"), 1 if narrow_width else 3),
+        (self.findChild(QWidget, "paperActionRow"), 1 if narrow_width else (2 if medium_width else 4)),
+        (getattr(self, "trade_plan_empty_actions", None), 1 if narrow_width else (2 if medium_width else 3)),
+        (self.findChild(QWidget, "detailMetricsActionRow"), 1 if narrow_width else (2 if medium_width else 3)),
+        (self.findChild(QWidget, "detailDecisionActionRow"), 1 if narrow_width else 2),
+        (self.findChild(QWidget, "detailExecutionActionRow"), 1 if narrow_width else 2),
+        (self.findChild(QWidget, "detailConclusionActionRow"), 1 if narrow_width else 2),
+        (self.findChild(QWidget, "brokerGateActionRow"), 1 if narrow_width else 2),
+        (self.findChild(QWidget, "brokerExecutionActionRow"), 1 if narrow_width else (2 if medium_width else 3)),
+        (self.findChild(QWidget, "brokerRecapActionRow"), 1 if narrow_width else 2),
+        (self.findChild(QWidget, "runtimeLogActionRow"), 1 if narrow_width else (2 if medium_width else 3)),
+    ]
+    for row_widget, columns in action_row_specs:
+        if not isinstance(row_widget, QWidget):
+            continue
+        buttons = list(row_widget.findChildren(QPushButton))
+        self._qh_reflow_items_in_container_v34(row_widget, buttons, columns, min_height=38, min_width=0 if narrow_width else 96)
+
+    risk_cards = [
+        bundle.get("card")
+        for bundle in getattr(self, "risk_snapshot_cards", {}).values()
+        if isinstance(bundle, dict) and isinstance(bundle.get("card"), QFrame)
+    ]
+    snapshot_box = self.findChild(QGroupBox, "configRiskSnapshotBox")
+    snapshot_layout = snapshot_box.layout() if isinstance(snapshot_box, QGroupBox) else None
+    if isinstance(snapshot_layout, QGridLayout) and risk_cards:
+        while snapshot_layout.count():
+            snapshot_layout.takeAt(0)
+        snapshot_columns = 1 if narrow_width else (2 if medium_width else 3)
+        for index, card in enumerate(risk_cards):
+            row, column = divmod(index, snapshot_columns)
+            card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            button = card.findChild(QPushButton)
+            if isinstance(button, QPushButton):
+                button.setMinimumHeight(max(button.minimumHeight(), 40))
+                button.setMinimumWidth(0)
+                button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            snapshot_layout.addWidget(card, row, column)
+        for column in range(snapshot_columns):
+            snapshot_layout.setColumnStretch(column, 1)
+
+    tool_panel_specs = [
+        (getattr(self, "scanner_tab", None), "scannerInfoPanel", (0, 1, 2, 1), (2, 0, 1, 2)),
+        (getattr(self, "board_tab", None), "boardMetaPanel", (0, 1, 1, 1), (1, 0, 1, 2)),
+        (getattr(self, "detail_tab", None), "detailHintPanel", (0, 1, 1, 1), (1, 0, 1, 2)),
+    ]
+    for root, panel_name, wide_pos, narrow_pos in tool_panel_specs:
+        if not isinstance(root, QWidget):
+            continue
+        tool_panel = root.findChild(QGroupBox, "workspaceToolPanel")
+        panel = root.findChild(QFrame, panel_name)
+        grid = tool_panel.layout() if isinstance(tool_panel, QGroupBox) else None
+        if not isinstance(panel, QFrame) or not isinstance(grid, QGridLayout):
+            continue
+        row, column, row_span, column_span = narrow_pos if narrow_width else wide_pos
+        grid.addWidget(panel, row, column, row_span, column_span)
+        grid.setColumnStretch(0, 3)
+        grid.setColumnStretch(1, 2 if not narrow_width else 3)
+
+    scanner_tool_panel = getattr(self, "scanner_tab", None)
+    if isinstance(scanner_tool_panel, QWidget):
+        tool_box = scanner_tool_panel.findChild(QGroupBox, "workspaceToolPanel")
+        if isinstance(tool_box, QGroupBox):
+            for button in tool_box.findChildren(QPushButton):
+                button.setMinimumWidth(0 if narrow_width else 96)
+                button.setSizePolicy(QSizePolicy.Expanding if narrow_width else QSizePolicy.Preferred, QSizePolicy.Fixed)
+            for checkbox in tool_box.findChildren(QCheckBox):
+                checkbox.setMinimumWidth(0)
+
+    config_tool_panel = self.findChild(QGroupBox, "configToolPanel")
+    if isinstance(config_tool_panel, QGroupBox):
+        config_tool_panel.setMinimumHeight(max(config_tool_panel.minimumHeight(), 118 if narrow_width else 96))
+        layout = config_tool_panel.layout()
+        if isinstance(layout, QHBoxLayout):
+            layout.setSpacing(12 if narrow_width else 16)
+            layout.setContentsMargins(14, 12, 14, 12)
+
+    config_tab = getattr(self, "config_tab", None)
+    if isinstance(config_tab, QWidget):
+        for splitter in config_tab.findChildren(QSplitter):
+            if splitter.count() == 2:
+                splitter.setOrientation(Qt.Vertical if narrow_width else Qt.Horizontal)
+                self._configure_splitter(splitter, [540, 420] if narrow_width else [620, 620])
+        strategy_box = config_tab.findChild(QGroupBox, "configStrategyBox")
+        if isinstance(strategy_box, QGroupBox):
+            strategy_layout = strategy_box.layout()
+            if isinstance(strategy_layout, QFormLayout):
+                strategy_layout.setRowWrapPolicy(QFormLayout.WrapAllRows if narrow_width else QFormLayout.WrapLongRows)
+                strategy_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+                strategy_layout.setLabelAlignment(Qt.AlignLeft if narrow_width else Qt.AlignRight)
+                strategy_layout.setHorizontalSpacing(12)
+                strategy_layout.setVerticalSpacing(12 if narrow_width else 10)
+            for widget in list(strategy_box.findChildren(QLineEdit)) + list(strategy_box.findChildren(QComboBox)):
+                widget.setMinimumWidth(0)
+                widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        license_box = config_tab.findChild(QGroupBox, "configLicenseBox")
+        if isinstance(license_box, QGroupBox):
+            for button in license_box.findChildren(QPushButton):
+                button.setMinimumWidth(0 if narrow_width else 124)
+                button.setMinimumHeight(max(button.minimumHeight(), 40))
+                button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+    broker_tab = getattr(self, "broker_tab", None)
+    if isinstance(broker_tab, QWidget):
+        for splitter_name in ("paper_trading_splitter", "paper_analytics_splitter"):
+            splitter = getattr(self, splitter_name, None)
+            if isinstance(splitter, QSplitter):
+                splitter.setOrientation(Qt.Vertical if narrow_width else Qt.Horizontal)
+                if splitter_name == "paper_trading_splitter":
+                    self._configure_splitter(splitter, [560, 560] if narrow_width else [560, 760])
+                else:
+                    self._configure_splitter(splitter, [520, 420] if narrow_width else [520, 760])
+        paper_settings_grid = getattr(self, "paper_settings_grid", None)
+        if isinstance(paper_settings_grid, QGridLayout):
+            initial_cash_label = getattr(self, "paper_initial_cash_label", None)
+            initial_cash_input = getattr(self, "paper_initial_cash_input", None)
+            max_position_label = getattr(self, "paper_max_position_label", None)
+            max_position_input = getattr(self, "paper_max_position_input", None)
+            auto_interval_label = getattr(self, "paper_auto_interval_label", None)
+            auto_interval_input = getattr(self, "paper_auto_interval_input", None)
+            auto_run_checkbox = getattr(self, "paper_auto_run_checkbox", None)
+            if not all(
+                isinstance(widget, QWidget)
+                for widget in (
+                    initial_cash_label,
+                    initial_cash_input,
+                    max_position_label,
+                    max_position_input,
+                    auto_interval_label,
+                    auto_interval_input,
+                    auto_run_checkbox,
+                )
+            ):
+                initial_cash_label = initial_cash_input = max_position_label = max_position_input = None
+                auto_interval_label = auto_interval_input = auto_run_checkbox = None
+            if initial_cash_label is not None:
+                for widget, wide_max in (
+                    (initial_cash_input, 120),
+                    (max_position_input, 100),
+                    (auto_interval_input, 88),
+                ):
+                    if isinstance(widget, QLineEdit):
+                        widget.setMinimumWidth(0 if narrow_width else wide_max)
+                        widget.setMaximumWidth(16777215 if narrow_width else wide_max)
+                        widget.setSizePolicy(QSizePolicy.Expanding if narrow_width else QSizePolicy.Fixed, QSizePolicy.Fixed)
+                if isinstance(auto_run_checkbox, QCheckBox):
+                    auto_run_checkbox.setMinimumHeight(max(auto_run_checkbox.minimumHeight(), 34))
+                    auto_run_checkbox.setMinimumWidth(0)
+                while paper_settings_grid.count():
+                    paper_settings_grid.takeAt(0)
+                if narrow_width:
+                    paper_settings_grid.addWidget(initial_cash_label, 0, 0)
+                    paper_settings_grid.addWidget(initial_cash_input, 0, 1)
+                    paper_settings_grid.addWidget(max_position_label, 1, 0)
+                    paper_settings_grid.addWidget(max_position_input, 1, 1)
+                    paper_settings_grid.addWidget(auto_interval_label, 2, 0)
+                    paper_settings_grid.addWidget(auto_interval_input, 2, 1)
+                    paper_settings_grid.addWidget(auto_run_checkbox, 3, 0, 1, 2)
+                    paper_settings_grid.setColumnStretch(0, 1)
+                    paper_settings_grid.setColumnStretch(1, 1)
+                else:
+                    paper_settings_grid.addWidget(initial_cash_label, 0, 0)
+                    paper_settings_grid.addWidget(initial_cash_input, 0, 1)
+                    paper_settings_grid.addWidget(max_position_label, 0, 2)
+                    paper_settings_grid.addWidget(max_position_input, 0, 3)
+                    paper_settings_grid.addWidget(auto_interval_label, 1, 0)
+                    paper_settings_grid.addWidget(auto_interval_input, 1, 1)
+                    paper_settings_grid.addWidget(auto_run_checkbox, 1, 2, 1, 2)
+                    for column in range(4):
+                        paper_settings_grid.setColumnStretch(column, 1 if column % 2 else 0)
+        paper_metrics_panel = broker_tab.findChild(QFrame, "paperMetricsPanel")
+        if isinstance(paper_metrics_panel, QFrame):
+            metric_cards = list(paper_metrics_panel.findChildren(QFrame, "metricCard"))
+            self._qh_reflow_items_in_container_v34(
+                paper_metrics_panel,
+                metric_cards,
+                2 if narrow_width else 4,
+            )
+
+    feature_card_specs = [
+        ("authEntryCard", 108 if narrow_width else 96),
+        ("scannerInfoPanel", 124 if narrow_width else 110),
+        ("boardMetaPanel", 118 if narrow_width else 104),
+        ("detailHintPanel", 110 if narrow_width else 98),
+        ("riskSnapshotCard", 188 if narrow_width else 170),
+        ("paperSettingsPanel", 120),
+        ("paperMetricsPanel", 124),
+        ("scannerLiveSummaryPanel", 106 if narrow_width else 94),
+        ("boardLiveSummaryPanel", 106 if narrow_width else 94),
+        ("detailLiveSummaryPanel", 106 if narrow_width else 94),
+        ("configLiveSummaryPanel", 106 if narrow_width else 94),
+    ]
+    for object_name, min_height in feature_card_specs:
+        for widget in self.findChildren(QFrame, object_name):
+            widget.setMinimumHeight(max(widget.minimumHeight(), min_height))
+            widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+
+
+def _qh_polish_visual_rhythm_v35(self: QuantHunterWindow) -> None:
+    available_width = self.width() or 1600
+    screen = self.screen()
+    if screen is not None:
+        available_width = min(available_width, screen.availableGeometry().width()) if self.width() else screen.availableGeometry().width()
+    narrow_width = available_width <= 1480
+
+    standalone_button_specs = {
+        "market_refresh_button": ("刷新算法池", "刷新市场算法池、龙头候选和总览信号。"),
+        "recommend_push_focus_button": ("去送审", "把当前焦点股票送入交易审查链路。"),
+        "recommend_detail_focus_button": ("看复盘", "跳到复盘页继续查看单票证据和结论。"),
+        "recommend_broker_focus_button": ("去交易", "跳到交易页查看委托建议和执行链路。"),
+        "market_open_news_button": ("看原文", "打开当前消息原文。"),
+        "market_news_detail_button": ("看详情", "查看当前消息的详细解读。"),
+        "recommend_news_source_button": ("看原文", "打开当前消息原文。"),
+        "recommend_news_detail_button": ("看详情", "查看当前消息的详细解读。"),
+        "paper_initialize_button": ("初始化", "初始化 AI 模拟盘账户与起始参数。"),
+        "paper_run_button": ("执行一轮", "让 AI 模拟盘按当前配置自主执行一轮。"),
+        "paper_export_button": ("导出报告", "导出当前模拟盘报告与分析结果。"),
+        "paper_reset_button": ("重置", "清空模拟盘持仓、交割单和收益曲线。"),
+    }
+    for attr_name, (text, tooltip) in standalone_button_specs.items():
+        button = getattr(self, attr_name, None)
+        if isinstance(button, QPushButton):
+            self._set_label_text_if_changed(button, text, tooltip=tooltip)
+
+    config_tool_panel = self.findChild(QGroupBox, "configToolPanel")
+    if isinstance(config_tool_panel, QGroupBox):
+        labels = config_tool_panel.findChildren(QLabel)
+        if labels:
+            labels[0].setObjectName("workspaceSummaryHeadline")
+            labels[0].setWordWrap(True)
+
+    title_specs = {
+        "workspaceSummaryHeadline": (13, 24),
+        "sectionTitle": (13, 22),
+        "emptyStateTitle": (16, 28),
+        "metricCaption": (11, 18),
+        "metricValue": (18 if narrow_width else 20, 28),
+        "metricAccent": (11, 18),
+        "metricCardTitle": (11, 18),
+        "metricCardValue": (18 if narrow_width else 20, 28),
+        "workspaceTitle": (14, 24),
+        "workspaceSubtitle": (12, 20),
+    }
+    for object_name, (point_size, min_height) in title_specs.items():
+        for label in self.findChildren(QLabel, object_name):
+            font = label.font()
+            font.setPointSize(max(font.pointSize(), point_size))
+            if object_name in {"workspaceSummaryHeadline", "sectionTitle", "emptyStateTitle", "metricValue", "metricCardValue", "workspaceTitle"}:
+                font.setBold(True)
+            label.setFont(font)
+            label.setMinimumHeight(max(label.minimumHeight(), min_height))
+            label.setWordWrap(True)
+
+    for frame_name, minimum_height in (
+        ("metricCard", 96),
+        ("authEntryCard", 110),
+        ("scannerInfoPanel", 120),
+        ("boardMetaPanel", 112),
+        ("detailHintPanel", 104),
+        ("riskSnapshotCard", 180 if narrow_width else 164),
+        ("paperSettingsPanel", 120),
+        ("scannerLiveSummaryPanel", 104),
+        ("boardLiveSummaryPanel", 104),
+        ("detailLiveSummaryPanel", 104),
+        ("configLiveSummaryPanel", 104),
+    ):
+        for frame in self.findChildren(QFrame, frame_name):
+            frame.setMinimumHeight(max(frame.minimumHeight(), minimum_height))
+            layout = frame.layout()
+            if layout is not None:
+                margin = 14 if not narrow_width else 12
+                layout.setContentsMargins(margin, margin - 2, margin, margin - 2)
+                layout.setSpacing(6 if not narrow_width else 5)
+
+    for row in self.findChildren(QFrame):
+        if not bool(row.property("actionRow")):
+            continue
+        buttons = row.findChildren(QPushButton)
+        if not buttons:
+            continue
+        if narrow_width:
+            for button in buttons:
+                button.setMinimumWidth(0)
+                button.setMaximumWidth(16777215)
+                button.setMinimumHeight(max(button.minimumHeight(), 40))
+                button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        else:
+            target_width = min(max(max(button.sizeHint().width(), button.minimumSizeHint().width()) for button in buttons) + 20, 176)
+            for button in buttons:
+                button.setMinimumWidth(max(target_width, 112))
+                button.setMaximumWidth(max(button.maximumWidth(), target_width + 18))
+                button.setMinimumHeight(max(button.minimumHeight(), 40))
+                button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+
+    for box_name in ("configLicenseBox", "configNewsSourceBox"):
+        box = self.findChild(QGroupBox, box_name)
+        if not isinstance(box, QGroupBox):
+            continue
+        for button in box.findChildren(QPushButton):
+            button.setMinimumHeight(max(button.minimumHeight(), 40))
+            if narrow_width:
+                button.setMinimumWidth(0)
+                button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            else:
+                button.setMinimumWidth(max(button.minimumWidth(), 124))
+
+    for box_name, minimum_height in (
+        ("paperExperimentPanel", 172),
+    ):
+        box = self.findChild(QGroupBox, box_name)
+        if isinstance(box, QGroupBox):
+            box.setMinimumHeight(max(box.minimumHeight(), minimum_height))
+
+    for text_name, (minimum_height, maximum_height) in {
+        "license_status_text": (220, 300),
+        "config_notes_text": (180, 260),
+        "news_source_status_text": (190, 260),
+        "board_text": (220, 300),
+        "board_monitor_text": (220, 300),
+        "broker_gate_summary_text": (128, 170),
+        "broker_mainline_review_text": (170, 220),
+        "broker_execution_text": (210, 280),
+        "broker_recap_text": (190, 250),
+        "monitor_summary_text": (176, 240),
+        "paper_trading_text": (170, 230),
+        "paper_experiment_text": (150, 220),
+    }.items():
+        widget = getattr(self, text_name, None)
+        if isinstance(widget, QTextEdit):
+            widget.setMinimumHeight(max(widget.minimumHeight(), minimum_height))
+            widget.setMaximumHeight(max(widget.maximumHeight(), maximum_height))
 
 
 QuantHunterWindow._apply_visual_polish_v21 = _qh_apply_visual_polish_v21
 QuantHunterWindow._apply_terminal_table_governance_v22 = _qh_apply_terminal_table_governance_v22
 QuantHunterWindow._apply_toolbar_density_v22 = _qh_apply_toolbar_density_v22
-QuantHunterWindow._apply_layout_polish_v19 = _qh_apply_layout_polish_v21
+QuantHunterWindow._apply_recommend_page_polish_v32 = _qh_apply_recommend_page_polish_v32
+QuantHunterWindow._qh_reflow_items_in_container_v34 = _qh_reflow_items_in_container_v34
+QuantHunterWindow._refine_dense_workspace_layouts_v34 = _qh_refine_dense_workspace_layouts_v34
+QuantHunterWindow._polish_visual_rhythm_v35 = _qh_polish_visual_rhythm_v35
+
+
+_ORIGINAL_QH_APPLY_LAYOUT_POLISH_V35 = QuantHunterWindow._apply_layout_polish_v19
+
+
+def _qh_apply_layout_polish_v35(self: QuantHunterWindow) -> None:
+    _ORIGINAL_QH_APPLY_LAYOUT_POLISH_V35(self)
+    self._refine_dense_workspace_layouts_v34()
+    self._polish_visual_rhythm_v35()
+
+
+QuantHunterWindow._apply_layout_polish_v19 = _qh_apply_layout_polish_v35
 
 
 def _qh_set_widget_spotlight_v23(self: QuantHunterWindow, widget: QWidget | None, tone: str) -> None:
@@ -23449,25 +24442,25 @@ def _qh_apply_depth_effect(widget: QWidget | None, *, blur: float, offset_y: flo
 
 def _qh_apply_depth_effects_v27(self: QuantHunterWindow) -> None:
     shadow_palette = {
-        "graphite": {
+        "dark": {
             "hero": QColor(4, 10, 16, 150),
             "panel": QColor(4, 10, 16, 122),
             "chart": QColor(4, 10, 16, 136),
             "metric": QColor(4, 10, 16, 112),
         },
-        "ocean": {
-            "hero": QColor(57, 88, 110, 70),
-            "panel": QColor(57, 88, 110, 52),
-            "chart": QColor(57, 88, 110, 58),
-            "metric": QColor(57, 88, 110, 48),
+        "light": {
+            "hero": QColor(123, 97, 58, 56),
+            "panel": QColor(123, 97, 58, 42),
+            "chart": QColor(123, 97, 58, 48),
+            "metric": QColor(123, 97, 58, 36),
         },
-        "sunrise": {
-            "hero": QColor(96, 70, 34, 72),
-            "panel": QColor(96, 70, 34, 54),
-            "chart": QColor(96, 70, 34, 60),
-            "metric": QColor(96, 70, 34, 46),
+        "gold": {
+            "hero": QColor(95, 67, 20, 118),
+            "panel": QColor(95, 67, 20, 92),
+            "chart": QColor(95, 67, 20, 96),
+            "metric": QColor(95, 67, 20, 78),
         },
-    }.get(str(getattr(self, "current_theme", "graphite") or "graphite"), {})
+    }.get(str(getattr(self, "current_theme", DEFAULT_TERMINAL_THEME) or DEFAULT_TERMINAL_THEME), {})
 
     for name in ("shell_header",):
         _qh_apply_depth_effect(getattr(self, name, None), blur=34.0, offset_y=8.0, color=shadow_palette.get("hero", QColor(4, 10, 16, 150)))
@@ -23611,12 +24604,20 @@ QWidget#overviewRoot QLabel#metricValue,
 QWidget#overviewRoot QLabel#workspaceBadgeValue {
     color: #fbfdff;
 }
+QWidget#overviewRoot QLabel#heroTitle {
+    font-size: 20px;
+    font-weight: 900;
+}
 QWidget#overviewRoot QLabel#heroSubtitle,
 QWidget#overviewRoot QLabel#workspaceSubtitle,
 QWidget#overviewRoot QLabel#inlineHint,
 QWidget#overviewRoot QLabel#metricCaption,
 QWidget#overviewRoot QLabel#workspaceBadgeCaption {
     color: #c7d7e6;
+}
+QWidget#overviewRoot QLabel#heroSubtitle {
+    font-size: 12px;
+    line-height: 1.4;
 }
 QWidget#overviewRoot QLineEdit,
 QWidget#overviewRoot QComboBox,
@@ -23859,7 +24860,8 @@ def _qh_apply_overview_hard_theme_v30(self: QuantHunterWindow) -> None:
             widget.setAutoFillBackground(False)
             widget.setStyleSheet(stylesheet)
 
-    palette = _build_terminal_palette()
+    token = _terminal_theme_tokens(str(getattr(self, "current_theme", DEFAULT_TERMINAL_THEME) or DEFAULT_TERMINAL_THEME))
+    palette = _build_terminal_palette(str(getattr(self, "current_theme", DEFAULT_TERMINAL_THEME) or DEFAULT_TERMINAL_THEME))
 
     def _tint(widget) -> None:
         if isinstance(widget, QWidget):
@@ -23886,30 +24888,30 @@ def _qh_apply_overview_hard_theme_v30(self: QuantHunterWindow) -> None:
                 self._set_plain_text_if_changed(widget, text)
 
     group_style = (
-        "QGroupBox { background:qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 rgba(19,27,36,0.99), stop:1 rgba(13,19,27,0.99)); "
-        "border:1px solid rgba(123,145,170,0.18); border-radius:18px; color:#eef5fd; } "
-        "QGroupBox::title { color:#eef5fd; font-weight:800; } "
-        "QLabel { background:transparent; color:#eef5fd; }"
+        f"QGroupBox {{ background:qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 {token['panel_0']}, stop:1 {token['panel_1']}); "
+        f"border:1px solid {token['border']}; border-radius:18px; color:{token['text']}; }} "
+        f"QGroupBox::title {{ color:{token['text']}; font-weight:800; }} "
+        f"QLabel {{ background:transparent; color:{token['text']}; }}"
     )
     text_panel_style = (
-        "background:rgba(11,16,22,0.98); color:#eef5fd; "
-        "border:1px solid rgba(120,142,166,0.18); border-radius:16px; padding:12px;"
+        f"background:{token['panel_2']}; color:{token['text']}; "
+        f"border:1px solid {token['border']}; border-radius:16px; padding:12px;"
     )
     input_style = (
-        "background:rgba(13,19,27,0.98); color:#eef5fd; "
-        "border:1px solid rgba(126,151,179,0.18); border-radius:14px; padding:8px 12px;"
+        f"background:{token['input_bg']}; color:{token['input_fg']}; "
+        f"border:1px solid {token['border']}; border-radius:14px; padding:8px 12px;"
     )
     ghost_button_style = (
-        "background:rgba(18,25,34,0.98); color:#f3f8ff; "
-        "border:1px solid rgba(123,145,170,0.18); border-radius:12px; padding:8px 14px; font-weight:800;"
+        f"background:{token['button_ghost']}; color:{token['text']}; "
+        f"border:1px solid {token['border']}; border-radius:12px; padding:8px 14px; font-weight:800;"
     )
     tonal_button_style = (
-        "background:rgba(28,38,50,0.98); color:#eef5fd; "
-        "border:1px solid rgba(126,183,255,0.18); border-radius:12px; padding:8px 14px; font-weight:800;"
+        f"background:{token['button_tonal']}; color:{token['text']}; "
+        f"border:1px solid {token['primary']}; border-radius:12px; padding:8px 14px; font-weight:800;"
     )
     accent_button_style = (
-        "background:qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 rgba(43,132,191,0.98), stop:1 rgba(30,92,138,0.98)); "
-        "color:#ffffff; border:1px solid rgba(126,183,255,0.22); border-radius:12px; padding:10px 16px; font-weight:800;"
+        f"background:qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {token['accent_0']}, stop:1 {token['accent_1']}); "
+        f"color:{token['button_accent_text']}; border:1px solid {token['primary']}; border-radius:12px; padding:10px 16px; font-weight:800;"
     )
 
     for name in [
@@ -23940,11 +24942,11 @@ def _qh_apply_overview_hard_theme_v30(self: QuantHunterWindow) -> None:
         _set(widget, "background:transparent;")
 
     for attr_name, style in [
-        ("market_header_label", "color:#fbfdff; background:transparent; font-size:22px; font-weight:900;"),
-        ("market_subheader_label", "color:#c7d7e6; background:transparent; font-size:13px; font-weight:600;"),
-        ("market_signal_label", "color:#ffe08a; background:rgba(16,22,30,0.98); border:1px solid rgba(123,145,170,0.18); border-radius:10px; padding:8px 12px; font-weight:800;"),
-        ("market_quote_label", "color:#c7d7e6; background:transparent; font-size:12px; font-weight:600;"),
-        ("market_status_label", "color:#f7fbff; background:qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 rgba(31,44,60,0.98), stop:1 rgba(17,25,34,0.98)); border:1px solid rgba(133,191,255,0.18); border-left:4px solid #8fc4ff; border-radius:15px; padding:10px 14px; font-weight:800;"),
+        ("market_header_label", f"color:{token['text']}; background:transparent; font-size:22px; font-weight:900;"),
+        ("market_subheader_label", f"color:{token['text_soft']}; background:transparent; font-size:13px; font-weight:600;"),
+        ("market_signal_label", f"color:{token['secondary']}; background:{token['panel_0']}; border:1px solid {token['border']}; border-radius:10px; padding:8px 12px; font-weight:800;"),
+        ("market_quote_label", f"color:{token['text_soft']}; background:transparent; font-size:12px; font-weight:600;"),
+        ("market_status_label", f"color:{token['text']}; background:qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {token['panel_0']}, stop:1 {token['button_ghost']}); border:1px solid {token['border']}; border-left:4px solid {token['primary']}; border-radius:15px; padding:10px 14px; font-weight:800;"),
     ]:
         widget = getattr(self, attr_name, None)
         _tint(widget)
@@ -24054,11 +25056,11 @@ def _qh_apply_overview_hard_theme_v30(self: QuantHunterWindow) -> None:
 
     widget = getattr(self, "market_pool_table", None)
     _tint(widget)
-    _set(widget, "background:rgba(11,16,22,0.98); color:#eef5fd; border:1px solid rgba(120,142,166,0.18); border-radius:18px; selection-background-color:rgba(38,72,108,0.98); selection-color:#f8fbff;")
+    _set(widget, f"background:{token['panel_2']}; color:{token['text']}; border:1px solid {token['border']}; border-radius:18px; selection-background-color:{token['selection']}; selection-color:{token['selection_text']};")
     for attr_name in ["intraday_chart_view", "daily_chart_view", "fund_chart_view", "momentum_chart_view", "indicator_chart_view"]:
         widget = getattr(self, attr_name, None)
         _tint(widget)
-        _set(widget, "background:qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #0b0f15, stop:1 #10161d); border:1px solid rgba(120,142,166,0.18); border-radius:16px;")
+        _set(widget, f"background:qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 {token['shell_bg_0']}, stop:1 {token['shell_bg_1']}); border:1px solid {token['border']}; border-radius:16px;")
 
     self._qh_overview_hard_theme_applied_v30 = True
 
@@ -24088,12 +25090,26 @@ QuantHunterWindow._post_build_ui_tweaks = _qh_post_build_ui_tweaks_v30
 
 
 def _qh_apply_unified_color_system_v31(self: QuantHunterWindow) -> None:
-    token = _terminal_theme_tokens(getattr(self, "current_theme", "graphite"))
+    if getattr(self, "_qh_unified_color_system_applied_v31", False):
+        return
+    token = _terminal_theme_tokens(getattr(self, "current_theme", DEFAULT_TERMINAL_THEME))
     style = f"""
 QWidget#shellRoot,
 QWidget[workspaceShellRoot="true"] {{
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {token["shell_bg_0"]}, stop:0.56 {token["shell_bg_1"]}, stop:1 {token["shell_bg_2"]});
     color: {token["text"]};
+}}
+QTabBar::tab {{
+    background: {token["tab_bg"]};
+    color: {token["tab_fg"]};
+    border: 1px solid {token["border"]};
+}}
+QTabBar::tab:hover {{
+    border-color: {token["primary"]};
+}}
+QTabBar::tab:selected {{
+    background: {token["tab_selected_bg"]};
+    color: {token["tab_selected_fg"]};
 }}
 QWidget#overviewRoot,
 QWidget#scannerRoot,
@@ -24112,7 +25128,21 @@ QFrame#shellChip,
 QFrame#workspaceHero,
 QFrame#workspaceBadge,
 QFrame#metricCard,
+QFrame#authEntryCard,
+QFrame#scannerInfoPanel,
+QFrame#boardMetaPanel,
+QFrame#detailHintPanel,
+QFrame#riskSnapshotCard,
+QFrame#paperSettingsPanel,
+QFrame#paperMetricsPanel,
+QFrame#scannerLiveSummaryPanel,
+QFrame#boardLiveSummaryPanel,
+QFrame#detailLiveSummaryPanel,
+QFrame#configLiveSummaryPanel,
+QFrame[actionRow="true"],
 QGroupBox#workspaceToolPanel,
+QGroupBox#configToolPanel,
+QGroupBox#paperExperimentPanel,
 QGroupBox#terminalPanel,
 QGroupBox[surfaceRole="metric-band"],
 QGroupBox[surfaceRole="spotlight"],
@@ -24138,15 +25168,59 @@ QGroupBox#breadthSignalBox {{
     border: 1px solid {token["border"]};
     color: {token["text"]};
 }}
+QFrame[actionRow="true"] {{
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {token["panel_0"]}, stop:1 {token["panel_1"]});
+    border: 1px solid {token["border"]};
+    border-radius: 16px;
+}}
+QFrame#authEntryCard,
+QFrame#scannerInfoPanel,
+QFrame#boardMetaPanel,
+QFrame#detailHintPanel,
+QFrame#riskSnapshotCard,
+QFrame#paperSettingsPanel,
+QFrame#paperMetricsPanel,
+QFrame#scannerLiveSummaryPanel,
+QFrame#boardLiveSummaryPanel,
+QFrame#detailLiveSummaryPanel,
+QFrame#configLiveSummaryPanel {{
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {token["panel_0"]}, stop:0.48 {token["panel_1"]}, stop:1 {token["shell_bg_1"]});
+    border: 1px solid {token["border"]};
+    border-radius: 18px;
+}}
+QFrame#shellChip:hover,
+QFrame#workspaceBadge:hover,
+QFrame#metricCard:hover,
+QFrame#authEntryCard:hover,
+QFrame#scannerInfoPanel:hover,
+QFrame#boardMetaPanel:hover,
+QFrame#detailHintPanel:hover,
+QFrame#riskSnapshotCard:hover,
+QFrame#paperSettingsPanel:hover,
+QFrame#paperMetricsPanel:hover,
+QFrame#scannerLiveSummaryPanel:hover,
+QFrame#boardLiveSummaryPanel:hover,
+QFrame#detailLiveSummaryPanel:hover,
+QFrame#configLiveSummaryPanel:hover,
+QFrame[actionRow="true"]:hover {{
+    border-color: {token["primary"]};
+}}
+QFrame[actionRow="true"][riskActive="true"] {{
+    border-color: {token["primary"]};
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {token["panel_1"]}, stop:1 {token["button_tonal"]});
+}}
 QFrame#shellHeader,
 QFrame#shellPulseBar,
 QFrame#workspaceHero,
+QGroupBox#configToolPanel,
+QGroupBox#paperExperimentPanel,
 QGroupBox[surfaceRole="spotlight"] {{
     border-color: {token["primary"]};
 }}
 QFrame#shellHeader QLabel,
 QFrame#shellPulseBar QLabel,
 QFrame#shellChip QLabel,
+QFrame[actionRow="true"] QLabel,
 QFrame#workspaceHero QLabel,
 QFrame#workspaceBadge QLabel,
 QFrame#metricCard QLabel,
@@ -24193,7 +25267,7 @@ QLabel#terminalSignal {{
 }}
 QLabel#shellBrandPill,
 QLabel#workspaceHeroStamp {{
-    background: rgba(24, 35, 48, 0.96);
+    background: {token["panel_0"]};
     border: 1px solid {token["border"]};
     border-radius: 10px;
 }}
@@ -24210,7 +25284,7 @@ QFrame#workspaceHeroAccent[heroTone="board"] {{
     border: none;
 }}
 QFrame#workspaceBadgeRail {{
-    background: rgba(14, 21, 29, 0.42);
+    background: {token["button_ghost"]};
     border: 1px solid {token["border"]};
     border-radius: 18px;
 }}
@@ -24219,16 +25293,30 @@ QComboBox,
 QTextEdit,
 QListWidget,
 QTableWidget {{
-    background: {token["panel_2"]};
-    color: {token["text"]};
+    background: {token["input_bg"]};
+    color: {token["input_fg"]};
     border: 1px solid {token["border"]};
     selection-background-color: {token["selection"]};
-    selection-color: #f5f7fa;
+    selection-color: {token["selection_text"]};
 }}
 QLineEdit:focus,
 QComboBox:focus,
-QTextEdit:focus {{
+QTextEdit:focus,
+QListWidget:focus,
+QTableWidget:focus {{
     border-color: {token["primary"]};
+}}
+QComboBox QAbstractItemView,
+QListWidget {{
+    background: {token["panel_2"]};
+    color: {token["text"]};
+    selection-background-color: {token["selection"]};
+    selection-color: {token["selection_text"]};
+    border: 1px solid {token["border"]};
+}}
+QListWidget::item:selected {{
+    background: {token["selection"]};
+    color: {token["selection_text"]};
 }}
 QTextEdit#marketNotePanel,
 QTextEdit#terminalConsole {{
@@ -24251,12 +25339,12 @@ QTableWidget#marketPoolTable::item:selected,
 QTableWidget#recommendPoolTable::item:selected,
 QTableWidget#terminalTable::item:selected {{
     background: {token["selection"]};
-    color: #f5f7fa;
+    color: {token["selection_text"]};
 }}
 QHeaderView::section,
 QTableWidget#terminalTable QHeaderView::section {{
     background: {token["panel_1"]};
-    color: #d4dbe3;
+    color: {token["tab_selected_fg"]};
     border: none;
     border-bottom: 1px solid {token["border"]};
     font-weight: 800;
@@ -24283,11 +25371,15 @@ QPushButton#tonalButton {{
 }}
 QPushButton#accentButton {{
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {token["accent_0"]}, stop:1 {token["accent_1"]});
-    color: #081019;
-    border: 1px solid rgba(94, 167, 255, 0.38);
+    color: {token["button_accent_text"]};
+    border: 1px solid {token["primary"]};
 }}
 QPushButton#accentButton:hover {{
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {token["accent_1"]}, stop:1 {token["accent_1"]});
+}}
+QPushButton:checked,
+QPushButton:focus {{
+    border-color: {token["primary"]};
 }}
 QLabel#statusBanner,
 QLabel#focusStateLabel,
@@ -24315,11 +25407,34 @@ QLabel#focusStateLabel[spotlight="risk"] {{
     border-color: rgba(196, 91, 91, 0.65);
     border-left-color: {token["danger"]};
 }}
+QScrollBar:vertical,
+QScrollBar:horizontal {{
+    background: {token["shell_bg_0"]};
+    border: none;
+    width: 10px;
+    height: 10px;
+    margin: 2px;
+}}
+QScrollBar::handle:vertical,
+QScrollBar::handle:horizontal {{
+    background: {token["selection"]};
+    border-radius: 5px;
+    min-height: 24px;
+    min-width: 24px;
+}}
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical,
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:horizontal,
+QScrollBar::add-page:vertical,
+QScrollBar::sub-page:vertical,
+QScrollBar::add-page:horizontal,
+QScrollBar::sub-page:horizontal {{
+    background: transparent;
+    border: none;
+}}
 """
-    current = self.styleSheet()
-    marker = "QWidget#shellRoot,\nQWidget[workspaceShellRoot=\"true\"]"
-    if marker not in current:
-        self.setStyleSheet(current + style)
+    self.setStyleSheet(self.styleSheet() + style)
     self._qh_unified_color_system_applied_v31 = True
 
 
@@ -24456,10 +25571,20 @@ def _qh_refresh_recommend_decision_summary_v38(self: QuantHunterWindow, row=None
 def _qh_refresh_recommendation_focus_panels_v38(self: QuantHunterWindow, row=None) -> None:
     _ORIGINAL_QH_REFRESH_RECOMMENDATION_FOCUS_PANELS_V38(self, row)
     review_widget = getattr(self, "recommend_focus_review_text", None)
+    action_button = getattr(self, "recommend_news_source_button", None)
+    detail_button = getattr(self, "recommend_news_detail_button", None)
     if not isinstance(review_widget, QTextEdit):
+        if hasattr(self, "_update_news_action_button"):
+            self._update_news_action_button(action_button, None)
+        if hasattr(self, "_update_news_detail_button"):
+            self._update_news_detail_button(detail_button, None)
         return
     current = row or (self._current_recommend_focus() if hasattr(self, "_current_recommend_focus") else None)
     if current is None:
+        if hasattr(self, "_update_news_action_button"):
+            self._update_news_action_button(action_button, None)
+        if hasattr(self, "_update_news_detail_button"):
+            self._update_news_detail_button(detail_button, None)
         return
     verdict, execution_summary, can_submit, can_open_broker = _qh_recommend_execution_summary_v24(self, current)
     execution_state = str(getattr(current, "execution_status", "") or "待观察")
@@ -24491,6 +25616,7 @@ def _qh_refresh_recommendation_focus_panels_v38(self: QuantHunterWindow, row=Non
     )
     news_loader = getattr(self, "_news_digest_lines_for_symbol", None)
     news_lines = news_loader(symbol, limit=2) if callable(news_loader) and symbol else []
+    latest_news = symbol_news[0] if symbol_news else None
     lines.append(f"首选动作：{primary_headline} | {primary_detail}")
     lines.append("辅助消息面：")
     lines.extend(logic_lines)
@@ -24498,6 +25624,10 @@ def _qh_refresh_recommendation_focus_panels_v38(self: QuantHunterWindow, row=Non
         lines.append("近期消息：")
         lines.extend(news_lines)
     self._set_plain_text_if_changed(review_widget, "\n".join(lines))
+    if hasattr(self, "_update_news_action_button"):
+        self._update_news_action_button(action_button, latest_news)
+    if hasattr(self, "_update_news_detail_button"):
+        self._update_news_detail_button(detail_button, latest_news)
 
 
 def _qh_recommend_primary_button_key_v39(
@@ -25304,7 +26434,127 @@ QuantHunterWindow._on_shell_chip_clicked_v47 = _qh_on_shell_chip_clicked_v47
 QuantHunterWindow._refresh_workspace_focus_banners = _qh_refresh_workspace_focus_banners_v40
 
 
-def _build_terminal_palette(theme_key: str = "graphite") -> QPalette:
+def _qh_set_widget_page_tone_v33(widget: QWidget | None, tone: str, *, refresh_style: bool = False) -> None:
+    if not isinstance(widget, QWidget):
+        return
+    if str(widget.property("pageTone") or "") == tone:
+        return
+    widget.setProperty("pageTone", tone)
+    if refresh_style:
+        style = widget.style()
+        if style is not None:
+            try:
+                style.unpolish(widget)
+                style.polish(widget)
+            except Exception:
+                pass
+        widget.update()
+
+
+def _qh_apply_workspace_page_tones_v33(self: QuantHunterWindow) -> None:
+    tone_widget_types = (QFrame, QGroupBox, QLabel, QTextEdit, QTableWidget, QListWidget, QLineEdit, QComboBox, QCheckBox, QPushButton, QSplitter)
+    wrap_label_names = {
+        "workspaceTitle",
+        "workspaceSubtitle",
+        "workspaceBadgeValue",
+        "workspaceBadgeCaption",
+        "workspaceEyebrow",
+        "workspaceSummaryHeadline",
+        "metricCardTitle",
+        "metricCardValue",
+        "statusBanner",
+        "focusStateLabel",
+        "workspaceFocusBanner",
+        "inlineHint",
+        "sectionTitle",
+        "emptyStateTitle",
+        "emptyStateMeta",
+    }
+
+    for workspace_key in WORKSPACE_TAB_ORDER:
+        root = getattr(self, f"{workspace_key}_tab", None)
+        if not isinstance(root, QWidget):
+            continue
+        _qh_set_widget_page_tone_v33(root, workspace_key)
+        for child in root.findChildren(QWidget):
+            if isinstance(child, tone_widget_types):
+                _qh_set_widget_page_tone_v33(child, workspace_key)
+            if isinstance(child, QLabel) and (child.objectName() in wrap_label_names or bool(child.parentWidget() and child.parentWidget().property("actionRow"))):
+                child.setMinimumWidth(0)
+                child.setWordWrap(True)
+            elif isinstance(child, QTextEdit):
+                child.setLineWrapMode(QTextEdit.WidgetWidth)
+                child.setWordWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+                child.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+                child.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            elif isinstance(child, QLineEdit):
+                child.setMinimumHeight(max(child.minimumHeight(), 38))
+            elif isinstance(child, QComboBox):
+                child.setMinimumHeight(max(child.minimumHeight(), 38))
+            elif isinstance(child, QCheckBox):
+                child.setMinimumHeight(max(child.minimumHeight(), 32))
+            elif isinstance(child, QPushButton):
+                child.setMinimumHeight(max(child.minimumHeight(), 38))
+            elif isinstance(child, QTableWidget):
+                child.horizontalHeader().setHighlightSections(False)
+                child.verticalHeader().setDefaultSectionSize(max(child.verticalHeader().defaultSectionSize(), 42))
+
+    current_index = self.tabs.currentIndex() if hasattr(self, "tabs") else 0
+    current_tone = WORKSPACE_TAB_ORDER[current_index] if 0 <= current_index < len(WORKSPACE_TAB_ORDER) else "overview"
+
+    for widget in (
+        getattr(self, "tabs", None),
+        self.tabs.tabBar() if hasattr(self, "tabs") else None,
+        getattr(self, "top_badge", None),
+        getattr(self, "theme_title_label", None),
+        getattr(self, "theme_combo", None),
+        getattr(self, "shell_header", None),
+        getattr(self, "shell_product_eyebrow", None),
+        getattr(self, "shell_brand_pill", None),
+        getattr(self, "shell_product_title", None),
+        getattr(self, "shell_product_subtitle", None),
+        getattr(self, "shell_pulse_bar", None),
+        getattr(self, "shell_pulse_label", None),
+        getattr(self, "shell_pulse_hint", None),
+        getattr(self, "shell_pulse_meta", None),
+    ):
+        _qh_set_widget_page_tone_v33(widget, current_tone, refresh_style=True)
+
+    for chip_name in (
+        "shell_workspace_chip",
+        "shell_focus_chip",
+        "shell_market_chip",
+        "shell_pipeline_chip",
+        "shell_refresh_chip",
+        "shell_runtime_chip",
+    ):
+        chip = getattr(self, chip_name, None)
+        if not isinstance(chip, dict):
+            continue
+        for part_name in ("frame", "label", "value"):
+            _qh_set_widget_page_tone_v33(chip.get(part_name), current_tone, refresh_style=True)
+
+
+_ORIGINAL_QH_POST_BUILD_UI_TWEAKS_V33 = QuantHunterWindow._post_build_ui_tweaks
+_ORIGINAL_QH_ON_WORKSPACE_TAB_CHANGED_V33 = QuantHunterWindow._on_workspace_tab_changed
+
+
+def _qh_post_build_ui_tweaks_v33(self: QuantHunterWindow) -> None:
+    _ORIGINAL_QH_POST_BUILD_UI_TWEAKS_V33(self)
+    self._apply_workspace_page_tones_v33()
+
+
+def _qh_on_workspace_tab_changed_v33(self: QuantHunterWindow, index: int) -> None:
+    _ORIGINAL_QH_ON_WORKSPACE_TAB_CHANGED_V33(self, index)
+    self._apply_workspace_page_tones_v33()
+
+
+QuantHunterWindow._apply_workspace_page_tones_v33 = _qh_apply_workspace_page_tones_v33
+QuantHunterWindow._post_build_ui_tweaks = _qh_post_build_ui_tweaks_v33
+QuantHunterWindow._on_workspace_tab_changed = _qh_on_workspace_tab_changed_v33
+
+
+def _build_terminal_palette(theme_key: str = DEFAULT_TERMINAL_THEME) -> QPalette:
     token = _terminal_theme_tokens(theme_key)
     palette = QPalette()
     palette.setColor(QPalette.Window, QColor(token["shell_bg_1"]))
@@ -25314,12 +26564,12 @@ def _build_terminal_palette(theme_key: str = "graphite") -> QPalette:
     palette.setColor(QPalette.Text, QColor(token["text"]))
     palette.setColor(QPalette.Button, QColor(token["panel_0"]))
     palette.setColor(QPalette.ButtonText, QColor(token["text"]))
-    palette.setColor(QPalette.BrightText, QColor("#fbfdff"))
+    palette.setColor(QPalette.BrightText, QColor(token["selection_text"]))
     palette.setColor(QPalette.Highlight, QColor(token["selection"]))
-    palette.setColor(QPalette.HighlightedText, QColor("#fbfdff"))
+    palette.setColor(QPalette.HighlightedText, QColor(token["selection_text"]))
     palette.setColor(QPalette.ToolTipBase, QColor(token["shell_bg_2"]))
     palette.setColor(QPalette.ToolTipText, QColor(token["text"]))
-    palette.setColor(QPalette.PlaceholderText, QColor("#8ea4bb"))
+    palette.setColor(QPalette.PlaceholderText, QColor(token["text_soft"]))
     return palette
 
 

@@ -1,75 +1,75 @@
 {
   "full_tests": {
-    "status": "OK",
-    "count": 231
+    "status": "FAIL",
+    "count": 292
   },
   "compat_tests": {
-    "status": "OK",
-    "count": 173
+    "status": "FAIL",
+    "count": 140
   },
   "perf": {
     "pipeline": [
       {
         "files": 10,
-        "scan_ms": 4.06,
-        "backtest_ms": 0.31,
-        "recommend_ms": 0.63,
-        "plan_ms": 0.04,
+        "scan_ms": 4.22,
+        "backtest_ms": 0.3,
+        "recommend_ms": 0.62,
+        "plan_ms": 0.03,
         "board_ms": 0.04,
-        "export_ms": 3.86,
-        "paper_ms": 1.09,
+        "export_ms": 4.18,
+        "paper_ms": 1.37,
         "rows": 7,
         "pool": 7,
         "decisions": 0
       },
       {
         "files": 50,
-        "scan_ms": 19.26,
-        "backtest_ms": 1.35,
+        "scan_ms": 20.31,
+        "backtest_ms": 1.34,
         "recommend_ms": 2.28,
         "plan_ms": 0.05,
         "board_ms": 0.1,
-        "export_ms": 5.39,
-        "paper_ms": 1.12,
+        "export_ms": 6.36,
+        "paper_ms": 1.45,
         "rows": 34,
         "pool": 34,
         "decisions": 0
       },
       {
         "files": 100,
-        "scan_ms": 37.77,
-        "backtest_ms": 2.76,
-        "recommend_ms": 4.2,
+        "scan_ms": 40.88,
+        "backtest_ms": 2.83,
+        "recommend_ms": 4.34,
         "plan_ms": 0.06,
         "board_ms": 0.17,
-        "export_ms": 7.35,
-        "paper_ms": 1.17,
+        "export_ms": 9.1,
+        "paper_ms": 1.46,
         "rows": 67,
         "pool": 67,
         "decisions": 0
       },
       {
         "files": 200,
-        "scan_ms": 75.46,
-        "backtest_ms": 5.4,
-        "recommend_ms": 8.22,
+        "scan_ms": 80.57,
+        "backtest_ms": 5.51,
+        "recommend_ms": 8.31,
         "plan_ms": 0.09,
         "board_ms": 0.31,
-        "export_ms": 17.4,
-        "paper_ms": 1.27,
+        "export_ms": 12.76,
+        "paper_ms": 1.65,
         "rows": 134,
         "pool": 134,
         "decisions": 0
       },
       {
         "files": 500,
-        "scan_ms": 191.11,
-        "backtest_ms": 13.35,
-        "recommend_ms": 20.67,
-        "plan_ms": 0.18,
-        "board_ms": 0.75,
-        "export_ms": 25.67,
-        "paper_ms": 1.79,
+        "scan_ms": 211.56,
+        "backtest_ms": 14.11,
+        "recommend_ms": 20.97,
+        "plan_ms": 0.19,
+        "board_ms": 0.76,
+        "export_ms": 31.41,
+        "paper_ms": 2.27,
         "rows": 334,
         "pool": 334,
         "decisions": 0
@@ -79,39 +79,39 @@
       [
         {
           "files": 10,
-          "scan_ms": 4.25,
-          "backtest_ms": 0.34,
-          "recommend_ms": 3.16,
+          "scan_ms": 4.47,
+          "backtest_ms": 0.33,
+          "recommend_ms": 3.21,
           "plan_ms": 0.05,
-          "board_ms": 0.05,
-          "export_ms": 3.86,
-          "paper_ms": 1.14,
-          "rows": 7,
-          "pool": 7,
-          "decisions": 0
-        },
-        {
-          "files": 10,
-          "scan_ms": 4.06,
-          "backtest_ms": 0.31,
-          "recommend_ms": 0.63,
-          "plan_ms": 0.04,
           "board_ms": 0.04,
-          "export_ms": 3.32,
-          "paper_ms": 1.09,
+          "export_ms": 4.24,
+          "paper_ms": 1.37,
           "rows": 7,
           "pool": 7,
           "decisions": 0
         },
         {
           "files": 10,
-          "scan_ms": 3.96,
+          "scan_ms": 4.09,
           "backtest_ms": 0.3,
-          "recommend_ms": 0.61,
+          "recommend_ms": 0.59,
+          "plan_ms": 0.03,
+          "board_ms": 0.09,
+          "export_ms": 3.87,
+          "paper_ms": 1.34,
+          "rows": 7,
+          "pool": 7,
+          "decisions": 0
+        },
+        {
+          "files": 10,
+          "scan_ms": 4.22,
+          "backtest_ms": 0.3,
+          "recommend_ms": 0.62,
           "plan_ms": 0.03,
           "board_ms": 0.03,
-          "export_ms": 4.32,
-          "paper_ms": 1.0,
+          "export_ms": 4.18,
+          "paper_ms": 1.38,
           "rows": 7,
           "pool": 7,
           "decisions": 0
@@ -120,39 +120,39 @@
       [
         {
           "files": 50,
-          "scan_ms": 20.33,
-          "backtest_ms": 1.36,
+          "scan_ms": 21.93,
+          "backtest_ms": 1.35,
           "recommend_ms": 2.28,
           "plan_ms": 0.05,
           "board_ms": 0.1,
-          "export_ms": 6.0,
-          "paper_ms": 1.2,
+          "export_ms": 6.36,
+          "paper_ms": 1.44,
           "rows": 34,
           "pool": 34,
           "decisions": 0
         },
         {
           "files": 50,
-          "scan_ms": 18.84,
-          "backtest_ms": 1.33,
-          "recommend_ms": 2.23,
+          "scan_ms": 20.26,
+          "backtest_ms": 1.34,
+          "recommend_ms": 2.26,
           "plan_ms": 0.05,
           "board_ms": 0.1,
-          "export_ms": 5.24,
-          "paper_ms": 1.1,
+          "export_ms": 6.36,
+          "paper_ms": 1.45,
           "rows": 34,
           "pool": 34,
           "decisions": 0
         },
         {
           "files": 50,
-          "scan_ms": 19.26,
-          "backtest_ms": 1.35,
-          "recommend_ms": 2.3,
+          "scan_ms": 20.31,
+          "backtest_ms": 1.32,
+          "recommend_ms": 2.38,
           "plan_ms": 0.05,
           "board_ms": 0.1,
-          "export_ms": 5.39,
-          "paper_ms": 1.12,
+          "export_ms": 6.34,
+          "paper_ms": 1.58,
           "rows": 34,
           "pool": 34,
           "decisions": 0
@@ -161,39 +161,39 @@
       [
         {
           "files": 100,
-          "scan_ms": 38.15,
-          "backtest_ms": 3.43,
-          "recommend_ms": 4.25,
+          "scan_ms": 41.17,
+          "backtest_ms": 4.4,
+          "recommend_ms": 5.02,
           "plan_ms": 0.06,
-          "board_ms": 0.17,
-          "export_ms": 7.45,
-          "paper_ms": 1.26,
+          "board_ms": 0.18,
+          "export_ms": 9.73,
+          "paper_ms": 4.77,
           "rows": 67,
           "pool": 67,
           "decisions": 0
         },
         {
           "files": 100,
-          "scan_ms": 37.77,
-          "backtest_ms": 2.76,
-          "recommend_ms": 4.2,
+          "scan_ms": 40.61,
+          "backtest_ms": 2.83,
+          "recommend_ms": 4.22,
           "plan_ms": 0.06,
           "board_ms": 0.17,
-          "export_ms": 7.04,
-          "paper_ms": 1.07,
+          "export_ms": 8.38,
+          "paper_ms": 1.46,
           "rows": 67,
           "pool": 67,
           "decisions": 0
         },
         {
           "files": 100,
-          "scan_ms": 37.75,
-          "backtest_ms": 2.7,
-          "recommend_ms": 4.16,
+          "scan_ms": 40.88,
+          "backtest_ms": 2.79,
+          "recommend_ms": 4.34,
           "plan_ms": 0.06,
           "board_ms": 0.17,
-          "export_ms": 7.35,
-          "paper_ms": 1.17,
+          "export_ms": 9.1,
+          "paper_ms": 1.46,
           "rows": 67,
           "pool": 67,
           "decisions": 0
@@ -202,39 +202,39 @@
       [
         {
           "files": 200,
-          "scan_ms": 75.46,
-          "backtest_ms": 5.4,
-          "recommend_ms": 8.38,
-          "plan_ms": 0.09,
-          "board_ms": 0.32,
-          "export_ms": 17.4,
-          "paper_ms": 1.35,
-          "rows": 134,
-          "pool": 134,
-          "decisions": 0
-        },
-        {
-          "files": 200,
-          "scan_ms": 75.98,
-          "backtest_ms": 5.44,
-          "recommend_ms": 8.21,
-          "plan_ms": 0.09,
+          "scan_ms": 80.16,
+          "backtest_ms": 5.39,
+          "recommend_ms": 8.31,
+          "plan_ms": 0.1,
           "board_ms": 0.31,
-          "export_ms": 22.61,
-          "paper_ms": 1.26,
+          "export_ms": 12.76,
+          "paper_ms": 2.29,
           "rows": 134,
           "pool": 134,
           "decisions": 0
         },
         {
           "files": 200,
-          "scan_ms": 74.58,
-          "backtest_ms": 5.27,
+          "scan_ms": 80.58,
+          "backtest_ms": 5.61,
           "recommend_ms": 8.22,
           "plan_ms": 0.09,
-          "board_ms": 0.3,
-          "export_ms": 13.02,
-          "paper_ms": 1.27,
+          "board_ms": 0.32,
+          "export_ms": 12.58,
+          "paper_ms": 1.65,
+          "rows": 134,
+          "pool": 134,
+          "decisions": 0
+        },
+        {
+          "files": 200,
+          "scan_ms": 80.57,
+          "backtest_ms": 5.51,
+          "recommend_ms": 8.38,
+          "plan_ms": 0.09,
+          "board_ms": 0.31,
+          "export_ms": 14.15,
+          "paper_ms": 1.53,
           "rows": 134,
           "pool": 134,
           "decisions": 0
@@ -243,39 +243,39 @@
       [
         {
           "files": 500,
-          "scan_ms": 190.22,
-          "backtest_ms": 13.3,
-          "recommend_ms": 20.67,
-          "plan_ms": 0.18,
-          "board_ms": 0.75,
-          "export_ms": 25.97,
-          "paper_ms": 1.79,
-          "rows": 334,
-          "pool": 334,
-          "decisions": 0
-        },
-        {
-          "files": 500,
-          "scan_ms": 191.11,
-          "backtest_ms": 13.65,
-          "recommend_ms": 20.69,
+          "scan_ms": 211.56,
+          "backtest_ms": 13.58,
+          "recommend_ms": 20.97,
           "plan_ms": 0.19,
-          "board_ms": 0.81,
-          "export_ms": 25.58,
-          "paper_ms": 9.89,
+          "board_ms": 0.76,
+          "export_ms": 31.41,
+          "paper_ms": 2.27,
           "rows": 334,
           "pool": 334,
           "decisions": 0
         },
         {
           "files": 500,
-          "scan_ms": 198.85,
-          "backtest_ms": 13.35,
-          "recommend_ms": 20.29,
-          "plan_ms": 0.18,
-          "board_ms": 0.73,
-          "export_ms": 25.67,
-          "paper_ms": 1.42,
+          "scan_ms": 198.53,
+          "backtest_ms": 14.11,
+          "recommend_ms": 20.63,
+          "plan_ms": 0.19,
+          "board_ms": 0.75,
+          "export_ms": 26.48,
+          "paper_ms": 1.84,
+          "rows": 334,
+          "pool": 334,
+          "decisions": 0
+        },
+        {
+          "files": 500,
+          "scan_ms": 256.2,
+          "backtest_ms": 17.68,
+          "recommend_ms": 27.53,
+          "plan_ms": 0.23,
+          "board_ms": 1.0,
+          "export_ms": 32.66,
+          "paper_ms": 2.58,
           "rows": 334,
           "pool": 334,
           "decisions": 0
@@ -287,9 +287,9 @@
       "available": true,
       "iterations": 3,
       "boot_ms": [
-        2254.66,
-        2367.41,
-        2362.82
+        3674.84,
+        3974.0,
+        3987.98
       ]
     },
     "qt_boot_breakdown": {
@@ -298,22 +298,22 @@
       "import_ms": 0.01,
       "breakdown": [
         {
-          "total_ms": 2177.91,
-          "build_ui_ms": 161.09,
-          "post_build_ms": 551.5,
-          "finish_bootstrap_ms": 0.84
+          "total_ms": 3912.34,
+          "build_ui_ms": 182.49,
+          "post_build_ms": 618.37,
+          "finish_bootstrap_ms": 1.73
         },
         {
-          "total_ms": 2302.21,
-          "build_ui_ms": 164.68,
-          "post_build_ms": 552.72,
-          "finish_bootstrap_ms": 0.88
+          "total_ms": 3610.5,
+          "build_ui_ms": 180.5,
+          "post_build_ms": 615.86,
+          "finish_bootstrap_ms": 1.73
         },
         {
-          "total_ms": 2330.96,
-          "build_ui_ms": 161.1,
-          "post_build_ms": 554.49,
-          "finish_bootstrap_ms": 0.87
+          "total_ms": 3678.78,
+          "build_ui_ms": 175.86,
+          "post_build_ms": 631.32,
+          "finish_bootstrap_ms": 1.6
         }
       ]
     },
@@ -322,20 +322,20 @@
   "commands": {
     "full_tests": {
       "name": "full_tests",
-      "returncode": 0,
+      "returncode": 1,
       "stdout": "",
-      "stderr": "----------------------------------------------------------------------\nRan 231 tests in 16.459s\n\nOK\n"
+      "stderr": "======================================================================\nFAIL: test_recommend_dispatch_snapshot_highlights_pending_and_failed_flow (tests.test_core.StrategyWorkflowTests.test_recommend_dispatch_snapshot_highlights_pending_and_failed_flow)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"C:\\Users\\18335\\Documents\\New project\\tests\\test_core.py\", line 510, in test_recommend_dispatch_snapshot_highlights_pending_and_failed_flow\n    self.assertIn(\"���շַ�\", snapshot[\"headline\"])\n    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: '���շַ�' not found in '���зַ�\\n���ۣ������� | ���� | �� 2 | �� 2 | �� 0\\n���գ����� 1 | ���� 0 | �ύ 0 | ʧ�� 1\\n��һ�����ȸ��� �ַ�����'\n\n======================================================================\nFAIL: test_refresh_recommend_summary_cards_stays_compact_for_intraday_scan (tests.test_core.StrategyWorkflowTests.test_refresh_recommend_summary_cards_stays_compact_for_intraday_scan)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"C:\\Users\\18335\\Documents\\New project\\tests\\test_core.py\", line 7288, in test_refresh_recommend_summary_cards_stays_compact_for_intraday_scan\n    self.assertEqual(window.recommend_summary_cards[\"plan\"].data[0], \"�ƻ� 1 / ���� 2\")\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: '�ƻ� 1 / �ύ 2' != '�ƻ� 1 / ���� 2'\n- �ƻ� 1 / �ύ 2\n?        ^^\n+ �ƻ� 1 / ���� 2\n?        ^^\n\n\n======================================================================\nFAIL: test_refresh_recommend_summary_cards_surfaces_one_day_hold_grade (tests.test_core.StrategyWorkflowTests.test_refresh_recommend_summary_cards_surfaces_one_day_hold_grade)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"C:\\Users\\18335\\Documents\\New project\\tests\\test_core.py\", line 7353, in test_refresh_recommend_summary_cards_surfaces_one_day_hold_grade\n    self.assertIn(\"���� ǿ����\", window.recommend_summary_cards[\"plan\"].data[1])\n    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: '���� ǿ����' not found in '���� һ������ | ���� 1 | ʧ�� 0'\n\n======================================================================\nFAIL: test_refresh_recommend_summary_cards_surfaces_tail_buy_runtime_phase (tests.test_core.StrategyWorkflowTests.test_refresh_recommend_summary_cards_surfaces_tail_buy_runtime_phase)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"C:\\Users\\18335\\Documents\\New project\\tests\\test_core.py\", line 7414, in test_refresh_recommend_summary_cards_surfaces_tail_buy_runtime_phase\n    self.assertIn(\"β�� β��ִ�д�\", window.recommend_summary_cards[\"plan\"].data[1])\n    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: 'β�� β��ִ�д�' not found in '���� β������ | ���� 1 | ʧ�� 0'\n\n======================================================================\nFAIL: test_refresh_strategy_focus_detail_surfaces_commercial_strategy_labels (tests.test_core.StrategyWorkflowTests.test_refresh_strategy_focus_detail_surfaces_commercial_strategy_labels)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"C:\\Users\\18335\\Documents\\New project\\tests\\test_core.py\", line 11498, in test_refresh_strategy_focus_detail_surfaces_commercial_strategy_labels\n    self.assertIn(\"ս����λ\", text)\n    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^\nAssertionError: 'ս����λ' not found in 'ս���� | ��ֵ����\\n���ۣ������ȣ���ȷ���źź��ٳ��֡�\\n���ߣ������� / ����λ 2 / ǰ�� / ���� 1 ֻ\\n���������� �� ��ע �ز� 12.50 һ�����Ⱥ��������\\n\\n��ô��\\n- �������ʺϻز��޸�����λ�нӡ�ǿ����ȫ�߼ʺ��޸�Ԥ�ڵ�Ʊ��\\n- ȷ�ϣ��ز� 12.50 һ�����Ⱥ��������\\n- ʧЧ������ 12.00 �����ߺ�ֹͣ������\\n- ��λ�����ȷ���������Ҫһ���Դ�����\\n\\nΪʲô����\\n- ���㣺���������������� / ���룩\\n- �������� ������ ���޸�Ԥ�ڣ�λ�úͳнӸ�ƫ��������ǰ������ 86.0��\\n- �߻�������޸�Ԥ��\\n- ���գ��� | �زȳнӽ���\\n\\n���ְ�\\n- ս�� 86.0 | �ۺ� 80.0 | ���� 71.0\\n- ��ͷ 0.0 | ���� 0.0 | ��� 0.0\\n- ���� 86.0 | β�� 0.0 | һ�� 0.0\\n\\n��ս�� Top 3\\n- �������� | 86.0 | ������ | ����'\n\n----------------------------------------------------------------------\nRan 292 tests in 48.453s\n\nFAILED (failures=5)\n"
     },
     "compat_tests": {
       "name": "compat_tests",
-      "returncode": 0,
+      "returncode": 1,
       "stdout": "",
-      "stderr": ".............................................................................................................................................................................\n----------------------------------------------------------------------\nRan 173 tests in 0.364s\n\nOK\n"
+      "stderr": "...........................................................................................................................................F\n======================================================================\nFAIL: test_recommend_dispatch_snapshot_highlights_pending_and_failed_flow (tests.test_core.StrategyWorkflowTests.test_recommend_dispatch_snapshot_highlights_pending_and_failed_flow)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"C:\\Users\\18335\\Documents\\New project\\tests\\test_core.py\", line 510, in test_recommend_dispatch_snapshot_highlights_pending_and_failed_flow\n    self.assertIn(\"���շַ�\", snapshot[\"headline\"])\nAssertionError: '���շַ�' not found in '���зַ�\\n���ۣ������� | ���� | �� 2 | �� 2 | �� 0\\n���գ����� 1 | ���� 0 | �ύ 0 | ʧ�� 1\\n��һ�����ȸ��� �ַ�����'\n\n----------------------------------------------------------------------\nRan 140 tests in 8.698s\n\nFAILED (failures=1)\n"
     },
     "perf": {
       "name": "perf",
       "returncode": 0,
-      "stdout": "{\n  \"pipeline\": [\n    {\n      \"files\": 10,\n      \"scan_ms\": 4.06,\n      \"backtest_ms\": 0.31,\n      \"recommend_ms\": 0.63,\n      \"plan_ms\": 0.04,\n      \"board_ms\": 0.04,\n      \"export_ms\": 3.86,\n      \"paper_ms\": 1.09,\n      \"rows\": 7,\n      \"pool\": 7,\n      \"decisions\": 0\n    },\n    {\n      \"files\": 50,\n      \"scan_ms\": 19.26,\n      \"backtest_ms\": 1.35,\n      \"recommend_ms\": 2.28,\n      \"plan_ms\": 0.05,\n      \"board_ms\": 0.1,\n      \"export_ms\": 5.39,\n      \"paper_ms\": 1.12,\n      \"rows\": 34,\n      \"pool\": 34,\n      \"decisions\": 0\n    },\n    {\n      \"files\": 100,\n      \"scan_ms\": 37.77,\n      \"backtest_ms\": 2.76,\n      \"recommend_ms\": 4.2,\n      \"plan_ms\": 0.06,\n      \"board_ms\": 0.17,\n      \"export_ms\": 7.35,\n      \"paper_ms\": 1.17,\n      \"rows\": 67,\n      \"pool\": 67,\n      \"decisions\": 0\n    },\n    {\n      \"files\": 200,\n      \"scan_ms\": 75.46,\n      \"backtest_ms\": 5.4,\n      \"recommend_ms\": 8.22,\n      \"plan_ms\": 0.09,\n      \"board_ms\": 0.31,\n      \"export_ms\": 17.4,\n      \"paper_ms\": 1.27,\n      \"rows\": 134,\n      \"pool\": 134,\n      \"decisions\": 0\n    },\n    {\n      \"files\": 500,\n      \"scan_ms\": 191.11,\n      \"backtest_ms\": 13.35,\n      \"recommend_ms\": 20.67,\n      \"plan_ms\": 0.18,\n      \"board_ms\": 0.75,\n      \"export_ms\": 25.67,\n      \"paper_ms\": 1.79,\n      \"rows\": 334,\n      \"pool\": 334,\n      \"decisions\": 0\n    }\n  ],\n  \"pipeline_runs\": [\n    [\n      {\n        \"files\": 10,\n        \"scan_ms\": 4.25,\n        \"backtest_ms\": 0.34,\n        \"recommend_ms\": 3.16,\n        \"plan_ms\": 0.05,\n        \"board_ms\": 0.05,\n        \"export_ms\": 3.86,\n        \"paper_ms\": 1.14,\n        \"rows\": 7,\n        \"pool\": 7,\n        \"decisions\": 0\n      },\n      {\n        \"files\": 10,\n        \"scan_ms\": 4.06,\n        \"backtest_ms\": 0.31,\n        \"recommend_ms\": 0.63,\n        \"plan_ms\": 0.04,\n        \"board_ms\": 0.04,\n        \"export_ms\": 3.32,\n        \"paper_ms\": 1.09,\n        \"rows\": 7,\n        \"pool\": 7,\n        \"decisions\": 0\n      },\n      {\n        \"files\": 10,\n        \"scan_ms\": 3.96,\n        \"backtest_ms\": 0.3,\n        \"recommend_ms\": 0.61,\n        \"plan_ms\": 0.03,\n        \"board_ms\": 0.03,\n        \"export_ms\": 4.32,\n        \"paper_ms\": 1.0,\n        \"rows\": 7,\n        \"pool\": 7,\n        \"decisions\": 0\n      }\n    ],\n    [\n      {\n        \"files\": 50,\n        \"scan_ms\": 20.33,\n        \"backtest_ms\": 1.36,\n        \"recommend_ms\": 2.28,\n        \"plan_ms\": 0.05,\n        \"board_ms\": 0.1,\n        \"export_ms\": 6.0,\n        \"paper_ms\": 1.2,\n        \"rows\": 34,\n        \"pool\": 34,\n        \"decisions\": 0\n      },\n      {\n        \"files\": 50,\n        \"scan_ms\": 18.84,\n        \"backtest_ms\": 1.33,\n        \"recommend_ms\": 2.23,\n        \"plan_ms\": 0.05,\n        \"board_ms\": 0.1,\n        \"export_ms\": 5.24,\n        \"paper_ms\": 1.1,\n        \"rows\": 34,\n        \"pool\": 34,\n        \"decisions\": 0\n      },\n      {\n        \"files\": 50,\n        \"scan_ms\": 19.26,\n        \"backtest_ms\": 1.35,\n        \"recommend_ms\": 2.3,\n        \"plan_ms\": 0.05,\n        \"board_ms\": 0.1,\n        \"export_ms\": 5.39,\n        \"paper_ms\": 1.12,\n        \"rows\": 34,\n        \"pool\": 34,\n        \"decisions\": 0\n      }\n    ],\n    [\n      {\n        \"files\": 100,\n        \"scan_ms\": 38.15,\n        \"backtest_ms\": 3.43,\n        \"recommend_ms\": 4.25,\n        \"plan_ms\": 0.06,\n        \"board_ms\": 0.17,\n        \"export_ms\": 7.45,\n        \"paper_ms\": 1.26,\n        \"rows\": 67,\n        \"pool\": 67,\n        \"decisions\": 0\n      },\n      {\n        \"files\": 100,\n        \"scan_ms\": 37.77,\n        \"backtest_ms\": 2.76,\n        \"recommend_ms\": 4.2,\n        \"plan_ms\": 0.06,\n        \"board_ms\": 0.17,\n        \"export_ms\": 7.04,\n        \"paper_ms\": 1.07,\n        \"rows\": 67,\n        \"pool\": 67,\n        \"decisions\": 0\n      },\n      {\n        \"files\": 100,\n        \"scan_ms\": 37.75,\n        \"backtest_ms\": 2.7,\n        \"recommend_ms\": 4.16,\n        \"plan_ms\": 0.06,\n        \"board_ms\": 0.17,\n        \"export_ms\": 7.35,\n        \"paper_ms\": 1.17,\n        \"rows\": 67,\n        \"pool\": 67,\n        \"decisions\": 0\n      }\n    ],\n    [\n      {\n        \"files\": 200,\n        \"scan_ms\": 75.46,\n        \"backtest_ms\": 5.4,\n        \"recommend_ms\": 8.38,\n        \"plan_ms\": 0.09,\n        \"board_ms\": 0.32,\n        \"export_ms\": 17.4,\n        \"paper_ms\": 1.35,\n        \"rows\": 134,\n        \"pool\": 134,\n        \"decisions\": 0\n      },\n      {\n        \"files\": 200,\n        \"scan_ms\": 75.98,\n        \"backtest_ms\": 5.44,\n        \"recommend_ms\": 8.21,\n        \"plan_ms\": 0.09,\n        \"board_ms\": 0.31,\n        \"export_ms\": 22.61,\n        \"paper_ms\": 1.26,\n        \"rows\": 134,\n        \"pool\": 134,\n        \"decisions\": 0\n      },\n      {\n        \"files\": 200,\n        \"scan_ms\": 74.58,\n        \"backtest_ms\": 5.27,\n        \"recommend_ms\": 8.22,\n        \"plan_ms\": 0.09,\n        \"board_ms\": 0.3,\n        \"export_ms\": 13.02,\n        \"paper_ms\": 1.27,\n        \"rows\": 134,\n        \"pool\": 134,\n        \"decisions\": 0\n      }\n    ],\n    [\n      {\n        \"files\": 500,\n        \"scan_ms\": 190.22,\n        \"backtest_ms\": 13.3,\n        \"recommend_ms\": 20.67,\n        \"plan_ms\": 0.18,\n        \"board_ms\": 0.75,\n        \"export_ms\": 25.97,\n        \"paper_ms\": 1.79,\n        \"rows\": 334,\n        \"pool\": 334,\n        \"decisions\": 0\n      },\n      {\n        \"files\": 500,\n        \"scan_ms\": 191.11,\n        \"backtest_ms\": 13.65,\n        \"recommend_ms\": 20.69,\n        \"plan_ms\": 0.19,\n        \"board_ms\": 0.81,\n        \"export_ms\": 25.58,\n        \"paper_ms\": 9.89,\n        \"rows\": 334,\n        \"pool\": 334,\n        \"decisions\": 0\n      },\n      {\n        \"files\": 500,\n        \"scan_ms\": 198.85,\n        \"backtest_ms\": 13.35,\n        \"recommend_ms\": 20.29,\n        \"plan_ms\": 0.18,\n        \"board_ms\": 0.73,\n        \"export_ms\": 25.67,\n        \"paper_ms\": 1.42,\n        \"rows\": 334,\n        \"pool\": 334,\n        \"decisions\": 0\n      }\n    ]\n  ],\n  \"pipeline_repeats\": 3,\n  \"qt_boot\": {\n    \"available\": true,\n    \"iterations\": 3,\n    \"boot_ms\": [\n      2254.66,\n      2367.41,\n      2362.82\n    ]\n  },\n  \"qt_boot_breakdown\": {\n    \"available\": true,\n    \"iterations\": 3,\n    \"import_ms\": 0.01,\n    \"breakdown\": [\n      {\n        \"total_ms\": 2177.91,\n        \"build_ui_ms\": 161.09,\n        \"post_build_ms\": 551.5,\n        \"finish_bootstrap_ms\": 0.84\n      },\n      {\n        \"total_ms\": 2302.21,\n        \"build_ui_ms\": 164.68,\n        \"post_build_ms\": 552.72,\n        \"finish_bootstrap_ms\": 0.88\n      },\n      {\n        \"total_ms\": 2330.96,\n        \"build_ui_ms\": 161.1,\n        \"post_build_ms\": 554.49,\n        \"finish_bootstrap_ms\": 0.87\n      }\n    ]\n  },\n  \"perf_regressions\": []\n}\n",
+      "stdout": "{\n  \"pipeline\": [\n    {\n      \"files\": 10,\n      \"scan_ms\": 4.22,\n      \"backtest_ms\": 0.3,\n      \"recommend_ms\": 0.62,\n      \"plan_ms\": 0.03,\n      \"board_ms\": 0.04,\n      \"export_ms\": 4.18,\n      \"paper_ms\": 1.37,\n      \"rows\": 7,\n      \"pool\": 7,\n      \"decisions\": 0\n    },\n    {\n      \"files\": 50,\n      \"scan_ms\": 20.31,\n      \"backtest_ms\": 1.34,\n      \"recommend_ms\": 2.28,\n      \"plan_ms\": 0.05,\n      \"board_ms\": 0.1,\n      \"export_ms\": 6.36,\n      \"paper_ms\": 1.45,\n      \"rows\": 34,\n      \"pool\": 34,\n      \"decisions\": 0\n    },\n    {\n      \"files\": 100,\n      \"scan_ms\": 40.88,\n      \"backtest_ms\": 2.83,\n      \"recommend_ms\": 4.34,\n      \"plan_ms\": 0.06,\n      \"board_ms\": 0.17,\n      \"export_ms\": 9.1,\n      \"paper_ms\": 1.46,\n      \"rows\": 67,\n      \"pool\": 67,\n      \"decisions\": 0\n    },\n    {\n      \"files\": 200,\n      \"scan_ms\": 80.57,\n      \"backtest_ms\": 5.51,\n      \"recommend_ms\": 8.31,\n      \"plan_ms\": 0.09,\n      \"board_ms\": 0.31,\n      \"export_ms\": 12.76,\n      \"paper_ms\": 1.65,\n      \"rows\": 134,\n      \"pool\": 134,\n      \"decisions\": 0\n    },\n    {\n      \"files\": 500,\n      \"scan_ms\": 211.56,\n      \"backtest_ms\": 14.11,\n      \"recommend_ms\": 20.97,\n      \"plan_ms\": 0.19,\n      \"board_ms\": 0.76,\n      \"export_ms\": 31.41,\n      \"paper_ms\": 2.27,\n      \"rows\": 334,\n      \"pool\": 334,\n      \"decisions\": 0\n    }\n  ],\n  \"pipeline_runs\": [\n    [\n      {\n        \"files\": 10,\n        \"scan_ms\": 4.47,\n        \"backtest_ms\": 0.33,\n        \"recommend_ms\": 3.21,\n        \"plan_ms\": 0.05,\n        \"board_ms\": 0.04,\n        \"export_ms\": 4.24,\n        \"paper_ms\": 1.37,\n        \"rows\": 7,\n        \"pool\": 7,\n        \"decisions\": 0\n      },\n      {\n        \"files\": 10,\n        \"scan_ms\": 4.09,\n        \"backtest_ms\": 0.3,\n        \"recommend_ms\": 0.59,\n        \"plan_ms\": 0.03,\n        \"board_ms\": 0.09,\n        \"export_ms\": 3.87,\n        \"paper_ms\": 1.34,\n        \"rows\": 7,\n        \"pool\": 7,\n        \"decisions\": 0\n      },\n      {\n        \"files\": 10,\n        \"scan_ms\": 4.22,\n        \"backtest_ms\": 0.3,\n        \"recommend_ms\": 0.62,\n        \"plan_ms\": 0.03,\n        \"board_ms\": 0.03,\n        \"export_ms\": 4.18,\n        \"paper_ms\": 1.38,\n        \"rows\": 7,\n        \"pool\": 7,\n        \"decisions\": 0\n      }\n    ],\n    [\n      {\n        \"files\": 50,\n        \"scan_ms\": 21.93,\n        \"backtest_ms\": 1.35,\n        \"recommend_ms\": 2.28,\n        \"plan_ms\": 0.05,\n        \"board_ms\": 0.1,\n        \"export_ms\": 6.36,\n        \"paper_ms\": 1.44,\n        \"rows\": 34,\n        \"pool\": 34,\n        \"decisions\": 0\n      },\n      {\n        \"files\": 50,\n        \"scan_ms\": 20.26,\n        \"backtest_ms\": 1.34,\n        \"recommend_ms\": 2.26,\n        \"plan_ms\": 0.05,\n        \"board_ms\": 0.1,\n        \"export_ms\": 6.36,\n        \"paper_ms\": 1.45,\n        \"rows\": 34,\n        \"pool\": 34,\n        \"decisions\": 0\n      },\n      {\n        \"files\": 50,\n        \"scan_ms\": 20.31,\n        \"backtest_ms\": 1.32,\n        \"recommend_ms\": 2.38,\n        \"plan_ms\": 0.05,\n        \"board_ms\": 0.1,\n        \"export_ms\": 6.34,\n        \"paper_ms\": 1.58,\n        \"rows\": 34,\n        \"pool\": 34,\n        \"decisions\": 0\n      }\n    ],\n    [\n      {\n        \"files\": 100,\n        \"scan_ms\": 41.17,\n        \"backtest_ms\": 4.4,\n        \"recommend_ms\": 5.02,\n        \"plan_ms\": 0.06,\n        \"board_ms\": 0.18,\n        \"export_ms\": 9.73,\n        \"paper_ms\": 4.77,\n        \"rows\": 67,\n        \"pool\": 67,\n        \"decisions\": 0\n      },\n      {\n        \"files\": 100,\n        \"scan_ms\": 40.61,\n        \"backtest_ms\": 2.83,\n        \"recommend_ms\": 4.22,\n        \"plan_ms\": 0.06,\n        \"board_ms\": 0.17,\n        \"export_ms\": 8.38,\n        \"paper_ms\": 1.46,\n        \"rows\": 67,\n        \"pool\": 67,\n        \"decisions\": 0\n      },\n      {\n        \"files\": 100,\n        \"scan_ms\": 40.88,\n        \"backtest_ms\": 2.79,\n        \"recommend_ms\": 4.34,\n        \"plan_ms\": 0.06,\n        \"board_ms\": 0.17,\n        \"export_ms\": 9.1,\n        \"paper_ms\": 1.46,\n        \"rows\": 67,\n        \"pool\": 67,\n        \"decisions\": 0\n      }\n    ],\n    [\n      {\n        \"files\": 200,\n        \"scan_ms\": 80.16,\n        \"backtest_ms\": 5.39,\n        \"recommend_ms\": 8.31,\n        \"plan_ms\": 0.1,\n        \"board_ms\": 0.31,\n        \"export_ms\": 12.76,\n        \"paper_ms\": 2.29,\n        \"rows\": 134,\n        \"pool\": 134,\n        \"decisions\": 0\n      },\n      {\n        \"files\": 200,\n        \"scan_ms\": 80.58,\n        \"backtest_ms\": 5.61,\n        \"recommend_ms\": 8.22,\n        \"plan_ms\": 0.09,\n        \"board_ms\": 0.32,\n        \"export_ms\": 12.58,\n        \"paper_ms\": 1.65,\n        \"rows\": 134,\n        \"pool\": 134,\n        \"decisions\": 0\n      },\n      {\n        \"files\": 200,\n        \"scan_ms\": 80.57,\n        \"backtest_ms\": 5.51,\n        \"recommend_ms\": 8.38,\n        \"plan_ms\": 0.09,\n        \"board_ms\": 0.31,\n        \"export_ms\": 14.15,\n        \"paper_ms\": 1.53,\n        \"rows\": 134,\n        \"pool\": 134,\n        \"decisions\": 0\n      }\n    ],\n    [\n      {\n        \"files\": 500,\n        \"scan_ms\": 211.56,\n        \"backtest_ms\": 13.58,\n        \"recommend_ms\": 20.97,\n        \"plan_ms\": 0.19,\n        \"board_ms\": 0.76,\n        \"export_ms\": 31.41,\n        \"paper_ms\": 2.27,\n        \"rows\": 334,\n        \"pool\": 334,\n        \"decisions\": 0\n      },\n      {\n        \"files\": 500,\n        \"scan_ms\": 198.53,\n        \"backtest_ms\": 14.11,\n        \"recommend_ms\": 20.63,\n        \"plan_ms\": 0.19,\n        \"board_ms\": 0.75,\n        \"export_ms\": 26.48,\n        \"paper_ms\": 1.84,\n        \"rows\": 334,\n        \"pool\": 334,\n        \"decisions\": 0\n      },\n      {\n        \"files\": 500,\n        \"scan_ms\": 256.2,\n        \"backtest_ms\": 17.68,\n        \"recommend_ms\": 27.53,\n        \"plan_ms\": 0.23,\n        \"board_ms\": 1.0,\n        \"export_ms\": 32.66,\n        \"paper_ms\": 2.58,\n        \"rows\": 334,\n        \"pool\": 334,\n        \"decisions\": 0\n      }\n    ]\n  ],\n  \"pipeline_repeats\": 3,\n  \"qt_boot\": {\n    \"available\": true,\n    \"iterations\": 3,\n    \"boot_ms\": [\n      3674.84,\n      3974.0,\n      3987.98\n    ]\n  },\n  \"qt_boot_breakdown\": {\n    \"available\": true,\n    \"iterations\": 3,\n    \"import_ms\": 0.01,\n    \"breakdown\": [\n      {\n        \"total_ms\": 3912.34,\n        \"build_ui_ms\": 182.49,\n        \"post_build_ms\": 618.37,\n        \"finish_bootstrap_ms\": 1.73\n      },\n      {\n        \"total_ms\": 3610.5,\n        \"build_ui_ms\": 180.5,\n        \"post_build_ms\": 615.86,\n        \"finish_bootstrap_ms\": 1.73\n      },\n      {\n        \"total_ms\": 3678.78,\n        \"build_ui_ms\": 175.86,\n        \"post_build_ms\": 631.32,\n        \"finish_bootstrap_ms\": 1.6\n      }\n    ]\n  },\n  \"perf_regressions\": []\n}\n",
       "stderr": ""
     }
   }

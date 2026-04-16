@@ -268,10 +268,10 @@ class ActionFlowCard(InsightCardBase):
     def __init__(self, title: str, accent: str, parent: QWidget | None = None) -> None:
         super().__init__("actionFlowCard", parent)
         self.accent = accent
-        self.setMinimumHeight(104)
+        self.setMinimumHeight(96)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(15, 13, 15, 13)
-        layout.setSpacing(4)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(3)
 
         self.accent_strip = self._create_accent_strip(accent)
         self.title_label = QLabel(title)
@@ -297,14 +297,14 @@ class ActionFlowCard(InsightCardBase):
         self._apply_card_styles(
             border_color="rgba(110, 129, 151, 0.16)",
             title_selector="actionFlowTitle",
-            title_color="#9fb2c7",
-            title_size=12,
+            title_color="#889db1",
+            title_size=11,
             emphasis_selector="actionFlowCount",
             emphasis_color=self.accent,
-            emphasis_size=18,
+            emphasis_size=16,
         )
-        self.focus_label.setStyleSheet("color:#e4edf6; font-size:12px; font-weight:700;")
-        self.note_label.setStyleSheet("color:#8397ab; font-size:10px; line-height:1.25;")
+        self.focus_label.setStyleSheet("color:#e8f0f8; font-size:11px; font-weight:800;")
+        self.note_label.setStyleSheet("color:#7d92a7; font-size:9px; line-height:1.2;")
 
     def set_data(self, count_text: str, focus_text: str, note_text: str) -> None:
         self._set_label_if_changed(self.count_label, count_text)

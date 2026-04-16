@@ -122,9 +122,11 @@ def build_workspace_badge(value: str, caption: str, hero_tone: str = "default") 
     value_label = QLabel(value)
     value_label.setObjectName("workspaceBadgeValue")
     value_label.setProperty("heroTone", hero_tone)
+    value_label.setWordWrap(True)
     caption_label = QLabel(caption)
     caption_label.setObjectName("workspaceBadgeCaption")
     caption_label.setProperty("heroTone", hero_tone)
+    caption_label.setWordWrap(True)
 
     layout.addWidget(value_label)
     layout.addWidget(caption_label)
@@ -160,6 +162,7 @@ def build_workspace_hero(
 
     eyebrow_label = QLabel(eyebrow)
     eyebrow_label.setObjectName("workspaceEyebrow")
+    eyebrow_label.setWordWrap(True)
     top_row.addWidget(eyebrow_label)
 
     stamp_label = QLabel(_workspace_hero_stamp(hero_tone))
@@ -171,6 +174,7 @@ def build_workspace_hero(
 
     title_label = QLabel(title)
     title_label.setObjectName("workspaceTitle")
+    title_label.setWordWrap(True)
     text_layout.addWidget(title_label)
 
     subtitle_label = QLabel(subtitle)
@@ -322,8 +326,12 @@ def create_shell_chip(label: str, value: str) -> dict[str, object]:
     layout.setSpacing(2)
     label_widget = QLabel(label)
     label_widget.setObjectName("shellChipLabel")
+    label_widget.setWordWrap(False)
     value_widget = QLabel(value)
     value_widget.setObjectName("shellChipValue")
+    value_widget.setWordWrap(True)
+    frame.setToolTip(value)
+    value_widget.setToolTip(value)
     layout.addWidget(label_widget)
     layout.addWidget(value_widget)
     return {"frame": frame, "label": label_widget, "value": value_widget}
@@ -333,8 +341,12 @@ def set_shell_chip(chip: dict[str, object] | None, value: str) -> None:
     if not chip:
         return
     widget = chip.get("value")
+    frame = chip.get("frame")
     if isinstance(widget, QLabel):
         widget.setText(value)
+        widget.setToolTip(value)
+    if isinstance(frame, QFrame):
+        frame.setToolTip(value)
 
 
 def _clean_copy(value: object) -> str:
@@ -364,6 +376,24 @@ def news_source_tier(source: str) -> str:
     return "B级"
 
 
+def news_source_visual_label(source: str) -> str:
+    tier = news_source_tier(source)
+    return {
+        "A级": "已公告",
+        "B级": "媒体催化",
+        "C级": "传闻线索",
+    }.get(tier, "消息线索")
+
+
+def news_source_visual_tone(source: str) -> str:
+    tier = news_source_tier(source)
+    return {
+        "A级": "buy",
+        "B级": "watch",
+        "C级": "risk",
+    }.get(tier, "watch")
+
+
 def news_confidence_label(news_items: list[object] | tuple[object, ...] | None) -> str:
     if not news_items:
         return "可信度 待确认"
@@ -380,8 +410,9 @@ def build_news_digest_lines(news_items: list[object] | tuple[object, ...] | None
         source = _clean_copy(getattr(item, "source", "")) or "来源未知"
         published = _clean_copy(getattr(item, "published_at", ""))
         tier = news_source_tier(source)
+        visual = news_source_visual_label(source)
         meta = " / ".join(part for part in (source, published, f"可信度 {tier}") if part)
-        lines.append(f"- {title}{f' ({meta})' if meta else ''}")
+        lines.append(f"- [{visual}] {title}{f' ({meta})' if meta else ''}")
         summary = _clean_copy(getattr(item, "summary", ""))
         if summary:
             lines.append(f"  {_compact_copy(summary, 42)}")

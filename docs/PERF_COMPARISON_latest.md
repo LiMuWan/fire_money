@@ -8,22 +8,22 @@
 
 ## Pipeline
 
-- 10 files | scan 4.06ms | backtest 0.31ms | recommend 0.63ms | plan 0.04ms | board 0.04ms | export 3.86ms | paper 1.09ms
-- 50 files | scan 19.26ms | backtest 1.35ms | recommend 2.28ms | plan 0.05ms | board 0.10ms | export 5.39ms | paper 1.12ms
-- 100 files | scan 37.77ms | backtest 2.76ms | recommend 4.20ms | plan 0.06ms | board 0.17ms | export 7.35ms | paper 1.17ms
-- 200 files | scan 75.46ms | backtest 5.40ms | recommend 8.22ms | plan 0.09ms | board 0.31ms | export 17.40ms | paper 1.27ms
-- 500 files | scan 191.11ms | backtest 13.35ms | recommend 20.67ms | plan 0.18ms | board 0.75ms | export 25.67ms | paper 1.79ms
+- 10 files | scan 4.22ms | backtest 0.30ms | recommend 0.62ms | plan 0.03ms | board 0.04ms | export 4.18ms | paper 1.37ms
+- 50 files | scan 20.31ms | backtest 1.34ms | recommend 2.28ms | plan 0.05ms | board 0.10ms | export 6.36ms | paper 1.45ms
+- 100 files | scan 40.88ms | backtest 2.83ms | recommend 4.34ms | plan 0.06ms | board 0.17ms | export 9.10ms | paper 1.46ms
+- 200 files | scan 80.57ms | backtest 5.51ms | recommend 8.31ms | plan 0.09ms | board 0.31ms | export 12.76ms | paper 1.65ms
+- 500 files | scan 211.56ms | backtest 14.11ms | recommend 20.97ms | plan 0.19ms | board 0.76ms | export 31.41ms | paper 2.27ms
 
 ## Qt Boot
 
-- Samples: 2254.66ms, 2367.41ms, 2362.82ms
+- Samples: 3674.84ms, 3974.00ms, 3987.98ms
 
 ## Qt Boot Breakdown
 
 - Import: 0.01ms
-- Run 1: total 2177.91ms | build 161.09ms | post 551.50ms | finish 0.84ms
-- Run 2: total 2302.21ms | build 164.68ms | post 552.72ms | finish 0.88ms
-- Run 3: total 2330.96ms | build 161.10ms | post 554.49ms | finish 0.87ms
+- Run 1: total 3912.34ms | build 182.49ms | post 618.37ms | finish 1.73ms
+- Run 2: total 3610.50ms | build 180.50ms | post 615.86ms | finish 1.73ms
+- Run 3: total 3678.78ms | build 175.86ms | post 631.32ms | finish 1.60ms
 
 ## Regressions
 

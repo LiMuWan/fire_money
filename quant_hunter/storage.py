@@ -47,7 +47,7 @@ class AppState:
     universe_dir: str = ""
     selected_symbol: str = ""
     watchlist: list[str] = field(default_factory=list)
-    ui_theme: str = "sunrise"
+    ui_theme: str = "dark"
     theme_alias_path: str = ""
     news_source_provider: str = "csv"
     news_source_path: str = ""
@@ -237,19 +237,19 @@ def _decode_paper_trading_state(payload: object) -> PaperTradingState:
 def load_app_state(path: str | Path) -> AppState:
     file_path = Path(path)
     if not file_path.exists():
-        return AppState()
+        return AppState(ui_theme="sunrise")
     try:
         raw_text = file_path.read_text(encoding="utf-8")
         if not raw_text.strip():
-            return AppState()
+            return AppState(ui_theme="sunrise")
         data = json.loads(raw_text)
     except (OSError, json.JSONDecodeError):
-        return AppState()
+        return AppState(ui_theme="sunrise")
     return AppState(
         universe_dir=data.get("universe_dir", ""),
         selected_symbol=data.get("selected_symbol", ""),
         watchlist=_as_string_list(data.get("watchlist", [])),
-        ui_theme=data.get("ui_theme", "sunrise"),
+        ui_theme=data.get("ui_theme", "dark"),
         theme_alias_path=data.get("theme_alias_path", ""),
         news_source_provider=str(data.get("news_source_provider", "csv") or "csv"),
         news_source_path=str(data.get("news_source_path", "") or ""),
