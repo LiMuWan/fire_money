@@ -983,11 +983,13 @@ def build_overview_workspace(
     left_panel = QWidget()
     left_panel.setObjectName("overviewSidePanel")
     left_panel.setMinimumWidth(264)
+    window.overview_left_panel = left_panel
     left_layout = QVBoxLayout(left_panel)
     left_layout.setContentsMargins(0, 0, 0, 0)
     left_layout.setSpacing(10)
     left_title = QLabel("市场快照")
     left_title.setObjectName("heroTitle")
+    window.overview_left_title = left_title
     left_layout.addWidget(left_title)
     window.overview_intraday_container = QWidget()
     window.overview_intraday_container_layout = QVBoxLayout(window.overview_intraday_container)
@@ -1235,6 +1237,7 @@ def build_overview_workspace(
     right_panel = QWidget()
     right_panel.setObjectName("overviewRightPanel")
     right_panel.setMinimumWidth(332)
+    window.overview_right_panel = right_panel
     right_layout = QVBoxLayout(right_panel)
     right_layout.setContentsMargins(0, 0, 0, 0)
     right_layout.setSpacing(10)

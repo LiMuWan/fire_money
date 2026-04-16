@@ -2308,6 +2308,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertTrue(button.isEnabled())
         self.assertIn("分层：已公告", button.toolTip())
         self.assertIn("可直接打开原文链接", button.toolTip())
+        self.assertIn("建议：先看推荐页", button.toolTip())
         self.assertEqual(button.role, "accent")
 
         media_button = module.QPushButton()
@@ -2345,8 +2346,21 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(button.text(), "查看公告详情")
         self.assertTrue(button.isEnabled())
         self.assertIn("分层：已公告", button.toolTip())
+        self.assertIn("建议：先看推荐页", button.toolTip())
         self.assertIn("点击查看详情弹窗", button.toolTip())
         self.assertEqual(button.role, "tonal")
+
+        media_button = module.QPushButton()
+        media_item = SimpleNamespace(
+            source="财联社",
+            published_at="2026-04-17 10:12:00",
+            title="机器人主线继续扩散",
+            summary="媒体催化 | 关注板块扩散",
+            url="https://example.com/media",
+        )
+        module.QuantHunterWindow._update_news_detail_button(window, media_button, media_item)
+        self.assertEqual(media_button.text(), "查看媒体详情")
+        self.assertEqual(media_button.role, "ghost")
 
     def test_news_detail_lines_include_source_time_summary_and_url(self) -> None:
         module = importlib.import_module("app_qt")
@@ -2377,11 +2391,27 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         self.assertEqual(lines, ["2025年年度报告摘要", "2025年年度报告", "董事会决议公告"])
 
+    def test_news_recommended_action_maps_message_types_to_workspaces(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        recommend_target = module.QuantHunterWindow._news_recommended_action(SimpleNamespace(), SimpleNamespace(summary="分红预案 | 偏稳健催化", title="利润分配方案公告"))
+        detail_target = module.QuantHunterWindow._news_recommended_action(SimpleNamespace(), SimpleNamespace(summary="定期报告 | 业绩确认型催化", title="2025年年度报告"))
+        broker_target = module.QuantHunterWindow._news_recommended_action(SimpleNamespace(), SimpleNamespace(summary="治理动作 | 治理/资本动作催化", title="董事会决议公告"))
+        overview_target = module.QuantHunterWindow._news_recommended_action(SimpleNamespace(), SimpleNamespace(summary="媒体催化 | 关注板块扩散", title="媒体继续追踪"))
+
+        self.assertEqual(recommend_target[0], "recommend")
+        self.assertEqual(detail_target[0], "detail")
+        self.assertEqual(broker_target[0], "broker")
+        self.assertEqual(overview_target[0], "overview")
+
     def test_route_news_item_to_workspace_focuses_symbol_before_navigation(self) -> None:
         module = importlib.import_module("app_qt")
         focus_calls: list[tuple[str, str]] = []
         recommend_calls: list[str] = []
+        feedback_calls: list[tuple[str, str]] = []
         window = SimpleNamespace(
+            _set_news_focus_context=lambda item, target="": setattr(window, "last_news_focus_context", {"symbol": item.symbol, "title": "demo", "source": "巨潮资讯", "target": target}),
+            _trigger_news_navigation_feedback=lambda item, target="": feedback_calls.append((item.symbol, target)),
             _focus_symbol_everywhere=lambda symbol, origin="": focus_calls.append((symbol, origin)),
             _focus_symbol_in_recommend_workspace=lambda symbol: recommend_calls.append(symbol),
         )
@@ -2391,6 +2421,8 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         self.assertEqual(focus_calls, [("SZSE.300001", "news")])
         self.assertEqual(recommend_calls, ["SZSE.300001"])
+        self.assertEqual(feedback_calls, [("SZSE.300001", "recommend")])
+        self.assertEqual(window.last_news_focus_context["target"], "recommend")
 
     def test_route_news_item_to_workspace_shows_hint_when_symbol_missing(self) -> None:
         module = importlib.import_module("app_qt")
@@ -2401,6 +2433,99 @@ class StrategyWorkflowTests(unittest.TestCase):
             module.QuantHunterWindow._route_news_item_to_workspace(window, item, "recommend")
 
         info_box.assert_called_once()
+
+    def test_news_focus_context_helpers_return_suffix_and_tooltip(self) -> None:
+        module = importlib.import_module("app_qt")
+        window = SimpleNamespace(
+            last_news_focus_context={"symbol": "SZSE.300001", "title": "利润分配方案公告", "source": "巨潮资讯", "target": "broker"},
+            transient_news_feedback={"symbol": "SZSE.300001"},
+        )
+
+        suffix = module.QuantHunterWindow._news_focus_context_suffix(window, "SZSE.300001")
+        tooltip = module.QuantHunterWindow._news_focus_context_tooltip(window, "SZSE.300001")
+
+        self.assertEqual(suffix, " | 【消息驱动】刚由消息定位")
+        self.assertIn("来自消息驱动：已公告", tooltip)
+        self.assertIn("利润分配方案公告", tooltip)
+        self.assertIn("交易页", tooltip)
+
+    def test_render_text_with_news_badge_wraps_focus_text_in_html(self) -> None:
+        module = importlib.import_module("app_qt")
+        window = SimpleNamespace(
+            last_news_focus_context={"symbol": "SZSE.300001", "title": "利润分配方案公告", "source": "巨潮资讯", "target": "recommend"},
+            transient_news_feedback={},
+            _news_focus_badge_html=lambda symbol, compact=False: module.QuantHunterWindow._news_focus_badge_html(
+                SimpleNamespace(
+                    last_news_focus_context={"symbol": "SZSE.300001", "title": "利润分配方案公告", "source": "巨潮资讯", "target": "recommend"},
+                    transient_news_feedback={},
+                ),
+                symbol,
+                compact=compact,
+            ),
+        )
+
+        rendered = module.QuantHunterWindow._render_text_with_news_badge(window, "推荐焦点：龙头样本", "SZSE.300001")
+
+        self.assertIn("<span", rendered)
+        self.assertIn("消息驱动", rendered)
+        self.assertIn("推荐焦点：龙头样本", rendered)
+
+    def test_prepend_card_badge_adds_compact_badge_html(self) -> None:
+        module = importlib.import_module("app_qt")
+        window = SimpleNamespace(
+            _card_news_badge_html=lambda symbol: module.QuantHunterWindow._card_news_badge_html(
+                SimpleNamespace(
+                    last_news_focus_context={"symbol": "SZSE.300001", "title": "利润分配方案公告", "source": "巨潮资讯", "target": "recommend"},
+                    transient_news_feedback={},
+                ),
+                symbol,
+            )
+        )
+
+        rendered = module.QuantHunterWindow._prepend_card_badge(window, "消息分层", "SZSE.300001")
+
+        self.assertIn("<span", rendered)
+        self.assertIn("消息驱动", rendered)
+        self.assertIn("消息分层", rendered)
+
+    def test_render_leaderboard_cards_prepends_news_badge_to_stock_name(self) -> None:
+        from quant_hunter import ui_refresh
+
+        class DummyCard:
+            def __init__(self) -> None:
+                self.row = None
+                self._leaderboard_signature = None
+
+            def show(self) -> None:
+                return None
+
+            def set_row(self, rank_text, row) -> None:
+                self.row = (rank_text, row)
+
+            def set_message(self, title, message) -> None:
+                self.row = ("message", title, message)
+
+        row = SimpleNamespace(
+            symbol="SZSE.300001",
+            stock_name="龙头样本",
+            stock_id="300001",
+            primary_strategy="龙头模型",
+            strategy_tag="龙头模型",
+            fund_model="主力回流",
+            dragon_decision_score=88.0,
+            heat_score=86.0,
+            pct_change=5.2,
+            main_inflow=1.5,
+        )
+        window = SimpleNamespace(
+            market_leaderboard_cards=[DummyCard()],
+            _prepend_card_badge=lambda text, symbol: f"<span>消息驱动</span> {text}" if symbol == "SZSE.300001" else text,
+        )
+
+        ui_refresh.render_leaderboard_cards(window, [row])
+
+        self.assertIsNotNone(window.market_leaderboard_cards[0].row)
+        self.assertIn("消息驱动", window.market_leaderboard_cards[0].row[1].stock_name)
 
     def test_daily_pool_builder_ranks_reclaim_candidate(self) -> None:
         sample_dir = self._temp_dir() / "daily_pool_universe"
@@ -3834,8 +3959,15 @@ class StrategyWorkflowTests(unittest.TestCase):
                 self.assertEqual(window.left_signal_tabs.count(), 3)
                 self.assertTrue(hasattr(window, "overview_chart_controls_tabs"))
                 self.assertEqual(window.overview_chart_controls_tabs.count(), 2)
+                self.assertTrue(hasattr(window, "overview_primary_chart_tabs"))
+                self.assertEqual(window.overview_primary_chart_tabs.count(), 2)
                 self.assertTrue(hasattr(window, "overview_mini_chart_tabs"))
                 self.assertEqual(window.overview_mini_chart_tabs.count(), 3)
+                self.assertTrue(hasattr(window, "overview_right_panel"))
+                self.assertTrue(hasattr(window, "market_leaderboard_cards"))
+                self.assertEqual(len(window.market_leaderboard_cards), 3)
+                self.assertTrue(hasattr(window, "overview_summary_cards"))
+                self.assertEqual(set(window.overview_summary_cards.keys()), {"theme", "source", "capital", "decision"})
                 self.assertEqual(
                     set(getattr(window, "market_overlay_buttons", {}).keys()),
                     {"MA", "BOLL", "HIGHLOW", "BREAK"},
@@ -3876,11 +4008,37 @@ class StrategyWorkflowTests(unittest.TestCase):
                 window.resize(1600, 900)
                 window._apply_layout_polish_v19()
                 app.processEvents()
-                self.assertLessEqual(window.shell_header.maximumHeight(), 122)
-                self.assertLessEqual(window.shell_pulse_bar.maximumHeight(), 62)
+                self.assertLessEqual(window.shell_header.maximumHeight(), 108)
+                self.assertLessEqual(window.shell_header.minimumHeight(), 108)
+                self.assertLessEqual(window.shell_pulse_bar.maximumHeight(), 52)
+                self.assertLessEqual(window.shell_pulse_bar.minimumHeight(), 52)
                 self.assertLessEqual(window.overview_command_text.maximumHeight(), 170)
                 self.assertLessEqual(window.overview_execution_text.maximumHeight(), 170)
                 self.assertLessEqual(window.overview_playbook_text.maximumHeight(), 130)
+                self.assertLessEqual(window.left_signal_tabs.maximumHeight(), 228)
+                self.assertLessEqual(window.right_intel_tabs.maximumHeight(), 296)
+                self.assertLessEqual(window.overview_chart_controls_tabs.maximumHeight(), 138)
+                self.assertLessEqual(window.overview_primary_chart_tabs.maximumHeight(), 336)
+                self.assertLessEqual(window.overview_mini_chart_tabs.maximumHeight(), 186)
+                self.assertLessEqual(window.market_pool_table.maximumHeight(), 234)
+                self.assertLessEqual(window.market_pool_table.verticalHeader().defaultSectionSize(), 64)
+                self.assertLessEqual(window.overview_left_panel.minimumWidth(), 232)
+                self.assertLessEqual(window.overview_right_panel.minimumWidth(), 276)
+                self.assertLessEqual(window.market_leaderboard_cards[0].maximumHeight(), 94)
+                self.assertLessEqual(window.overview_summary_cards["theme"].maximumHeight(), 82)
+                self.assertLessEqual(window.market_search_input.maximumHeight(), 36)
+                self.assertLessEqual(window.market_theme_combo.maximumHeight(), 36)
+                self.assertLessEqual(window.market_refresh_button.maximumHeight(), 36)
+                self.assertLessEqual(next(iter(window.overview_quick_buttons.values())).maximumHeight(), 34)
+                self.assertLessEqual(next(iter(window.timeframe_buttons.values())).maximumHeight(), 34)
+                self.assertLessEqual(window.shell_workspace_chip["frame"].maximumWidth(), 176)
+                self.assertLessEqual(window.shell_market_chip["frame"].maximumWidth(), 176)
+                self.assertLessEqual(window.shell_pipeline_chip["frame"].maximumWidth(), 176)
+                self.assertEqual(window.shell_workspace_chip["value"].text(), "总览")
+                self.assertEqual(window.market_search_input.placeholderText(), "代码/名称/题材")
+                self.assertEqual(window.market_refresh_button.text(), "刷新市场")
+                self.assertIs(window.intraday_chart_view.parentWidget(), window.overview_intraday_chart_page)
+                self.assertFalse(window.overview_intraday_container.isVisible())
             finally:
                 window.close()
                 app.processEvents()
@@ -4048,6 +4206,81 @@ class StrategyWorkflowTests(unittest.TestCase):
                 window._render_market_dashboard("000001")
                 app.processEvents()
                 self.assertIn("结构", window.market_quote_label.text())
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_message_flow_smoke(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                recommendation = RecommendationRow(
+                    symbol="SZSE.300001",
+                    stock_id="300001",
+                    stock_name="龙头样本",
+                    action="BUY",
+                    label="RECLAIM_LONG",
+                    signal_date="2026-04-17",
+                    close=10.0,
+                    entry_price=10.0,
+                    stop_price=9.4,
+                    target_price=10.9,
+                    technical_score=82.0,
+                    position_score=80.0,
+                    persistence_score=78.0,
+                    news_score=76.0,
+                    leader_score=88.0,
+                    total_score=87.0,
+                    mainline_tag="机器人",
+                    catalyst="订单超预期",
+                    rationale="主线前排加速，资金回流明显",
+                    next_focus="继续盯量能和承接",
+                    mainline_risk_flag="中",
+                    mainline_role="CORE",
+                    mainline_rank=1,
+                    mainline_window_score=82.0,
+                    confidence_score=85.0,
+                    execution_readiness=81.0,
+                    primary_strategy="龙头模型",
+                    opportunity_tier="优先处理",
+                )
+                news_item = SimpleNamespace(
+                    symbol="SZSE.300001",
+                    source="财联社",
+                    published_at="2026-04-17 10:12:00",
+                    title="机器人主线继续扩散",
+                    summary="媒体催化 | 关注板块扩散",
+                    url="https://example.com/media",
+                )
+
+                window.active_symbol = "SZSE.300001"
+                window.daily_pool_rows = [recommendation]
+                window.news_catalysts = {"SZSE.300001": [news_item]}
+                window.last_news_focus_context = {
+                    "symbol": "SZSE.300001",
+                    "title": news_item.title,
+                    "source": news_item.source,
+                    "target": "recommend",
+                }
+                window.transient_news_feedback = {"symbol": "SZSE.300001"}
+
+                window._update_market_text_panels("SZSE.300001", None, recommendation)
+                window._refresh_recommendation_focus_panels(recommendation)
+                app.processEvents()
+
+                self.assertIn("建议：先回总览", window.market_breadth_text.toPlainText())
+                self.assertEqual(window.market_open_news_button.text(), "查看媒体原文")
+                self.assertEqual(window.market_news_detail_button.text(), "查看媒体详情")
+                self.assertIn("消息驱动", window.overview_summary_cards["source"].headline_label.text())
+                self.assertIn("查看媒体原文", window.recommend_news_source_button.text())
+                self.assertIn("查看媒体详情", window.recommend_news_detail_button.text())
+                self.assertIn("消息驱动", window.daily_pool_focus_label.text())
             finally:
                 window.close()
                 app.processEvents()
@@ -6748,6 +6981,45 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn("炒作逻辑", window.market_decision_text.toPlainText())
         self.assertEqual(window.market_open_news_button.text(), "查看媒体原文")
         self.assertIn("分层：媒体催化", window.market_open_news_button.toolTip())
+
+    def test_populate_market_depth_texts_v5_surfaces_recommended_next_workspace(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        top_row = SimpleNamespace(
+            symbol="SHSE.600000",
+            stock_name="浦发银行",
+            mainline_tag="银行修复",
+            theme_name="银行修复",
+            strategy_tag="龙头模型",
+            catalyst="利润分配预案",
+            rationale="分红稳住预期，资金回流",
+            next_focus="盯承接和量能",
+            mainline_risk_flag="低",
+        )
+        news_item = SimpleNamespace(
+            title="2025年度利润分配方案公告",
+            source="巨潮资讯",
+            published_at="2026-04-17 09:31:00",
+            summary="分红预案 | 偏稳健催化",
+        )
+        window = SimpleNamespace(
+            market_buy_text=module.QTextEdit(),
+            market_sell_text=module.QTextEdit(),
+            market_breadth_text=module.QTextEdit(),
+            news_catalysts={"SHSE.600000": [news_item]},
+            _set_note_panel_tone_v5=lambda widget, tone: None,
+            _news_recommended_action=lambda item: ("recommend", "先看推荐页", "这类催化更适合先看机会分层"),
+            _news_digest_lines_for_symbol=lambda symbol, limit=2: [f"- [已公告] {news_item.title}"],
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+        )
+
+        module._qh_populate_market_depth_texts_v5(window, [top_row])
+
+        text = window.market_breadth_text.toPlainText()
+        self.assertIn("建议：先看推荐页 | 这类催化更适合先看机会分层", text)
+        self.assertIn("结论：已公告 | 可信度 A级", text)
+        self.assertIn("焦点：浦发银行", text)
 
     def test_refresh_news_source_status_panel_renders_provider_runtime(self) -> None:
         module = importlib.import_module("app_qt")
@@ -9794,15 +10066,36 @@ class StrategyWorkflowTests(unittest.TestCase):
             recommend_news_source_button=module.QPushButton(),
             recommend_news_detail_button=module.QPushButton(),
             recommend_queue_text=module.QTextEdit(),
+            daily_pool_focus_label=module.QLabel(),
             daily_pool_rows=[waiting, row],
             news_catalysts={"SZSE.300001": [SimpleNamespace(source="巨潮资讯", published_at="2026-04-17 09:31:00", title="利润分配方案公告", summary="分红预案", url="https://example.com/notice.pdf")]},
             execution_status_by_symbol={"SZSE.300001": "待观察", "SZSE.300002": "待观察"},
+            last_news_focus_context={"symbol": "SZSE.300001", "title": "利润分配方案公告", "source": "巨潮资讯", "target": "recommend"},
             _current_recommend_focus=lambda: row,
             _selected_daily_pool_recommendation=lambda: row,
             _display_action=lambda value: {"BUY": "买入", "WATCH": "观察", "SELL": "卖出"}.get(value, value),
             _display_mainline_role=lambda value: value or "主升",
             _stock_profile_for_symbol=lambda symbol: None,
             _news_digest_lines_for_symbol=lambda symbol, limit=2: [f"- [已公告] 利润分配方案公告 (巨潮资讯 / 2026-04-17 09:31:00 / 可信度 A级)"],
+            _stock_name_for_symbol=lambda symbol: "龙头样本",
+            _stock_id_for_symbol=lambda symbol: "300001",
+            _news_focus_context_suffix=lambda symbol: module.QuantHunterWindow._news_focus_context_suffix(SimpleNamespace(last_news_focus_context={"symbol": "SZSE.300001", "title": "利润分配方案公告", "source": "巨潮资讯", "target": "recommend"}), symbol),
+            _news_focus_context_tooltip=lambda symbol: module.QuantHunterWindow._news_focus_context_tooltip(SimpleNamespace(last_news_focus_context={"symbol": "SZSE.300001", "title": "利润分配方案公告", "source": "巨潮资讯", "target": "recommend"}), symbol),
+            _render_text_with_news_badge=lambda text, symbol, compact=False: module.QuantHunterWindow._render_text_with_news_badge(
+                SimpleNamespace(
+                    _news_focus_badge_html=lambda current_symbol, compact=False: module.QuantHunterWindow._news_focus_badge_html(
+                        SimpleNamespace(
+                            last_news_focus_context={"symbol": "SZSE.300001", "title": "利润分配方案公告", "source": "巨潮资讯", "target": "recommend"},
+                            transient_news_feedback={},
+                        ),
+                        current_symbol,
+                        compact=compact,
+                    )
+                ),
+                text,
+                symbol,
+                compact=compact,
+            ),
             _update_news_action_button=lambda button, item: module.QuantHunterWindow._update_news_action_button(
                 SimpleNamespace(
                     _set_button_role=lambda target, role="ghost": setattr(target, "role", role),
@@ -9826,6 +10119,10 @@ class StrategyWorkflowTests(unittest.TestCase):
             _refresh_recommend_focus_cards=lambda current=None: None,
             _refresh_recommend_decision_summary=lambda current=None: None,
             _refresh_action_button_states_v30=lambda: None,
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip) if tooltip is not None and hasattr(widget, "setToolTip") else None,
+            ),
             _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text) if widget.toPlainText() != text else None,
         )
 
@@ -9839,6 +10136,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn("分层：已公告", window.recommend_news_source_button.toolTip())
         self.assertEqual(window.recommend_news_detail_button.text(), "查看公告详情")
         self.assertIn("点击查看详情弹窗", window.recommend_news_detail_button.toolTip())
+        self.assertIn("消息驱动", window.daily_pool_focus_label.text())
 
     def test_refresh_broker_order_focus_uses_recommendation_when_intent_missing(self) -> None:
         module = importlib.import_module("app_qt")

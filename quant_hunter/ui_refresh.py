@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from contextlib import contextmanager
+from types import SimpleNamespace
 
 try:
     from PySide6.QtCore import Qt
@@ -1800,6 +1801,18 @@ def render_leaderboard_cards(window, rows: list) -> None:
     for index, card in enumerate(window.market_leaderboard_cards):
         if index < len(visible_rows):
             row = visible_rows[index]
+            display_row = row
+            prepend_badge = getattr(window, "_prepend_card_badge", None)
+            if callable(prepend_badge):
+                symbol = getattr(row, "symbol", "") or ""
+                stock_name = getattr(row, "stock_name", "") or ""
+                if symbol and stock_name:
+                    try:
+                        display_row = SimpleNamespace(**vars(row))
+                    except TypeError:
+                        display_row = SimpleNamespace(**getattr(row, "__dict__", {}))
+                    if getattr(display_row, "stock_name", ""):
+                        display_row.stock_name = prepend_badge(str(stock_name), symbol)
             strategy_name = getattr(row, "primary_strategy", "") or getattr(row, "strategy_tag", "")
             decision_score = getattr(row, "dragon_decision_score", getattr(row, "heat_score", 0.0))
             signature = (
@@ -1816,7 +1829,7 @@ def render_leaderboard_cards(window, rows: list) -> None:
             )
             card.show()
             if getattr(card, "_leaderboard_signature", None) != signature:
-                card.set_row(f"TOP {index + 1}", row)
+                card.set_row(f"TOP {index + 1}", display_row)
                 card._leaderboard_signature = signature
         else:
             signature = ("message", "等待候选同步", "当前暂无入选标的，首轮扫描后会在这里显示前排。")

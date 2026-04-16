@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout, QWidget
 
 
@@ -10,6 +11,8 @@ class InsightCardBase(QFrame):
 
     def _set_label_if_changed(self, widget: QLabel, text: str) -> None:
         if widget.text() != text:
+            if hasattr(widget, "setTextFormat"):
+                widget.setTextFormat(Qt.RichText if "<span" in str(text) else Qt.AutoText)
             widget.setText(text)
 
     def _set_stylesheet_if_changed(self, widget, stylesheet: str) -> None:
@@ -67,8 +70,10 @@ class InsightCardBase(QFrame):
 class LeaderboardCard(InsightCardBase):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("leaderboardCard", parent)
+        self._compact_density = False
         self.setMinimumHeight(142)
         layout = QVBoxLayout(self)
+        self._layout = layout
         layout.setContentsMargins(16, 13, 16, 13)
         layout.setSpacing(4)
 
@@ -102,6 +107,21 @@ class LeaderboardCard(InsightCardBase):
             widget.setWordWrap(True)
             layout.addWidget(widget)
         layout.addStretch(1)
+        self.set_density(False)
+
+    def set_density(self, compact: bool) -> None:
+        self._compact_density = bool(compact)
+        self.setMinimumHeight(86 if self._compact_density else 142)
+        self.setMaximumHeight(94 if self._compact_density else 16777215)
+        self._layout.setContentsMargins(
+            12 if self._compact_density else 16,
+            10 if self._compact_density else 13,
+            12 if self._compact_density else 16,
+            10 if self._compact_density else 13,
+        )
+        self._layout.setSpacing(2 if self._compact_density else 4)
+        self.fund_label.setVisible(not self._compact_density)
+        self.flow_label.setVisible(not self._compact_density)
 
     def set_row(self, rank_text: str, row) -> None:
         accent = {"TOP 1": "#f5c451", "TOP 2": "#cfd8e3", "TOP 3": "#b7835a"}.get(rank_text, "#7ed7ff")
@@ -315,8 +335,10 @@ class ActionFlowCard(InsightCardBase):
 class CompactSummaryCard(InsightCardBase):
     def __init__(self, title: str, accent: str, parent: QWidget | None = None) -> None:
         super().__init__("compactSummaryCard", parent)
+        self._compact_density = False
         self.setMinimumHeight(96)
         layout = QVBoxLayout(self)
+        self._layout = layout
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(5)
 
@@ -345,6 +367,28 @@ class CompactSummaryCard(InsightCardBase):
             emphasis_size=17,
         )
         self.detail_label.setStyleSheet("color:#90a4b8; font-size:10px; line-height:1.3;")
+        self.set_density(False)
+
+    def set_density(self, compact: bool) -> None:
+        self._compact_density = bool(compact)
+        self.setMinimumHeight(74 if self._compact_density else 96)
+        self.setMaximumHeight(82 if self._compact_density else 16777215)
+        self._layout.setContentsMargins(
+            12 if self._compact_density else 16,
+            10 if self._compact_density else 14,
+            12 if self._compact_density else 16,
+            10 if self._compact_density else 14,
+        )
+        self._layout.setSpacing(3 if self._compact_density else 5)
+        self.title_label.setStyleSheet(
+            f"color:#98aec5; font-size:{11 if self._compact_density else 12}px; font-weight:900;"
+        )
+        self.headline_label.setStyleSheet(
+            f"color:#f4f8fc; font-size:{15 if self._compact_density else 17}px; font-weight:800;"
+        )
+        self.detail_label.setStyleSheet(
+            f"color:#90a4b8; font-size:{9 if self._compact_density else 10}px; line-height:1.25;"
+        )
 
     def set_data(self, headline: str, detail: str) -> None:
         self._set_label_if_changed(self.headline_label, headline)
