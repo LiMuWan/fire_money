@@ -15,6 +15,7 @@ from typing import Any
 from .decision import TradeDecision
 from .models import BrokerProfile, BrokerStatus, CashSnapshot, HoldingRecord, OrderIntent, ScanRow
 from .risk import DEFAULT_RISK_CONTROLS, normalize_risk_profile, resolve_risk_controls
+from .theme import display_mainline_role
 
 _MIN_ORDER_RISK_REWARD_RATIO = DEFAULT_RISK_CONTROLS.plan_min_risk_reward_ratio
 _WARN_TOTAL_LOSS_RATIO = DEFAULT_RISK_CONTROLS.warn_total_loss_ratio
@@ -25,6 +26,11 @@ _WARN_SINGLE_POSITION_ASSET_RATIO = DEFAULT_RISK_CONTROLS.warn_single_position_a
 _BLOCK_SINGLE_POSITION_ASSET_RATIO = DEFAULT_RISK_CONTROLS.block_single_position_asset_ratio
 _WARN_SINGLE_POSITION_CASH_RATIO = DEFAULT_RISK_CONTROLS.warn_single_position_cash_ratio
 _BLOCK_SINGLE_POSITION_CASH_RATIO = DEFAULT_RISK_CONTROLS.block_single_position_cash_ratio
+
+TEST_SUBMIT_REQUIRE_WHITELIST_TEXT = "\u6d4b\u8bd5\u5355\u6a21\u5f0f\u8981\u6c42\u5148\u586b\u5199\u6d4b\u8bd5\u767d\u540d\u5355\u80a1\u7968\u4ee3\u7801\u3002"
+TEST_SUBMIT_WHITELIST_PREFIX = "\u6d4b\u8bd5\u767d\u540d\u5355\uff1a"
+MAINLINE_GATE_PREFIX = "\u4e3b\u7ebf\u5ba1\u67e5 / \u4e3b\u7ebf\u95f8\u95e8\uff1a"
+MAINLINE_REVIEW_PENDING_DETAIL = "\u672a\u547d\u4e2d\u5f53\u524d\u63a8\u8350\u6c60\uff0c\u9700\u4eba\u5de5\u590d\u6838\u540e\u518d\u51b3\u5b9a\u662f\u5426\u6267\u884c\u3002"
 
 
 def _is_trade_plan_viable(price: float, stop_price: float, target_price: float, min_ratio: float = _MIN_ORDER_RISK_REWARD_RATIO) -> bool:
@@ -48,14 +54,11 @@ def _trade_plan_risk_reward_ratio(price: float, stop_price: float, target_price:
 
 
 def _display_mainline_role(value: str) -> str:
-    return {
-        "CORE": "核心龙头",
-        "FRONT": "前排核心",
-        "ASSIST": "助攻前排",
-        "FOLLOW": "跟风观察",
-        "NOISE": "杂毛噪声",
-        "ELIMINATED": "淘汰风险",
-    }.get(value or "", value or "--")
+    return display_mainline_role(value)
+
+
+def _mainline_gate_message(symbol_or_name: str, text: str) -> str:
+    return f"{MAINLINE_GATE_PREFIX}{symbol_or_name} {text}"
 
 
 def _normalize_test_submit_max_amount(value: float | int | None, default: float = 10000.0) -> float:
@@ -116,7 +119,7 @@ def build_submission_intents(
     buy_intents = [item for item in prepared if str(getattr(item, "side", "") or "").upper() == "BUY"]
 
     if not whitelist:
-        blockers.append("测试单模式要求先填写测试白名单股票代码。")
+        blockers.append(TEST_SUBMIT_REQUIRE_WHITELIST_TEXT)
         return [], [], blockers
 
     blocked_symbols = [
@@ -158,7 +161,7 @@ def build_submission_intents(
 
     if buy_intents and not notes and not blockers:
         notes.append(f"测试单模式已开启，买入金额上限为 {max_buy_amount:,.0f}。")
-    notes.append(f"测试白名单：{', '.join(whitelist)}")
+    notes.append(f"{TEST_SUBMIT_WHITELIST_PREFIX}{', '.join(whitelist)}")
     return guarded, notes, blockers
 
 
@@ -294,11 +297,11 @@ def _build_mainline_review(order_intents: list[OrderIntent], recommendations: li
                     "window_score": 0.0,
                     "risk_flag": "待核对",
                     "status": "待核对",
-                    "detail": "未命中当前推荐池，需人工复核后再决定是否执行。",
+                    "detail": MAINLINE_REVIEW_PENDING_DETAIL,
                 }
             )
             if intent.side == "BUY":
-                warnings.append(f"主线审查 / 主线闸门：{intent.symbol} 未命中当前推荐池，建议人工复核。")
+                warnings.append(_mainline_gate_message(intent.symbol, "未命中当前推荐池，建议人工复核。"))
             continue
 
         theme_name = getattr(recommendation, "mainline_tag", "") or getattr(recommendation, "theme_name", "") or "未分类"
@@ -314,19 +317,44 @@ def _build_mainline_review(order_intents: list[OrderIntent], recommendations: li
         if intent.side == "BUY":
             if role in {"ELIMINATED", "NOISE"}:
                 status = "拦截"
-                blockers.append(f"主线审查 / 主线闸门：{getattr(recommendation, 'stock_name', intent.symbol)} 已处于{role_label}，不建议新开仓。")
+                blockers.append(
+                    _mainline_gate_message(
+                        getattr(recommendation, "stock_name", intent.symbol),
+                        f"已处于{role_label}，不建议新开仓。",
+                    )
+                )
             elif rank > 3:
                 status = "拦截"
-                blockers.append(f"主线审查 / 主线闸门：{getattr(recommendation, 'stock_name', intent.symbol)} 已跌出主线前 3，暂不建议新开仓。")
+                blockers.append(
+                    _mainline_gate_message(
+                        getattr(recommendation, "stock_name", intent.symbol),
+                        "已跌出主线前 3，暂不建议新开仓。",
+                    )
+                )
             elif risk_flag == "高" or failure_risk >= 72.0:
                 status = "拦截"
-                blockers.append(f"主线审查 / 主线闸门：{getattr(recommendation, 'stock_name', intent.symbol)} 主线风险偏高，建议暂缓执行。")
+                blockers.append(
+                    _mainline_gate_message(
+                        getattr(recommendation, "stock_name", intent.symbol),
+                        "主线风险偏高，建议暂缓执行。",
+                    )
+                )
             elif window_score < 50.0:
                 status = "拦截"
-                blockers.append(f"主线审查 / 主线闸门：{getattr(recommendation, 'stock_name', intent.symbol)} 主线窗口不足，等待更清晰买点。")
+                blockers.append(
+                    _mainline_gate_message(
+                        getattr(recommendation, "stock_name", intent.symbol),
+                        "主线窗口不足，等待更清晰买点。",
+                    )
+                )
             elif role == "FOLLOW" or window_score < 66.0 or risk_flag == "中":
                 status = "谨慎"
-                warnings.append(f"主线审查 / 主线闸门：{getattr(recommendation, 'stock_name', intent.symbol)} 更适合缩量试错或等待确认。")
+                warnings.append(
+                    _mainline_gate_message(
+                        getattr(recommendation, "stock_name", intent.symbol),
+                        "更适合缩量试错或等待确认。",
+                    )
+                )
             else:
                 pass_count += 1
         else:

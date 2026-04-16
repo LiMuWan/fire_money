@@ -42,6 +42,7 @@ from quant_hunter.risk import RISK_PROFILE_LABELS, risk_profile_brief
 from quant_hunter.models import ScanRow
 from quant_hunter.reports import _report_mainline_followup_text
 from quant_hunter.recommend_status import execution_summary_for_rows
+from quant_hunter.theme import display_mainline_role as _shared_display_mainline_role
 from quant_hunter.ui_helpers import one_day_hold_grade, one_day_hold_tripwire_metrics, tail_buy_execution_checklist, tail_buy_runtime_panel_lines, tail_buy_runtime_status
 from quant_hunter.ui_status import display_fill_status, display_order_status, market_pool_colors, signal_colors, submission_colors
 
@@ -272,14 +273,7 @@ def _brief_panel_text(title: str, conclusion: str, risk: str, next_step: str) ->
 
 
 def _display_mainline_role(value: str) -> str:
-    return {
-        "CORE": "核心龙头",
-        "FRONT": "前排核心",
-        "ASSIST": "助攻前排",
-        "FOLLOW": "跟风观察",
-        "NOISE": "杂毛噪声",
-        "ELIMINATED": "淘汰风险",
-    }.get(value or "", value or "--")
+    return _shared_display_mainline_role(value)
 
 
 def _mainline_flow_brief(recommendation) -> str:

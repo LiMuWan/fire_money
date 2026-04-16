@@ -49,6 +49,10 @@ class AppState:
     watchlist: list[str] = field(default_factory=list)
     ui_theme: str = "sunrise"
     theme_alias_path: str = ""
+    news_source_provider: str = "csv"
+    news_source_path: str = ""
+    news_source_last_loaded_at: str = ""
+    news_source_status: str = ""
     recommend_theme_filter: str = _ALL
     recommend_strategy_filter: str = _ALL
     recommend_action_filter: str = _ALL
@@ -247,6 +251,10 @@ def load_app_state(path: str | Path) -> AppState:
         watchlist=_as_string_list(data.get("watchlist", [])),
         ui_theme=data.get("ui_theme", "sunrise"),
         theme_alias_path=data.get("theme_alias_path", ""),
+        news_source_provider=str(data.get("news_source_provider", "csv") or "csv"),
+        news_source_path=str(data.get("news_source_path", "") or ""),
+        news_source_last_loaded_at=str(data.get("news_source_last_loaded_at", "") or ""),
+        news_source_status=str(data.get("news_source_status", "") or ""),
         recommend_theme_filter=data.get("recommend_theme_filter", _ALL),
         recommend_strategy_filter=data.get("recommend_strategy_filter", _ALL),
         recommend_action_filter=data.get("recommend_action_filter", _ALL),

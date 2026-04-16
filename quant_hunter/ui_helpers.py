@@ -337,6 +337,111 @@ def set_shell_chip(chip: dict[str, object] | None, value: str) -> None:
         widget.setText(value)
 
 
+def _clean_copy(value: object) -> str:
+    return str(value or "").replace("\r", " ").replace("\n", " ").strip()
+
+
+def _compact_copy(value: object, limit: int) -> str:
+    text = _clean_copy(value)
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "…"
+
+
+def news_source_tier(source: str) -> str:
+    normalized = _clean_copy(source).lower()
+    if not normalized:
+        return "B级"
+    if any(token in normalized for token in ("巨潮", "cninfo", "上交所", "深交所", "公告", "互动易", "e互动", "公司公告")):
+        return "A级"
+    if any(token in normalized for token in ("股吧", "雪球", "微博", "论坛", "传闻", "社群", "自媒体", "小作文")):
+        return "C级"
+    if any(
+        token in normalized
+        for token in ("财联社", "证券时报", "上证报", "中证报", "东方财富", "同花顺", "界面", "wind", "choice")
+    ):
+        return "B级"
+    return "B级"
+
+
+def news_confidence_label(news_items: list[object] | tuple[object, ...] | None) -> str:
+    if not news_items:
+        return "可信度 待确认"
+    source = _clean_copy(getattr(news_items[0], "source", ""))
+    return f"可信度 {news_source_tier(source)}"
+
+
+def build_news_digest_lines(news_items: list[object] | tuple[object, ...] | None, limit: int = 2) -> list[str]:
+    if not news_items:
+        return []
+    lines: list[str] = []
+    for item in list(news_items)[: max(0, limit)]:
+        title = _clean_copy(getattr(item, "title", "")) or "消息标题未填写"
+        source = _clean_copy(getattr(item, "source", "")) or "来源未知"
+        published = _clean_copy(getattr(item, "published_at", ""))
+        tier = news_source_tier(source)
+        meta = " / ".join(part for part in (source, published, f"可信度 {tier}") if part)
+        lines.append(f"- {title}{f' ({meta})' if meta else ''}")
+        summary = _clean_copy(getattr(item, "summary", ""))
+        if summary:
+            lines.append(f"  {_compact_copy(summary, 42)}")
+    return lines
+
+
+def build_hype_logic_summary(
+    *,
+    theme_name: str = "",
+    catalyst: str = "",
+    rationale: str = "",
+    profile_notes: str = "",
+    scan_reason: str = "",
+    news_title: str = "",
+) -> str:
+    trigger = _clean_copy(catalyst) or _clean_copy(news_title)
+    thesis = _clean_copy(rationale) or _clean_copy(profile_notes) or _clean_copy(scan_reason)
+    theme = _clean_copy(theme_name)
+    parts: list[str] = []
+    if trigger:
+        parts.append(_compact_copy(trigger, 18))
+    if theme and theme not in "".join(parts):
+        parts.append(_compact_copy(theme, 10))
+    if thesis and thesis not in "".join(parts):
+        parts.append(_compact_copy(thesis, 24))
+    if not parts:
+        return "等待逻辑生成"
+    return " -> ".join(parts)
+
+
+def build_hype_logic_lines(
+    *,
+    theme_name: str = "",
+    catalyst: str = "",
+    rationale: str = "",
+    profile_notes: str = "",
+    scan_reason: str = "",
+    news_title: str = "",
+    next_focus: str = "",
+    risk_flag: str = "",
+    confidence_label: str = "",
+) -> list[str]:
+    logic_summary = build_hype_logic_summary(
+        theme_name=theme_name,
+        catalyst=catalyst,
+        rationale=rationale,
+        profile_notes=profile_notes,
+        scan_reason=scan_reason,
+        news_title=news_title,
+    )
+    watch_text = _compact_copy(next_focus, 30) or "继续盯量能、承接和主线延续"
+    risk_text = _compact_copy(risk_flag, 10) or "待评估"
+    confidence_text = _clean_copy(confidence_label) or "可信度 待确认"
+    return [
+        f"炒作逻辑：{logic_summary}",
+        f"验证焦点：{watch_text}",
+        f"风险/可信度：{risk_text} | {confidence_text}",
+    ]
+
+
 def recommendation_focus_lines(row) -> list[str]:
     if row is None:
         return ["等待推荐池刷新。"]

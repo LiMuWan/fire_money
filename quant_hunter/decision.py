@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 
 from .models import HoldingRecord, RecommendationRow
 from .risk import DEFAULT_RISK_CONTROLS, RiskControls, normalize_risk_profile, resolve_risk_controls
-from .theme import infer_mainline_flow_signal, infer_mainline_stage
+from .theme import display_mainline_role, infer_mainline_flow_signal, infer_mainline_stage
 
 
 @dataclass(frozen=True)
@@ -159,13 +159,7 @@ class DecisionEngine:
 
     @staticmethod
     def _mainline_role_label(role: str) -> str:
-        return {
-            "CORE": "核心龙头",
-            "FRONT": "前排主线",
-            "FOLLOW": "跟随补位",
-            "NOISE": "噪声支线",
-            "ELIMINATED": "主线淘汰",
-        }.get(role, "主线观察")
+        return display_mainline_role(role)
 
     @classmethod
     def _trade_risk_reward_ratio(cls, planned_entry: float, planned_stop: float, planned_target: float) -> float:

@@ -1,18 +1,10 @@
-from __future__ import annotations
-
-# The desktop UI is intentionally unified around a single high-contrast terminal theme.
-THEME_OPTIONS = [("graphite", "专业终端")]
-
+﻿from __future__ import annotations
 
 THEME_OPTIONS = [
-    ("sunrise", "晨曦"),
-    ("ocean", "海雾"),
-    ("graphite", "石墨"),
-    ("pro_terminal", "专业黑金"),
+    ("graphite", "专业终端"),
+    ("cerulean", "钛蓝终端"),
+    ("ember", "琥珀终端"),
 ]
-
-# Keep the runtime theme picker locked to the terminal theme.
-THEME_OPTIONS = [("graphite", "专业终端")]
 
 DISPLAY_TEXT = {
     "action": {
@@ -100,8 +92,8 @@ DAILY_POOL_TABLE_HEADERS = [
     "低吸",
     "尾盘",
     "一日",
-    "决策",
     "动作",
+    "决策",
     "催化",
     "日期",
     "买卖价",
@@ -123,6 +115,7 @@ def workspace_name_for_index(index: int) -> str:
     if 0 <= index < len(WORKSPACE_TAB_ORDER):
         return WORKSPACE_LABEL_BY_KEY.get(WORKSPACE_TAB_ORDER[index], "未命名")
     return "未命名"
+
 
 OVERVIEW_QUICK_ROUTE_SPECS = {
     "市场总览": {"workspace": "overview", "widget": "intraday_chart_view"},

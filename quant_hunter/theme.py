@@ -156,6 +156,17 @@ def infer_mainline_flow_signal(
     return "延续观察"
 
 
+def display_mainline_role(role: str) -> str:
+    return {
+        "CORE": "\u6838\u5fc3\u9f99\u5934",
+        "FRONT": "\u524d\u6392\u6838\u5fc3",
+        "ASSIST": "\u52a9\u653b\u524d\u6392",
+        "FOLLOW": "\u8ddf\u98ce\u89c2\u5bdf",
+        "NOISE": "\u6742\u6bdb\u566a\u58f0",
+        "ELIMINATED": "\u6dd8\u6c70\u98ce\u9669",
+    }.get(role or "", role or "--")
+
+
 class ThemeHeatEngine:
     def __init__(self, theme_aliases: dict[str, tuple[str, ...]] | None = None) -> None:
         self.theme_aliases = theme_aliases or DEFAULT_THEME_KEYWORDS
