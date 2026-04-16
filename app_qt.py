@@ -2621,13 +2621,13 @@ GRAPHITE_COMMERCIAL_STYLE = """
         border-radius: 24px;
     }
     QGroupBox[surfaceRole="priority-rail"] {
-        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(22, 31, 42, 0.99), stop:1 rgba(12, 18, 25, 0.99));
-        border: 1px solid rgba(129, 149, 174, 0.18);
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(20, 28, 38, 0.96), stop:0.52 rgba(14, 20, 28, 0.98), stop:1 rgba(12, 18, 25, 0.98));
+        border: 1px solid rgba(129, 149, 174, 0.14);
         border-radius: 22px;
     }
     QGroupBox[surfaceRole="analysis"] {
-        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(20, 28, 38, 0.98), stop:1 rgba(13, 19, 27, 0.98));
-        border: 1px solid rgba(110, 129, 151, 0.18);
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(18, 25, 35, 0.96), stop:0.55 rgba(13, 19, 27, 0.98), stop:1 rgba(10, 15, 22, 0.98));
+        border: 1px solid rgba(110, 129, 151, 0.14);
         border-radius: 20px;
     }
     QTextEdit#marketNotePanel[panelTone="command"],
@@ -2704,6 +2704,66 @@ GRAPHITE_COMMERCIAL_STYLE = """
     }
     QSplitter#workspaceControlSplit::handle:vertical {
         background: qlineargradient(x1:0, y1:0.5, x2:1, y2:0.5, stop:0 transparent, stop:0.18 rgba(255,255,255,0.02), stop:0.5 rgba(141, 189, 249, 0.20), stop:0.82 rgba(255,255,255,0.02), stop:1 transparent);
+    }
+    QGroupBox#overviewPriorityBox::title,
+    QGroupBox#overviewSummaryBox::title,
+    QGroupBox#themeSummaryBox::title,
+    QGroupBox#capitalBox::title,
+    QGroupBox#decisionBox::title {
+        color: #f3f8ff;
+        font-size: 13px;
+        font-weight: 900;
+        padding-left: 4px;
+    }
+    QGroupBox#themeSummaryBox QTextEdit#marketNotePanel,
+    QGroupBox#capitalBox QTextEdit#marketNotePanel,
+    QGroupBox#decisionBox QTextEdit#marketNotePanel {
+        border-radius: 18px;
+        padding: 14px 16px;
+        font-size: 12px;
+    }
+    QGroupBox#overviewSummaryBox QFrame#metricCard {
+        border-radius: 18px;
+    }
+    QGroupBox#overviewPriorityBox QFrame#actionFlowCard,
+    QGroupBox#leaderboardBox QFrame#leaderboardCard,
+    QGroupBox#overviewSummaryBox QFrame#compactSummaryCard {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(17, 24, 33, 0.98), stop:0.58 rgba(12, 17, 24, 0.98), stop:1 rgba(9, 14, 20, 0.99));
+        border: 1px solid rgba(110, 129, 151, 0.16);
+        border-radius: 16px;
+    }
+    QGroupBox#overviewPriorityBox QFrame#actionFlowCard:hover,
+    QGroupBox#leaderboardBox QFrame#leaderboardCard:hover,
+    QGroupBox#overviewSummaryBox QFrame#compactSummaryCard:hover {
+        border: 1px solid rgba(151, 203, 255, 0.20);
+    }
+    QLabel#actionFlowTitle,
+    QLabel#compactSummaryTitle,
+    QLabel#leaderboardRank,
+    QLabel#leaderboardBadge {
+        text-transform: uppercase;
+        letter-spacing: 0.6px;
+    }
+    QLabel#compactSummaryHeadline,
+    QLabel#leaderboardName {
+        color: #f4f8fc;
+    }
+    QLabel#compactSummaryDetail,
+    QLabel#leaderboardMeta,
+    QLabel#leaderboardReason,
+    QLabel#leaderboardFlow,
+    QLabel#leaderboardMetric {
+        color: #95a9bd;
+    }
+    QTableWidget#marketPoolTable {
+        border-radius: 18px;
+    }
+    QTableWidget#marketPoolTable QHeaderView::section {
+        color: #8ea4bb;
+        font-size: 11px;
+        font-weight: 800;
+        padding: 10px 10px;
+        border-bottom: 1px solid rgba(110, 129, 151, 0.18);
     }
     QTableWidget#marketPoolTable::item:selected,
     QTableWidget#recommendPoolTable::item:selected,
@@ -3549,8 +3609,8 @@ class QuantHunterWindow(QMainWindow):
             frame = chip.get("frame") if isinstance(chip, dict) else None
             value_label = chip.get("value") if isinstance(chip, dict) else None
             if isinstance(frame, QWidget):
-                frame.setMinimumWidth(96)
-                frame.setMaximumWidth(172)
+                frame.setMinimumWidth(self._scaled_int(96, minimum=92))
+                frame.setMaximumWidth(self._scaled_int(172, minimum=156))
                 frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
             if isinstance(value_label, QLabel):
                 value_label.setWordWrap(False)
@@ -3585,7 +3645,7 @@ class QuantHunterWindow(QMainWindow):
             (self.shell_focus_hover_execution_button, "ghost"),
         ):
             self._set_button_role(button, role)
-            button.setMinimumHeight(30)
+            button.setMinimumHeight(self._scaled_int(30, minimum=30))
             self.shell_focus_hover_action_row.addWidget(button)
         self.shell_focus_hover_recommend_button.clicked.connect(lambda: self._run_shell_focus_hover_action_v50("recommend"))
         self.shell_focus_hover_broker_button.clicked.connect(lambda: self._run_shell_focus_hover_action_v50("broker"))
@@ -10014,6 +10074,20 @@ QPushButton#accentButton:hover {
         if hasattr(widget, "setPlainText") and current_text != text:
             widget.setPlainText(text)
 
+    def _ui_scale_factor(self) -> float:
+        app = QApplication.instance()
+        screen = self.screen() or (app.primaryScreen() if app is not None else None)
+        dpi = screen.logicalDotsPerInch() if screen is not None else 96.0
+        return max(dpi / 96.0, 1.0)
+
+    def _scaled_int(self, value: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
+        scaled = int(round(value * self._ui_scale_factor()))
+        if minimum is not None:
+            scaled = max(scaled, minimum)
+        if maximum is not None:
+            scaled = min(scaled, maximum)
+        return scaled
+
     def _refresh_shell_header(self) -> None:
         current_name = self._workspace_name_for_index(self.tabs.currentIndex()) if hasattr(self, "tabs") else "龙头主控台"
         if hasattr(self, "shell_workspace_chip"):
@@ -10138,17 +10212,44 @@ QPushButton#accentButton:hover {
         row_frame = QFrame()
         row_frame.setObjectName(row_name)
         row_frame.setProperty("actionRow", True)
-        row_layout = QHBoxLayout(row_frame)
-        row_layout.setContentsMargins(10, 8, 10, 8)
-        row_layout.setSpacing(10)
-        for label, role, handler in actions:
-            button = QPushButton(label)
-            self._set_button_role(button, role)
-            button.setMinimumHeight(36)
-            button.clicked.connect(handler)
-            row_layout.addWidget(button)
-        row_layout.addStretch(1)
+        if row_name == "runtimeLogActionRow":
+            row_layout = QGridLayout(row_frame)
+            row_layout.setContentsMargins(10, 8, 10, 8)
+            row_layout.setHorizontalSpacing(10)
+            row_layout.setVerticalSpacing(10)
+            for index, (label, role, handler) in enumerate(actions):
+                button = QPushButton(label)
+                self._set_button_role(button, role)
+                button.setMinimumHeight(36)
+                button.clicked.connect(handler)
+                row_layout.addWidget(button, index // 2, index % 2)
+            row_layout.setColumnStretch(0, 1)
+            row_layout.setColumnStretch(1, 1)
+        else:
+            row_layout = QHBoxLayout(row_frame)
+            row_layout.setContentsMargins(10, 8, 10, 8)
+            row_layout.setSpacing(10)
+            for label, role, handler in actions:
+                button = QPushButton(label)
+                self._set_button_role(button, role)
+                button.setMinimumHeight(36)
+                button.clicked.connect(handler)
+                row_layout.addWidget(button)
+            row_layout.addStretch(1)
         layout.addWidget(row_frame)
+
+    def _relayout_button_grid(self, layout: QGridLayout, buttons: list[QPushButton], columns: int) -> None:
+        if columns <= 0:
+            columns = 1
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                layout.removeWidget(widget)
+        for index, button in enumerate([btn for btn in buttons if isinstance(btn, QPushButton)]):
+            layout.addWidget(button, index // columns, index % columns)
+        for column in range(columns):
+            layout.setColumnStretch(column, 1)
 
     def _ensure_metric_row(
         self,
@@ -13090,22 +13191,22 @@ QPushButton#accentButton:hover {
 
     def _polish_workspace_density(self) -> None:
         if hasattr(self, "shell_header"):
-            self.shell_header.setMaximumHeight(112)
+            self.shell_header.setMaximumHeight(self._scaled_int(112, minimum=112))
             self.shell_header.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         if hasattr(self, "shell_pulse_bar"):
-            self.shell_pulse_bar.setMaximumHeight(62)
+            self.shell_pulse_bar.setMaximumHeight(self._scaled_int(62, minimum=62))
             self.shell_pulse_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         for hero in self.findChildren(QFrame, "workspaceHero"):
-            hero.setMaximumHeight(108)
+            hero.setMaximumHeight(self._scaled_int(108, minimum=108))
             hero.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         for badge in self.findChildren(QFrame, "workspaceBadge"):
-            badge.setMaximumHeight(54)
+            badge.setMaximumHeight(self._scaled_int(54, minimum=54))
             badge.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 
         for action_row in self.findChildren(QFrame, "scannerTopActionRow"):
-            action_row.setMaximumHeight(58)
+            action_row.setMaximumHeight(self._scaled_int(58, minimum=58))
         for tab in [
             getattr(self, "scanner_tab", None),
             getattr(self, "board_tab", None),
@@ -21237,6 +21338,53 @@ def _qh_apply_layout_polish_v19(self: QuantHunterWindow) -> None:
             available_width = max(screen.availableGeometry().width(), self.width())
         compact_overview = available_width <= 1920
         narrow_overview = available_width <= 1440
+        zoomed_layout = self._ui_scale_factor() >= 1.20
+
+        def _compact_label(label: QLabel | None, *, max_segments: int = 2, max_height: int = 54) -> None:
+            if not isinstance(label, QLabel):
+                return
+            full_text = (label.toolTip() or label.text() or "").strip()
+            compact_text = full_text
+            if " | " in full_text:
+                segments = [segment.strip() for segment in full_text.split(" | ") if segment.strip()]
+                compact_text = " | ".join(segments[:max_segments]) if segments else full_text
+            label.setMinimumWidth(0)
+            label.setMaximumHeight(max_height)
+            label.setWordWrap(True)
+            self._set_label_text_if_changed(label, compact_text, tooltip=full_text or compact_text)
+
+        def _restore_label(label: QLabel | None) -> None:
+            if not isinstance(label, QLabel):
+                return
+            label.setMaximumHeight(16777215)
+            label.setWordWrap(True)
+            tooltip = (label.toolTip() or "").strip()
+            if tooltip and tooltip != label.text().strip():
+                    self._set_label_text_if_changed(label, tooltip, tooltip=tooltip)
+
+        if zoomed_layout and hasattr(self, "shell_header"):
+            self.shell_header.setMaximumHeight(self._scaled_int(148, minimum=132))
+        if zoomed_layout and hasattr(self, "shell_pulse_bar"):
+            self.shell_pulse_bar.setMaximumHeight(self._scaled_int(92, minimum=76))
+
+        for chip_name in (
+            "shell_workspace_chip",
+            "shell_focus_chip",
+            "shell_market_chip",
+            "shell_pipeline_chip",
+            "shell_refresh_chip",
+            "shell_runtime_chip",
+        ):
+            chip = getattr(self, chip_name, None)
+            if not isinstance(chip, dict):
+                continue
+            frame = chip.get("frame")
+            value_label = chip.get("value")
+            if isinstance(frame, QWidget):
+                frame.setMinimumWidth(self._scaled_int(108 if zoomed_layout else 96, minimum=96))
+                frame.setMaximumWidth(self._scaled_int(220 if zoomed_layout else 172, minimum=172))
+            if isinstance(value_label, QLabel):
+                value_label.setWordWrap(zoomed_layout)
 
         splitter_specs = {
             "overview_main_splitter": (
@@ -21244,14 +21392,32 @@ def _qh_apply_layout_polish_v19(self: QuantHunterWindow) -> None:
                 [220, 520, 220] if narrow_overview else ([240, 620, 260] if compact_overview else [300, 520, 320]),
             ),
             "overview_left_notes_splitter": ([150, 150, 220], [120, 120, 160]),
-            "recommend_dispatch_splitter": ([420, 780, 340], [320, 420, 280]),
-            "recommend_summary_splitter": ([460, 980], [360, 520]),
+            "recommend_dispatch_splitter": (
+                [300, 500, 220] if narrow_overview else [420, 780, 340],
+                [240, 320, 180] if narrow_overview else [320, 420, 280],
+            ),
+            "recommend_summary_splitter": (
+                [360, 700] if narrow_overview else [460, 980],
+                [260, 360] if narrow_overview else [360, 520],
+            ),
             "recommend_recap_middle_splitter": ([360, 980], [300, 560]),
             "recommend_recap_bottom_splitter": ([360, 980], [300, 560]),
-            "recommend_review_splitter": ([780, 560], [520, 360]),
-            "broker_control_splitter": ([560, 620, 360], [320, 320, 280]),
-            "broker_middle_splitter": ([560, 1040], [360, 520]),
-            "broker_order_focus_splitter": ([960, 400], [560, 320]),
+            "recommend_review_splitter": (
+                [420, 280] if narrow_overview else [780, 560],
+                [260, 220] if narrow_overview else [520, 360],
+            ),
+            "broker_control_splitter": (
+                [380, 420, 260] if narrow_overview else [560, 620, 360],
+                [260, 260, 220] if narrow_overview else [320, 320, 280],
+            ),
+            "broker_middle_splitter": (
+                [380, 760] if narrow_overview else [560, 1040],
+                [260, 360] if narrow_overview else [360, 520],
+            ),
+            "broker_order_focus_splitter": (
+                [420, 260] if narrow_overview else [960, 400],
+                [300, 220] if narrow_overview else [560, 320],
+            ),
             "paper_trading_splitter": ([620, 920], [420, 520]),
         }
         for attr_name, (sizes, min_sizes) in splitter_specs.items():
@@ -21268,23 +21434,27 @@ def _qh_apply_layout_polish_v19(self: QuantHunterWindow) -> None:
                     self._configure_splitter(splitter, sizes)
                     splitter.setSizes(sizes)
 
+        recommend_tab = getattr(self, "recommend_tab", None)
+        if isinstance(recommend_tab, QWidget):
+            for splitter in recommend_tab.findChildren(QSplitter, "workspaceControlSplit"):
+                if splitter.count() == 3:
+                    sizes = [440, 320, 260] if narrow_overview else [500, 520, 430]
+                    self._configure_splitter(splitter, sizes)
+                    splitter.setSizes(sizes)
+
+        broker_tab = getattr(self, "broker_tab", None)
+        if isinstance(broker_tab, QWidget):
+            for splitter in broker_tab.findChildren(QSplitter, "workspaceControlSplit"):
+                if splitter.count() == 3:
+                    sizes = [380, 420, 260] if narrow_overview else [520, 500, 360]
+                    self._configure_splitter(splitter, sizes)
+                    splitter.setSizes(sizes)
+
         if hasattr(self, "market_status_label") and isinstance(self.market_status_label, QLabel):
             if narrow_overview:
-                self.market_status_label.setMinimumWidth(0)
-                self.market_status_label.setMaximumHeight(54)
-                full_text = self.market_status_label.text().strip()
-                compact_text = full_text
-                if " | " in full_text:
-                    segments = [segment.strip() for segment in full_text.split(" | ") if segment.strip()]
-                    compact_text = " | ".join(segments[:2])
-                self._set_label_text_if_changed(self.market_status_label, compact_text, tooltip=full_text or compact_text)
+                _compact_label(self.market_status_label)
             else:
-                self.market_status_label.setMaximumHeight(16777215)
-                if self.market_status_label.toolTip():
-                    tooltip = self.market_status_label.toolTip().strip()
-                    if tooltip and tooltip != self.market_status_label.text().strip():
-                        self._set_label_text_if_changed(self.market_status_label, tooltip, tooltip=tooltip)
-            self.market_status_label.setWordWrap(True)
+                _restore_label(self.market_status_label)
 
         for attr_name, min_width, max_width in (
             ("market_search_input", 150 if narrow_overview else 180, 220 if narrow_overview else 280),
@@ -21303,6 +21473,157 @@ def _qh_apply_layout_polish_v19(self: QuantHunterWindow) -> None:
             widget = getattr(self, attr_name, None)
             if isinstance(widget, QWidget):
                 widget.setMinimumWidth(min_width)
+
+        if hasattr(self, "overview_main_splitter") and isinstance(self.overview_main_splitter, QSplitter):
+            if narrow_overview:
+                self._apply_splitter_layout_v19(self.overview_main_splitter, [240, 980, 300], [220, 520, 260])
+            else:
+                self._apply_splitter_layout_v19(self.overview_main_splitter, [260, 1180, 360], [240, 640, 300])
+
+        for attr_name, height in (
+            ("market_theme_brief_text", 148 if narrow_overview else 160),
+            ("market_source_status_text", 132 if narrow_overview else 144),
+            ("market_capital_text", 160 if narrow_overview else 176),
+            ("market_decision_text", 188 if narrow_overview else 204),
+        ):
+            widget = getattr(self, attr_name, None)
+            if isinstance(widget, QTextEdit):
+                widget.setMinimumHeight(height)
+                widget.setMaximumHeight(max(height + 26, widget.minimumHeight()))
+
+        for box_name in ("themeSummaryBox", "capitalBox", "decisionBox"):
+            box = self.findChild(QGroupBox, box_name)
+            if not isinstance(box, QGroupBox):
+                continue
+            layout = box.layout()
+            if isinstance(layout, (QVBoxLayout, QGridLayout)):
+                inner = self._scaled_int(14 if not narrow_overview else 12, minimum=10)
+                gap = self._scaled_int(12 if not narrow_overview else 10, minimum=8)
+                layout.setContentsMargins(inner, inner, inner, inner)
+                layout.setSpacing(gap)
+
+        overview_action_rows = (
+            "overviewThemeActionRow",
+            "overviewCapitalActionRow",
+            "overviewDecisionActionRow",
+        )
+        overview_button_height = self._scaled_int(38 if zoomed_layout else 36, minimum=36)
+        for row_name in overview_action_rows:
+            row = self.findChild(QWidget, row_name)
+            if not isinstance(row, QWidget):
+                continue
+            layout = row.layout()
+            if isinstance(layout, QHBoxLayout):
+                margin = self._scaled_int(10 if zoomed_layout else 8, minimum=8)
+                spacing = self._scaled_int(10 if zoomed_layout else 8, minimum=8)
+                layout.setContentsMargins(margin, margin, margin, margin)
+                layout.setSpacing(spacing)
+            for button in row.findChildren(QPushButton):
+                button.setMinimumHeight(overview_button_height)
+                button.setMaximumHeight(overview_button_height)
+                button.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+
+        for button_map_name, min_width in (
+            ("timeframe_buttons", 68 if narrow_overview else 80),
+            ("history_window_buttons", 84 if narrow_overview else 92),
+            ("market_overlay_buttons", 60 if narrow_overview else 72),
+            ("secondary_indicator_buttons", 64 if narrow_overview else 76),
+        ):
+            button_map = getattr(self, button_map_name, None)
+            if not isinstance(button_map, dict):
+                continue
+            for button in button_map.values():
+                if isinstance(button, QPushButton):
+                    button.setMinimumWidth(min_width)
+
+        runtime_log_row = self.findChild(QWidget, "runtimeLogActionRow")
+        if isinstance(runtime_log_row, QWidget):
+            layout = runtime_log_row.layout()
+            runtime_margin = self._scaled_int(8 if zoomed_layout else 6, minimum=6)
+            runtime_spacing = self._scaled_int(8 if zoomed_layout else 6, minimum=6)
+            if isinstance(layout, (QHBoxLayout, QGridLayout)):
+                layout.setContentsMargins(runtime_margin, runtime_margin, runtime_margin, runtime_margin)
+                layout.setSpacing(runtime_spacing)
+            runtime_button_height = self._scaled_int(38 if zoomed_layout else 36, minimum=36)
+            runtime_button_width = self._scaled_int(84 if narrow_overview else 104, minimum=80)
+            runtime_buttons = runtime_log_row.findChildren(QPushButton)
+            for button in runtime_buttons:
+                button.setMinimumHeight(runtime_button_height)
+                button.setMaximumHeight(runtime_button_height)
+                button.setMinimumWidth(runtime_button_width)
+                button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            if isinstance(layout, QGridLayout):
+                runtime_columns = 1 if (narrow_overview and zoomed_layout) else (2 if narrow_overview else 3)
+                self._relayout_button_grid(layout, runtime_buttons, runtime_columns)
+
+        broker_control_splitter = getattr(self, "broker_control_splitter", None)
+        if isinstance(broker_control_splitter, QSplitter) and broker_control_splitter.count() == 3:
+            profile_box = broker_control_splitter.widget(0)
+            action_box = broker_control_splitter.widget(1)
+            runtime_box = broker_control_splitter.widget(2)
+            for tool_box in (profile_box, action_box):
+                if not isinstance(tool_box, QGroupBox):
+                    continue
+                grid = tool_box.layout()
+                if isinstance(grid, QGridLayout):
+                    grid.setHorizontalSpacing(8 if narrow_overview else 10)
+                    grid.setVerticalSpacing(8 if narrow_overview else 10)
+                    for button in tool_box.findChildren(QPushButton):
+                        button.setMinimumWidth(124 if narrow_overview else 128)
+                        button.setMaximumWidth(150 if narrow_overview else 16777215)
+            if isinstance(profile_box, QGroupBox):
+                profile_grid = profile_box.layout()
+                profile_buttons = [
+                    getattr(self, "choose_export_dir_button", None),
+                    getattr(self, "save_broker_profile_button", None),
+                    getattr(self, "create_broker_templates_button", None),
+                    getattr(self, "validate_broker_connection_button", None),
+                ]
+                if isinstance(profile_grid, QGridLayout):
+                    if narrow_overview:
+                        for index, button in enumerate([btn for btn in profile_buttons if isinstance(btn, QPushButton)]):
+                            profile_grid.addWidget(button, 7 + index // 2, index % 2, 1, 2)
+                            button.setMinimumWidth(120)
+                            button.setMaximumWidth(16777215)
+                    else:
+                        default_positions = [
+                            (0, 4),
+                            (1, 4),
+                            (2, 4),
+                            (3, 4),
+                        ]
+                        for button, (row, column) in zip(profile_buttons, default_positions):
+                            if isinstance(button, QPushButton):
+                                profile_grid.addWidget(button, row, column)
+                                button.setMinimumWidth(128)
+            if isinstance(action_box, QGroupBox):
+                action_grid = action_box.layout()
+                action_buttons = [btn for btn in getattr(self, "broker_action_buttons", []) if isinstance(btn, QPushButton)]
+                if isinstance(action_grid, QGridLayout) and action_buttons:
+                    self._relayout_button_grid(action_grid, action_buttons, 2 if narrow_overview else 4)
+                    for button in action_buttons:
+                        button.setMinimumWidth(112 if narrow_overview else 0)
+                        button.setMaximumWidth(16777215)
+            if narrow_overview:
+                self._configure_splitter(broker_control_splitter, [430, 430, 250])
+                broker_control_splitter.setSizes([430, 430, 250])
+                if isinstance(profile_box, QWidget):
+                    profile_box.setMinimumWidth(420)
+                if isinstance(action_box, QWidget):
+                    action_box.setMinimumWidth(420)
+                if isinstance(runtime_box, QWidget):
+                    runtime_box.setMinimumWidth(240)
+
+        if narrow_overview:
+            _compact_label(getattr(self, "recommend_status_label", None))
+            _compact_label(getattr(self, "daily_pool_focus_label", None), max_segments=1)
+            _compact_label(getattr(self, "broker_status_banner", None))
+            _compact_label(getattr(self, "orders_focus_label", None), max_segments=1)
+        else:
+            _restore_label(getattr(self, "recommend_status_label", None))
+            _restore_label(getattr(self, "daily_pool_focus_label", None))
+            _restore_label(getattr(self, "broker_status_banner", None))
+            _restore_label(getattr(self, "orders_focus_label", None))
 
         detail_tab = getattr(self, "detail_tab", None)
         if isinstance(detail_tab, QWidget):

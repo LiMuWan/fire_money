@@ -294,6 +294,8 @@ def build_broker_workspace(window, build_table, adapter_factory, project_root: P
     window._style_terminal_panel(profile_box)
     profile_box.setObjectName("workspaceToolPanel")
     profile_grid = QGridLayout(profile_box)
+    profile_grid.setHorizontalSpacing(10)
+    profile_grid.setVerticalSpacing(10)
     adapter = adapter_factory()
     profile = window.state.broker_profile
     fields = [
@@ -347,12 +349,18 @@ def build_broker_workspace(window, build_table, adapter_factory, project_root: P
     choose_export_button = QPushButton("选择导出目录")
     save_profile_button = QPushButton("保存账户配置")
     create_templates_button = QPushButton("生成模板文件")
+    choose_export_button.setObjectName("brokerChooseExportButton")
+    save_profile_button.setObjectName("brokerSaveProfileButton")
+    create_templates_button.setObjectName("brokerCreateTemplatesButton")
+    window.choose_export_dir_button = choose_export_button
+    window.save_broker_profile_button = save_profile_button
+    window.create_broker_templates_button = create_templates_button
     window._set_button_role(choose_export_button)
     window._set_button_role(save_profile_button, "accent")
     window._set_button_role(create_templates_button)
     for button in (choose_export_button, save_profile_button, create_templates_button):
         button.setMinimumHeight(38)
-        button.setMinimumWidth(150)
+        button.setMinimumWidth(128)
     choose_export_button.clicked.connect(window.choose_export_dir)
     save_profile_button.clicked.connect(window.save_profile)
     create_templates_button.clicked.connect(window.create_broker_templates)
@@ -361,8 +369,9 @@ def build_broker_workspace(window, build_table, adapter_factory, project_root: P
     profile_grid.addWidget(create_templates_button, 2, 4)
     validate_profile_button = QPushButton("校验连接")
     window._set_button_role(validate_profile_button)
+    validate_profile_button.setObjectName("brokerValidateConnectionButton")
     validate_profile_button.setMinimumHeight(38)
-    validate_profile_button.setMinimumWidth(150)
+    validate_profile_button.setMinimumWidth(128)
     validate_profile_button.clicked.connect(window.validate_broker_connection)
     window.validate_broker_connection_button = validate_profile_button
     profile_grid.addWidget(validate_profile_button, 3, 4)
@@ -386,6 +395,18 @@ def build_broker_workspace(window, build_table, adapter_factory, project_root: P
     for index, (label, handler, role) in enumerate(action_specs):
         button = QPushButton(label)
         window._set_button_role(button, role)
+        button.setObjectName(
+            [
+                "brokerImportHoldingsButton",
+                "brokerImportCashButton",
+                "brokerGenerateSuggestionsButton",
+                "brokerExportPlanButton",
+                "brokerExportReplayButton",
+                "brokerSyncSdkButton",
+                "brokerGenerateScriptButton",
+                "brokerConfirmSubmitButton",
+            ][index]
+        )
         button.setMinimumHeight(42)
         button.clicked.connect(handler)
         if label == "生成盘中计划":
@@ -395,6 +416,16 @@ def build_broker_workspace(window, build_table, adapter_factory, project_root: P
         action_grid.addWidget(button, index // 4, index % 4)
         if handler == window.sync_broker_via_sdk:
             window.sync_broker_button = button
+    window.broker_action_buttons = [
+        action_box.findChild(QPushButton, "brokerImportHoldingsButton"),
+        action_box.findChild(QPushButton, "brokerImportCashButton"),
+        action_box.findChild(QPushButton, "brokerGenerateSuggestionsButton"),
+        action_box.findChild(QPushButton, "brokerExportPlanButton"),
+        action_box.findChild(QPushButton, "brokerExportReplayButton"),
+        action_box.findChild(QPushButton, "brokerSyncSdkButton"),
+        action_box.findChild(QPushButton, "brokerGenerateScriptButton"),
+        action_box.findChild(QPushButton, "brokerConfirmSubmitButton"),
+    ]
 
     broker_metrics_box = QGroupBox("执行指标")
     window._style_terminal_panel(broker_metrics_box)
@@ -480,20 +511,25 @@ def build_broker_workspace(window, build_table, adapter_factory, project_root: P
     window._style_terminal_console(window.runtime_status_text)
     runtime_layout.addWidget(window.runtime_status_text)
 
-    runtime_action_row = QHBoxLayout()
+    runtime_action_row = QGridLayout()
+    runtime_action_row.setContentsMargins(0, 0, 0, 0)
+    runtime_action_row.setHorizontalSpacing(8)
+    runtime_action_row.setVerticalSpacing(8)
     runtime_action_specs = [
         ("刷新诊断", window.refresh_runtime_panel, "ghost", "runtimeRefreshButton"),
         ("导出运行日志", window.export_runtime_log, "ghost", "runtimeExportButton"),
         ("清理行情缓存", window.clear_market_cache, "ghost", "runtimeClearCacheButton"),
     ]
-    for label, handler, role, object_name in runtime_action_specs:
+    for index, (label, handler, role, object_name) in enumerate(runtime_action_specs):
         button = QPushButton(label)
         window._set_button_role(button, role)
         button.setObjectName(object_name)
         button.setMinimumHeight(38)
+        button.setMinimumWidth(104)
         button.clicked.connect(handler)
-        runtime_action_row.addWidget(button)
-    runtime_action_row.addStretch(1)
+        runtime_action_row.addWidget(button, index // 2, index % 2)
+    runtime_action_row.setColumnStretch(0, 1)
+    runtime_action_row.setColumnStretch(1, 1)
     runtime_layout.addLayout(runtime_action_row)
 
     window.runtime_log_text = QTextEdit()
@@ -880,15 +916,15 @@ def build_overview_workspace(
     window.overview_stage_container.setObjectName("workspaceStage")
     overview_stage_layout = QVBoxLayout(window.overview_stage_container)
     overview_stage_layout.setContentsMargins(0, 0, 0, 0)
-    overview_stage_layout.setSpacing(14)
+    overview_stage_layout.setSpacing(12)
     overview_command_stage = QWidget()
     overview_detail_stage = QWidget()
-    overview_stage_layout.addWidget(overview_command_stage, stretch=5)
+    overview_stage_layout.addWidget(overview_command_stage, stretch=6)
     overview_stage_layout.addWidget(overview_detail_stage, stretch=2)
     layout.addWidget(window.overview_stage_container, stretch=5)
     command_stage_layout = QVBoxLayout(overview_command_stage)
-    command_stage_layout.setContentsMargins(0, 8, 0, 0)
-    command_stage_layout.setSpacing(14)
+    command_stage_layout.setContentsMargins(0, 4, 0, 0)
+    command_stage_layout.setSpacing(12)
     detail_stage_layout = QVBoxLayout(overview_detail_stage)
     detail_stage_layout.setContentsMargins(0, 8, 0, 0)
     detail_stage_layout.setSpacing(14)
@@ -898,8 +934,8 @@ def build_overview_workspace(
     overview_priority_box.setProperty("pageTone", "overview")
     overview_priority_box.setProperty("surfaceRole", "priority-rail")
     overview_priority_layout = QHBoxLayout(overview_priority_box)
-    overview_priority_layout.setContentsMargins(12, 12, 12, 12)
-    overview_priority_layout.setSpacing(10)
+    overview_priority_layout.setContentsMargins(16, 14, 16, 14)
+    overview_priority_layout.setSpacing(12)
     window.overview_priority_cards = {
         "market": action_flow_card_cls("买", "#25d07f"),
         "theme": action_flow_card_cls("持", "#4fc3f7"),
@@ -914,7 +950,7 @@ def build_overview_workspace(
     window.overview_main_splitter = main_splitter
     left_panel = QWidget()
     left_panel.setObjectName("overviewSidePanel")
-    left_panel.setMinimumWidth(280)
+    left_panel.setMinimumWidth(264)
     left_layout = QVBoxLayout(left_panel)
     left_layout.setContentsMargins(0, 0, 0, 0)
     left_layout.setSpacing(10)
@@ -967,7 +1003,7 @@ def build_overview_workspace(
     main_splitter.addWidget(left_panel)
     center_panel = QWidget()
     center_panel.setObjectName("overviewCenterPanel")
-    center_panel.setMinimumWidth(720)
+    center_panel.setMinimumWidth(760)
     center_layout = QVBoxLayout(center_panel)
     center_layout.setContentsMargins(0, 0, 0, 0)
     center_layout.setSpacing(10)
@@ -1092,6 +1128,8 @@ def build_overview_workspace(
     pool_box.setObjectName("opportunityPoolBox")
     pool_box.setProperty("pageTone", "overview")
     pool_layout = QVBoxLayout(pool_box)
+    pool_layout.setContentsMargins(12, 12, 12, 12)
+    pool_layout.setSpacing(10)
     window.market_pool_table = build_table(["序", "股票", "资金标签", "策略标签", "涨跌幅", "最新价"])
     window.market_pool_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
     window.market_pool_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
@@ -1114,17 +1152,17 @@ def build_overview_workspace(
     main_splitter.addWidget(center_panel)
     right_panel = QWidget()
     right_panel.setObjectName("overviewRightPanel")
-    right_panel.setMinimumWidth(300)
+    right_panel.setMinimumWidth(332)
     right_layout = QVBoxLayout(right_panel)
     right_layout.setContentsMargins(0, 0, 0, 0)
-    right_layout.setSpacing(10)
+    right_layout.setSpacing(12)
     leaderboard_box = QGroupBox("掘龙榜")
     leaderboard_box.setObjectName("leaderboardBox")
     leaderboard_box.setProperty("pageTone", "overview")
     leaderboard_box.setProperty("surfaceRole", "analysis")
     leaderboard_layout = QVBoxLayout(leaderboard_box)
-    leaderboard_layout.setContentsMargins(10, 10, 10, 10)
-    leaderboard_layout.setSpacing(10)
+    leaderboard_layout.setContentsMargins(12, 12, 12, 12)
+    leaderboard_layout.setSpacing(12)
     window.market_leaderboard_text = QTextEdit()
     window.market_leaderboard_text.setReadOnly(True)
     window.market_leaderboard_text.hide()
@@ -1133,113 +1171,87 @@ def build_overview_workspace(
     window.market_leaderboard_cards = [leaderboard_card_cls() for _ in range(3)]
     for card in window.market_leaderboard_cards:
         leaderboard_layout.addWidget(card)
-    right_layout.addWidget(leaderboard_box, stretch=5)
+    right_layout.addWidget(leaderboard_box, stretch=4)
     overview_summary_box = QGroupBox("主控摘要")
     overview_summary_box.setObjectName("overviewSummaryBox")
     window._style_terminal_panel(overview_summary_box)
     overview_summary_box.setProperty("pageTone", "overview")
     overview_summary_box.setProperty("surfaceRole", "metric-band")
-    overview_summary_layout = QHBoxLayout(overview_summary_box)
-    overview_summary_layout.setContentsMargins(10, 10, 10, 10)
-    overview_summary_layout.setSpacing(10)
+    overview_summary_layout = QGridLayout(overview_summary_box)
+    overview_summary_layout.setContentsMargins(12, 12, 12, 12)
+    overview_summary_layout.setHorizontalSpacing(10)
+    overview_summary_layout.setVerticalSpacing(10)
     window.overview_summary_cards = {
         "theme": compact_summary_card_cls("大盘", "#c792ea"),
         "source": compact_summary_card_cls("消息", "#7ed7ff"),
         "capital": compact_summary_card_cls("建仓", "#25d07f"),
         "decision": compact_summary_card_cls("持仓", "#ff9f43"),
     }
-    for key in ["theme", "source", "capital", "decision"]:
-        overview_summary_layout.addWidget(window.overview_summary_cards[key])
+    for index, key in enumerate(["theme", "source", "capital", "decision"]):
+        overview_summary_layout.addWidget(window.overview_summary_cards[key], index // 2, index % 2)
+    overview_summary_layout.setColumnStretch(0, 1)
+    overview_summary_layout.setColumnStretch(1, 1)
     right_layout.addWidget(overview_summary_box, stretch=2)
     right_notes = QWidget()
     right_notes.setObjectName("overviewRightNotes")
     right_notes_layout = QVBoxLayout(right_notes)
     right_notes_layout.setContentsMargins(0, 0, 0, 0)
-    right_notes_layout.setSpacing(10)
-    right_layout.addWidget(right_notes, stretch=4)
+    right_notes_layout.setSpacing(12)
+    right_layout.addWidget(right_notes, stretch=5)
     right_summary_box = QGroupBox("主题摘要")
     right_summary_box.setObjectName("themeSummaryBox")
     right_summary_box.setProperty("pageTone", "overview")
     right_summary_box.setProperty("surfaceRole", "analysis")
     right_summary_layout = QVBoxLayout(right_summary_box)
-    right_summary_layout.setContentsMargins(10, 10, 10, 10)
-    right_summary_layout.setSpacing(10)
+    right_summary_layout.setContentsMargins(14, 14, 14, 14)
+    right_summary_layout.setSpacing(12)
     window.market_theme_brief_text = QTextEdit()
     window.market_theme_brief_text.setReadOnly(True)
     window.market_theme_brief_text.setObjectName("marketNotePanel")
     window.market_theme_brief_text.setProperty("panelTone", "theme")
-    window.market_theme_brief_text.setMinimumHeight(168)
-    window.market_theme_brief_text.setMaximumHeight(220)
+    window.market_theme_brief_text.setMinimumHeight(138)
+    window.market_theme_brief_text.setMaximumHeight(176)
     right_summary_layout.addWidget(window.market_theme_brief_text, stretch=1)
-    summary_action_row = QHBoxLayout()
-    summary_focus_button = QPushButton("查看推荐池")
-    summary_news_button = QPushButton("查看消息催化")
-    window._set_button_role(summary_focus_button, "tonal")
-    window._set_button_role(summary_news_button, "ghost")
-    summary_focus_button.clicked.connect(window.open_overview_theme_to_recommend)
-    summary_news_button.clicked.connect(window.open_overview_source_to_news)
-    summary_action_row.addWidget(summary_focus_button)
-    summary_action_row.addWidget(summary_news_button)
-    summary_action_row.addStretch(1)
-    right_summary_layout.addLayout(summary_action_row)
     window.market_source_status_text = QTextEdit()
     window.market_source_status_text.setReadOnly(True)
     window.market_source_status_text.setObjectName("marketNotePanel")
     window.market_source_status_text.setProperty("panelTone", "system")
-    window.market_source_status_text.setMinimumHeight(168)
-    window.market_source_status_text.setMaximumHeight(220)
+    window.market_source_status_text.setMinimumHeight(122)
+    window.market_source_status_text.setMaximumHeight(158)
     right_summary_layout.addWidget(window.market_source_status_text, stretch=1)
-    right_notes_layout.addWidget(right_summary_box, stretch=1)
+    right_notes_layout.addWidget(right_summary_box, stretch=2)
     capital_box = QGroupBox("持仓与大盘")
     capital_box.setObjectName("capitalBox")
     capital_box.setProperty("pageTone", "overview")
     capital_box.setProperty("surfaceRole", "analysis")
     capital_layout = QVBoxLayout(capital_box)
+    capital_layout.setContentsMargins(14, 14, 14, 14)
+    capital_layout.setSpacing(12)
     window.market_capital_text = QTextEdit()
     window.market_capital_text.setReadOnly(True)
     window.market_capital_text.setObjectName("marketNotePanel")
     window.market_capital_text.setProperty("panelTone", "capital")
-    window.market_capital_text.setMinimumHeight(210)
-    window.market_capital_text.setMaximumHeight(260)
+    window.market_capital_text.setMinimumHeight(144)
+    window.market_capital_text.setMaximumHeight(188)
     capital_layout.addWidget(window.market_capital_text)
-    capital_action_row = QHBoxLayout()
-    capital_recommend_button = QPushButton("去看推荐")
-    capital_refresh_button = QPushButton("回到总览")
-    window._set_button_role(capital_recommend_button, "tonal")
-    window._set_button_role(capital_refresh_button, "ghost")
-    capital_recommend_button.clicked.connect(window.open_overview_capital_to_recommend)
-    capital_refresh_button.clicked.connect(lambda: window._navigate_to_workspace("overview", "market_pool_table"))
-    capital_action_row.addWidget(capital_recommend_button)
-    capital_action_row.addWidget(capital_refresh_button)
-    capital_action_row.addStretch(1)
-    capital_layout.addLayout(capital_action_row)
     right_notes_layout.addWidget(capital_box, stretch=1)
     decision_box = QGroupBox("买卖点结论")
     decision_box.setObjectName("decisionBox")
     decision_box.setProperty("pageTone", "overview")
     decision_box.setProperty("surfaceRole", "analysis")
     decision_layout = QVBoxLayout(decision_box)
+    decision_layout.setContentsMargins(14, 14, 14, 14)
+    decision_layout.setSpacing(12)
     window.market_decision_text = QTextEdit()
     window.market_decision_text.setReadOnly(True)
     window.market_decision_text.setObjectName("marketNotePanel")
     window.market_decision_text.setProperty("panelTone", "decision")
-    window.market_decision_text.setMinimumHeight(210)
-    window.market_decision_text.setMaximumHeight(260)
+    window.market_decision_text.setMinimumHeight(170)
+    window.market_decision_text.setMaximumHeight(220)
     decision_layout.addWidget(window.market_decision_text)
-    decision_action_row = QHBoxLayout()
-    decision_broker_button = QPushButton("去看交易")
-    decision_recommend_button = QPushButton("去看推荐")
-    window._set_button_role(decision_broker_button, "accent")
-    window._set_button_role(decision_recommend_button, "tonal")
-    decision_broker_button.clicked.connect(window.open_overview_decision_to_broker)
-    decision_recommend_button.clicked.connect(window.open_overview_theme_to_recommend)
-    decision_action_row.addWidget(decision_broker_button)
-    decision_action_row.addWidget(decision_recommend_button)
-    decision_action_row.addStretch(1)
-    decision_layout.addLayout(decision_action_row)
-    right_notes_layout.addWidget(decision_box, stretch=1)
+    right_notes_layout.addWidget(decision_box, stretch=2)
     main_splitter.addWidget(right_panel)
-    window._configure_splitter(main_splitter, [280, 1100, 320])
+    window._configure_splitter(main_splitter, [260, 1220, 360])
     command_stage_layout.addWidget(main_splitter, stretch=1)
     params_box = QGroupBox("策略参数")
     params_layout = QGridLayout(params_box)

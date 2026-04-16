@@ -21,7 +21,7 @@ class InsightCardBase(QFrame):
         strip.setFixedHeight(5)
         strip.setStyleSheet(
             "QFrame {"
-            f"background:qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {accent_color}, stop:0.55 rgba(255,255,255,0.85), stop:1 {accent_color});"
+            f"background:qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(255,255,255,0.0), stop:0.2 {accent_color}, stop:0.8 {accent_color}, stop:1 rgba(255,255,255,0.0));"
             "border:none; border-radius:2px; }"
         )
         return strip
@@ -44,8 +44,8 @@ class InsightCardBase(QFrame):
         rules = [
             (
                 f"QFrame#{self.objectName()} {{ "
-                "background:qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(27, 38, 52, 0.98), stop:0.52 rgba(17, 24, 33, 0.98), stop:1 rgba(12, 18, 26, 0.99)); "
-                f"border:1px solid {border_color}; border-radius:18px; }}"
+                "background:qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(19, 26, 35, 0.98), stop:0.52 rgba(13, 18, 25, 0.98), stop:1 rgba(10, 15, 22, 0.99)); "
+                f"border:1px solid {border_color}; border-radius:16px; }}"
             ),
             f"QFrame#{self.objectName()} QLabel {{ background: transparent; }}",
             f"QLabel#{title_selector} {{ color:{title_color}; font-size:{title_size}px; font-weight:{title_weight}; }}",
@@ -59,7 +59,7 @@ class InsightCardBase(QFrame):
                 f"QLabel#{emphasis_selector} {{ color:{emphasis_color}; font-size:{emphasis_size}px; font-weight:700; }}"
             )
         rules.append(
-            f"QFrame#{self.objectName()}:hover {{ border: 1px solid rgba(151, 203, 255, 0.32); }}"
+            f"QFrame#{self.objectName()}:hover {{ border: 1px solid rgba(151, 203, 255, 0.22); }}"
         )
         self._set_stylesheet_if_changed(self, "".join(rules))
 
@@ -67,10 +67,10 @@ class InsightCardBase(QFrame):
 class LeaderboardCard(InsightCardBase):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("leaderboardCard", parent)
-        self.setMinimumHeight(168)
+        self.setMinimumHeight(154)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(6)
+        layout.setSpacing(5)
 
         self.rank_label = QLabel("TOP")
         self.rank_label.setObjectName("leaderboardRank")
@@ -130,25 +130,25 @@ class LeaderboardCard(InsightCardBase):
             reason_parts.append(strategy_name)
         reason_text = "入选原因：" + " | ".join(reason_parts[:2]) if reason_parts else "入选原因：等待市场与候选同步"
         self._apply_card_styles(
-            border_color=accent,
+            border_color="rgba(110, 129, 151, 0.20)",
             title_selector="leaderboardName",
             title_color="#f5f7fa",
-            title_size=18,
+            title_size=17,
             subtitle_selector="leaderboardMeta",
-            subtitle_color="#8fa0b6",
+            subtitle_color="#8ea2b8",
             emphasis_selector="leaderboardMetric",
-            emphasis_color="#25f3ff",
-            emphasis_size=12,
+            emphasis_color="#d8e7f6",
+            emphasis_size=11,
         )
-        self._set_stylesheet_if_changed(self.rank_label, f"color:{accent}; font-size:12px; font-weight:800;")
-        self._set_stylesheet_if_changed(self.flow_label, f"color:{accent}; font-size:12px; font-weight:700;")
+        self._set_stylesheet_if_changed(self.rank_label, f"color:{accent}; font-size:11px; font-weight:900; letter-spacing:0.6px;")
+        self._set_stylesheet_if_changed(self.flow_label, "color:#9eb4ca; font-size:11px; font-weight:700;")
         self._set_stylesheet_if_changed(
             self.status_label,
-            f"color:{accent}; font-size:11px; font-weight:800; letter-spacing:0.8px; "
-            "background:rgba(126, 215, 255, 0.08); border:1px solid rgba(126, 215, 255, 0.20); "
-            "border-radius:10px; padding:4px 9px;"
+            f"color:{accent}; font-size:10px; font-weight:800; letter-spacing:0.8px; "
+            "background:rgba(255,255,255,0.03); border:1px solid rgba(126, 183, 255, 0.14); "
+            "border-radius:9px; padding:3px 8px;"
         )
-        self._set_stylesheet_if_changed(self.reason_label, "color:#d2ddea; font-size:12px; font-weight:600;")
+        self._set_stylesheet_if_changed(self.reason_label, "color:#d2ddea; font-size:11px; font-weight:600;")
         self._set_label_if_changed(self.rank_label, rank_text)
         self._set_label_if_changed(self.status_label, status_text)
         self.status_label.setToolTip(
@@ -174,14 +174,14 @@ class LeaderboardCard(InsightCardBase):
     def set_message(self, title: str, message: str) -> None:
         self._set_stylesheet_if_changed(
             self,
-            "QFrame#leaderboardCard { background:#11161d; border:1px solid #2f3d4f; border-radius:12px; }"
-            "QLabel#leaderboardRank { color:#8fa0b6; font-size:12px; font-weight:800; }"
-            "QLabel#leaderboardBadge { color:#8fa0b6; font-size:11px; font-weight:800; }"
-            "QLabel#leaderboardName { color:#f5f7fa; font-size:16px; font-weight:800; }"
-            "QLabel#leaderboardMeta { color:#8fa0b6; font-size:12px; }"
-            "QLabel#leaderboardReason { color:#c7d6e6; font-size:12px; font-weight:600; }"
-            "QLabel#leaderboardMetric { color:#8fa0b6; font-size:12px; font-weight:700; }"
-            "QLabel#leaderboardFlow { color:#8fa0b6; font-size:12px; }"
+            "QFrame#leaderboardCard { background:qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(19,26,35,0.98), stop:1 rgba(10,15,22,0.99)); border:1px solid rgba(110,129,151,0.18); border-radius:16px; }"
+            "QLabel#leaderboardRank { color:#8fa0b6; font-size:11px; font-weight:900; }"
+            "QLabel#leaderboardBadge { color:#8fa0b6; font-size:10px; font-weight:800; }"
+            "QLabel#leaderboardName { color:#f5f7fa; font-size:15px; font-weight:800; }"
+            "QLabel#leaderboardMeta { color:#8fa0b6; font-size:11px; }"
+            "QLabel#leaderboardReason { color:#c7d6e6; font-size:11px; font-weight:600; }"
+            "QLabel#leaderboardMetric { color:#8fa0b6; font-size:11px; font-weight:700; }"
+            "QLabel#leaderboardFlow { color:#8fa0b6; font-size:11px; }"
         )
         self._set_label_if_changed(self.rank_label, title)
         self._set_label_if_changed(self.status_label, "WAIT")
@@ -267,10 +267,10 @@ class ActionFlowCard(InsightCardBase):
     def __init__(self, title: str, accent: str, parent: QWidget | None = None) -> None:
         super().__init__("actionFlowCard", parent)
         self.accent = accent
-        self.setMinimumHeight(122)
+        self.setMinimumHeight(114)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(15, 13, 15, 13)
-        layout.setSpacing(6)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(5)
 
         self.accent_strip = self._create_accent_strip(accent)
         self.title_label = QLabel(title)
@@ -294,16 +294,16 @@ class ActionFlowCard(InsightCardBase):
 
     def _apply(self) -> None:
         self._apply_card_styles(
-            border_color=self.accent,
+            border_color="rgba(110, 129, 151, 0.18)",
             title_selector="actionFlowTitle",
-            title_color="#f5f7fa",
-            title_size=15,
+            title_color="#dce7f3",
+            title_size=13,
             emphasis_selector="actionFlowCount",
             emphasis_color=self.accent,
-            emphasis_size=22,
+            emphasis_size=20,
         )
-        self.focus_label.setStyleSheet("color:#e2ebf6; font-size:12px; font-weight:700;")
-        self.note_label.setStyleSheet("color:#98abbe; font-size:12px; line-height:1.4;")
+        self.focus_label.setStyleSheet("color:#e2ebf6; font-size:11px; font-weight:700;")
+        self.note_label.setStyleSheet("color:#8fa2b6; font-size:11px; line-height:1.35;")
 
     def set_data(self, count_text: str, focus_text: str, note_text: str) -> None:
         self._set_label_if_changed(self.count_label, count_text)
@@ -314,10 +314,10 @@ class ActionFlowCard(InsightCardBase):
 class CompactSummaryCard(InsightCardBase):
     def __init__(self, title: str, accent: str, parent: QWidget | None = None) -> None:
         super().__init__("compactSummaryCard", parent)
-        self.setMinimumHeight(108)
+        self.setMinimumHeight(102)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(15, 13, 15, 13)
-        layout.setSpacing(6)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(5)
 
         self.accent_strip = self._create_accent_strip(accent)
         self.title_label = QLabel(title)
@@ -335,15 +335,15 @@ class CompactSummaryCard(InsightCardBase):
         layout.addStretch(1)
 
         self._apply_card_styles(
-            border_color=accent,
+            border_color="rgba(110, 129, 151, 0.18)",
             title_selector="compactSummaryTitle",
-            title_color="#f5f7fa",
-            title_size=14,
+            title_color="#98aec5",
+            title_size=12,
             emphasis_selector="compactSummaryHeadline",
-            emphasis_color=accent,
-            emphasis_size=18,
+            emphasis_color="#f4f8fc",
+            emphasis_size=17,
         )
-        self.detail_label.setStyleSheet("color:#dce6f0; font-size:12px; line-height:1.4;")
+        self.detail_label.setStyleSheet("color:#94a8bc; font-size:11px; line-height:1.35;")
 
     def set_data(self, headline: str, detail: str) -> None:
         self._set_label_if_changed(self.headline_label, headline)
