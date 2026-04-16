@@ -1563,41 +1563,42 @@ def refresh_overview_priority_cards(window, pool: list, recommendations: list, t
 
     market_text = "可做" if avg_heat >= 75 else ("轻仓" if avg_heat >= 60 else "谨慎")
     hold_note = "先看持仓延续，不追高。" if hold_rows else "没有明确持仓票时，先跟踪观察股。"
+    top_theme_name = getattr(top_buy, "theme_name", "") or getattr(top_hold, "theme_name", "") or top_theme or "待确认"
 
     window.overview_priority_cards["market"].set_data(
-        f"{len(buy_rows)} 只" if recommendations else "--",
-        f"状态: 建仓 {top_buy.stock_name if top_buy else '暂无'}",
+        f"建仓 {len(buy_rows)}" if recommendations else "--",
+        f"{top_buy.stock_name if top_buy else '暂无标的'} | {market_text}",
         (
-            f"下一步: {getattr(top_buy, 'buy_point', '') or '等待突破确认后再买'} | 大盘 {market_text}"
+            f"{getattr(top_buy, 'buy_point', '') or '等待突破确认后再买'} | 主线 {getattr(top_buy, 'theme_name', '') or top_theme_name}"
             if top_buy
-            else f"下一步: 当前大盘 {market_text}，没有明确新开仓票。"
+            else f"市场节奏 {market_text} | 暂无明确新开仓票。"
         ),
     )
     window.overview_priority_cards["theme"].set_data(
-        f"{len(hold_rows) or len(watch_rows)} 只" if recommendations else "--",
-        f"状态: 持仓 {top_hold.stock_name if top_hold else '暂无'}",
+        f"持有 {len(hold_rows) or len(watch_rows)}" if recommendations else "--",
+        f"{top_hold.stock_name if top_hold else '暂无标的'} | 跟踪位",
         (
-            f"下一步: {getattr(top_hold, 'add_point', '') or '沿趋势持有，放量再加'} | {getattr(top_hold, 'stock_pool', '') or '趋势股'}"
+            f"{getattr(top_hold, 'add_point', '') or '沿趋势持有，放量再加'} | {getattr(top_hold, 'stock_pool', '') or '趋势股'}"
             if top_hold
-            else f"下一步: {hold_note}"
+            else hold_note
         ),
     )
     window.overview_priority_cards["strategy"].set_data(
-        f"{len(reduce_rows)} 只" if recommendations else "--",
-        f"状态: 减仓 {top_reduce.stock_name if top_reduce else '暂无'}",
+        f"减仓 {len(reduce_rows)}" if recommendations else "--",
+        f"{top_reduce.stock_name if top_reduce else '暂无标的'} | 风险回收",
         (
-            f"下一步: {getattr(top_reduce, 'sell_point', '') or '冲高乏力先减一半'}"
+            f"{getattr(top_reduce, 'sell_point', '') or '冲高乏力先减一半'} | 控回撤"
             if top_reduce
-            else "下一步: 没有明显减仓票，持仓仍以跟踪为主。"
+            else "暂无明显减仓票，持仓仍以跟踪为主。"
         ),
     )
     window.overview_priority_cards["focus"].set_data(
-        f"{len(sell_rows)} 只" if recommendations else "--",
-        f"状态: 卖出 {top_sell.stock_name if top_sell else '暂无'}",
+        f"离场 {len(sell_rows)}" if recommendations else "--",
+        f"{top_sell.stock_name if top_sell else '暂无标的'} | 防守位",
         (
-            f"下一步: {getattr(top_sell, 'risk_line', '') or '跌破防守线直接离场'}"
+            f"{getattr(top_sell, 'risk_line', '') or '跌破防守线直接离场'} | 主线 {top_theme_name}"
             if top_sell
-            else f"下一步: 暂时没有明确清仓票，主线仍看 {top_theme or '等待确认'}。"
+            else f"暂无明确清仓票 | 主线仍看 {top_theme_name}。"
         ),
     )
 
@@ -2240,7 +2241,16 @@ def _build_market_identity_item(row, *, background, foreground) -> QTableWidgetI
     symbol = getattr(row, "symbol", "") or "--"
     heat_score = float(getattr(row, "heat_score", 0.0) or 0.0)
     decision_score = float(getattr(row, "decision_score", 0.0) or 0.0)
-    item = QTableWidgetItem(f"{stock_name}  {stock_id}\n热度 {heat_score:.1f} | 决策 {decision_score:.1f}")
+    action = str(getattr(row, "action", "") or "").upper()
+    action_label_map = {
+        "BUY": "建仓",
+        "HOLD": "持有",
+        "WATCH": "观察",
+        "REDUCE": "减仓",
+        "SELL": "离场",
+    }
+    action_label = action_label_map.get(action, "跟踪")
+    item = QTableWidgetItem(f"{stock_name}  {stock_id}\n{action_label} | 热度 {heat_score:.1f} | 决策 {decision_score:.1f}")
     item.setBackground(background)
     item.setForeground(foreground)
     item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
@@ -2249,6 +2259,7 @@ def _build_market_identity_item(row, *, background, foreground) -> QTableWidgetI
             [
                 f"{stock_name} ({stock_id})",
                 f"交易标识：{symbol}",
+                f"当前动作：{action_label}",
                 f"热度：{heat_score:.1f}",
                 f"涨幅：{float(getattr(row, 'pct_change', 0.0) or 0.0):.2f}%",
                 f"决策分：{decision_score:.1f}",
@@ -2346,6 +2357,7 @@ def apply_market_filters(window) -> None:
                 getattr(row, "stock_id", ""),
                 getattr(row, "theme_name", ""),
                 getattr(row, "strategy_tag", ""),
+                getattr(row, "action", ""),
                 getattr(row, "signal_label", ""),
                 getattr(row, "fund_model", ""),
                 getattr(row, "main_inflow", 0.0),
@@ -2381,10 +2393,10 @@ def apply_market_filters(window) -> None:
             window.market_pool_table.setItem(row_index, 1, identity_item)
 
             fund_tooltip = f"资金模型：{row.fund_model}\n主力净流入：{row.main_inflow / 1e8:.2f} 亿"
-            fund_item = _ensure_table_item(window.market_pool_table, row_index, 2, f"{row.fund_model}\n净流入 {row.main_inflow / 1e8:.2f} 亿")
+            fund_item = _ensure_table_item(window.market_pool_table, row_index, 2, f"{row.fund_model}\n流入 {row.main_inflow / 1e8:.2f} 亿")
             fund_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            fund_item.setBackground(QColor("#1B2633"))
-            fund_item.setForeground(QColor("#8FC7FF"))
+            fund_item.setBackground(QColor("#17212B"))
+            fund_item.setForeground(QColor("#9CB9D7"))
             if fund_item.toolTip() != fund_tooltip:
                 fund_item.setToolTip(fund_tooltip)
 
@@ -2397,11 +2409,11 @@ def apply_market_filters(window) -> None:
                 window.market_pool_table,
                 row_index,
                 3,
-                f"{row.strategy_tag}\n{theme_name} | {window._display_label(row.signal_label)}",
+                f"{row.strategy_tag}\n{theme_name} · {window._display_label(row.signal_label)}",
             )
             strategy_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            strategy_item.setBackground(QColor("#24303A"))
-            strategy_item.setForeground(QColor("#FFD166"))
+            strategy_item.setBackground(QColor("#202933"))
+            strategy_item.setForeground(QColor("#D7C18E"))
             if strategy_item.toolTip() != strategy_tooltip:
                 strategy_item.setToolTip(strategy_tooltip)
 
@@ -2413,7 +2425,7 @@ def apply_market_filters(window) -> None:
                 window.market_pool_table,
                 row_index,
                 5,
-                f"{row.latest_price:.2f}\n决策 {getattr(row, 'decision_score', 0.0):.1f}",
+                f"{row.latest_price:.2f}\n评分 {getattr(row, 'decision_score', 0.0):.1f}",
             )
             price_tooltip = f"决策分 {getattr(row, 'decision_score', 0.0):.1f} | 题材 {theme_name}"
             if price_item.toolTip() != price_tooltip:

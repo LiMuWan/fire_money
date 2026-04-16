@@ -1869,6 +1869,15 @@ TERMINAL_WORKSPACE_STYLE = """
         font-size: 12px;
         font-weight: 800;
     }
+    QLabel#workspaceFocusBanner[summaryBand="true"] {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(20, 28, 39, 0.98), stop:0.48 rgba(14, 20, 28, 0.98), stop:1 rgba(11, 17, 24, 0.98));
+        border: 1px solid rgba(118, 136, 158, 0.16);
+        border-left: 2px solid rgba(126, 183, 255, 0.46);
+        border-radius: 12px;
+        padding: 9px 14px;
+        font-size: 11px;
+        font-weight: 700;
+    }
     QLabel#workspaceFocusBanner[stateTone="buy"] {
         border-left: 4px solid #4de29a;
         background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(18, 49, 35, 0.96), stop:1 rgba(16, 24, 34, 0.96));
@@ -2748,6 +2757,15 @@ GRAPHITE_COMMERCIAL_STYLE = """
     QLabel#leaderboardName {
         color: #f4f8fc;
     }
+    QLabel#actionFlowCount {
+        color: #f4f8fc;
+        font-size: 18px;
+        font-weight: 900;
+    }
+    QLabel#actionFlowFocus,
+    QLabel#compactSummaryHeadline {
+        font-weight: 800;
+    }
     QLabel#compactSummaryDetail,
     QLabel#leaderboardMeta,
     QLabel#leaderboardReason,
@@ -2755,20 +2773,35 @@ GRAPHITE_COMMERCIAL_STYLE = """
     QLabel#leaderboardMetric {
         color: #95a9bd;
     }
+    QLabel#leaderboardRank,
+    QLabel#leaderboardBadge,
+    QLabel#compactSummaryTitle,
+    QLabel#actionFlowTitle {
+        color: #7f95ab;
+        font-size: 10px;
+        font-weight: 900;
+    }
     QTableWidget#marketPoolTable {
         border-radius: 18px;
     }
     QTableWidget#marketPoolTable QHeaderView::section {
-        color: #8ea4bb;
-        font-size: 11px;
+        background: rgba(14, 20, 28, 0.92);
+        color: #8399ae;
+        font-size: 10px;
         font-weight: 800;
-        padding: 10px 10px;
-        border-bottom: 1px solid rgba(110, 129, 151, 0.18);
+        padding: 8px 10px;
+        border-bottom: 1px solid rgba(110, 129, 151, 0.14);
+        border-right: 1px solid rgba(110, 129, 151, 0.06);
+    }
+    QTableWidget#marketPoolTable::item {
+        padding-top: 10px;
+        padding-bottom: 10px;
+        border-bottom: 1px solid rgba(110, 129, 151, 0.10);
     }
     QTableWidget#marketPoolTable::item:selected,
     QTableWidget#recommendPoolTable::item:selected,
     QTableWidget#terminalTable::item:selected {
-        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(38, 72, 108, 0.98), stop:1 rgba(23, 36, 50, 0.98));
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(33, 65, 97, 0.98), stop:1 rgba(22, 34, 47, 0.98));
         color: #f8fbff;
     }
     QTableWidget#recommendPoolTable[pageTone="recommend"]::item:selected,
@@ -9232,8 +9265,8 @@ QLineEdit:focus, QComboBox:focus {
         padding: 10px;
     }
     QFrame[actionRow="true"] {
-        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(29, 38, 51, 0.92), stop:1 rgba(18, 24, 33, 0.88));
-        border: 1px solid rgba(109, 137, 167, 0.22);
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(24, 31, 42, 0.96), stop:1 rgba(17, 23, 31, 0.92));
+        border: 1px solid rgba(109, 137, 167, 0.16);
         border-radius: 14px;
     }
     QFrame[actionRow="true"][riskActive="true"] {
@@ -9241,8 +9274,8 @@ QLineEdit:focus, QComboBox:focus {
         border: 1px solid rgba(125, 183, 255, 0.40);
     }
     QFrame[actionRow="true"]:hover {
-        border-color: rgba(138, 186, 245, 0.30);
-        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(34, 45, 61, 0.96), stop:1 rgba(20, 27, 38, 0.92));
+        border-color: rgba(138, 186, 245, 0.24);
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(29, 38, 52, 0.96), stop:1 rgba(19, 26, 36, 0.94));
     }
     QGroupBox#terminalPanel {
         background: #11161d;
@@ -10647,9 +10680,12 @@ QPushButton#accentButton:hover {
             layout = parent.layout()
             if layout is None:
                 continue
-            banner = QLabel("焦点标的：等待联动")
+            banner = QLabel("市场池摘要：等待联动")
             banner.setObjectName("workspaceFocusBanner")
             banner.setWordWrap(True)
+            if banner_name == "overview_focus_banner":
+                banner.setProperty("pageTone", "overview")
+                banner.setProperty("summaryBand", True)
             layout.insertWidget(0, banner)
             setattr(self, banner_name, banner)
 
@@ -10692,7 +10728,7 @@ QPushButton#accentButton:hover {
             self.daily_pool_table.setHorizontalHeaderLabels(DAILY_POOL_TABLE_HEADERS)
             self.daily_pool_table.setColumnHidden(2, True)
         if hasattr(self, "market_pool_table"):
-            self.market_pool_table.setHorizontalHeaderLabels(["序", "股票标识", "资金标签", "策略标签", "涨跌幅", "最新价"])
+            self.market_pool_table.setHorizontalHeaderLabels(["层级", "标的 / 代码", "资金画像", "策略归因", "涨跌", "价格 / 评分"])
 
     def _refresh_live_workspace_summary_panels(self) -> None:
         if hasattr(self, "scanner_live_summary_headline"):
@@ -13325,9 +13361,12 @@ QPushButton#accentButton:hover {
             layout = parent.layout()
             if layout is None:
                 continue
-            banner = QLabel("焦点标的：等待联动")
+            banner = QLabel("市场池摘要：等待联动")
             banner.setObjectName("workspaceFocusBanner")
             banner.setWordWrap(True)
+            if banner_name == "overview_focus_banner":
+                banner.setProperty("pageTone", "overview")
+                banner.setProperty("summaryBand", True)
             layout.insertWidget(0, banner)
             setattr(self, banner_name, banner)
 
@@ -13358,7 +13397,7 @@ QPushButton#accentButton:hover {
             self.daily_pool_table.setHorizontalHeaderLabels(DAILY_POOL_TABLE_HEADERS)
             self.daily_pool_table.setColumnHidden(2, True)
         if hasattr(self, "market_pool_table"):
-            self.market_pool_table.setHorizontalHeaderLabels(["序", "股票标识", "资金标签", "策略标签", "涨跌幅", "最新价"])
+            self.market_pool_table.setHorizontalHeaderLabels(["层级", "标的 / 代码", "资金画像", "策略归因", "涨跌", "价格 / 评分"])
 
     def _refresh_live_workspace_summary_panels(self) -> None:
         if hasattr(self, "scanner_live_summary_headline"):
@@ -13798,15 +13837,23 @@ QPushButton#accentButton:hover {
             table.setAlternatingRowColors(False)
             table.setSelectionBehavior(QTableWidget.SelectRows)
             table.setSelectionMode(QTableWidget.SingleSelection)
-            table.verticalHeader().setDefaultSectionSize(max(table.verticalHeader().defaultSectionSize(), 64))
+            table.verticalHeader().setDefaultSectionSize(max(table.verticalHeader().defaultSectionSize(), 72))
+            table.setWordWrap(True)
+            table.setTextElideMode(Qt.ElideNone)
             header = table.horizontalHeader()
             header.setStretchLastSection(False)
+            header.setMinimumHeight(max(header.height(), 42))
+            header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
             header.setSectionResizeMode(1, QHeaderView.Stretch)
-            header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-            header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-            header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
-            header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(2, QHeaderView.Interactive)
+            header.setSectionResizeMode(3, QHeaderView.Interactive)
+            header.setSectionResizeMode(4, QHeaderView.Interactive)
+            header.setSectionResizeMode(5, QHeaderView.Interactive)
+            table.setColumnWidth(2, max(table.columnWidth(2), 150))
+            table.setColumnWidth(3, max(table.columnWidth(3), 176))
+            table.setColumnWidth(4, max(table.columnWidth(4), 88))
+            table.setColumnWidth(5, max(table.columnWidth(5), 108))
 
         if hasattr(self, "daily_pool_table"):
             table = self.daily_pool_table
@@ -21508,20 +21555,28 @@ def _qh_apply_layout_polish_v19(self: QuantHunterWindow) -> None:
             "overviewDecisionActionRow",
         )
         overview_button_height = self._scaled_int(38 if zoomed_layout else 36, minimum=36)
+        overview_margin_h = self._scaled_int(10 if zoomed_layout else 8, minimum=8)
+        overview_margin_v = self._scaled_int(8 if zoomed_layout else 6, minimum=6)
         for row_name in overview_action_rows:
             row = self.findChild(QWidget, row_name)
             if not isinstance(row, QWidget):
                 continue
             layout = row.layout()
             if isinstance(layout, QHBoxLayout):
-                margin = self._scaled_int(10 if zoomed_layout else 8, minimum=8)
                 spacing = self._scaled_int(10 if zoomed_layout else 8, minimum=8)
-                layout.setContentsMargins(margin, margin, margin, margin)
+                layout.setContentsMargins(overview_margin_h, overview_margin_v, overview_margin_h, overview_margin_v)
                 layout.setSpacing(spacing)
+            max_button_height = overview_button_height
             for button in row.findChildren(QPushButton):
-                button.setMinimumHeight(overview_button_height)
-                button.setMaximumHeight(overview_button_height)
+                target_height = max(overview_button_height, button.sizeHint().height())
+                button.setMinimumHeight(target_height)
+                button.setMaximumHeight(target_height)
+                button.setMinimumWidth(self._scaled_int(98 if narrow_overview else 106, minimum=92))
                 button.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+                max_button_height = max(max_button_height, target_height)
+            row_height = max_button_height + overview_margin_v * 2 + self._scaled_int(8, minimum=6)
+            row.setMinimumHeight(row_height)
+            row.setMaximumHeight(row_height)
 
         for button_map_name, min_width in (
             ("timeframe_buttons", 68 if narrow_overview else 80),
@@ -21913,6 +21968,12 @@ def _qh_apply_terminal_table_governance_v22(self: QuantHunterWindow) -> None:
     if getattr(self, "_qh_terminal_table_governance_applied_v22", False):
         return
     table_specs = {
+        "market_pool_table": {
+            "content": {0},
+            "stretch": {1},
+            "widths": {2: 150, 3: 176, 4: 88, 5: 108},
+            "min_height": 420,
+        },
         "daily_pool_table": {
             "hidden": [20],
             "content": {0, 2, 5, 6, 7, 8, 9, 18, 21, 22},
@@ -25050,7 +25111,7 @@ def _qh_workspace_focus_capsule_v40(self: QuantHunterWindow, page: str) -> tuple
     symbol, recommendation, intent, execution_row = _qh_current_focus_context_v40(self)
     if not symbol:
         empty_map = {
-            "overview": "总览焦点：等待从龙头池、推荐池或扫描页联动一只股票",
+            "overview": "市场池摘要：等待从机会池、推荐池或扫描页联动一只股票",
             "recommend": "推荐焦点：等待从推荐池、龙头榜或交易计划联动一只股票",
             "detail": "复盘焦点：等待扫描、推荐或交易页同步单票标的",
         }
@@ -25077,7 +25138,15 @@ def _qh_workspace_focus_capsule_v40(self: QuantHunterWindow, page: str) -> tuple
         next_step = "继续同步扫描、推荐与交易链路。"
 
     next_brief = next_step[:24] + ("…" if len(next_step) > 24 else "")
-    prefix_map = {"overview": "总览焦点", "recommend": "推荐焦点", "detail": "复盘焦点"}
+    prefix_map = {"overview": "市场池摘要", "recommend": "推荐焦点", "detail": "复盘焦点"}
+    if page == "overview":
+        market_count = self.market_pool_table.rowCount() if hasattr(self, "market_pool_table") else 0
+        flow_label = getattr(recommendation, "fund_model", "") if recommendation is not None else "等待联动"
+        strategy_label = getattr(recommendation, "primary_strategy", "") or getattr(recommendation, "strategy_tag", "") if recommendation is not None else ""
+        return (
+            tone,
+            f"市场池摘要：{stock_name} ({stock_id} / {symbol}) | 机会池 {market_count} | 【{badge}】{stage} | 资金 {flow_label or '待同步'} | 策略 {strategy_label or next_brief}",
+        )
     return tone, f"{prefix_map.get(page, '焦点')}：{stock_name} ({stock_id} / {symbol}) | 【{badge}】{stage} | 下一步 {next_brief}"
 
 

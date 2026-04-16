@@ -67,10 +67,10 @@ class InsightCardBase(QFrame):
 class LeaderboardCard(InsightCardBase):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("leaderboardCard", parent)
-        self.setMinimumHeight(154)
+        self.setMinimumHeight(142)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(5)
+        layout.setContentsMargins(16, 13, 16, 13)
+        layout.setSpacing(4)
 
         self.rank_label = QLabel("TOP")
         self.rank_label.setObjectName("leaderboardRank")
@@ -148,7 +148,7 @@ class LeaderboardCard(InsightCardBase):
             "background:rgba(255,255,255,0.03); border:1px solid rgba(126, 183, 255, 0.14); "
             "border-radius:9px; padding:3px 8px;"
         )
-        self._set_stylesheet_if_changed(self.reason_label, "color:#d2ddea; font-size:11px; font-weight:600;")
+        self._set_stylesheet_if_changed(self.reason_label, "color:#c7d5e3; font-size:10px; font-weight:600;")
         self._set_label_if_changed(self.rank_label, rank_text)
         self._set_label_if_changed(self.status_label, status_text)
         self.status_label.setToolTip(
@@ -162,14 +162,15 @@ class LeaderboardCard(InsightCardBase):
             )
         )
         self._set_label_if_changed(self.name_label, f"{row.stock_name} {row.stock_id}")
-        self._set_label_if_changed(self.reason_label, reason_text)
+        short_reason = " | ".join(reason_parts[:2]) if reason_parts else (strategy_name or "等待同步")
+        self._set_label_if_changed(self.reason_label, short_reason)
         self._set_label_if_changed(self.strategy_label, f"主策略：{strategy_name}")
         self._set_label_if_changed(self.fund_label, f"资金标签：{getattr(row, 'fund_model', '')}")
         self._set_label_if_changed(
             self.metrics_label,
-            f"决策分 {decision_score:.1f} | 热度 {getattr(row, 'heat_score', 0.0):.1f} | 涨幅 {getattr(row, 'pct_change', 0.0):.2f}%"
+            f"决策 {decision_score:.1f} | 热度 {getattr(row, 'heat_score', 0.0):.1f} | 涨跌 {getattr(row, 'pct_change', 0.0):.2f}%"
         )
-        self._set_label_if_changed(self.flow_label, f"主力净流入 {getattr(row, 'main_inflow', 0.0) / 1e8:.2f} 亿")
+        self._set_label_if_changed(self.flow_label, f"资金 {getattr(row, 'main_inflow', 0.0) / 1e8:.2f} 亿")
 
     def set_message(self, title: str, message: str) -> None:
         self._set_stylesheet_if_changed(
@@ -188,7 +189,7 @@ class LeaderboardCard(InsightCardBase):
         self.status_label.setToolTip("动作：WAIT\n状态：等待同步新的市场与推荐数据")
         self._set_label_if_changed(self.name_label, message)
         self._set_label_if_changed(self.strategy_label, "")
-        self._set_label_if_changed(self.reason_label, "Why now: Waiting for synchronized market data")
+        self._set_label_if_changed(self.reason_label, "等待市场与候选同步")
         self._set_label_if_changed(self.fund_label, "")
         self._set_label_if_changed(self.metrics_label, "")
         self._set_label_if_changed(self.flow_label, "")
@@ -267,10 +268,10 @@ class ActionFlowCard(InsightCardBase):
     def __init__(self, title: str, accent: str, parent: QWidget | None = None) -> None:
         super().__init__("actionFlowCard", parent)
         self.accent = accent
-        self.setMinimumHeight(114)
+        self.setMinimumHeight(104)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(5)
+        layout.setContentsMargins(15, 13, 15, 13)
+        layout.setSpacing(4)
 
         self.accent_strip = self._create_accent_strip(accent)
         self.title_label = QLabel(title)
@@ -294,16 +295,16 @@ class ActionFlowCard(InsightCardBase):
 
     def _apply(self) -> None:
         self._apply_card_styles(
-            border_color="rgba(110, 129, 151, 0.18)",
+            border_color="rgba(110, 129, 151, 0.16)",
             title_selector="actionFlowTitle",
-            title_color="#dce7f3",
-            title_size=13,
+            title_color="#9fb2c7",
+            title_size=12,
             emphasis_selector="actionFlowCount",
             emphasis_color=self.accent,
-            emphasis_size=20,
+            emphasis_size=18,
         )
-        self.focus_label.setStyleSheet("color:#e2ebf6; font-size:11px; font-weight:700;")
-        self.note_label.setStyleSheet("color:#8fa2b6; font-size:11px; line-height:1.35;")
+        self.focus_label.setStyleSheet("color:#e4edf6; font-size:12px; font-weight:700;")
+        self.note_label.setStyleSheet("color:#8397ab; font-size:10px; line-height:1.25;")
 
     def set_data(self, count_text: str, focus_text: str, note_text: str) -> None:
         self._set_label_if_changed(self.count_label, count_text)
@@ -314,7 +315,7 @@ class ActionFlowCard(InsightCardBase):
 class CompactSummaryCard(InsightCardBase):
     def __init__(self, title: str, accent: str, parent: QWidget | None = None) -> None:
         super().__init__("compactSummaryCard", parent)
-        self.setMinimumHeight(102)
+        self.setMinimumHeight(96)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(5)
@@ -343,7 +344,7 @@ class CompactSummaryCard(InsightCardBase):
             emphasis_color="#f4f8fc",
             emphasis_size=17,
         )
-        self.detail_label.setStyleSheet("color:#94a8bc; font-size:11px; line-height:1.35;")
+        self.detail_label.setStyleSheet("color:#90a4b8; font-size:10px; line-height:1.3;")
 
     def set_data(self, headline: str, detail: str) -> None:
         self._set_label_if_changed(self.headline_label, headline)
