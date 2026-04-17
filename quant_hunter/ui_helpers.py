@@ -116,7 +116,7 @@ def build_workspace_badge(value: str, caption: str, hero_tone: str = "default") 
     frame.setObjectName("workspaceBadge")
     frame.setProperty("heroTone", hero_tone)
     layout = QVBoxLayout(frame)
-    layout.setContentsMargins(16, 12, 16, 12)
+    layout.setContentsMargins(14, 10, 14, 10)
     layout.setSpacing(3)
 
     value_label = QLabel(value)
@@ -130,6 +130,7 @@ def build_workspace_badge(value: str, caption: str, hero_tone: str = "default") 
 
     layout.addWidget(value_label)
     layout.addWidget(caption_label)
+    frame.setMinimumWidth(100)
     return frame
 
 
@@ -150,11 +151,11 @@ def build_workspace_hero(
     accent_strip = QFrame()
     accent_strip.setObjectName("workspaceHeroAccent")
     accent_strip.setProperty("heroTone", hero_tone)
-    accent_strip.setFixedWidth(6)
+    accent_strip.setFixedWidth(4)
     layout.addWidget(accent_strip)
 
     text_layout = QVBoxLayout()
-    text_layout.setSpacing(3)
+    text_layout.setSpacing(6)
 
     top_row = QHBoxLayout()
     top_row.setContentsMargins(0, 0, 0, 0)
@@ -189,13 +190,13 @@ def build_workspace_hero(
         badge_rail.setObjectName("workspaceBadgeRail")
         badge_rail.setProperty("heroTone", hero_tone)
         badge_row = QHBoxLayout()
-        badge_row.setContentsMargins(0, 0, 0, 0)
+        badge_row.setContentsMargins(6, 4, 6, 4)
         badge_row.setSpacing(8)
         for value, caption in badges:
             badge_row.addWidget(build_workspace_badge(value, caption, hero_tone))
         badge_row.addStretch(1)
         badge_rail.setLayout(badge_row)
-        layout.addWidget(badge_rail, stretch=1)
+        layout.addWidget(badge_rail, stretch=0)
 
     return frame
 
@@ -324,9 +325,9 @@ def create_shell_chip(label: str, value: str) -> dict[str, object]:
     frame = QFrame()
     frame.setObjectName("shellChip")
     layout = QVBoxLayout(frame)
-    layout.setContentsMargins(12, 8, 12, 8)
-    layout.setSpacing(3)
-    frame.setMinimumHeight(46)
+    layout.setContentsMargins(11, 7, 11, 7)
+    layout.setSpacing(2)
+    frame.setMinimumHeight(42)
     label_widget = QLabel(label)
     label_widget.setObjectName("shellChipLabel")
     label_widget.setWordWrap(False)

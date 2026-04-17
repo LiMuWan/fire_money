@@ -2234,11 +2234,12 @@ TERMINAL_WORKSPACE_STYLE = """
         color: #98aabc;
         border: 1px solid rgba(112, 130, 153, 0.14);
         border-bottom: none;
-        padding: 9px 16px;
-        margin-right: 6px;
+        padding: 8px 8px;
+        margin-right: 0;
         border-top-left-radius: 12px;
         border-top-right-radius: 12px;
         font-weight: 700;
+        min-width: 0;
     }
     QTabWidget#compactInfoTabs QTabBar::tab:selected {
         background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(45, 72, 102, 0.98), stop:1 rgba(29, 46, 66, 0.98));
@@ -2472,6 +2473,15 @@ GRAPHITE_COMMERCIAL_STYLE = """
         color: #f5f9ff;
         font-size: 18px;
         font-weight: 900;
+    }
+    QLabel#emptyStateHint {
+        color: #bfd0e2;
+        font-size: 12px;
+        line-height: 1.35;
+        padding: 0;
+        background: transparent;
+        border: none;
+        font-weight: 600;
     }
     QLabel#emptyStateMeta {
         color: #a6b7ca;
@@ -21092,16 +21102,16 @@ def _qh_apply_workspace_compactness_v33(
     if isinstance(cockpit_parent, QTextEdit):
         cockpit_splitter = cockpit_parent.parentWidget()
         if isinstance(cockpit_splitter, QSplitter) and cockpit_splitter.count() == 2:
-            parent = cockpit_splitter.parentWidget()
-            if isinstance(parent, QWidget):
-                rect = parent.contentsRect()
-                if rect.height() > 0:
-                    target_height = max(rect.height() - 6, 96)
-                    for attr_name in ("overview_command_text", "overview_execution_text"):
-                        widget = getattr(self, attr_name, None)
-                        if isinstance(widget, QTextEdit):
-                            widget.setMinimumHeight(min(widget.minimumHeight(), target_height))
-                            widget.setMaximumHeight(target_height)
+            splitter_height = cockpit_splitter.height()
+            target_height = max(splitter_height - 4, 72) if splitter_height > 0 else (96 if very_compact else 118)
+            for attr_name in ("overview_command_text", "overview_execution_text"):
+                widget = getattr(self, attr_name, None)
+                if isinstance(widget, QTextEdit):
+                    widget.setMinimumHeight(min(widget.minimumHeight(), target_height))
+                    widget.setMaximumHeight(target_height)
+                    widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
+            cockpit_splitter.setMinimumHeight(target_height)
+            cockpit_splitter.setMaximumHeight(target_height)
 
     for attr_name, heights in {
         "recommend_status_label": (46, 40, 36),
@@ -22436,28 +22446,28 @@ def _qh_apply_layout_polish_v19(self: QuantHunterWindow) -> None:
 
         shell_summary_compact = compact_height or narrow_overview
         if hasattr(self, "shell_header"):
-            shell_header_height = 88 if ultra_compact_height else (98 if compact_height else self._scaled_int(132 if zoomed_layout else 112, minimum=96))
+            shell_header_height = 84 if ultra_compact_height else (94 if compact_height else self._scaled_int(124 if zoomed_layout else 106, minimum=92))
             self.shell_header.setMinimumHeight(shell_header_height)
             self.shell_header.setMaximumHeight(shell_header_height)
             shell_header_layout = self.shell_header.layout()
             if isinstance(shell_header_layout, QHBoxLayout):
-                inner_h = 12 if shell_summary_compact else 18
-                inner_v = 10 if shell_summary_compact else 12
+                inner_h = 11 if shell_summary_compact else 16
+                inner_v = 8 if shell_summary_compact else 10
                 shell_header_layout.setContentsMargins(inner_h, inner_v, inner_h, inner_v)
-                shell_header_layout.setSpacing(10 if shell_summary_compact else 14)
+                shell_header_layout.setSpacing(8 if shell_summary_compact else 12)
         if hasattr(self, "shell_pulse_bar"):
-            shell_pulse_height = 40 if ultra_compact_height else (46 if compact_height else self._scaled_int(70 if zoomed_layout else 54, minimum=44))
+            shell_pulse_height = 38 if ultra_compact_height else (44 if compact_height else self._scaled_int(60 if zoomed_layout else 48, minimum=42))
             self.shell_pulse_bar.setMinimumHeight(shell_pulse_height)
             self.shell_pulse_bar.setMaximumHeight(shell_pulse_height)
             shell_pulse_layout = self.shell_pulse_bar.layout()
             if isinstance(shell_pulse_layout, QHBoxLayout):
-                shell_pulse_layout.setContentsMargins(12 if shell_summary_compact else 16, 8 if shell_summary_compact else 10, 12 if shell_summary_compact else 16, 8 if shell_summary_compact else 10)
-                shell_pulse_layout.setSpacing(8 if shell_summary_compact else 10)
+                shell_pulse_layout.setContentsMargins(10 if shell_summary_compact else 14, 7 if shell_summary_compact else 8, 10 if shell_summary_compact else 14, 7 if shell_summary_compact else 8)
+                shell_pulse_layout.setSpacing(6 if shell_summary_compact else 8)
         for attr_name, max_height, max_segments in (
-            ("shell_product_subtitle", 40 if ultra_compact_height else (48 if compact_height else 64), 2 if ultra_compact_height else 3),
-            ("shell_pulse_label", 34 if ultra_compact_height else (40 if compact_height else 56), 2),
-            ("shell_pulse_hint", 30 if ultra_compact_height else (36 if compact_height else 52), 2),
-            ("shell_pulse_meta", 28 if ultra_compact_height else (32 if compact_height else 44), 2),
+            ("shell_product_subtitle", 34 if ultra_compact_height else (42 if compact_height else 52), 2),
+            ("shell_pulse_label", 30 if ultra_compact_height else (36 if compact_height else 44), 2),
+            ("shell_pulse_hint", 28 if ultra_compact_height else (34 if compact_height else 40), 2),
+            ("shell_pulse_meta", 24 if ultra_compact_height else (30 if compact_height else 36), 2),
         ):
             label = getattr(self, attr_name, None)
             if isinstance(label, QLabel):
@@ -22477,25 +22487,25 @@ def _qh_apply_layout_polish_v19(self: QuantHunterWindow) -> None:
             frame = chip.get("frame")
             value_label = chip.get("value")
             if isinstance(frame, QWidget):
-                min_chip_width = 88 if ultra_compact_height else (92 if compact_height else self._scaled_int(104 if zoomed_layout else 96, minimum=90))
-                max_chip_width = 164 if ultra_compact_height else (176 if compact_height else self._scaled_int(220 if zoomed_layout else 196, minimum=168))
+                min_chip_width = 84 if ultra_compact_height else (90 if compact_height else self._scaled_int(98 if zoomed_layout else 92, minimum=86))
+                max_chip_width = 154 if ultra_compact_height else (168 if compact_height else self._scaled_int(196 if zoomed_layout else 180, minimum=160))
                 frame.setMinimumWidth(min_chip_width)
                 frame.setMaximumWidth(max_chip_width)
-                frame.setMinimumHeight(42 if ultra_compact_height else (46 if compact_height else 50))
+                frame.setMinimumHeight(38 if ultra_compact_height else (42 if compact_height else 46))
                 frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
                 frame_layout = frame.layout()
                 if isinstance(frame_layout, QVBoxLayout):
-                    frame_layout.setContentsMargins(10 if shell_summary_compact else 12, 8 if shell_summary_compact else 10, 10 if shell_summary_compact else 12, 8 if shell_summary_compact else 10)
-                    frame_layout.setSpacing(1 if shell_summary_compact else 2)
+                    frame_layout.setContentsMargins(9 if shell_summary_compact else 11, 6 if shell_summary_compact else 7, 9 if shell_summary_compact else 11, 6 if shell_summary_compact else 7)
+                    frame_layout.setSpacing(1)
             if isinstance(value_label, QLabel):
                 value_label.setWordWrap(True)
-                value_label.setMinimumHeight(16 if shell_summary_compact else 18)
+                value_label.setMinimumHeight(14 if shell_summary_compact else 16)
         shell_chip_rail = getattr(self, "shell_chip_rail", None)
         if isinstance(shell_chip_rail, QWidget):
             rail_layout = shell_chip_rail.layout()
             if isinstance(rail_layout, QGridLayout):
-                rail_layout.setHorizontalSpacing(8 if shell_summary_compact else 10)
-                rail_layout.setVerticalSpacing(6 if shell_summary_compact else 8)
+                rail_layout.setHorizontalSpacing(6 if shell_summary_compact else 8)
+                rail_layout.setVerticalSpacing(4 if shell_summary_compact else 6)
 
         splitter_specs = {
             "overview_main_splitter": (
@@ -22719,8 +22729,8 @@ def _qh_apply_layout_polish_v19(self: QuantHunterWindow) -> None:
             ("overviewPriorityBox", 124 if ultra_compact_height else (142 if compact_height else 16777215)),
             ("cockpitBox", 210 if ultra_compact_height else (244 if compact_height else 16777215)),
             ("playbookBox", 156 if ultra_compact_height else (184 if compact_height else 16777215)),
-            ("leaderboardBox", 252 if ultra_compact_height else (304 if compact_height else (328 if overview_density_compact else 16777215))),
-            ("overviewSummaryBox", 176 if ultra_compact_height else (208 if compact_height else (224 if overview_density_compact else 16777215))),
+            ("leaderboardBox", 286 if ultra_compact_height else (336 if compact_height else (356 if overview_density_compact else 16777215))),
+            ("overviewSummaryBox", 196 if ultra_compact_height else (232 if compact_height else (248 if overview_density_compact else 16777215))),
         ):
             box = self.findChild(QGroupBox, box_name)
             if isinstance(box, QGroupBox):
@@ -22748,7 +22758,7 @@ def _qh_apply_layout_polish_v19(self: QuantHunterWindow) -> None:
 
         _apply_tab_stack_budget(
             getattr(self, "right_intel_tabs", None),
-            compact_content=250 if not ultra_compact_height else 220,
+            compact_content=262 if not ultra_compact_height else 232,
             relaxed_content=280,
         )
         _apply_tab_stack_budget(
@@ -22757,12 +22767,12 @@ def _qh_apply_layout_polish_v19(self: QuantHunterWindow) -> None:
             relaxed_content=220,
         )
         if hasattr(self, "market_pool_table") and isinstance(self.market_pool_table, QTableWidget):
-            pool_height = 172 if ultra_compact_height else (204 if compact_height else (228 if overview_density_compact else 260))
+            pool_height = 148 if ultra_compact_height else (204 if compact_height else (228 if overview_density_compact else 260))
             self.market_pool_table.setMinimumHeight(pool_height)
             self.market_pool_table.setMaximumHeight(pool_height + 30)
             self.market_pool_table.verticalHeader().setDefaultSectionSize(60 if ultra_compact_height else (64 if compact_height else (72 if overview_density_compact else 82)))
         if hasattr(self, "intraday_chart_view"):
-            self.intraday_chart_view.setMinimumHeight(160 if ultra_compact_height else (192 if compact_height else (220 if overview_density_compact else 260)))
+            self.intraday_chart_view.setMinimumHeight(144 if ultra_compact_height else (192 if compact_height else (220 if overview_density_compact else 260)))
         if hasattr(self, "daily_chart_view"):
             self.daily_chart_view.setMinimumHeight(220 if ultra_compact_height else (252 if compact_height else (284 if overview_density_compact else 320)))
         if hasattr(self, "overview_primary_chart_tabs") and isinstance(self.overview_primary_chart_tabs, QTabWidget):
@@ -22807,8 +22817,8 @@ def _qh_apply_layout_polish_v19(self: QuantHunterWindow) -> None:
                 continue
             layout = box.layout()
             if isinstance(layout, (QVBoxLayout, QGridLayout)):
-                dense_inner = self._scaled_int(10 if overview_density_compact else 14, minimum=8)
-                dense_gap = self._scaled_int(6 if overview_density_compact else 10, minimum=6)
+                dense_inner = self._scaled_int(12 if overview_density_compact else 14, minimum=10)
+                dense_gap = self._scaled_int(8 if overview_density_compact else 10, minimum=8)
                 layout.setContentsMargins(dense_inner, dense_inner, dense_inner, dense_inner)
                 layout.setSpacing(dense_gap)
                 if isinstance(layout, QGridLayout):
@@ -22830,9 +22840,9 @@ def _qh_apply_layout_polish_v19(self: QuantHunterWindow) -> None:
             "overviewCapitalActionRow",
             "overviewDecisionActionRow",
         )
-        overview_button_height = self._scaled_int(34 if compact_height else (38 if zoomed_layout else 36), minimum=32)
+        overview_button_height = self._scaled_int(34 if compact_height else (36 if zoomed_layout else 34), minimum=32)
         overview_margin_h = self._scaled_int(10 if zoomed_layout else 8, minimum=8)
-        overview_margin_v = self._scaled_int(8 if zoomed_layout else 6, minimum=6)
+        overview_margin_v = self._scaled_int(5 if zoomed_layout else 4, minimum=4)
         for row_name in overview_action_rows:
             row = self.findChild(QWidget, row_name)
             if not isinstance(row, QWidget):
@@ -22844,13 +22854,13 @@ def _qh_apply_layout_polish_v19(self: QuantHunterWindow) -> None:
                 layout.setSpacing(spacing)
             max_button_height = overview_button_height
             for button in row.findChildren(QPushButton):
-                target_height = max(overview_button_height, button.sizeHint().height())
+                target_height = overview_button_height
                 button.setMinimumHeight(target_height)
                 button.setMaximumHeight(target_height)
                 button.setMinimumWidth(self._scaled_int(98 if narrow_overview else 106, minimum=92))
                 button.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
                 max_button_height = max(max_button_height, target_height)
-            row_height = max_button_height + overview_margin_v * 2 + self._scaled_int(8, minimum=6)
+            row_height = max_button_height + overview_margin_v * 2 + self._scaled_int(4, minimum=4)
             row.setMinimumHeight(row_height)
             row.setMaximumHeight(row_height)
 
@@ -23123,6 +23133,16 @@ def _qh_apply_overview_compact_action_rows_v59(self: QuantHunterWindow, *, compa
             continue
         if isinstance(more_button, QPushButton):
             more_button.setToolTip("打开更多快捷跳转入口。")
+        target_height = 34 if compact else 38
+        target_width = 96 if compact else 112
+        for button in compact_buttons:
+            button.setFixedHeight(target_height)
+            button.setMinimumWidth(target_width)
+            button.setMaximumHeight(target_height)
+        if isinstance(more_button, QPushButton):
+            more_button.setFixedHeight(target_height)
+            more_button.setMaximumHeight(target_height)
+            more_button.setMinimumWidth(72 if compact else 88)
         if not compact:
             for button in compact_buttons:
                 button.show()
@@ -23837,6 +23857,8 @@ def _qh_refine_dense_workspace_layouts_v34(self: QuantHunterWindow) -> None:
 
     action_row_specs = [
         (getattr(self, "auth_action_row_panel", None), 1 if narrow_width else (2 if medium_width else 3)),
+        (self.findChild(QWidget, "boardCandidateActionRow"), 1 if narrow_width else (2 if medium_width else 4)),
+        (self.findChild(QWidget, "boardMonitorActionRow"), 1 if narrow_width else (2 if medium_width else 4)),
         (self.findChild(QWidget, "scannerTopActionRow"), 1 if narrow_width else 3),
         (self.findChild(QWidget, "paperActionRow"), 1 if narrow_width else (2 if medium_width else 4)),
         (getattr(self, "trade_plan_empty_actions", None), 1 if narrow_width else (2 if medium_width else 3)),
@@ -23849,11 +23871,31 @@ def _qh_refine_dense_workspace_layouts_v34(self: QuantHunterWindow) -> None:
         (self.findChild(QWidget, "brokerRecapActionRow"), 1 if narrow_width else 2),
         (self.findChild(QWidget, "runtimeLogActionRow"), 1 if narrow_width else (2 if medium_width else 3)),
     ]
+    def _resolve_action_row_columns(row_widget: QWidget, columns: int) -> int:
+        if not narrow_width:
+            return columns
+        row_name = row_widget.objectName() or ""
+        row_width = max(row_widget.width(), row_widget.sizeHint().width(), row_widget.minimumSizeHint().width())
+        if row_name in {"detailConclusionActionRow", "detailExecutionActionRow", "detailDecisionActionRow"} and row_width >= 300:
+            return 2
+        if row_name == "detailMetricsActionRow" and row_width >= 860:
+            return 2
+        if row_name == "boardCandidateActionRow" and row_width >= 640:
+            return 4
+        if row_name == "boardMonitorActionRow" and row_width >= 220:
+            return 2
+        if row_name in {"brokerGateActionRow", "paperActionRow", "scannerTopActionRow"} and row_width >= 820:
+            return 2
+        if row_name == "brokerExecutionActionRow" and row_width >= 980:
+            return 2
+        return columns
+
     for row_widget, columns in action_row_specs:
         if not isinstance(row_widget, QWidget):
             continue
         buttons = list(row_widget.findChildren(QPushButton))
-        self._qh_reflow_items_in_container_v34(row_widget, buttons, columns, min_height=38, min_width=0 if narrow_width else 96)
+        resolved_columns = _resolve_action_row_columns(row_widget, columns)
+        self._qh_reflow_items_in_container_v34(row_widget, buttons, resolved_columns, min_height=38, min_width=0 if narrow_width else 96)
 
     risk_cards = [
         bundle.get("card")
@@ -25679,11 +25721,14 @@ QWidget#overviewRoot QRadioButton {
     color: #f3f8ff;
     background-color: transparent;
 }
-QWidget#overviewRoot QTabWidget#compactInfoTabs QTabBar::tab {
-    color: #d3e1ee;
-    background: rgba(29, 39, 51, 0.94);
-    border-color: rgba(135, 159, 187, 0.20);
-}
+    QWidget#overviewRoot QTabWidget#compactInfoTabs QTabBar::tab {
+        color: #d3e1ee;
+        background: rgba(29, 39, 51, 0.94);
+        border-color: rgba(135, 159, 187, 0.20);
+        min-width: 0;
+        padding: 8px 8px;
+        margin-right: 0;
+    }
 QWidget#overviewRoot QTabWidget#compactInfoTabs QTabBar::tab:selected {
     color: #fbfdff;
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(52, 84, 118, 0.98), stop:1 rgba(35, 58, 84, 0.98));
@@ -26030,15 +26075,15 @@ def _qh_apply_overview_hard_theme_v30(self: QuantHunterWindow) -> None:
     )
     ghost_button_style = (
         f"background:{token['button_ghost']}; color:{token['text']}; "
-        f"border:1px solid {token['border']}; border-radius:12px; padding:8px 14px; font-weight:800;"
+        f"border:1px solid {token['border']}; border-radius:12px; padding:0 14px; font-weight:800;"
     )
     tonal_button_style = (
         f"background:{token['button_tonal']}; color:{token['text']}; "
-        f"border:1px solid {token['primary']}; border-radius:12px; padding:8px 14px; font-weight:800;"
+        f"border:1px solid {token['primary']}; border-radius:12px; padding:0 14px; font-weight:800;"
     )
     accent_button_style = (
         f"background:qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {token['accent_0']}, stop:1 {token['accent_1']}); "
-        f"color:{token['button_accent_text']}; border:1px solid {token['primary']}; border-radius:12px; padding:10px 16px; font-weight:800;"
+        f"color:{token['button_accent_text']}; border:1px solid {token['primary']}; border-radius:12px; padding:0 16px; font-weight:800;"
     )
 
     for name in [
@@ -27705,6 +27750,1396 @@ def _qh_on_workspace_tab_changed_v33(self: QuantHunterWindow, index: int) -> Non
 QuantHunterWindow._apply_workspace_page_tones_v33 = _qh_apply_workspace_page_tones_v33
 QuantHunterWindow._post_build_ui_tweaks = _qh_post_build_ui_tweaks_v33
 QuantHunterWindow._on_workspace_tab_changed = _qh_on_workspace_tab_changed_v33
+
+
+def _qh_finalize_overview_cockpit_height_v61(self: QuantHunterWindow) -> None:
+    splitter = None
+    for attr_name in ("overview_command_text", "overview_execution_text"):
+        widget = getattr(self, attr_name, None)
+        if isinstance(widget, QTextEdit):
+            parent = widget.parentWidget()
+            if isinstance(parent, QSplitter):
+                splitter = parent
+                break
+    if not isinstance(splitter, QSplitter) or splitter.count() != 2:
+        return
+
+    content_height = splitter.contentsRect().height()
+    splitter_height = splitter.height()
+    available_height = max(content_height, splitter_height)
+    if available_height <= 0:
+        return
+
+    target_height = max(88, available_height - 4)
+    for attr_name in ("overview_command_text", "overview_execution_text"):
+        widget = getattr(self, attr_name, None)
+        if not isinstance(widget, QTextEdit):
+            continue
+        preferred_height = widget.maximumHeight()
+        if preferred_height <= 0 or preferred_height >= 16777215:
+            preferred_height = widget.minimumHeight()
+        if preferred_height <= 0:
+            preferred_height = target_height
+        final_height = min(preferred_height, target_height)
+        widget.setMinimumHeight(final_height)
+        widget.setMaximumHeight(final_height)
+        widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
+        widget.updateGeometry()
+
+
+def _qh_finalize_overview_band_heights_v61(self: QuantHunterWindow) -> None:
+    def _fit_cards(
+        box_name: str,
+        card_name: str,
+        *,
+        compact_threshold: int,
+        compact_height: int,
+        relaxed_height: int,
+        compact_layout_margins: tuple[int, int, int, int],
+        relaxed_layout_margins: tuple[int, int, int, int],
+        compact_card_margins: tuple[int, int, int, int],
+        relaxed_card_margins: tuple[int, int, int, int],
+        compact_spacing: int,
+        relaxed_spacing: int,
+    ) -> None:
+        box = self.findChild(QGroupBox, box_name)
+        if not isinstance(box, QGroupBox):
+            return
+        cards = [card for card in box.findChildren(QFrame, card_name) if card.isVisible()]
+        if not cards:
+            return
+
+        content_height = box.contentsRect().height()
+        if content_height <= 0:
+            return
+        compact_mode = content_height <= compact_threshold
+
+        layout = box.layout()
+        if layout is not None:
+            margins = compact_layout_margins if compact_mode else relaxed_layout_margins
+            layout.setContentsMargins(*margins)
+            layout.setSpacing(compact_spacing if compact_mode else relaxed_spacing)
+            layout.invalidate()
+            layout.activate()
+
+        target_height = min(relaxed_height, content_height - (6 if compact_mode else 2))
+        target_height = max(compact_height if compact_mode else relaxed_height, target_height)
+
+        for card in cards:
+            card.setMinimumHeight(target_height)
+            card.setMaximumHeight(target_height)
+            card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            card_layout = card.layout()
+            if card_layout is not None:
+                margins = compact_card_margins if compact_mode else relaxed_card_margins
+                card_layout.setContentsMargins(*margins)
+                card_layout.setSpacing(compact_spacing if compact_mode else relaxed_spacing)
+                card_layout.invalidate()
+                card_layout.activate()
+            if card_name == "actionFlowCard":
+                note_label = card.findChild(QLabel, "actionFlowNote")
+                focus_label = card.findChild(QLabel, "actionFlowFocus")
+                count_label = card.findChild(QLabel, "actionFlowCount")
+                title_label = card.findChild(QLabel, "actionFlowTitle")
+                for label, height in (
+                    (title_label, 16),
+                    (count_label, 20),
+                    (focus_label, 18),
+                    (note_label, 12 if compact_mode else 14),
+                ):
+                    if isinstance(label, QLabel):
+                        label.setMinimumHeight(0)
+                        label.setMaximumHeight(height)
+                        label.setWordWrap(True)
+            elif card_name == "metricCard":
+                for label in card.findChildren(QLabel):
+                    name = label.objectName()
+                    if name in {"metricCaption", "metricAccent"}:
+                        label.setMinimumHeight(0)
+                        label.setMaximumHeight(16 if compact_mode else 18)
+                    elif name == "metricValue":
+                        label.setMinimumHeight(0)
+                        label.setMaximumHeight(28 if compact_mode else 32)
+            card.updateGeometry()
+            card.resize(card.width(), target_height)
+
+        if layout is not None:
+            layout.invalidate()
+            layout.activate()
+        box.updateGeometry()
+
+    _fit_cards(
+        "dashboardMetricsBox",
+        "metricCard",
+        compact_threshold=104,
+        compact_height=88,
+        relaxed_height=96,
+        compact_layout_margins=(10, 4, 10, 4),
+        relaxed_layout_margins=(12, 8, 12, 8),
+        compact_card_margins=(10, 8, 10, 8),
+        relaxed_card_margins=(12, 10, 12, 10),
+        compact_spacing=3,
+        relaxed_spacing=5,
+    )
+    _fit_cards(
+        "overviewPriorityBox",
+        "actionFlowCard",
+        compact_threshold=96,
+        compact_height=80,
+        relaxed_height=88,
+        compact_layout_margins=(10, 4, 10, 4),
+        relaxed_layout_margins=(12, 8, 12, 8),
+        compact_card_margins=(10, 8, 10, 8),
+        relaxed_card_margins=(12, 10, 12, 10),
+        compact_spacing=2,
+        relaxed_spacing=3,
+    )
+
+
+def _qh_finalize_overview_analysis_density_v61(self: QuantHunterWindow) -> None:
+    leaderboard_box = self.findChild(QGroupBox, "leaderboardBox")
+    if isinstance(leaderboard_box, QGroupBox):
+        cards = [card for card in leaderboard_box.findChildren(QFrame, "leaderboardCard") if card.isVisible()]
+        layout = leaderboard_box.layout()
+        content_height = leaderboard_box.contentsRect().height()
+        if cards and layout is not None and content_height > 0:
+            layout.setContentsMargins(12, 8, 12, 8)
+            layout.setSpacing(8)
+            available_height = content_height - 16 - max(0, len(cards) - 1) * 8
+            target_height = max(62, min(74, available_height // len(cards)))
+            for card in cards:
+                if hasattr(card, "set_density"):
+                    try:
+                        card.set_density(True)
+                    except Exception:
+                        pass
+                card.setMinimumHeight(target_height)
+                card.setMaximumHeight(target_height)
+                card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+                card_layout = card.layout()
+                if card_layout is not None:
+                    card_layout.setContentsMargins(12, 10, 12, 10)
+                    card_layout.setSpacing(4)
+                for label_name, visible in (
+                    ("rank_label", True),
+                    ("status_label", True),
+                    ("name_label", True),
+                    ("metrics_label", True),
+                    ("strategy_label", False),
+                    ("reason_label", target_height >= 68),
+                    ("fund_label", False),
+                    ("flow_label", False),
+                ):
+                    label = getattr(card, label_name, None)
+                    if isinstance(label, QLabel):
+                        label.setVisible(visible)
+                        if visible:
+                            label.setMinimumHeight(0)
+                            label.setMaximumHeight(14 if label_name == "name_label" else 12)
+                            label.setWordWrap(True)
+                card.updateGeometry()
+            layout.invalidate()
+            layout.activate()
+
+    summary_box = self.findChild(QGroupBox, "overviewSummaryBox")
+    if isinstance(summary_box, QGroupBox):
+        cards = [card for card in summary_box.findChildren(QFrame, "compactSummaryCard") if card.isVisible()]
+        layout = summary_box.layout()
+        content_height = summary_box.contentsRect().height()
+        if cards and isinstance(layout, QGridLayout) and content_height > 0:
+            compact_overview = (self.width() or 1920) <= 1366 or (self.height() or 1080) <= 768
+            layout.setContentsMargins(14 if compact_overview else 12, 12 if compact_overview else 10, 14 if compact_overview else 12, 12 if compact_overview else 10)
+            layout.setHorizontalSpacing(12 if compact_overview else 10)
+            layout.setVerticalSpacing(12 if compact_overview else 10)
+            rows = 2 if len(cards) > 2 else 1
+            gap = 12 if compact_overview else 10
+            available_height = content_height - (24 if compact_overview else 20) - max(0, rows - 1) * gap
+            target_height = max(56, min(64 if compact_overview else 68, available_height // rows))
+            for card in cards:
+                if hasattr(card, "set_density"):
+                    try:
+                        card.set_density(True)
+                    except Exception:
+                        pass
+                card.setMinimumHeight(target_height)
+                card.setMaximumHeight(target_height)
+                card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+                accent_strip = getattr(card, "accent_strip", None)
+                if isinstance(accent_strip, QFrame):
+                    accent_strip.setMaximumHeight(4)
+                    accent_strip.setMinimumHeight(3)
+                card_layout = card.layout()
+                if card_layout is not None:
+                    card_layout.setContentsMargins(11 if compact_overview else 12, 9 if compact_overview else 10, 11 if compact_overview else 12, 9 if compact_overview else 10)
+                    card_layout.setSpacing(3 if compact_overview else 4)
+                for label_name, max_height in (
+                    ("title_label", 12),
+                    ("headline_label", 15 if compact_overview else 16),
+                    ("detail_label", 11 if compact_overview else 12),
+                ):
+                    label = getattr(card, label_name, None)
+                    if isinstance(label, QLabel):
+                        label.setMinimumHeight(0)
+                        label.setMaximumHeight(max_height)
+                        label.setWordWrap(True)
+                        if label_name == "detail_label":
+                            label.setVisible(True)
+                card.updateGeometry()
+            layout.invalidate()
+            layout.activate()
+
+    decision_box = self.findChild(QGroupBox, "decisionBox")
+    if isinstance(decision_box, QGroupBox):
+        content_rect = decision_box.contentsRect()
+        decision_text = getattr(self, "market_decision_text", None)
+        action_row = decision_box.findChild(QFrame, "overviewDecisionActionRow")
+        compact_overview = (self.width() or 1920) <= 1366 or (self.height() or 1080) <= 768
+        decision_layout = decision_box.layout()
+        if isinstance(decision_layout, QVBoxLayout):
+            decision_layout.setContentsMargins(14 if compact_overview else 12, 10 if compact_overview else 12, 14 if compact_overview else 12, 12 if compact_overview else 12)
+            decision_layout.setSpacing(6 if compact_overview else 8)
+        if isinstance(decision_text, QTextEdit):
+            target_height = max(96 if compact_overview else 104, min(118 if compact_overview else 126, content_rect.height() - (68 if compact_overview else 64)))
+            decision_text.setMinimumHeight(target_height)
+            decision_text.setMaximumHeight(target_height)
+            decision_text.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        if isinstance(action_row, QFrame):
+            action_row.setFrameShape(QFrame.NoFrame)
+            action_row.setLineWidth(0)
+            action_row.setMidLineWidth(0)
+            row_layout = action_row.layout()
+            if row_layout is not None:
+                row_layout.setContentsMargins(6 if compact_overview else 8, 0, 6 if compact_overview else 8, 0)
+                row_layout.setSpacing(6 if compact_overview else 8)
+            buttons = action_row.findChildren(QPushButton)
+            narrow_row = action_row.contentsRect().width() <= 220
+            compact_texts = ["交易执行", "推荐池"] if narrow_row else ["去看交易", "去看推荐"]
+            max_button_width = max(82, (max(action_row.contentsRect().width(), 180) - 18) // 2)
+            button_height = 24 if compact_overview else 26
+            action_row_height = button_height + 16
+            action_row.setMinimumHeight(action_row_height)
+            action_row.setMaximumHeight(action_row_height)
+            for index, button in enumerate(buttons[:2]):
+                full_text = str(button.property("_qh_full_text_v61") or button.text() or "").strip()
+                if not button.property("_qh_full_text_v61"):
+                    button.setProperty("_qh_full_text_v61", full_text)
+                button.setText(compact_texts[index] if index < len(compact_texts) else full_text)
+                button.setToolTip(full_text or button.text())
+                button.setMinimumHeight(button_height)
+                button.setMaximumHeight(button_height)
+                button.setMinimumWidth(0)
+                button.setMaximumWidth(max_button_width)
+                button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+    pool_box = self.findChild(QGroupBox, "opportunityPoolBox")
+    market_pool_table = getattr(self, "market_pool_table", None)
+    if isinstance(pool_box, QGroupBox) and isinstance(market_pool_table, QTableWidget):
+        content_rect = pool_box.contentsRect()
+        available_height = (content_rect.y() + content_rect.height()) - market_pool_table.geometry().y() - 6
+        compact_overview = (self.width() or 1920) <= 1366 or (self.height() or 1080) <= 768
+        minimum_height = 88 if (self.height() or 1080) <= 760 else 96
+        target_height = max(minimum_height, min(max(minimum_height, available_height - (10 if compact_overview else 6)), 150))
+        market_pool_table.setMinimumHeight(0)
+        market_pool_table.setMaximumHeight(16777215)
+        market_pool_table.setFixedHeight(target_height)
+        market_pool_table.resize(market_pool_table.width(), target_height)
+        market_pool_table.updateGeometry()
+        market_pool_table.verticalHeader().setDefaultSectionSize(44 if compact_overview else (48 if target_height <= 148 else 52))
+        pool_layout = pool_box.layout()
+        if isinstance(pool_layout, QVBoxLayout):
+            pool_layout.setContentsMargins(14 if compact_overview else 12, 10 if compact_overview else 12, 14 if compact_overview else 12, 10 if compact_overview else 12)
+            pool_layout.setSpacing(6 if compact_overview else 8)
+        if pool_layout is not None:
+            pool_layout.invalidate()
+            pool_layout.activate()
+
+    intraday_chart_view = getattr(self, "intraday_chart_view", None)
+    if isinstance(intraday_chart_view, QWidget):
+        parent = intraday_chart_view.parentWidget()
+        if isinstance(parent, QWidget):
+            available_height = parent.contentsRect().height()
+            if available_height > 0:
+                target_height = max(144, min(available_height, 176))
+                intraday_chart_view.setMinimumHeight(target_height)
+                intraday_chart_view.setMaximumHeight(target_height)
+
+
+_ORIGINAL_QH_APPLY_LAYOUT_POLISH_V61 = QuantHunterWindow._apply_layout_polish_v19
+
+
+def _qh_apply_layout_polish_v61(self: QuantHunterWindow) -> None:
+    _ORIGINAL_QH_APPLY_LAYOUT_POLISH_V61(self)
+    self._finalize_overview_band_heights_v61()
+    self._finalize_overview_cockpit_height_v61()
+    self._finalize_overview_analysis_density_v61()
+
+
+QuantHunterWindow._finalize_overview_band_heights_v61 = _qh_finalize_overview_band_heights_v61
+QuantHunterWindow._finalize_overview_cockpit_height_v61 = _qh_finalize_overview_cockpit_height_v61
+QuantHunterWindow._finalize_overview_analysis_density_v61 = _qh_finalize_overview_analysis_density_v61
+QuantHunterWindow._apply_layout_polish_v19 = _qh_apply_layout_polish_v61
+
+
+def _qh_finalize_compact_chrome_v62(self: QuantHunterWindow) -> None:
+    width = self.width() or 1920
+    height = self.height() or 1080
+    compact_mode = width <= 1440 or height <= 860
+    ultra_compact = width <= 1280 or height <= 760
+    if not compact_mode:
+        return
+
+    central = self.centralWidget()
+    if isinstance(central, QWidget):
+        layout = central.layout()
+        if isinstance(layout, QVBoxLayout):
+            layout.setContentsMargins(10 if ultra_compact else 12, 8, 10 if ultra_compact else 12, 10)
+            layout.setSpacing(8 if ultra_compact else 9)
+
+    shell_header = getattr(self, "shell_header", None)
+    if isinstance(shell_header, QFrame):
+        target_height = 72 if ultra_compact else 80
+        shell_header.setMinimumHeight(target_height)
+        shell_header.setMaximumHeight(target_height)
+        shell_header_layout = shell_header.layout()
+        if isinstance(shell_header_layout, QHBoxLayout):
+            shell_header_layout.setContentsMargins(10, 8, 10, 8)
+            shell_header_layout.setSpacing(8)
+
+    shell_pulse_bar = getattr(self, "shell_pulse_bar", None)
+    if isinstance(shell_pulse_bar, QFrame):
+        target_height = 34 if ultra_compact else 36
+        shell_pulse_bar.setMinimumHeight(target_height)
+        shell_pulse_bar.setMaximumHeight(target_height)
+        shell_pulse_layout = shell_pulse_bar.layout()
+        if isinstance(shell_pulse_layout, QHBoxLayout):
+            shell_pulse_layout.setContentsMargins(10, 5, 10, 5)
+            shell_pulse_layout.setSpacing(6)
+
+    for chip_name in (
+        "shell_workspace_chip",
+        "shell_focus_chip",
+        "shell_market_chip",
+        "shell_pipeline_chip",
+        "shell_refresh_chip",
+        "shell_runtime_chip",
+    ):
+        chip = getattr(self, chip_name, None)
+        if not isinstance(chip, dict):
+            continue
+        frame = chip.get("frame")
+        value_label = chip.get("value")
+        if isinstance(frame, QFrame):
+            frame.setMinimumHeight(38 if ultra_compact else 40)
+            frame.setMaximumHeight(42 if ultra_compact else 44)
+            inner = frame.layout()
+            if isinstance(inner, QVBoxLayout):
+                inner.setContentsMargins(8, 6, 8, 6)
+                inner.setSpacing(0)
+        if isinstance(value_label, QLabel):
+            value_label.setMinimumHeight(14)
+            value_label.setMaximumHeight(16)
+
+    startup_loading_frame = getattr(self, "startup_loading_frame", None)
+    if isinstance(startup_loading_frame, QFrame) and startup_loading_frame.isVisible():
+        target_height = 92 if ultra_compact else 108
+        startup_loading_frame.setMinimumHeight(target_height)
+        startup_loading_frame.setMaximumHeight(target_height)
+        startup_layout = startup_loading_frame.layout()
+        if isinstance(startup_layout, QVBoxLayout):
+            startup_layout.setContentsMargins(12, 8, 12, 8)
+            startup_layout.setSpacing(6)
+        startup_logo = getattr(self, "startup_loading_logo", None)
+        if isinstance(startup_logo, QLabel):
+            pixmap = startup_logo.pixmap()
+            if pixmap is not None:
+                scaled = pixmap.scaled(36 if ultra_compact else 40, 36 if ultra_compact else 40, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                startup_logo.setPixmap(scaled)
+            startup_logo.setMinimumSize(36 if ultra_compact else 40, 36 if ultra_compact else 40)
+            startup_logo.setMaximumSize(36 if ultra_compact else 40, 36 if ultra_compact else 40)
+        startup_meta = getattr(self, "startup_loading_meta", None)
+        if isinstance(startup_meta, QLabel):
+            startup_meta.setMaximumHeight(18)
+            startup_meta.setAlignment(Qt.AlignRight | Qt.AlignTop)
+        startup_progress = getattr(self, "startup_loading_progress", None)
+        if isinstance(startup_progress, QProgressBar):
+            startup_progress.setMaximumHeight(8)
+            startup_progress.setMinimumHeight(8)
+        for skeleton in getattr(self, "startup_loading_skeletons", []) or []:
+            if isinstance(skeleton, QLabel):
+                skeleton.setVisible(not ultra_compact)
+                skeleton.setMaximumHeight(14)
+
+    def _compact_label_text(label: QLabel | None, *, max_segments: int = 2, max_height: int = 40) -> None:
+        if not isinstance(label, QLabel):
+            return
+        full_text = str(label.toolTip() or label.text() or "").strip()
+        if not full_text:
+            return
+        if not label.property("_qh_full_text_v62"):
+            label.setProperty("_qh_full_text_v62", full_text)
+        full_text = str(label.property("_qh_full_text_v62") or full_text)
+        compact_text = full_text
+        if " | " in full_text:
+            segments = [segment.strip() for segment in full_text.split(" | ") if segment.strip()]
+            compact_text = " | ".join(segments[:max_segments]) if segments else full_text
+        elif "\n" in full_text:
+            compact_text = full_text.splitlines()[0].strip() or full_text
+        if label.text() != compact_text:
+            label.setText(compact_text)
+        label.setToolTip(full_text)
+        label.setMinimumHeight(0)
+        label.setMaximumHeight(max_height)
+        label.setWordWrap(True)
+
+    for attr_name in (
+        "overview_focus_banner",
+        "recommend_focus_banner",
+        "detail_focus_banner",
+        "scanner_focus_banner",
+        "board_focus_banner",
+        "broker_focus_banner",
+        "recommend_status_label",
+        "broker_status_banner",
+        "paper_trading_status_label",
+        "scanner_status_label",
+        "board_status_label",
+    ):
+        _compact_label_text(getattr(self, attr_name, None), max_segments=2 if ultra_compact else 3, max_height=38 if ultra_compact else 42)
+
+    recommend_empty_panel = self.findChild(QGroupBox, "emptyStatePanel")
+    if isinstance(recommend_empty_panel, QGroupBox):
+        content_height = recommend_empty_panel.contentsRect().height()
+        compact_buttons = content_height <= 196
+        for button in recommend_empty_panel.findChildren(QPushButton):
+            button.setMinimumHeight(38 if compact_buttons else 42)
+            button.setMaximumHeight(42 if compact_buttons else 46)
+            button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+
+    intraday_chart_view = getattr(self, "intraday_chart_view", None)
+    if isinstance(intraday_chart_view, QWidget):
+        parent = intraday_chart_view.parentWidget()
+        if isinstance(parent, QWidget):
+            available_height = parent.contentsRect().height()
+            if available_height > 0:
+                target_height = max(156 if ultra_compact else 168, min(available_height, 176 if compact_mode else 220))
+                intraday_chart_view.setMinimumHeight(target_height)
+                intraday_chart_view.setMaximumHeight(target_height)
+
+
+_ORIGINAL_QH_APPLY_LAYOUT_POLISH_V62 = QuantHunterWindow._apply_layout_polish_v19
+
+
+def _qh_apply_layout_polish_v62(self: QuantHunterWindow) -> None:
+    _ORIGINAL_QH_APPLY_LAYOUT_POLISH_V62(self)
+    self._finalize_compact_chrome_v62()
+
+
+QuantHunterWindow._finalize_compact_chrome_v62 = _qh_finalize_compact_chrome_v62
+QuantHunterWindow._apply_layout_polish_v19 = _qh_apply_layout_polish_v62
+
+
+def _qh_finalize_tail_regressions_v63(self: QuantHunterWindow) -> None:
+    def _compact_panel_label(label: QLabel | None, *, max_chars: int, max_height: int) -> None:
+        if not isinstance(label, QLabel):
+            return
+        full_text = str(label.toolTip() or label.text() or "").strip()
+        if not full_text:
+            return
+        if not label.property("_qh_full_text_empty_v63"):
+            label.setProperty("_qh_full_text_empty_v63", full_text)
+        full_text = str(label.property("_qh_full_text_empty_v63") or full_text)
+        compact_text = full_text
+        for separator in ("\n", "。", "，", " | "):
+            if separator in compact_text:
+                compact_text = compact_text.split(separator)[0].strip() or compact_text
+                break
+        if len(compact_text) > max_chars:
+            compact_text = compact_text[: max_chars - 1].rstrip() + "…"
+        if label.text() != compact_text:
+            label.setText(compact_text)
+        label.setToolTip(full_text)
+        label.setMinimumHeight(0)
+        label.setMaximumHeight(max_height)
+        label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        label.setWordWrap(True)
+
+    def _compact_hint_label(label: QLabel | None, *, max_chars: int, max_height: int, keep_segments: int = 1) -> None:
+        if not isinstance(label, QLabel) or not label.isVisible():
+            return
+        full_text = str(label.toolTip() or label.text() or "").strip()
+        if not full_text:
+            return
+        if not label.property("_qh_full_hint_text_v64"):
+            label.setProperty("_qh_full_hint_text_v64", full_text)
+        full_text = str(label.property("_qh_full_hint_text_v64") or full_text)
+        compact_text = full_text
+        if " | " in compact_text:
+            parts = [part.strip() for part in compact_text.split(" | ") if part.strip()]
+            if parts:
+                compact_text = " | ".join(parts[:keep_segments])
+        for separator in ("\n", "。", "，"):
+            if separator in compact_text:
+                compact_text = compact_text.split(separator)[0].strip() or compact_text
+                break
+        if len(compact_text) > max_chars:
+            compact_text = compact_text[: max_chars - 1].rstrip() + "…"
+        if label.text() != compact_text:
+            label.setText(compact_text)
+        label.setToolTip(full_text)
+        label.setMaximumHeight(max_height)
+        label.setWordWrap(True)
+
+    def _configure_compact_tabs(tab_widget: QTabWidget | None, *, compact: bool) -> None:
+        if not isinstance(tab_widget, QTabWidget) or not tab_widget.isVisible():
+            return
+        bar = tab_widget.tabBar()
+        if bar is None:
+            return
+        bar.setUsesScrollButtons(False)
+        bar.setDocumentMode(True)
+        bar.setElideMode(Qt.ElideRight)
+        bar.setExpanding(True)
+        available_width = max(tab_widget.width(), bar.width(), 0)
+        ultra_narrow = compact and available_width <= 360
+        short_label_map = {
+            "主题摘要": "主线",
+            "资金画像": "资金",
+            "交易决策": "决策",
+            "交易执行": "执行",
+            "策略研究": "策略",
+            "复盘跟踪": "复盘",
+            "执行": "执行",
+            "策略": "策略",
+            "复盘": "复盘",
+            "日线主图": "日线",
+            "分时快照": "分时",
+            "资金强度": "资金",
+            "动量节奏": "动量",
+            "指标副图": "指标",
+            "周期窗口": "周期",
+            "图层导航": "图层",
+            "今天能不能买": "买点",
+            "风险何时来": "风险",
+            "消息面跟踪": "消息",
+        }
+        for index in range(tab_widget.count()):
+            page = tab_widget.widget(index)
+            current_text = tab_widget.tabText(index)
+            if isinstance(page, QWidget) and not page.property("_qh_full_tab_text_v63"):
+                page.setProperty("_qh_full_tab_text_v63", current_text)
+            full_text = str(page.property("_qh_full_tab_text_v63")) if isinstance(page, QWidget) and page.property("_qh_full_tab_text_v63") else current_text
+            target_text = short_label_map.get(full_text, full_text) if ultra_narrow else full_text
+            if tab_widget.tabText(index) != target_text:
+                tab_widget.setTabText(index, target_text)
+            try:
+                bar.setTabToolTip(index, full_text)
+            except Exception:
+                pass
+
+    def _soften_action_row(row_name: str, *, compact: bool) -> None:
+        row = self.findChild(QFrame, row_name)
+        if not isinstance(row, QFrame) or not row.isVisible():
+            return
+        row_layout = row.layout()
+        buttons = [button for button in row.findChildren(QPushButton) if button.isVisible()]
+        grid_host = getattr(row, "_qh_grid_host_v34", None)
+        grid_layout = getattr(row, "_qh_grid_layout_v34", None)
+        if row_layout is not None:
+            row_layout.setContentsMargins(7 if compact else 10, 0 if compact else 2, 7 if compact else 10, 0 if compact else 2)
+            row_layout.setSpacing(6 if compact else 10)
+        if not buttons:
+            return
+        button_height = 34 if compact else 38
+        gap = 6 if compact else 10
+        ultra_narrow = compact and row.width() <= 360
+        compact_text_map = {
+            "查看推荐池": "看机会",
+            "查看推荐": "看机会",
+            "前往交易执行": "去交易",
+            "去交易页": "去交易",
+            "查看扫描": "看扫描",
+            "查看指标扫描": "看扫描",
+            "指标看扫描": "看扫描",
+            "回到总览": "看总览",
+        }
+        row_count = 1
+        if isinstance(grid_layout, QGridLayout) and grid_layout.count() > 0:
+            max_row = 0
+            for index in range(grid_layout.count()):
+                item = grid_layout.itemAt(index)
+                if item is None:
+                    continue
+                item_row, _, row_span, _ = grid_layout.getItemPosition(index)
+                max_row = max(max_row, item_row + max(1, row_span) - 1)
+            row_count = max_row + 1
+        elif compact and row.width() <= 420:
+            row_count = len(buttons)
+        if isinstance(grid_host, QWidget):
+            target_host_height = row_count * button_height + max(0, row_count - 1) * gap
+            grid_host.setMinimumHeight(target_host_height)
+            grid_host.setMaximumHeight(target_host_height)
+            grid_host.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        if isinstance(grid_layout, QGridLayout):
+            grid_layout.setHorizontalSpacing(gap)
+            grid_layout.setVerticalSpacing(gap)
+            grid_layout.invalidate()
+            grid_layout.activate()
+        chrome_height = max(0, row.height() - row.contentsRect().height())
+        if chrome_height <= 0:
+            chrome_height = 14 if compact else 10
+        target_height = row_count * button_height + max(0, row_count - 1) * gap + chrome_height
+        row.setMinimumHeight(target_height)
+        row.setMaximumHeight(target_height)
+        for button in buttons:
+            full_text = str(button.property("_qh_full_text_action_v64") or button.text() or "").strip()
+            if full_text and not button.property("_qh_full_text_action_v64"):
+                button.setProperty("_qh_full_text_action_v64", full_text)
+            if compact:
+                target_text = compact_text_map.get(full_text, full_text)
+                if ultra_narrow and len(target_text) > 5:
+                    target_text = target_text[:4] + "…"
+                if target_text and button.text() != target_text:
+                    button.setText(target_text)
+                if full_text:
+                    button.setToolTip(full_text)
+                if ultra_narrow and len(target_text) > 5:
+                    compact_text = target_text[:4] + "..."
+                    if button.text() != compact_text:
+                        button.setText(compact_text)
+            button.setMinimumHeight(button_height)
+            button.setMaximumHeight(button_height)
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            button.updateGeometry()
+        if row_layout is not None:
+            row_layout.invalidate()
+            row_layout.activate()
+
+    recommend_empty_panel = self.findChild(QGroupBox, "emptyStatePanel")
+    if isinstance(recommend_empty_panel, QGroupBox):
+        content_height = recommend_empty_panel.contentsRect().height()
+        compact_panel = self.height() <= 920 or content_height <= 166
+        button_height = 32 if compact_panel else (34 if content_height <= 196 else 38)
+        panel_layout = recommend_empty_panel.layout()
+        if isinstance(panel_layout, QVBoxLayout):
+            panel_layout.setContentsMargins(10 if compact_panel else 12, 6 if compact_panel else 8, 10 if compact_panel else 12, 6 if compact_panel else 8)
+            panel_layout.setSpacing(2 if compact_panel else 4)
+        _compact_panel_label(getattr(self, "recommend_status_label", None), max_chars=30 if compact_panel else 42, max_height=34 if compact_panel else 40)
+        _compact_panel_label(getattr(self, "recommend_empty_title", None), max_chars=14 if compact_panel else 20, max_height=24 if compact_panel else 28)
+        _compact_panel_label(getattr(self, "recommend_empty_hint", None), max_chars=22 if compact_panel else 34, max_height=22 if compact_panel else 28)
+        _compact_panel_label(getattr(self, "recommend_empty_meta", None), max_chars=24 if compact_panel else 38, max_height=22 if compact_panel else 28)
+        action_row = getattr(self, "recommend_empty_action_row", None)
+        if isinstance(action_row, QHBoxLayout):
+            action_row.setContentsMargins(0, 0, 0, 0)
+            action_row.setSpacing(6 if compact_panel else 8)
+        for button in recommend_empty_panel.findChildren(QPushButton):
+            button.setMinimumHeight(0)
+            button.setMaximumHeight(16777215)
+            button.setFixedHeight(button_height)
+            button.setMinimumWidth(0)
+            button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            button.updateGeometry()
+        if isinstance(panel_layout, QVBoxLayout):
+            panel_layout.invalidate()
+            panel_layout.activate()
+
+    compact_tabs = self.height() <= 920 or self.width() <= 1366
+    for attr_name in _overview_priority_tab_attrs_v60():
+        _configure_compact_tabs(getattr(self, attr_name, None), compact=compact_tabs)
+
+    compact_workspace = self.height() <= 920 or self.width() <= 1366
+    scanner_root = getattr(self, "scanner_tab", None)
+    if isinstance(scanner_root, QWidget):
+        tool_box = scanner_root.findChild(QGroupBox, "workspaceToolPanel")
+        if isinstance(tool_box, QGroupBox):
+            tool_layout = tool_box.layout()
+            if isinstance(tool_layout, QGridLayout):
+                tool_layout.setContentsMargins(12 if compact_workspace else 14, 10 if compact_workspace else 12, 12 if compact_workspace else 14, 10 if compact_workspace else 12)
+                tool_layout.setHorizontalSpacing(12 if compact_workspace else 16)
+                tool_layout.setVerticalSpacing(8 if compact_workspace else 10)
+            for button in tool_box.findChildren(QPushButton):
+                if button.parentWidget() is tool_box or button.parentWidget() in tool_box.findChildren(QWidget):
+                    button.setMinimumHeight(40 if compact_workspace else 44)
+                    button.setMaximumHeight(40 if compact_workspace else 46)
+            for checkbox in tool_box.findChildren(QCheckBox):
+                checkbox.setMinimumHeight(30 if compact_workspace else 34)
+            interval_input = scanner_root.findChild(QLineEdit, "intervalInput")
+            if isinstance(interval_input, QLineEdit):
+                interval_input.setMinimumHeight(34 if compact_workspace else 38)
+                interval_input.setMaximumHeight(34 if compact_workspace else 38)
+            for panel_name in ("scannerInfoPanel", "scannerLiveSummaryPanel"):
+                panel = scanner_root.findChild(QFrame, panel_name)
+                if not isinstance(panel, QFrame):
+                    continue
+                panel_layout = panel.layout()
+                if isinstance(panel_layout, QVBoxLayout):
+                    panel_layout.setContentsMargins(10 if compact_workspace else 12, 8 if compact_workspace else 10, 10 if compact_workspace else 12, 8 if compact_workspace else 10)
+                    panel_layout.setSpacing(4 if compact_workspace else 5)
+                for label in panel.findChildren(QLabel):
+                    if not label.isVisible():
+                        continue
+                    label.setMaximumHeight(48 if panel_name == "scannerLiveSummaryPanel" else 40)
+                    label.setWordWrap(True)
+
+    broker_root = getattr(self, "broker_tab", None)
+    if isinstance(broker_root, QWidget):
+        experiment_box = broker_root.findChild(QGroupBox, "paperExperimentPanel")
+        if isinstance(experiment_box, QGroupBox):
+            experiment_layout = experiment_box.layout()
+            if isinstance(experiment_layout, QVBoxLayout):
+                experiment_layout.setContentsMargins(10 if compact_workspace else 12, 8 if compact_workspace else 10, 10 if compact_workspace else 12, 8 if compact_workspace else 10)
+                experiment_layout.setSpacing(4 if compact_workspace else 6)
+            experiment_hint = experiment_box.findChild(QLabel, "inlineHint")
+            if isinstance(experiment_hint, QLabel):
+                experiment_hint.setMaximumHeight(28 if compact_workspace else 32)
+            experiment_text = getattr(self, "paper_experiment_text", None)
+            if isinstance(experiment_text, QTextEdit):
+                experiment_text.setMinimumHeight(168 if compact_workspace else 192)
+                experiment_text.setMaximumHeight(188 if compact_workspace else 200)
+        settings_panel = broker_root.findChild(QFrame, "paperSettingsPanel")
+        if isinstance(settings_panel, QFrame):
+            settings_layout = settings_panel.layout()
+            if isinstance(settings_layout, QVBoxLayout):
+                settings_layout.setContentsMargins(10 if compact_workspace else 12, 8 if compact_workspace else 10, 10 if compact_workspace else 12, 8 if compact_workspace else 10)
+                settings_layout.setSpacing(8 if compact_workspace else 10)
+            settings_grid = getattr(self, "paper_settings_grid", None)
+            if isinstance(settings_grid, QGridLayout):
+                settings_grid.setHorizontalSpacing(8 if compact_workspace else 10)
+                settings_grid.setVerticalSpacing(6 if compact_workspace else 8)
+            for widget in settings_panel.findChildren(QLineEdit):
+                widget.setMinimumHeight(34 if compact_workspace else 38)
+            for widget in settings_panel.findChildren(QCheckBox):
+                widget.setMinimumHeight(30 if compact_workspace else 34)
+
+    detail_root = getattr(self, "detail_tab", None)
+    if isinstance(detail_root, QWidget):
+        tool_box = detail_root.findChild(QGroupBox, "workspaceToolPanel")
+        if isinstance(tool_box, QGroupBox):
+            tool_layout = tool_box.layout()
+            if isinstance(tool_layout, QGridLayout):
+                tool_layout.setContentsMargins(12 if compact_workspace else 14, 10 if compact_workspace else 12, 12 if compact_workspace else 14, 10 if compact_workspace else 12)
+                tool_layout.setHorizontalSpacing(12 if compact_workspace else 16)
+                tool_layout.setVerticalSpacing(8 if compact_workspace else 10)
+            for button in tool_box.findChildren(QPushButton):
+                button.setMinimumHeight(40 if compact_workspace else 44)
+                button.setMaximumHeight(40 if compact_workspace else 46)
+            for label in tool_box.findChildren(QLabel):
+                if not label.isVisible():
+                    continue
+                if label.objectName() == "inlineHint":
+                    label.setMaximumHeight(40 if compact_workspace else 48)
+                    label.setWordWrap(True)
+            for panel_name in ("detailHintPanel", "detailLiveSummaryPanel"):
+                panel = detail_root.findChild(QFrame, panel_name)
+                if not isinstance(panel, QFrame):
+                    continue
+                panel_layout = panel.layout()
+                if isinstance(panel_layout, QVBoxLayout):
+                    panel_layout.setContentsMargins(10 if compact_workspace else 12, 8 if compact_workspace else 10, 10 if compact_workspace else 12, 8 if compact_workspace else 10)
+                    panel_layout.setSpacing(4 if compact_workspace else 5)
+                for label in panel.findChildren(QLabel):
+                    if not label.isVisible():
+                        continue
+                    if label.objectName() in {"inlineHint", "workspaceSummaryHeadline"}:
+                        label.setMaximumHeight(42 if compact_workspace else 48)
+                        label.setWordWrap(True)
+                if compact_workspace and panel_name == "detailHintPanel":
+                    _compact_hint_label(panel.findChild(QLabel, "inlineHint"), max_chars=28, max_height=36)
+                if compact_workspace and panel_name == "detailLiveSummaryPanel":
+                    hint_labels = [label for label in panel.findChildren(QLabel, "inlineHint") if label.isVisible()]
+                    for index, label in enumerate(hint_labels):
+                        _compact_hint_label(label, max_chars=26 if index == 0 else 30, max_height=30 if index == 0 else 36, keep_segments=2 if index == 0 else 1)
+
+    board_root = getattr(self, "board_tab", None)
+    if isinstance(board_root, QWidget):
+        tool_box = board_root.findChild(QGroupBox, "workspaceToolPanel")
+        if isinstance(tool_box, QGroupBox):
+            tool_layout = tool_box.layout()
+            if isinstance(tool_layout, QGridLayout):
+                tool_layout.setContentsMargins(12 if compact_workspace else 14, 10 if compact_workspace else 12, 12 if compact_workspace else 14, 10 if compact_workspace else 12)
+                tool_layout.setHorizontalSpacing(12 if compact_workspace else 16)
+                tool_layout.setVerticalSpacing(8 if compact_workspace else 10)
+            for button in tool_box.findChildren(QPushButton):
+                button.setMinimumHeight(40 if compact_workspace else 44)
+                button.setMaximumHeight(40 if compact_workspace else 46)
+            for checkbox in tool_box.findChildren(QCheckBox):
+                checkbox.setMinimumHeight(30 if compact_workspace else 32)
+            for panel_name in ("boardMetaPanel", "boardLiveSummaryPanel"):
+                panel = board_root.findChild(QFrame, panel_name)
+                if not isinstance(panel, QFrame):
+                    continue
+                panel_layout = panel.layout()
+                if isinstance(panel_layout, QVBoxLayout):
+                    panel_layout.setContentsMargins(10 if compact_workspace else 12, 8 if compact_workspace else 10, 10 if compact_workspace else 12, 8 if compact_workspace else 10)
+                    panel_layout.setSpacing(4 if compact_workspace else 5)
+                for label in panel.findChildren(QLabel):
+                    if not label.isVisible():
+                        continue
+                    label.setMaximumHeight(42 if compact_workspace else 48)
+                    label.setWordWrap(True)
+                if compact_workspace and panel_name == "boardMetaPanel":
+                    labels = [label for label in panel.findChildren(QLabel) if label.isVisible()]
+                    for label in labels:
+                        _compact_hint_label(label, max_chars=28, max_height=36)
+                if compact_workspace and panel_name == "boardLiveSummaryPanel":
+                    hint_labels = [label for label in panel.findChildren(QLabel, "inlineHint") if label.isVisible()]
+                    for index, label in enumerate(hint_labels):
+                        _compact_hint_label(label, max_chars=26 if index == 0 else 20, max_height=30, keep_segments=2 if index == 0 else 1)
+
+    for chart_name in ("intraday_chart_view", "daily_chart_view"):
+        chart = getattr(self, chart_name, None)
+        if not isinstance(chart, QWidget) or not chart.isVisible():
+            continue
+        parent = chart.parentWidget()
+        if not isinstance(parent, QWidget):
+            continue
+        parent_rect = parent.contentsRect()
+        available_height = max(0, parent_rect.height() - (2 if chart.objectName() == "marketChartPanel" else 0))
+        if available_height <= 0:
+            continue
+        compact_overview = (self.width() or 1920) <= 1366 or (self.height() or 1080) <= 768
+        target_height = min(168 if self.height() <= 900 else 220, max(120, available_height - (10 if compact_overview else 6)))
+        chart.setMinimumHeight(0)
+        chart.setMaximumHeight(16777215)
+        chart.setFixedHeight(target_height)
+        chart.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        chart.resize(chart.width(), target_height)
+        chart.updateGeometry()
+        parent_layout = parent.layout()
+        if parent_layout is not None:
+            parent_layout.invalidate()
+            parent_layout.activate()
+
+    for row_name in ("overviewThemeActionRow", "overviewCapitalActionRow"):
+        row = self.findChild(QWidget, row_name)
+        if not isinstance(row, QWidget):
+            continue
+        content_width = row.contentsRect().width()
+        content_height = row.contentsRect().height()
+        compact_buttons = content_width <= 220
+        button_width = max(72, (content_width - 22) // 2) if compact_buttons else None
+        button_height = max(34, min(38, content_height - 10))
+        for button in row.findChildren(QPushButton):
+            button.setMinimumHeight(0)
+            button.setMaximumHeight(16777215)
+            button.setFixedHeight(button_height)
+            button.setMinimumWidth(0)
+            if button_width is not None:
+                button.setMaximumWidth(button_width)
+            button.updateGeometry()
+
+    compact_rows = self.height() <= 920 or self.width() <= 1366
+    for row_name in (
+        "boardCandidateActionRow",
+        "boardMonitorActionRow",
+        "brokerGateActionRow",
+        "brokerExecutionActionRow",
+        "paperActionRow",
+        "detailConclusionActionRow",
+        "detailExecutionActionRow",
+        "detailDecisionActionRow",
+        "detailMetricsActionRow",
+        "scannerTopActionRow",
+    ):
+        _soften_action_row(row_name, compact=compact_rows)
+
+
+_ORIGINAL_QH_APPLY_LAYOUT_POLISH_V63 = QuantHunterWindow._apply_layout_polish_v19
+
+
+def _qh_apply_layout_polish_v63(self: QuantHunterWindow) -> None:
+    _ORIGINAL_QH_APPLY_LAYOUT_POLISH_V63(self)
+    self._finalize_tail_regressions_v63()
+
+
+QuantHunterWindow._finalize_tail_regressions_v63 = _qh_finalize_tail_regressions_v63
+QuantHunterWindow._apply_layout_polish_v19 = _qh_apply_layout_polish_v63
+
+
+def _qh_merge_widget_style_marker_v64(widget: QWidget | None, marker: str, directive: str) -> None:
+    if not isinstance(widget, QWidget):
+        return
+    start_token = f"/* {marker}:start */"
+    end_token = f"/* {marker}:end */"
+    current = widget.styleSheet() or ""
+    if start_token in current and end_token in current:
+        prefix, remainder = current.split(start_token, 1)
+        _, suffix = remainder.split(end_token, 1)
+        current = (prefix.rstrip() + " " + suffix.lstrip()).strip()
+    block = f"{start_token} {directive.strip()} {end_token}"
+    widget.setStyleSheet((current + " " + block).strip())
+
+
+def _qh_apply_institutional_ui_system_v64(self: QuantHunterWindow) -> None:
+    compact_mode = (self.width() or 1920) <= 1366 or (self.height() or 1080) <= 820
+    dense_mode = compact_mode or (self.width() or 1920) <= 1600 or (self.height() or 1080) <= 900
+    button_height = 34 if dense_mode else 36
+    input_height = 34 if dense_mode else 36
+    block_radius = 16 if compact_mode else 18
+    block_padding_h = 12 if compact_mode else 14
+    block_padding_top = 14 if compact_mode else 16
+    block_padding_bottom = 10 if compact_mode else 12
+    group_margin_top = 14 if compact_mode else 16
+    title_size = 12 if compact_mode else 13
+    body_size = 11 if compact_mode else 12
+    lead_size = 14 if compact_mode else 15
+    hero_size = 19 if compact_mode else 21
+    hero_subtitle_size = 11 if compact_mode else 12
+    badge_size = 14 if compact_mode else 15
+    top_badge_size = 11 if compact_mode else 12
+    shell_title_size = 17 if compact_mode else 18
+    shell_value_size = 12 if compact_mode else 13
+    shell_label_size = 10 if compact_mode else 11
+    shell_subtitle_size = 10 if compact_mode else 11
+    shell_header_radius = 20 if dense_mode else 22
+    shell_chip_radius = 14 if dense_mode else 16
+
+    start_token = "/* institutional-ui-v64:start */"
+    end_token = "/* institutional-ui-v64:end */"
+    base_style = self.styleSheet() or ""
+    if start_token in base_style and end_token in base_style:
+        prefix, remainder = base_style.split(start_token, 1)
+        _, suffix = remainder.split(end_token, 1)
+        base_style = (prefix.rstrip() + "\n" + suffix.lstrip()).strip()
+    override = f"""
+{start_token}
+QWidget {{
+    font-family: "Segoe UI", "Microsoft YaHei UI", "PingFang SC";
+}}
+QGroupBox {{
+    border-radius: {block_radius}px;
+    margin-top: {group_margin_top}px;
+    padding: {block_padding_top}px {block_padding_h}px {block_padding_bottom}px {block_padding_h}px;
+}}
+QGroupBox::title {{
+    left: 12px;
+    padding: 0 6px;
+    font-size: {title_size}px;
+    font-weight: 900;
+    letter-spacing: 0.2px;
+}}
+QPushButton {{
+    min-height: {button_height}px;
+    max-height: {button_height}px;
+    border-radius: {11 if compact_mode else 12}px;
+    padding: 0px {12 if compact_mode else 14}px;
+    font-size: {body_size}px;
+    font-weight: 800;
+}}
+QLineEdit,
+QComboBox,
+QListWidget,
+QTextEdit,
+QTableWidget {{
+    font-size: {body_size}px;
+}}
+QHeaderView::section {{
+    padding: {8 if compact_mode else 10}px {8 if compact_mode else 10}px;
+    font-size: {body_size}px;
+    font-weight: 800;
+}}
+QLabel#heroTitle,
+QLabel#workspaceTitle {{
+    font-size: {hero_size}px;
+    font-weight: 900;
+}}
+QLabel#workspaceSummaryHeadline,
+QLabel#metricValue,
+QLabel#metricCardValue {{
+    font-size: {lead_size}px;
+    font-weight: 800;
+}}
+QLabel#workspaceBadgeValue {{
+    font-size: {badge_size}px;
+    font-weight: 800;
+}}
+QLabel#sectionTitle {{
+    font-size: {title_size}px;
+    font-weight: 900;
+}}
+QLabel#heroSubtitle,
+QLabel#workspaceSubtitle {{
+    font-size: {hero_subtitle_size}px;
+    font-weight: 600;
+}}
+QLabel#inlineHint,
+QLabel#metricCaption,
+QLabel#workspaceBadgeCaption,
+QLabel#emptyStateHint,
+QLabel#emptyStateMeta {{
+    font-size: {body_size}px;
+    font-weight: 600;
+}}
+QLabel#topBadge,
+QLabel#statusBanner,
+QLabel#focusStateLabel,
+QLabel#workspaceFocusBanner {{
+    font-size: {top_badge_size}px;
+    font-weight: 800;
+}}
+QLabel#shellProductTitle {{
+    font-size: {shell_title_size}px;
+    font-weight: 900;
+    letter-spacing: 0.2px;
+}}
+QLabel#shellProductSubtitle,
+QLabel#shellPulseHint,
+QLabel#shellPulseMeta {{
+    font-size: {shell_subtitle_size}px;
+    font-weight: 600;
+    color: #96aabd;
+}}
+QLabel#shellPulseLabel,
+QLabel#shellChipValue {{
+    font-size: {shell_value_size}px;
+    font-weight: 800;
+}}
+QLabel#shellChipLabel,
+QLabel#shellProductEyebrow {{
+    font-size: {shell_label_size}px;
+    font-weight: 700;
+    color: #8ea2b6;
+}}
+QTabBar::tab {{
+    min-height: {32 if dense_mode else 34}px;
+    padding: 0 {12 if dense_mode else 14}px;
+    border-radius: {11 if dense_mode else 12}px;
+    font-size: {body_size}px;
+    font-weight: 700;
+}}
+QFrame#shellHeader {{
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(17, 24, 33, 0.97), stop:0.58 rgba(13, 18, 25, 0.97), stop:1 rgba(10, 14, 20, 0.98));
+    border: 1px solid rgba(103, 126, 149, 0.16);
+    border-radius: {shell_header_radius}px;
+}}
+QFrame#shellPulseBar {{
+    background: rgba(13, 18, 25, 0.88);
+    border: 1px solid rgba(103, 126, 149, 0.12);
+    border-radius: {shell_chip_radius}px;
+}}
+QFrame#shellChip {{
+    background: rgba(11, 16, 22, 0.84);
+    border: 1px solid rgba(103, 126, 149, 0.12);
+    border-radius: {shell_chip_radius}px;
+}}
+QFrame#shellChip:hover,
+QFrame#shellPulseBar:hover {{
+    border-color: rgba(132, 176, 228, 0.18);
+}}
+QFrame#workspaceHero {{
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(21, 30, 40, 0.98), stop:0.48 rgba(16, 22, 30, 0.98), stop:1 rgba(12, 17, 24, 0.99));
+    border: 1px solid rgba(120, 144, 170, 0.16);
+    border-radius: {22 if dense_mode else 24}px;
+}}
+QFrame#workspaceHeroAccent {{
+    border-radius: 2px;
+    margin-right: 2px;
+}}
+QFrame#workspaceBadgeRail {{
+    background: rgba(15, 21, 29, 0.34);
+    border: 1px solid rgba(116, 136, 159, 0.10);
+    border-radius: {16 if dense_mode else 18}px;
+}}
+QFrame#workspaceBadge {{
+    background: rgba(10, 15, 21, 0.64);
+    border: 1px solid rgba(121, 141, 165, 0.10);
+    border-radius: {14 if dense_mode else 16}px;
+}}
+QFrame#workspaceBadge,
+QFrame#metricCard,
+QFrame#authEntryCard,
+QFrame#scannerInfoPanel,
+QFrame#boardMetaPanel,
+QFrame#detailHintPanel,
+QFrame#riskSnapshotCard,
+QFrame#paperSettingsPanel,
+QFrame#paperMetricsPanel,
+QFrame#scannerLiveSummaryPanel,
+QFrame#boardLiveSummaryPanel,
+QFrame#detailLiveSummaryPanel,
+QFrame#configLiveSummaryPanel,
+QGroupBox#workspaceToolPanel,
+QGroupBox#configToolPanel,
+QGroupBox#paperExperimentPanel,
+QGroupBox[surfaceRole="metric-band"],
+QGroupBox[surfaceRole="priority-rail"],
+QGroupBox[surfaceRole="analysis"] {{
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(20, 28, 37, 0.97), stop:0.55 rgba(15, 21, 29, 0.98), stop:1 rgba(12, 17, 24, 0.99));
+    border: 1px solid rgba(108, 127, 149, 0.12);
+}}
+QGroupBox[surfaceRole="spotlight"] {{
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(24, 35, 47, 0.99), stop:0.48 rgba(16, 24, 34, 0.99), stop:1 rgba(11, 17, 24, 0.99));
+    border: 1px solid rgba(132, 183, 238, 0.18);
+}}
+QFrame#metricCard:hover,
+QFrame#authEntryCard:hover,
+QFrame#scannerInfoPanel:hover,
+QFrame#boardMetaPanel:hover,
+QFrame#detailHintPanel:hover,
+QFrame#riskSnapshotCard:hover,
+QFrame#paperSettingsPanel:hover,
+QFrame#paperMetricsPanel:hover,
+QFrame#scannerLiveSummaryPanel:hover,
+QFrame#boardLiveSummaryPanel:hover,
+QFrame#detailLiveSummaryPanel:hover,
+QFrame#configLiveSummaryPanel:hover,
+QGroupBox#workspaceToolPanel:hover,
+QGroupBox[surfaceRole="spotlight"]:hover {{
+    border-color: rgba(141, 191, 246, 0.18);
+}}
+QFrame[actionRow="true"] {{
+    background: transparent;
+    border: none;
+}}
+QLineEdit,
+QComboBox,
+QListWidget,
+QTextEdit,
+QTableWidget {{
+    background: rgba(10, 15, 21, 0.98);
+    border: 1px solid rgba(108, 127, 149, 0.14);
+    border-radius: {14 if dense_mode else 16}px;
+    padding: {8 if dense_mode else 10}px {10 if dense_mode else 12}px;
+}}
+QTextEdit#marketNotePanel,
+QTextEdit#terminalConsole {{
+    background: rgba(11, 17, 24, 0.985);
+    border-color: rgba(110, 129, 151, 0.15);
+    border-radius: {16 if dense_mode else 18}px;
+    padding: {10 if dense_mode else 12}px {12 if dense_mode else 14}px;
+}}
+QLabel#statusBanner,
+QLabel#focusStateLabel,
+QLabel#workspaceFocusBanner {{
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(24, 34, 45, 0.94), stop:1 rgba(15, 22, 30, 0.90));
+    border: 1px solid rgba(121, 141, 165, 0.14);
+    border-left: 3px solid rgba(143, 196, 255, 0.82);
+    border-radius: {12 if dense_mode else 14}px;
+    padding: {8 if dense_mode else 10}px {12 if dense_mode else 14}px;
+}}
+QLabel#workspaceHeroStamp,
+QLabel#topBadge {{
+    border-radius: 10px;
+    padding: 3px 8px;
+}}
+QLabel#workspaceEyebrow,
+QLabel#sectionTitle,
+QGroupBox::title {{
+    color: #dbe6f2;
+}}
+QLabel#workspaceEyebrow {{
+    font-size: {10 if dense_mode else 11}px;
+    font-weight: 800;
+    letter-spacing: 0.9px;
+}}
+QLabel#workspaceTitle {{
+    letter-spacing: 0.2px;
+}}
+QLabel#workspaceSubtitle,
+QLabel#heroSubtitle,
+QLabel#inlineHint,
+QLabel#metricCaption,
+QLabel#workspaceBadgeCaption {{
+    color: #9fb2c6;
+}}
+QFrame#overviewThemeActionRow QPushButton,
+QFrame#overviewCapitalActionRow QPushButton,
+QFrame#overviewDecisionActionRow QPushButton,
+QFrame#brokerGateActionRow QPushButton,
+QFrame#brokerExecutionActionRow QPushButton,
+QFrame#paperActionRow QPushButton,
+QFrame#detailConclusionActionRow QPushButton,
+QFrame#detailExecutionActionRow QPushButton,
+QFrame#detailDecisionActionRow QPushButton,
+QFrame#detailMetricsActionRow QPushButton,
+QFrame#scannerTopActionRow QPushButton,
+QFrame#boardCandidateActionRow QPushButton,
+QFrame#boardMonitorActionRow QPushButton,
+QGroupBox#emptyStatePanel QPushButton {{
+    min-height: {button_height}px;
+    max-height: {button_height}px;
+    padding-top: 0px;
+    padding-bottom: 0px;
+}}
+{end_token}
+"""
+    self.setStyleSheet((base_style + "\n" + override.strip()).strip())
+
+    def _apply_font_rule(object_name: str, size: int, weight: int, min_height: int) -> None:
+        directive = f"background: transparent; font-size: {size}px; font-weight: {weight};"
+        for label in self.findChildren(QLabel, object_name):
+            _qh_merge_widget_style_marker_v64(label, f"institutional-label-{object_name}", directive)
+            label.setMinimumHeight(max(label.minimumHeight(), min_height))
+            label.setWordWrap(True)
+
+    for object_name, size, weight, min_height in (
+        ("heroTitle", hero_size, 900, 26 if compact_mode else 30),
+        ("workspaceTitle", hero_size, 900, 24 if compact_mode else 28),
+        ("workspaceSummaryHeadline", lead_size, 800, 22 if compact_mode else 24),
+        ("metricValue", lead_size + 2, 900, 24 if compact_mode else 28),
+        ("metricCardValue", lead_size + 2, 900, 24 if compact_mode else 28),
+        ("workspaceBadgeValue", badge_size, 800, 20 if compact_mode else 22),
+        ("sectionTitle", title_size, 900, 20 if compact_mode else 22),
+        ("heroSubtitle", hero_subtitle_size, 600, 18 if compact_mode else 20),
+        ("workspaceSubtitle", hero_subtitle_size, 600, 18 if compact_mode else 20),
+        ("inlineHint", body_size, 600, 18 if compact_mode else 20),
+        ("metricCaption", body_size, 600, 18 if compact_mode else 20),
+        ("workspaceBadgeCaption", body_size, 600, 18 if compact_mode else 20),
+        ("emptyStateHint", body_size, 600, 20 if compact_mode else 22),
+        ("emptyStateMeta", body_size, 600, 20 if compact_mode else 22),
+        ("statusBanner", top_badge_size, 800, 26 if compact_mode else 30),
+        ("focusStateLabel", top_badge_size, 800, 26 if compact_mode else 30),
+        ("workspaceFocusBanner", top_badge_size, 800, 26 if compact_mode else 30),
+        ("topBadge", top_badge_size, 900, 22 if compact_mode else 24),
+        ("shellProductTitle", shell_title_size, 900, 22 if compact_mode else 24),
+        ("shellPulseLabel", shell_value_size, 800, 18 if compact_mode else 20),
+        ("shellChipValue", shell_value_size, 800, 18 if compact_mode else 20),
+        ("shellProductSubtitle", shell_subtitle_size, 600, 16 if compact_mode else 18),
+        ("shellPulseHint", shell_subtitle_size, 600, 16 if compact_mode else 18),
+        ("shellPulseMeta", shell_subtitle_size, 600, 16 if compact_mode else 18),
+        ("shellChipLabel", shell_label_size, 700, 14 if compact_mode else 16),
+        ("shellProductEyebrow", shell_label_size, 700, 14 if compact_mode else 16),
+    ):
+        _apply_font_rule(object_name, size, weight, min_height)
+
+    for button in self.findChildren(QPushButton):
+        full_text = str(button.text() or button.toolTip() or "").strip()
+        if full_text:
+            button.setToolTip(full_text)
+        if button.maximumHeight() >= 16777215 or button.maximumHeight() < button_height:
+            button.setMinimumHeight(button_height)
+            button.setMaximumHeight(button_height)
+        button_font = button.font()
+        button_font.setPointSize(body_size)
+        button_font.setBold(True)
+        button.setFont(button_font)
+
+    for input_widget in self.findChildren(QLineEdit):
+        input_widget.setMinimumHeight(max(input_widget.minimumHeight(), input_height))
+    for combo in self.findChildren(QComboBox):
+        combo.setMinimumHeight(max(combo.minimumHeight(), input_height))
+    for checkbox in self.findChildren(QCheckBox):
+        checkbox.setMinimumHeight(max(checkbox.minimumHeight(), 28 if compact_mode else 30))
+
+    for panel_name in (
+        "workspaceToolPanel",
+        "scannerInfoPanel",
+        "scannerLiveSummaryPanel",
+        "paperExperimentPanel",
+        "paperSettingsPanel",
+        "detailHintPanel",
+        "detailLiveSummaryPanel",
+        "boardMetaPanel",
+        "boardLiveSummaryPanel",
+    ):
+        panel = self.findChild(QWidget, panel_name)
+        if not isinstance(panel, QWidget) or not panel.isVisible():
+            continue
+        layout = panel.layout()
+        if isinstance(layout, (QVBoxLayout, QHBoxLayout, QGridLayout)):
+            layout.setContentsMargins(
+                10 if compact_mode else 12,
+                8 if compact_mode else 10,
+                10 if compact_mode else 12,
+                8 if compact_mode else 10,
+            )
+            if isinstance(layout, QGridLayout):
+                layout.setHorizontalSpacing(8 if compact_mode else 10)
+                layout.setVerticalSpacing(6 if compact_mode else 8)
+            else:
+                layout.setSpacing(4 if compact_mode else 6)
+        for child_button in panel.findChildren(QPushButton):
+            if child_button.maximumHeight() >= 16777215 or child_button.maximumHeight() <= button_height + 4:
+                child_button.setMinimumHeight(button_height)
+                child_button.setMaximumHeight(button_height)
+        for child_label in panel.findChildren(QLabel):
+            if child_label.isVisible():
+                child_label.setWordWrap(True)
+
+    action_row_names = (
+        "overviewThemeActionRow",
+        "overviewCapitalActionRow",
+        "overviewDecisionActionRow",
+        "brokerGateActionRow",
+        "brokerExecutionActionRow",
+        "paperActionRow",
+        "detailConclusionActionRow",
+        "detailExecutionActionRow",
+        "detailDecisionActionRow",
+        "detailMetricsActionRow",
+        "scannerTopActionRow",
+        "boardCandidateActionRow",
+        "boardMonitorActionRow",
+    )
+    for row_name in action_row_names:
+        row = self.findChild(QWidget, row_name)
+        if not isinstance(row, QWidget):
+            continue
+        row_layout = row.layout()
+        if isinstance(row_layout, (QHBoxLayout, QGridLayout)):
+            row_layout.setContentsMargins(
+                8 if compact_mode else 10,
+                0,
+                8 if compact_mode else 10,
+                0,
+            )
+            row_layout.setSpacing(6 if compact_mode else 10)
+        buttons = [button for button in row.findChildren(QPushButton) if button.isVisible()]
+        row_count = 1
+        grid_layout = getattr(row, "_qh_grid_layout_v34", None)
+        if isinstance(grid_layout, QGridLayout) and grid_layout.count() > 0:
+            max_row = 0
+            for index in range(grid_layout.count()):
+                item = grid_layout.itemAt(index)
+                if item is None:
+                    continue
+                item_row, _, row_span, _ = grid_layout.getItemPosition(index)
+                max_row = max(max_row, item_row + max(1, row_span) - 1)
+            row_count = max_row + 1
+        chrome_height = max(10, row.height() - row.contentsRect().height())
+        target_height = row_count * button_height + max(0, row_count - 1) * (6 if compact_mode else 10) + chrome_height
+        row.setMinimumHeight(target_height)
+        row.setMaximumHeight(target_height)
+        for button in buttons:
+            button.setMinimumHeight(button_height)
+            button.setMaximumHeight(button_height)
+
+    recommend_empty_panel = self.findChild(QGroupBox, "emptyStatePanel")
+    if isinstance(recommend_empty_panel, QGroupBox):
+        empty_buttons = [button for button in recommend_empty_panel.findChildren(QPushButton) if button.isVisible()]
+        for button in empty_buttons:
+            button.setMinimumHeight(button_height)
+            button.setMaximumHeight(button_height)
+
+
+def _qh_schedule_institutional_ui_system_v64(self: QuantHunterWindow) -> None:
+    if not hasattr(self, "_qh_institutional_ui_timer_v64"):
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(self._apply_institutional_ui_system_v64)
+        self._qh_institutional_ui_timer_v64 = timer
+    self._qh_institutional_ui_timer_v64.start(0)
+    QTimer.singleShot(160, self._apply_institutional_ui_system_v64)
+    QTimer.singleShot(640, self._apply_institutional_ui_system_v64)
+
+
+_ORIGINAL_QH_POST_BUILD_UI_TWEAKS_V64 = QuantHunterWindow._post_build_ui_tweaks
+_ORIGINAL_QH_APPLY_LAYOUT_POLISH_V64 = QuantHunterWindow._apply_layout_polish_v19
+
+
+def _qh_post_build_ui_tweaks_v64(self: QuantHunterWindow) -> None:
+    _ORIGINAL_QH_POST_BUILD_UI_TWEAKS_V64(self)
+    self._schedule_institutional_ui_system_v64()
+
+
+def _qh_apply_layout_polish_v64(self: QuantHunterWindow) -> None:
+    _ORIGINAL_QH_APPLY_LAYOUT_POLISH_V64(self)
+    self._apply_institutional_ui_system_v64()
+
+
+QuantHunterWindow._apply_institutional_ui_system_v64 = _qh_apply_institutional_ui_system_v64
+QuantHunterWindow._schedule_institutional_ui_system_v64 = _qh_schedule_institutional_ui_system_v64
+QuantHunterWindow._post_build_ui_tweaks = _qh_post_build_ui_tweaks_v64
+QuantHunterWindow._apply_layout_polish_v19 = _qh_apply_layout_polish_v64
 
 
 def _build_terminal_palette(theme_key: str = DEFAULT_TERMINAL_THEME) -> QPalette:

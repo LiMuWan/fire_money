@@ -19,6 +19,22 @@ class InsightCardBase(QFrame):
         if widget.styleSheet() != stylesheet:
             widget.setStyleSheet(stylesheet)
 
+    def _set_density_style(
+        self,
+        widget: QLabel,
+        *,
+        color: str,
+        compact_size: int,
+        regular_size: int,
+        weight: int = 600,
+        extra: str = "",
+    ) -> None:
+        size = compact_size if getattr(self, "_compact_density", False) else regular_size
+        rule = f"color:{color}; font-size:{size}px; font-weight:{weight};"
+        if extra:
+            rule += f" {extra}"
+        self._set_stylesheet_if_changed(widget, rule.strip())
+
     def _create_accent_strip(self, accent_color: str) -> QFrame:
         strip = QFrame()
         strip.setFixedHeight(5)
@@ -47,8 +63,8 @@ class InsightCardBase(QFrame):
         rules = [
             (
                 f"QFrame#{self.objectName()} {{ "
-                "background:qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(19, 26, 35, 0.98), stop:0.52 rgba(13, 18, 25, 0.98), stop:1 rgba(10, 15, 22, 0.99)); "
-                f"border:1px solid {border_color}; border-radius:16px; }}"
+                "background:qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(18, 25, 34, 0.985), stop:0.54 rgba(12, 18, 25, 0.985), stop:1 rgba(9, 14, 20, 0.995)); "
+                f"border:1px solid {border_color}; border-radius:18px; }}"
             ),
             f"QFrame#{self.objectName()} QLabel {{ background: transparent; }}",
             f"QLabel#{title_selector} {{ color:{title_color}; font-size:{title_size}px; font-weight:{title_weight}; }}",
@@ -62,20 +78,41 @@ class InsightCardBase(QFrame):
                 f"QLabel#{emphasis_selector} {{ color:{emphasis_color}; font-size:{emphasis_size}px; font-weight:700; }}"
             )
         rules.append(
-            f"QFrame#{self.objectName()}:hover {{ border: 1px solid rgba(151, 203, 255, 0.22); }}"
+            f"QFrame#{self.objectName()}:hover {{ border: 1px solid rgba(151, 203, 255, 0.18); }}"
         )
         self._set_stylesheet_if_changed(self, "".join(rules))
+
+    def _compact_copy(
+        self,
+        text: str,
+        *,
+        max_chars: int,
+        keep_segments: int | None = None,
+    ) -> str:
+        value = str(text or "").strip()
+        if not value:
+            return value
+        compact = value
+        if keep_segments and " | " in value:
+            parts = [part.strip() for part in value.split(" | ") if part.strip()]
+            if parts:
+                compact = " | ".join(parts[:keep_segments])
+        if "\n" in compact:
+            compact = compact.splitlines()[0].strip() or compact
+        if len(compact) > max_chars:
+            compact = compact[: max_chars - 1].rstrip() + "..."
+        return compact
 
 
 class LeaderboardCard(InsightCardBase):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("leaderboardCard", parent)
         self._compact_density = False
-        self.setMinimumHeight(142)
+        self.setMinimumHeight(152)
         layout = QVBoxLayout(self)
         self._layout = layout
-        layout.setContentsMargins(16, 13, 16, 13)
-        layout.setSpacing(4)
+        layout.setContentsMargins(16, 15, 16, 15)
+        layout.setSpacing(6)
 
         self.rank_label = QLabel("TOP")
         self.rank_label.setObjectName("leaderboardRank")
@@ -111,17 +148,32 @@ class LeaderboardCard(InsightCardBase):
 
     def set_density(self, compact: bool) -> None:
         self._compact_density = bool(compact)
-        self.setMinimumHeight(104 if self._compact_density else 142)
-        self.setMaximumHeight(118 if self._compact_density else 16777215)
+        self.setMinimumHeight(64 if self._compact_density else 152)
+        self.setMaximumHeight(76 if self._compact_density else 16777215)
         self._layout.setContentsMargins(
-            12 if self._compact_density else 16,
-            10 if self._compact_density else 13,
-            12 if self._compact_density else 16,
-            10 if self._compact_density else 13,
+            10 if self._compact_density else 16,
+            9 if self._compact_density else 15,
+            10 if self._compact_density else 16,
+            9 if self._compact_density else 15,
         )
-        self._layout.setSpacing(3 if self._compact_density else 4)
-        self.fund_label.setVisible(True)
+        self._layout.setSpacing(3 if self._compact_density else 6)
+        self.strategy_label.setVisible(not self._compact_density)
+        self.fund_label.setVisible(False)
         self.flow_label.setVisible(not self._compact_density)
+        self.rank_label.setMaximumHeight(12 if self._compact_density else 14)
+        self.status_label.setMaximumHeight(18 if self._compact_density else 20)
+        self.name_label.setMaximumHeight(16 if self._compact_density else 22)
+        self.reason_label.setMaximumHeight(12 if self._compact_density else 16)
+        self.metrics_label.setMaximumHeight(12 if self._compact_density else 16)
+        self.flow_label.setMaximumHeight(12 if self._compact_density else 16)
+        self._set_density_style(self.rank_label, color="#8fa0b6", compact_size=10, regular_size=11, weight=900, extra="letter-spacing:0.7px;")
+        self._set_density_style(self.status_label, color="#d8e7f6", compact_size=9, regular_size=10, weight=800, extra="letter-spacing:0.8px; background:rgba(255,255,255,0.025); border:1px solid rgba(126, 183, 255, 0.12); border-radius:9px; padding:3px 8px;")
+        self._set_density_style(self.name_label, color="#f5f7fa", compact_size=13, regular_size=15, weight=800)
+        self._set_density_style(self.strategy_label, color="#8ea2b8", compact_size=10, regular_size=11, weight=600)
+        self._set_density_style(self.reason_label, color="#bed0e2", compact_size=9, regular_size=10, weight=600)
+        self._set_density_style(self.fund_label, color="#8ea2b8", compact_size=10, regular_size=11, weight=600)
+        self._set_density_style(self.metrics_label, color="#dce8f5", compact_size=10, regular_size=11, weight=700)
+        self._set_density_style(self.flow_label, color="#93abc2", compact_size=10, regular_size=11, weight=700)
 
     def set_row(self, rank_text: str, row) -> None:
         accent = {"TOP 1": "#f5c451", "TOP 2": "#cfd8e3", "TOP 3": "#b7835a"}.get(rank_text, "#7ed7ff")
@@ -153,22 +205,24 @@ class LeaderboardCard(InsightCardBase):
             border_color="rgba(110, 129, 151, 0.20)",
             title_selector="leaderboardName",
             title_color="#f5f7fa",
-            title_size=17,
+            title_size=15,
             subtitle_selector="leaderboardMeta",
             subtitle_color="#8ea2b8",
             emphasis_selector="leaderboardMetric",
             emphasis_color="#d8e7f6",
             emphasis_size=11,
         )
-        self._set_stylesheet_if_changed(self.rank_label, f"color:{accent}; font-size:11px; font-weight:900; letter-spacing:0.6px;")
-        self._set_stylesheet_if_changed(self.flow_label, "color:#9eb4ca; font-size:11px; font-weight:700;")
-        self._set_stylesheet_if_changed(
+        self._set_density_style(self.rank_label, color=accent, compact_size=10, regular_size=11, weight=900, extra="letter-spacing:0.6px;")
+        self._set_density_style(self.flow_label, color="#9eb4ca", compact_size=10, regular_size=11, weight=700)
+        self._set_density_style(
             self.status_label,
-            f"color:{accent}; font-size:10px; font-weight:800; letter-spacing:0.8px; "
-            "background:rgba(255,255,255,0.03); border:1px solid rgba(126, 183, 255, 0.14); "
-            "border-radius:9px; padding:3px 8px;"
+            color=accent,
+            compact_size=9,
+            regular_size=10,
+            weight=800,
+            extra="letter-spacing:0.8px; background:rgba(255,255,255,0.03); border:1px solid rgba(126, 183, 255, 0.14); border-radius:9px; padding:3px 8px;",
         )
-        self._set_stylesheet_if_changed(self.reason_label, "color:#c7d5e3; font-size:10px; font-weight:600;")
+        self._set_density_style(self.reason_label, color="#c7d5e3", compact_size=9, regular_size=10, weight=600)
         self._set_label_if_changed(self.rank_label, rank_text)
         self._set_label_if_changed(self.status_label, status_text)
         self.status_label.setToolTip(
@@ -181,16 +235,34 @@ class LeaderboardCard(InsightCardBase):
                 ]
             )
         )
-        self._set_label_if_changed(self.name_label, f"{row.stock_name} {row.stock_id}")
         short_reason = " | ".join(reason_parts[:2]) if reason_parts else (strategy_name or "等待同步")
-        self._set_label_if_changed(self.reason_label, short_reason)
-        self._set_label_if_changed(self.strategy_label, f"主策略：{strategy_name}")
-        self._set_label_if_changed(self.fund_label, f"资金标签：{getattr(row, 'fund_model', '')}")
-        self._set_label_if_changed(
-            self.metrics_label,
-            f"决策 {decision_score:.1f} | 热度 {getattr(row, 'heat_score', 0.0):.1f} | 涨跌 {getattr(row, 'pct_change', 0.0):.2f}%"
-        )
-        self._set_label_if_changed(self.flow_label, f"资金 {getattr(row, 'main_inflow', 0.0) / 1e8:.2f} 亿")
+        full_name = f"{row.stock_name} {row.stock_id}"
+        metrics_text = f"决策 {decision_score:.1f} | 热度 {getattr(row, 'heat_score', 0.0):.1f} | 涨跌 {getattr(row, 'pct_change', 0.0):.2f}%"
+        flow_text = f"资金 {getattr(row, 'main_inflow', 0.0) / 1e8:.2f} 亿"
+        strategy_text = f"主策略：{strategy_name}"
+        fund_text = f"资金标签：{getattr(row, 'fund_model', '')}"
+        if self._compact_density:
+            name_text = self._compact_copy(full_name, max_chars=14)
+            reason_text = self._compact_copy(short_reason, max_chars=10, keep_segments=1)
+            metrics_display = f"决策 {decision_score:.1f} | 涨 {pct_change:.1f}%"
+            flow_display = f"资金 {main_inflow / 1e8:.1f}亿"
+        else:
+            name_text = full_name
+            reason_text = short_reason
+            metrics_display = metrics_text
+            flow_display = flow_text
+        self._set_label_if_changed(self.name_label, name_text)
+        self.name_label.setToolTip(full_name)
+        self._set_label_if_changed(self.reason_label, reason_text)
+        self.reason_label.setToolTip(short_reason)
+        self._set_label_if_changed(self.strategy_label, strategy_text)
+        self.strategy_label.setToolTip(strategy_text)
+        self._set_label_if_changed(self.fund_label, fund_text)
+        self.fund_label.setToolTip(fund_text)
+        self._set_label_if_changed(self.metrics_label, metrics_display)
+        self.metrics_label.setToolTip(metrics_text)
+        self._set_label_if_changed(self.flow_label, flow_display)
+        self.flow_label.setToolTip(flow_text)
 
     def set_message(self, title: str, message: str) -> None:
         self._set_stylesheet_if_changed(
@@ -288,10 +360,10 @@ class ActionFlowCard(InsightCardBase):
     def __init__(self, title: str, accent: str, parent: QWidget | None = None) -> None:
         super().__init__("actionFlowCard", parent)
         self.accent = accent
-        self.setMinimumHeight(96)
+        self.setMinimumHeight(108)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 12, 14, 12)
-        layout.setSpacing(3)
+        layout.setSpacing(5)
 
         self.accent_strip = self._create_accent_strip(accent)
         self.title_label = QLabel(title)
@@ -321,10 +393,10 @@ class ActionFlowCard(InsightCardBase):
             title_size=11,
             emphasis_selector="actionFlowCount",
             emphasis_color=self.accent,
-            emphasis_size=16,
+            emphasis_size=15,
         )
         self.focus_label.setStyleSheet("color:#e8f0f8; font-size:11px; font-weight:800;")
-        self.note_label.setStyleSheet("color:#7d92a7; font-size:9px; line-height:1.2;")
+        self.note_label.setStyleSheet("color:#8ca0b3; font-size:10px; font-weight:600; line-height:1.4;")
 
     def set_data(self, count_text: str, focus_text: str, note_text: str) -> None:
         self._set_label_if_changed(self.count_label, count_text)
@@ -339,8 +411,8 @@ class CompactSummaryCard(InsightCardBase):
         self.setMinimumHeight(96)
         layout = QVBoxLayout(self)
         self._layout = layout
-        layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(5)
+        layout.setContentsMargins(16, 15, 16, 15)
+        layout.setSpacing(6)
 
         self.accent_strip = self._create_accent_strip(accent)
         self.title_label = QLabel(title)
@@ -351,6 +423,9 @@ class CompactSummaryCard(InsightCardBase):
         self.detail_label = QLabel("")
         self.detail_label.setObjectName("compactSummaryDetail")
         self.detail_label.setWordWrap(True)
+        self.title_label.setMinimumHeight(0)
+        self.headline_label.setMinimumHeight(0)
+        self.detail_label.setMinimumHeight(0)
         layout.addWidget(self.accent_strip)
         layout.addWidget(self.title_label)
         layout.addWidget(self.headline_label)
@@ -364,35 +439,39 @@ class CompactSummaryCard(InsightCardBase):
             title_size=12,
             emphasis_selector="compactSummaryHeadline",
             emphasis_color="#f4f8fc",
-            emphasis_size=17,
+            emphasis_size=16,
         )
-        self.detail_label.setStyleSheet("color:#90a4b8; font-size:10px; line-height:1.3;")
+        self.detail_label.setStyleSheet("color:#90a4b8; font-size:11px; font-weight:600; line-height:1.35;")
         self.set_density(False)
 
     def set_density(self, compact: bool) -> None:
         self._compact_density = bool(compact)
-        self.setMinimumHeight(74 if self._compact_density else 96)
-        self.setMaximumHeight(82 if self._compact_density else 16777215)
+        self.setMinimumHeight(60 if self._compact_density else 108)
+        self.setMaximumHeight(72 if self._compact_density else 16777215)
         self._layout.setContentsMargins(
-            12 if self._compact_density else 16,
-            10 if self._compact_density else 14,
-            12 if self._compact_density else 16,
-            10 if self._compact_density else 14,
+            10 if self._compact_density else 16,
+            9 if self._compact_density else 15,
+            10 if self._compact_density else 16,
+            9 if self._compact_density else 15,
         )
-        self._layout.setSpacing(3 if self._compact_density else 5)
+        self._layout.setSpacing(3 if self._compact_density else 6)
         self.title_label.setStyleSheet(
             f"color:#98aec5; font-size:{11 if self._compact_density else 12}px; font-weight:900;"
         )
         self.headline_label.setStyleSheet(
-            f"color:#f4f8fc; font-size:{15 if self._compact_density else 17}px; font-weight:800;"
+            f"color:#f4f8fc; font-size:{14 if self._compact_density else 16}px; font-weight:800;"
         )
         self.detail_label.setStyleSheet(
-            f"color:#90a4b8; font-size:{9 if self._compact_density else 10}px; line-height:1.25;"
+            f"color:#90a4b8; font-size:{10 if self._compact_density else 11}px; font-weight:600; line-height:1.35;"
         )
 
     def set_data(self, headline: str, detail: str) -> None:
-        self._set_label_if_changed(self.headline_label, headline)
-        self._set_label_if_changed(self.detail_label, detail)
+        headline_text = self._compact_copy(headline, max_chars=10, keep_segments=1) if self._compact_density else headline
+        detail_text = self._compact_copy(detail, max_chars=16, keep_segments=1) if self._compact_density else detail
+        self._set_label_if_changed(self.headline_label, headline_text)
+        self._set_label_if_changed(self.detail_label, detail_text)
+        self.headline_label.setToolTip(headline)
+        self.detail_label.setToolTip(detail)
 
 
 class AlertSignalCard(InsightCardBase):
