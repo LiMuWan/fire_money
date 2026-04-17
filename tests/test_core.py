@@ -2404,6 +2404,49 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(broker_target[0], "broker")
         self.assertEqual(overview_target[0], "overview")
 
+    def test_news_workflow_snapshot_lines_surface_current_focus_news(self) -> None:
+        module = importlib.import_module("app_qt")
+        item = SimpleNamespace(
+            symbol="SZSE.300001",
+            source="财联社",
+            title="机器人主线继续扩散",
+            summary="媒体催化 | 关注板块扩散",
+            url="https://example.com/media",
+        )
+        window = SimpleNamespace(
+            active_symbol="SZSE.300001",
+            news_catalysts={"SZSE.300001": [item]},
+            _selected_daily_pool_recommendation=lambda: None,
+            _latest_news_item_for_symbol=lambda symbol: item if symbol == "SZSE.300001" else None,
+            _stock_name_for_symbol=lambda symbol: "龙头样本",
+            _stock_id_for_symbol=lambda symbol: "300001",
+            _news_recommended_action=lambda current: ("overview", "先看总览", "先看主线资金有没有放大"),
+        )
+
+        lines = module.QuantHunterWindow._news_workflow_snapshot_lines(window)
+
+        self.assertIn("当前焦点：龙头样本 (300001 / SZSE.300001)", lines[0])
+        self.assertIn("当前消息：媒体催化 | 机器人主线继续扩散", lines[1])
+        self.assertIn("建议动作：先看总览 -> 总览", lines[2])
+        self.assertIn("原文状态：可打开原文", lines[3])
+
+    def test_news_action_brief_returns_short_recommended_action(self) -> None:
+        module = importlib.import_module("app_qt")
+        item = SimpleNamespace(
+            symbol="SZSE.300001",
+            source="财联社",
+            title="机器人主线继续扩散",
+            summary="媒体催化 | 关注板块扩散",
+        )
+        window = SimpleNamespace(
+            _latest_news_item_for_symbol=lambda symbol: item if symbol == "SZSE.300001" else None,
+            _news_recommended_action=lambda current: ("overview", "先看总览", "先确认主线"),
+        )
+
+        brief = module.QuantHunterWindow._news_action_brief(window, "SZSE.300001")
+
+        self.assertEqual(brief, "消息建议：先看总览")
+
     def test_route_news_item_to_workspace_focuses_symbol_before_navigation(self) -> None:
         module = importlib.import_module("app_qt")
         focus_calls: list[tuple[str, str]] = []
@@ -3968,6 +4011,17 @@ class StrategyWorkflowTests(unittest.TestCase):
                 self.assertEqual(len(window.market_leaderboard_cards), 3)
                 self.assertTrue(hasattr(window, "overview_summary_cards"))
                 self.assertEqual(set(window.overview_summary_cards.keys()), {"theme", "source", "capital", "decision"})
+                self.assertTrue(hasattr(window, "overview_cockpit_action_buttons"))
+                self.assertEqual(len(window.overview_cockpit_action_buttons), 3)
+                self.assertTrue(hasattr(window, "overview_cockpit_more_button"))
+                self.assertTrue(hasattr(window, "overview_playbook_action_buttons"))
+                self.assertEqual(len(window.overview_playbook_action_buttons), 3)
+                self.assertTrue(hasattr(window, "overview_playbook_more_button"))
+                self.assertTrue(hasattr(window, "overview_root_layout"))
+                self.assertTrue(hasattr(window, "dashboard_metrics_box"))
+                self.assertTrue(hasattr(window, "overview_priority_box"))
+                self.assertTrue(hasattr(window, "overview_cockpit_box"))
+                self.assertTrue(hasattr(window, "overview_playbook_box"))
                 self.assertEqual(
                     set(getattr(window, "market_overlay_buttons", {}).keys()),
                     {"MA", "BOLL", "HIGHLOW", "BREAK"},
@@ -3976,6 +4030,413 @@ class StrategyWorkflowTests(unittest.TestCase):
             finally:
                 window.close()
                 app.processEvents()
+
+    def test_load_universe_folder_runs_local_scan(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        selected_dir = str((Path(module.PROJECT_ROOT) / "sample_data").resolve())
+        scan_calls: list[tuple[Path, bool, bool]] = []
+        save_calls: list[str] = []
+        window = SimpleNamespace(
+            state=SimpleNamespace(universe_dir=""),
+            scan_summary_label=module.QLabel(),
+            recommend_status_label=module.QLabel(),
+            last_refresh_label=module.QLabel(),
+            _set_label_text_if_changed=lambda widget, text: widget.setText(text) if widget.text() != text else None,
+            save_state=lambda: save_calls.append("saved"),
+            _scan_universe=lambda folder, quiet=False, async_mode=True: scan_calls.append((Path(folder), quiet, async_mode)),
+        )
+
+        with patch.object(module.QFileDialog, "getExistingDirectory", return_value=selected_dir):
+            module.QuantHunterWindow.load_universe_folder(window)
+
+        self.assertEqual(window.state.universe_dir, selected_dir)
+        self.assertEqual(save_calls, ["saved"])
+        self.assertEqual(scan_calls, [(Path(selected_dir), False, True)])
+        self.assertIn("正在载入股票目录", window.scan_summary_label.text())
+        self.assertIn("等待本地扫描结果回流", window.recommend_status_label.text())
+
+    def test_load_sample_universe_uses_sample_dir_and_reference_data(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        scan_calls: list[tuple[Path, bool, bool]] = []
+        save_calls: list[str] = []
+        reference_calls: list[str] = []
+        warning_calls: list[tuple[str, str]] = []
+        window = SimpleNamespace(
+            state=SimpleNamespace(universe_dir=""),
+            recommend_empty_meta=module.QLabel(),
+            scan_summary_label=module.QLabel(),
+            recommend_status_label=module.QLabel(),
+            last_refresh_label=module.QLabel(),
+            _set_label_text_if_changed=lambda widget, text: widget.setText(text) if widget.text() != text else None,
+            _emit_action_feedback_v11=lambda *_args, **_kwargs: None,
+            _sync_pipeline_panels_v12=lambda: None,
+            load_sample_reference_data=lambda: reference_calls.append("sample"),
+            save_state=lambda: save_calls.append("saved"),
+            _scan_universe=lambda folder, quiet=False, async_mode=True: scan_calls.append((Path(folder), quiet, async_mode)),
+        )
+
+        with patch.object(module.QMessageBox, "warning", side_effect=lambda *_args: warning_calls.append((_args[1], _args[2]))):
+            module.QuantHunterWindow.load_sample_universe(window)
+
+        self.assertEqual(reference_calls, ["sample"])
+        self.assertEqual(save_calls, ["saved"])
+        self.assertEqual(scan_calls, [(module.SAMPLE_DIR, False, True)])
+        self.assertEqual(window.state.universe_dir, str(module.SAMPLE_DIR))
+        self.assertEqual(warning_calls, [])
+        self.assertIn("样例股票池与参考资料", window.recommend_empty_meta.text())
+
+    def test_rescan_universe_reuses_saved_local_directory(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        sample_dir = str(module.SAMPLE_DIR)
+        scan_calls: list[tuple[Path, bool, bool]] = []
+        fallback_calls: list[str] = []
+        warning_calls: list[tuple[str, str]] = []
+        window = SimpleNamespace(
+            state=SimpleNamespace(universe_dir=sample_dir),
+            scan_summary_label=module.QLabel(),
+            recommend_status_label=module.QLabel(),
+            last_refresh_label=module.QLabel(),
+            _set_label_text_if_changed=lambda widget, text: widget.setText(text) if widget.text() != text else None,
+            _emit_action_feedback_v11=lambda *_args, **_kwargs: None,
+            _sync_pipeline_panels_v12=lambda: None,
+            _scan_universe=lambda folder, quiet=False, async_mode=True: scan_calls.append((Path(folder), quiet, async_mode)),
+            load_universe_folder=lambda: fallback_calls.append("fallback"),
+        )
+
+        with patch.object(module.QMessageBox, "warning", side_effect=lambda *_args: warning_calls.append((_args[1], _args[2]))):
+            module.QuantHunterWindow.rescan_universe(window)
+
+        self.assertEqual(scan_calls, [(module.SAMPLE_DIR, False, True)])
+        self.assertEqual(fallback_calls, [])
+        self.assertEqual(warning_calls, [])
+        self.assertIn("正在重新扫描", window.scan_summary_label.text())
+
+    def test_qt_window_open_focus_symbol_in_detail_preserves_symbol_context(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.active_symbol = "SZSE.300001"
+                module.QuantHunterWindow.open_focus_symbol_in_detail(window)
+                app.processEvents()
+
+                self.assertIs(window.tabs.currentWidget(), window.detail_tab)
+                self.assertEqual(window.active_symbol, "SZSE.300001")
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_prioritizes_overview_stage_before_support_panels(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                app.processEvents()
+                layout = window.overview_root_layout
+                self.assertLess(layout.indexOf(window.overview_stage_container), layout.indexOf(window.overview_cockpit_box))
+                self.assertLess(layout.indexOf(window.overview_stage_container), layout.indexOf(window.overview_playbook_box))
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_moves_broker_execution_before_settings_panel(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                app.processEvents()
+                broker_layout = window.broker_scroll_area.widget().layout()
+                target = getattr(window, "broker_setup_drawer", window.broker_control_splitter)
+                self.assertLess(broker_layout.indexOf(window.broker_middle_splitter), broker_layout.indexOf(target))
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_hides_overview_controls_by_default(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                app.processEvents()
+                self.assertTrue(window.overview_controls_container.isHidden())
+                self.assertEqual(window.overview_controls_toggle_button.text(), "展开市场控制台")
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_hides_broker_setup_by_default(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.tabs.setCurrentWidget(window.broker_tab)
+                app.processEvents()
+                self.assertTrue(window.broker_control_splitter.isHidden())
+                self.assertEqual(window.broker_setup_toggle_button.text(), "展开账户与通道设置")
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_broker_setup_section_buttons_present(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.tabs.setCurrentWidget(window.broker_tab)
+                app.processEvents()
+                labels = {
+                    window.broker_setup_profile_button.text(),
+                    window.broker_setup_action_button.text(),
+                    window.broker_setup_runtime_button.text(),
+                }
+                self.assertEqual(labels, {"账户", "执行参数", "运行维护"})
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_recommend_core_board_precedes_support_splitters(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.tabs.setCurrentWidget(window.recommend_tab)
+                app.processEvents()
+                layout = window.recommend_scroll_area.widget().layout()
+                self.assertLess(layout.indexOf(window.recommend_pool_box), layout.indexOf(window.recommend_dispatch_splitter))
+                self.assertLess(layout.indexOf(window.recommend_decision_summary_box), layout.indexOf(window.recommend_summary_splitter))
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_detail_recap_precedes_metrics_box(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.tabs.setCurrentWidget(window.detail_tab)
+                app.processEvents()
+                layout = window.detail_workspace_scroll_area.widget().layout()
+                self.assertLess(layout.indexOf(window.detail_recap_splitter), layout.indexOf(window.detail_metrics_box))
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_board_candidate_and_monitor_share_horizontal_splitter(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+            from PySide6.QtCore import Qt
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.tabs.setCurrentWidget(window.board_tab)
+                app.processEvents()
+                self.assertTrue(hasattr(window, "board_workspace_splitter"))
+                self.assertEqual(window.board_workspace_splitter.orientation(), Qt.Horizontal)
+                self.assertEqual(window.board_workspace_splitter.count(), 2)
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_tab_order_matches_onboarding_flow(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                app.processEvents()
+                tab_labels = [window.tabs.tabText(index) for index in range(window.tabs.count())]
+                self.assertEqual(tab_labels[:4], ["市场机会工作台", "统一登录", "每日推荐", "交易执行"])
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_auth_workspace_exposes_sdk_fields_and_validate_cta(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                app.processEvents()
+                self.assertIn("account_name", window.login_inputs)
+                self.assertIn("sdk_module", window.login_inputs)
+                self.assertIn("sdk_python_path", window.login_inputs)
+                auth_buttons = {button.text() for button in window.auth_tab.findChildren(module.QPushButton)}
+                self.assertIn("校验接入", auth_buttons)
+                self.assertIn("前往交易执行", auth_buttons)
+                self.assertNotIn("保存配置", auth_buttons)
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_auth_workspace_uses_scroll_and_form_is_not_collapsed(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication, QGroupBox
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.tabs.setCurrentWidget(window.auth_tab)
+                app.processEvents()
+                self.assertTrue(hasattr(window, "auth_workspace_scroll_area"))
+                form_box = None
+                for group in window.auth_tab.findChildren(QGroupBox):
+                    if group.title() == "账号连接":
+                        form_box = group
+                        break
+                self.assertIsNotNone(form_box)
+                self.assertGreater(form_box.height(), 240)
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_config_workspace_scroll_area_is_not_collapsed(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication, QGroupBox
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.tabs.setCurrentWidget(window.config_tab)
+                app.processEvents()
+                self.assertTrue(hasattr(window, "config_workspace_scroll_area"))
+                self.assertGreater(window.config_workspace_scroll_area.height(), 200)
+                tool_panel = window.findChild(QGroupBox, "configToolPanel")
+                self.assertIsNotNone(tool_panel)
+                self.assertIs(window.config_workspace_scroll_area.widget().findChild(QGroupBox, "configToolPanel"), tool_panel)
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_overview_summary_box_keeps_custom_object_name(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication, QGroupBox
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.tabs.setCurrentWidget(window.overview_tab)
+                app.processEvents()
+                summary_box = window.findChild(QGroupBox, "overviewSummaryBox")
+                leaderboard_box = window.findChild(QGroupBox, "leaderboardBox")
+                self.assertIsNotNone(summary_box)
+                self.assertIsNotNone(leaderboard_box)
+                self.assertTrue(bool(summary_box.property("terminalPanel")))
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_leaderboard_card_compact_density_keeps_more_vertical_space(self) -> None:
+        from quant_hunter.ui_cards import LeaderboardCard
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+
+        card = LeaderboardCard()
+        try:
+            card.set_density(True)
+            self.assertGreaterEqual(card.minimumHeight(), 100)
+            self.assertLessEqual(card.maximumHeight(), 118)
+            self.assertFalse(card.fund_label.isHidden())
+            self.assertTrue(card.flow_label.isHidden())
+        finally:
+            card.deleteLater()
+
+    def test_qt_window_recommend_sample_buttons_use_full_sample_universe_flow(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            calls: list[str] = []
+            original_handler = module.QuantHunterWindow.load_sample_universe
+            try:
+                module.QuantHunterWindow.load_sample_universe = lambda self: calls.append("sample_universe")
+                app = QApplication.instance() or QApplication([])
+                window = module.QuantHunterWindow()
+                try:
+                    app.processEvents()
+                    window.recommend_empty_sample_button.click()
+                    window.tabs.setCurrentWidget(window.recommend_tab)
+                    app.processEvents()
+                    sample_buttons = [button for button in window.recommend_tab.findChildren(module.QPushButton) if button.text() == "载入示例资料"]
+                    self.assertTrue(sample_buttons)
+                    sample_buttons[0].click()
+                    app.processEvents()
+                finally:
+                    window.close()
+                    app.processEvents()
+            finally:
+                module.QuantHunterWindow.load_sample_universe = original_handler
+
+            self.assertEqual(calls, ["sample_universe", "sample_universe"])
 
     def test_qt_window_can_boot_repeatedly(self) -> None:
         if importlib.util.find_spec("PySide6") is None:
@@ -4015,16 +4476,19 @@ class StrategyWorkflowTests(unittest.TestCase):
                 self.assertLessEqual(window.overview_command_text.maximumHeight(), 170)
                 self.assertLessEqual(window.overview_execution_text.maximumHeight(), 170)
                 self.assertLessEqual(window.overview_playbook_text.maximumHeight(), 130)
-                self.assertLessEqual(window.left_signal_tabs.maximumHeight(), 228)
-                self.assertLessEqual(window.right_intel_tabs.maximumHeight(), 296)
-                self.assertLessEqual(window.overview_chart_controls_tabs.maximumHeight(), 138)
+                self.assertGreaterEqual(window.left_signal_tabs.maximumHeight(), 220)
+                self.assertLessEqual(window.left_signal_tabs.maximumHeight(), 280)
+                self.assertGreaterEqual(window.right_intel_tabs.maximumHeight(), 270)
+                self.assertLessEqual(window.right_intel_tabs.maximumHeight(), 340)
+                self.assertLessEqual(window.overview_chart_controls_tabs.maximumHeight(), 160)
                 self.assertLessEqual(window.overview_primary_chart_tabs.maximumHeight(), 336)
-                self.assertLessEqual(window.overview_mini_chart_tabs.maximumHeight(), 186)
+                self.assertGreaterEqual(window.overview_mini_chart_tabs.maximumHeight(), 200)
+                self.assertLessEqual(window.overview_mini_chart_tabs.maximumHeight(), 250)
                 self.assertLessEqual(window.market_pool_table.maximumHeight(), 234)
                 self.assertLessEqual(window.market_pool_table.verticalHeader().defaultSectionSize(), 64)
                 self.assertLessEqual(window.overview_left_panel.minimumWidth(), 232)
                 self.assertLessEqual(window.overview_right_panel.minimumWidth(), 276)
-                self.assertLessEqual(window.market_leaderboard_cards[0].maximumHeight(), 94)
+                self.assertLessEqual(window.market_leaderboard_cards[0].maximumHeight(), 118)
                 self.assertLessEqual(window.overview_summary_cards["theme"].maximumHeight(), 82)
                 self.assertLessEqual(window.market_search_input.maximumHeight(), 36)
                 self.assertLessEqual(window.market_theme_combo.maximumHeight(), 36)
@@ -4034,9 +4498,25 @@ class StrategyWorkflowTests(unittest.TestCase):
                 self.assertLessEqual(window.shell_workspace_chip["frame"].maximumWidth(), 176)
                 self.assertLessEqual(window.shell_market_chip["frame"].maximumWidth(), 176)
                 self.assertLessEqual(window.shell_pipeline_chip["frame"].maximumWidth(), 176)
+                self.assertGreaterEqual(window.shell_focus_chip["frame"].minimumHeight(), 42)
                 self.assertEqual(window.shell_workspace_chip["value"].text(), "总览")
                 self.assertEqual(window.market_search_input.placeholderText(), "代码/名称/题材")
                 self.assertEqual(window.market_refresh_button.text(), "刷新市场")
+                self.assertFalse(window.overview_cockpit_action_buttons[1].isHidden())
+                self.assertTrue(window.overview_cockpit_action_buttons[0].isHidden())
+                self.assertTrue(window.overview_cockpit_action_buttons[2].isHidden())
+                self.assertFalse(window.overview_cockpit_more_button.isHidden())
+                self.assertFalse(window.overview_playbook_action_buttons[0].isHidden())
+                self.assertTrue(window.overview_playbook_action_buttons[1].isHidden())
+                self.assertTrue(window.overview_playbook_action_buttons[2].isHidden())
+                self.assertFalse(window.overview_playbook_more_button.isHidden())
+                self.assertIsNotNone(window.overview_cockpit_more_button.menu())
+                self.assertEqual([action.text() for action in window.overview_cockpit_more_button.menu().actions()], [button.text() for button in (window.overview_cockpit_action_buttons[0], window.overview_cockpit_action_buttons[2])])
+                root_margins = window.overview_root_layout.contentsMargins()
+                self.assertLessEqual(window.overview_root_layout.spacing(), 10)
+                self.assertEqual((root_margins.left(), root_margins.top(), root_margins.right()), (8, 8, 8))
+                self.assertLessEqual(window.overview_command_stage_layout.spacing(), 8)
+                self.assertLessEqual(window.overview_detail_stage_layout.spacing(), 10)
                 self.assertIs(window.intraday_chart_view.parentWidget(), window.overview_intraday_chart_page)
                 self.assertFalse(window.overview_intraday_container.isVisible())
             finally:
@@ -4064,6 +4544,215 @@ class StrategyWorkflowTests(unittest.TestCase):
                 self.assertEqual((row0, col0, row_span0, col_span0), (0, 0, 1, 2))
                 self.assertEqual((row1, col1), (1, 0))
                 self.assertEqual((row2, col2), (1, 1))
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_compacts_overview_text_panels_into_summary_copy(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.resize(1600, 900)
+                full_status = "总览状态：正在从全市场筛选龙头候选... | 区间：2026-01-05 ~ 2026-03-09 | 视窗：第 1 屏 / 共 1 屏"
+                window._set_label_text_if_changed(window.market_status_label, full_status)
+                full_command = "\n".join(
+                    [
+                        "盘前指挥摘要",
+                        "",
+                        "焦点标的：龙头样本 (300001 / SZSE.300001)",
+                        "主线：机器人 | 分层：前排",
+                        "动作：买入 | 主策略：掘龙决策",
+                        "执行准备：88.0 | 置信：82.0",
+                        "催化：订单超预期 | 可信度 B级",
+                        "逻辑：容量核心、趋势延续、量价共振、消息强化",
+                        "下一步：先看分时承接、量能和主线持续性",
+                    ]
+                )
+                full_execution = "\n".join(
+                    [
+                        "执行路径",
+                        "",
+                        "买点：10.20",
+                        "止损：9.70",
+                        "目标：11.30",
+                        "失效条件：跌破防守位或主线切换时重新评估",
+                        "逻辑：容量核心、趋势延续、量价共振、消息强化",
+                        "验证：量能继续放大且承接稳定",
+                    ]
+                )
+                full_playbook = "\n".join(
+                    [
+                        "今天先做什么",
+                        "1. 先补齐登录配置：登录账号, 账户 ID, 策略 ID, SDK Token",
+                        "2. 再刷新市场和推荐池，确认主线与机会分层。",
+                        "3. 最后进入交易执行页复核委托、风险灯和仓位。",
+                        "4. 收盘后回到复盘页记录结论。",
+                    ]
+                )
+                window._set_plain_text_if_changed(window.overview_command_text, full_command)
+                window._set_plain_text_if_changed(window.overview_execution_text, full_execution)
+                window._set_plain_text_if_changed(window.overview_playbook_text, full_playbook)
+
+                window._apply_overview_text_summary_v58()
+                app.processEvents()
+
+                self.assertLessEqual(window.market_status_label.maximumHeight(), 54)
+                self.assertNotEqual(window.market_status_label.text(), full_status)
+                self.assertLess(len(window.market_status_label.text()), len(full_status))
+                self.assertIn("总览状态：正在从全市场筛选龙头候选", window.market_status_label.toolTip())
+                self.assertIn("区间：2026-01-05 ~ 2026-03-09", window.market_status_label.toolTip())
+                self.assertNotEqual(window.overview_command_text.toPlainText(), full_command)
+                self.assertIn("更多要点见提示", window.overview_command_text.toPlainText())
+                self.assertEqual(window.overview_command_text.toolTip(), full_command)
+                self.assertNotEqual(window.overview_execution_text.toPlainText(), full_execution)
+                self.assertEqual(window.overview_execution_text.toolTip(), full_execution)
+                self.assertNotEqual(window.overview_playbook_text.toPlainText(), full_playbook)
+                self.assertEqual(window.overview_playbook_text.toolTip(), full_playbook)
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_applies_overview_contrast_override_styles(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                app.processEvents()
+                window._apply_readability_override_v29()
+                app.processEvents()
+
+                stylesheet = window.styleSheet()
+                self.assertIn("QWidget#overviewRoot QTabWidget#compactInfoTabs QTabBar::tab", stylesheet)
+                self.assertIn("color: #d3e1ee;", stylesheet)
+                self.assertIn("QWidget#overviewRoot QPushButton:disabled", stylesheet)
+                self.assertIn("color:#d8e3ef", window.market_subheader_label.styleSheet())
+                self.assertIn("color:#d7e3ee", window.market_quote_label.styleSheet())
+                self.assertIn("color: #f7fbff", window._overview_outline_style("#4fc3f7"))
+                self.assertIn("color: #f7fbff", window._overview_filled_style("#237fa2"))
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_prioritizes_overview_tabs_for_compact_trade_context(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                focus_row = RecommendationRow(
+                    symbol="SZSE.300001",
+                    stock_id="300001",
+                    stock_name="龙头样本",
+                    action="BUY",
+                    label="RECLAIM_LONG",
+                    signal_date="2026-04-15",
+                    close=10.0,
+                    entry_price=10.0,
+                    stop_price=9.6,
+                    target_price=10.8,
+                    technical_score=86.0,
+                    position_score=77.0,
+                    persistence_score=82.0,
+                    news_score=73.0,
+                    leader_score=90.0,
+                    total_score=88.0,
+                )
+                focus_intent = OrderIntent(
+                    symbol="SZSE.300001",
+                    side="BUY",
+                    price=10.0,
+                    quantity=1000,
+                    stop_price=9.6,
+                    target_price=10.8,
+                    signal_date="2026-04-15",
+                    reason="focus",
+                )
+                window.news_catalysts = {"SZSE.300001": [SimpleNamespace(title="订单超预期", source="cninfo", summary="媒体催化")]}
+                window.order_intents = [focus_intent]
+                window.last_broker_execution_summary = {}
+                window._explicit_recommendation_focus = lambda: focus_row
+                window._selected_daily_pool_recommendation = lambda: focus_row
+                window._selected_order_intent = lambda: focus_intent
+
+                window._apply_overview_tab_priority_v60(compact=True)
+                app.processEvents()
+
+                self.assertEqual(window.left_signal_tabs.currentIndex(), 0)
+                self.assertEqual(window.right_intel_tabs.currentIndex(), 2)
+                self.assertEqual(window.overview_primary_chart_tabs.currentIndex(), 1)
+                self.assertEqual(window.overview_mini_chart_tabs.currentIndex(), 1)
+                self.assertEqual(window.overview_chart_controls_tabs.currentIndex(), 1)
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_keeps_user_selected_overview_tab_when_priority_reapplies(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                focus_row = RecommendationRow(
+                    symbol="SZSE.300001",
+                    stock_id="300001",
+                    stock_name="龙头样本",
+                    action="BUY",
+                    label="RECLAIM_LONG",
+                    signal_date="2026-04-15",
+                    close=10.0,
+                    entry_price=10.0,
+                    stop_price=9.6,
+                    target_price=10.8,
+                    technical_score=86.0,
+                    position_score=77.0,
+                    persistence_score=82.0,
+                    news_score=73.0,
+                    leader_score=90.0,
+                    total_score=88.0,
+                )
+                focus_intent = OrderIntent(
+                    symbol="SZSE.300001",
+                    side="BUY",
+                    price=10.0,
+                    quantity=1000,
+                    stop_price=9.6,
+                    target_price=10.8,
+                    signal_date="2026-04-15",
+                    reason="focus",
+                )
+                window.order_intents = [focus_intent]
+                window._explicit_recommendation_focus = lambda: focus_row
+                window._selected_daily_pool_recommendation = lambda: focus_row
+                window._selected_order_intent = lambda: focus_intent
+
+                window._apply_overview_tab_priority_v60(compact=True)
+                app.processEvents()
+                window.right_intel_tabs.setCurrentIndex(1)
+                app.processEvents()
+
+                window._apply_overview_tab_priority_v60(compact=True)
+                app.processEvents()
+
+                self.assertEqual(window.right_intel_tabs.currentIndex(), 1)
             finally:
                 window.close()
                 app.processEvents()
@@ -4271,19 +4960,60 @@ class StrategyWorkflowTests(unittest.TestCase):
                 window.transient_news_feedback = {"symbol": "SZSE.300001"}
 
                 window._update_market_text_panels("SZSE.300001", None, recommendation)
+                window._refresh_overview_focus_cards("SZSE.300001", None, recommendation)
+                window._populate_market_depth_texts([recommendation])
+                window._route_news_item_to_workspace(news_item, "recommend")
+                window._route_news_item_to_workspace(news_item, "detail")
                 window._refresh_recommendation_focus_panels(recommendation)
                 app.processEvents()
 
-                self.assertIn("建议：先回总览", window.market_breadth_text.toPlainText())
-                self.assertEqual(window.market_open_news_button.text(), "查看媒体原文")
-                self.assertEqual(window.market_news_detail_button.text(), "查看媒体详情")
-                self.assertIn("消息驱动", window.overview_summary_cards["source"].headline_label.text())
-                self.assertIn("查看媒体原文", window.recommend_news_source_button.text())
-                self.assertIn("查看媒体详情", window.recommend_news_detail_button.text())
-                self.assertIn("消息驱动", window.daily_pool_focus_label.text())
+                self.assertIn("建议：先看总览", window.market_breadth_text.toPlainText())
+                self.assertIn("原文", window.market_open_news_button.text())
+                self.assertIn("详情", window.market_news_detail_button.text())
+                self.assertTrue(window.market_open_news_button.isEnabled())
+                self.assertTrue(window.market_news_detail_button.isEnabled())
+                self.assertIn("刚由消息定位", window.overview_summary_cards["source"].headline_label.text())
+                self.assertIn("消息分层", window.overview_summary_cards["source"].headline_label.text())
+                self.assertIn("原文", window.recommend_news_source_button.text())
+                self.assertIn("详情", window.recommend_news_detail_button.text())
+                self.assertIn("SZSE.300001", window.recommend_focus_banner.text())
+                self.assertIn("先看总览", window.recommend_focus_banner.text())
+                self.assertIn("SZSE.300001", window.detail_focus_banner.text())
+                self.assertIn("先看总览", window.detail_focus_banner.text())
             finally:
                 window.close()
                 app.processEvents()
+
+    def test_refresh_workspace_focus_banners_append_news_action_brief(self) -> None:
+        module = importlib.import_module("app_qt")
+        window = SimpleNamespace(
+            active_symbol="SZSE.300001",
+            daily_pool_table=SimpleNamespace(rowCount=lambda: 5),
+            signal_table=SimpleNamespace(rowCount=lambda: 3),
+            trades_table=SimpleNamespace(rowCount=lambda: 2),
+            recommend_focus_banner=module.QLabel(),
+            detail_focus_banner=module.QLabel(),
+            daily_pool_rows=[SimpleNamespace(symbol="SZSE.300001", primary_strategy="龙头模型", action="BUY")],
+            scan_rows=[],
+            _selected_symbol_from_watchlist=lambda: "",
+            _selected_board_symbol=lambda: "",
+            _stock_name_for_symbol=lambda symbol: "龙头样本",
+            _stock_id_for_symbol=lambda symbol: "300001",
+            _focus_banner_tone=lambda symbol="", recommendation=None, scan_row=None: "buy",
+            _display_action=lambda value: {"BUY": "买入", "WATCH": "观察", "SELL": "卖出"}.get(value, value),
+            _news_focus_context_suffix=lambda symbol: " | 【消息驱动】",
+            _news_action_brief=lambda symbol="": "消息建议：先看推荐页",
+            _set_focus_banner_state=lambda banner, tone, text: banner.setText(text),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip) if tooltip is not None else None,
+            ),
+        )
+
+        module.QuantHunterWindow._refresh_workspace_focus_banners(window)
+
+        self.assertIn("先看推荐页", window.recommend_focus_banner.text())
+        self.assertIn("先看推荐页", window.detail_focus_banner.text())
 
     def test_market_multi_timeframe_summary_helper(self) -> None:
         if importlib.util.find_spec("PySide6") is None:
@@ -7035,6 +7765,12 @@ class StrategyWorkflowTests(unittest.TestCase):
             news_source_last_loaded_at="2026-04-16 10:18:00",
             news_source_status="示例消息源已载入 4 条消息",
             news_catalysts=news_items,
+            _news_workflow_snapshot_lines=lambda symbol="": [
+                "- 当前焦点：龙头样本 (300001 / SZSE.300001)",
+                "- 当前消息：已公告 | 利润分配方案公告",
+                "- 建议动作：先看推荐页 -> 推荐页",
+                "- 原文状态：可打开原文",
+            ],
             _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
         )
 
@@ -7045,6 +7781,9 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn("最后载入：2026-04-16 10:18:00", text)
         self.assertIn("已载入股票：2 只", text)
         self.assertIn("当前状态：示例消息源已载入 4 条消息", text)
+        self.assertIn("当前消息工作流", text)
+        self.assertIn("建议动作：先看推荐页 -> 推荐页", text)
+        self.assertIn("iteration-84-message-workflow-manual-checklist.md", text)
 
     def test_candidate_symbols_for_news_source_prioritizes_focus_and_watchlist(self) -> None:
         module = importlib.import_module("app_qt")
@@ -10590,6 +11329,77 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(window.broker_detail_toggle_button.text(), "收起执行明细")
         self.assertIn("执行明细已展开", window.broker_detail_status_label.text())
 
+    def test_set_broker_setup_visibility_updates_controls(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        window = SimpleNamespace(
+            broker_control_splitter=module.QWidget(),
+            broker_setup_toggle_button=module.QPushButton(),
+            broker_setup_status_label=module.QLabel(),
+            _set_label_text_if_changed=lambda label, text: label.setText(text) if label.text() != text else None,
+        )
+
+        module.QuantHunterWindow._set_broker_setup_visibility_v41(window, False)
+        self.assertFalse(window.broker_control_splitter.isVisible())
+        self.assertEqual(window.broker_setup_toggle_button.text(), "展开账户与通道设置")
+        self.assertIn("默认收起", window.broker_setup_status_label.text())
+
+        module.QuantHunterWindow._set_broker_setup_visibility_v41(window, True)
+        self.assertTrue(window.broker_control_splitter.isVisible())
+        self.assertEqual(window.broker_setup_toggle_button.text(), "收起账户与通道设置")
+        self.assertIn("已展开", window.broker_setup_status_label.text())
+
+    def test_open_broker_setup_section_expands_drawer_and_focuses_runtime(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        splitter = module.QSplitter()
+        splitter.addWidget(module.QWidget())
+        splitter.addWidget(module.QWidget())
+        splitter.addWidget(module.QWidget())
+        window = SimpleNamespace(
+            broker_setup_drawer=module.QWidget(),
+            broker_control_splitter=splitter,
+            broker_setup_toggle_button=module.QPushButton(),
+            broker_setup_status_label=module.QLabel(),
+            broker_setup_profile_button=module.QPushButton(),
+            broker_setup_action_button=module.QPushButton(),
+            broker_setup_runtime_button=module.QPushButton(),
+            _set_label_text_if_changed=lambda label, text: label.setText(text) if label.text() != text else None,
+            _set_button_role=lambda button, role="ghost": setattr(button, "role", role),
+        )
+        window._set_broker_setup_visibility_v41 = lambda visible: module.QuantHunterWindow._set_broker_setup_visibility_v41(window, visible)
+
+        module.QuantHunterWindow.open_broker_setup_section(window, "runtime")
+
+        self.assertTrue(window.broker_setup_drawer.isVisible())
+        self.assertTrue(window.broker_control_splitter.isVisible())
+        self.assertEqual(window.broker_setup_runtime_button.role, "accent")
+        self.assertEqual(window.broker_setup_profile_button.role, "ghost")
+        self.assertIn("运行维护", window.broker_setup_status_label.text())
+
+    def test_set_overview_controls_visibility_updates_controls(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        window = SimpleNamespace(
+            overview_controls_container=module.QWidget(),
+            overview_controls_toggle_button=module.QPushButton(),
+            overview_controls_status_label=module.QLabel(),
+            _set_label_text_if_changed=lambda label, text: label.setText(text) if label.text() != text else None,
+        )
+
+        module.QuantHunterWindow._set_overview_controls_visibility_v61(window, False)
+        self.assertFalse(window.overview_controls_container.isVisible())
+        self.assertEqual(window.overview_controls_toggle_button.text(), "展开市场控制台")
+        self.assertIn("首屏已聚焦市场洞察", window.overview_controls_status_label.text())
+
+        module.QuantHunterWindow._set_overview_controls_visibility_v61(window, True)
+        self.assertTrue(window.overview_controls_container.isVisible())
+        self.assertEqual(window.overview_controls_toggle_button.text(), "收起市场控制台")
+        self.assertIn("已展开", window.overview_controls_status_label.text())
+
     def test_build_paper_experiment_lines_highlights_verdict_and_next_round(self) -> None:
         module = importlib.import_module("app_qt")
         state = PaperTradingState(
@@ -12296,6 +13106,74 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         self.assertIn("隔日 强博弈", window.trade_plan_focus_label.text())
 
+    def test_refresh_trade_plan_focus_label_appends_news_action_brief(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        class _Sink:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def setText(self, value: str) -> None:
+                self.value = value
+
+            def text(self) -> str:
+                return self.value
+
+        decision = SimpleNamespace(
+            symbol="SZSE.300001",
+            stock_name="龙头样本",
+            action="BUY",
+        )
+        plan = SimpleNamespace(decisions=[decision])
+        row = SimpleNamespace(symbol="SZSE.300001", primary_strategy="龙头模型")
+        window = SimpleNamespace(
+            current_trade_plan=plan,
+            daily_pool_rows=[row],
+            trade_plan_focus_label=_Sink(),
+            _news_action_brief=lambda symbol="": "消息建议：先看推荐页",
+        )
+
+        with patch.object(module, "_ORIGINAL_QH_REFRESH_TRADE_PLAN_V7", lambda _window: None), patch.object(
+            module, "_qh_mainline_signal_brief_v4", return_value="继续跟"
+        ), patch.object(module, "one_day_hold_grade", return_value=""):
+            module._qh_refresh_trade_plan_v5(window)
+
+        self.assertIn("消息建议：先看推荐页", window.trade_plan_focus_label.text())
+
+    def test_update_broker_action_flow_appends_news_action_brief_for_focus_symbol(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        focus_row = SimpleNamespace(symbol="SZSE.300001", stock_name="龙头样本")
+        window = SimpleNamespace(
+            state=SimpleNamespace(strategy_risk_profile="standard"),
+            active_symbol="SZSE.300001",
+            broker_status_banner=module.QLabel(),
+            generate_order_suggestions_button=module.QPushButton(),
+            confirm_submit_orders_button=module.QPushButton(),
+            sync_broker_button=module.QPushButton(),
+            validate_broker_connection_button=module.QPushButton(),
+            broker_focus_blocker_button=module.QPushButton(),
+            broker_focus_priority_button=module.QPushButton(),
+            order_intents=[],
+            order_submission_records=[],
+            last_broker_execution_summary={"blockers": [], "warnings": []},
+            current_broker_profile=lambda: SimpleNamespace(mode="export", auth_channel="eastmoney"),
+            _explicit_recommendation_focus=lambda: focus_row,
+            _selected_order_intent=lambda: None,
+            _stock_name_for_symbol=lambda symbol: "龙头样本",
+            _news_action_brief=lambda symbol="": "消息建议：先看推荐页",
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+            _set_button_role=lambda button, role="ghost": setattr(button, "role", role),
+        )
+
+        with patch.object(module, "_qh_broker_primary_cta_tooltips_v54", return_value={"generate_tooltip": "", "confirm_tooltip": ""}), patch.object(
+            module, "_qh_broker_primary_cta_labels_v53", return_value={"confirm_text": "确认并提交委托", "generate_text": "生成委托建议"}
+        ):
+            module._qh_update_broker_action_flow_v26(window)
+
+        self.assertIn("消息建议：先看推荐页", window.broker_status_banner.text())
+
     def test_decision_engine_market_pulse_exposes_flow_signal(self) -> None:
         recommendations = [
             RecommendationRow(
@@ -12715,11 +13593,14 @@ class StrategyWorkflowTests(unittest.TestCase):
                 "strategy_id": module.QLineEdit(""),
             },
             login_inputs={
+                "account_name": module.QLineEdit("演示账户"),
                 "username": module.QLineEdit("demo-user"),
                 "password": module.QLineEdit("demo-password"),
                 "account_id": module.QLineEdit("demo-account"),
                 "token": module.QLineEdit("demo-token"),
                 "strategy_id": module.QLineEdit("demo-strategy"),
+                "sdk_module": module.QLineEdit("gm.api.demo"),
+                "sdk_python_path": module.QLineEdit("C:\\demo\\python.exe"),
             },
             mode_combo=SimpleNamespace(currentData=lambda: "sdk"),
             auth_channel_combo=SimpleNamespace(currentData=lambda: "gm"),
@@ -12757,11 +13638,14 @@ class StrategyWorkflowTests(unittest.TestCase):
                 "strategy_id": module.QLineEdit(""),
             },
             login_inputs={
+                "account_name": module.QLineEdit("演示账户"),
                 "username": module.QLineEdit("demo-user"),
                 "password": module.QLineEdit("demo-password"),
                 "account_id": module.QLineEdit("demo-account"),
                 "token": module.QLineEdit("demo-token"),
                 "strategy_id": module.QLineEdit("demo-strategy"),
+                "sdk_module": module.QLineEdit("gm.api.demo"),
+                "sdk_python_path": module.QLineEdit("C:\\demo\\python.exe"),
             },
             mode_combo=SimpleNamespace(currentData=lambda: "sdk"),
             auth_channel_combo=SimpleNamespace(currentData=lambda: "gm"),
@@ -12784,12 +13668,69 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(window.broker_inputs["account_id"].text(), "demo-account")
         self.assertEqual(window.broker_inputs["token"].text(), "demo-token")
         self.assertEqual(window.broker_inputs["strategy_id"].text(), "demo-strategy")
+        self.assertEqual(window.broker_inputs["account_name"].text(), "演示账户")
+        self.assertEqual(window.broker_inputs["sdk_module"].text(), "gm.api.demo")
+        self.assertEqual(window.broker_inputs["sdk_python_path"].text(), "C:\\demo\\python.exe")
+        self.assertEqual(window.state.broker_profile.account_name, "演示账户")
         self.assertEqual(window.state.broker_profile.account_id, "demo-account")
+        self.assertEqual(window.state.broker_profile.sdk_module, "gm.api.demo")
+        self.assertEqual(window.state.broker_profile.sdk_python_path, "C:\\demo\\python.exe")
         self.assertEqual(window.state.broker_profile.token, "demo-token")
         self.assertEqual(window.state.broker_profile.strategy_id, "demo-strategy")
         self.assertEqual(calls["saved"], 1)
         self.assertEqual(calls["login"], 1)
         self.assertEqual(calls["broker"], 1)
+
+    def test_validate_login_connection_syncs_auth_fields_before_validation(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+
+        calls = {"saved": 0, "login": 0, "validate": 0}
+        window = SimpleNamespace(
+            state=SimpleNamespace(broker_profile=BrokerProfile()),
+            broker_inputs={
+                "account_name": module.QLineEdit("东方财富账户"),
+                "account_id": module.QLineEdit(""),
+                "export_dir": module.QLineEdit("exports"),
+                "sdk_module": module.QLineEdit("gm.api"),
+                "sdk_python_path": module.QLineEdit(""),
+                "token": module.QLineEdit(""),
+                "strategy_id": module.QLineEdit(""),
+            },
+            login_inputs={
+                "account_name": module.QLineEdit("演示账户"),
+                "username": module.QLineEdit("demo-user"),
+                "password": module.QLineEdit("demo-password"),
+                "account_id": module.QLineEdit("demo-account"),
+                "token": module.QLineEdit("demo-token"),
+                "strategy_id": module.QLineEdit("demo-strategy"),
+                "sdk_module": module.QLineEdit("gm.api.demo"),
+                "sdk_python_path": module.QLineEdit("C:\\demo\\python.exe"),
+            },
+            mode_combo=SimpleNamespace(currentData=lambda: "sdk"),
+            auth_channel_combo=SimpleNamespace(currentData=lambda: "gm"),
+            test_submit_only_checkbox=SimpleNamespace(isChecked=lambda: True),
+            test_submit_max_amount_input=module.QLineEdit("2500"),
+            test_submit_symbol_whitelist_input=module.QLineEdit("600000"),
+            auto_export_submission_records_checkbox=SimpleNamespace(isChecked=lambda: True),
+            save_state=lambda: calls.__setitem__("saved", calls["saved"] + 1),
+            _refresh_login_status=lambda: calls.__setitem__("login", calls["login"] + 1),
+            validate_broker_connection=lambda: calls.__setitem__("validate", calls["validate"] + 1),
+        )
+        window._input_mapping_value = lambda mapping, key: module.QuantHunterWindow._input_mapping_value(window, mapping, key)
+        window._shared_broker_field_value = lambda key: module.QuantHunterWindow._shared_broker_field_value(window, key)
+        window._sync_shared_broker_fields = lambda source: module.QuantHunterWindow._sync_shared_broker_fields(window, source)
+        window.current_broker_profile = lambda: module.QuantHunterWindow.current_broker_profile(window)
+
+        module.QuantHunterWindow.validate_login_connection(window)
+
+        self.assertEqual(window.broker_inputs["account_name"].text(), "演示账户")
+        self.assertEqual(window.broker_inputs["sdk_module"].text(), "gm.api.demo")
+        self.assertEqual(window.broker_inputs["sdk_python_path"].text(), "C:\\demo\\python.exe")
+        self.assertEqual(calls["saved"], 1)
+        self.assertEqual(calls["login"], 1)
+        self.assertEqual(calls["validate"], 1)
 
     def test_save_strategy_preferences_controller_persists_risk_profile(self) -> None:
         from quant_hunter import ui_controllers

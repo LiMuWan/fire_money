@@ -122,11 +122,14 @@ def build_auth_workspace(window) -> None:
     form_grid.addWidget(window.auth_channel_combo, 0, 1)
 
     login_fields = [
+        ("account_name", "账户名称", profile.account_name or "东方财富账户"),
         ("username", "登录账号", profile.username),
         ("password", "登录密码", profile.password),
         ("token", "SDK Token", profile.token),
         ("account_id", "账户 ID", profile.account_id),
         ("strategy_id", "策略 ID", profile.strategy_id),
+        ("sdk_module", "SDK 模块", profile.sdk_module or "gm.api"),
+        ("sdk_python_path", "Bridge Python", profile.sdk_python_path),
     ]
     for index, (key, label, value) in enumerate(login_fields, start=1):
         form_grid.addWidget(QLabel(label), index, 0)
@@ -134,14 +137,45 @@ def build_auth_workspace(window) -> None:
         widget.setMinimumHeight(38)
         if key == "password":
             widget.setEchoMode(QLineEdit.Password)
+        if key == "sdk_python_path":
+            widget.setPlaceholderText("例如：C:\\Users\\18335\\AppData\\Local\\Programs\\Python\\Python312\\python.exe")
+        elif key == "sdk_module":
+            widget.setPlaceholderText("例如：gm.api")
         window.login_inputs[key] = widget
         form_grid.addWidget(widget, index, 1)
+        widget.textChanged.connect(lambda *_args: window._refresh_login_status())
 
+    window.auth_channel_combo.currentIndexChanged.connect(lambda *_args: window._refresh_login_status())
+
+    auth_hint = QLabel("GM / 自定义通道建议在这里同时补齐 SDK 模块与 Bridge Python，再做接入校验。")
+    auth_hint.setObjectName("inlineHint")
+    auth_hint.setWordWrap(True)
+    form_grid.addWidget(auth_hint, len(login_fields) + 1, 0, 1, 2)
+
+    action_row = QHBoxLayout()
+    action_row.setSpacing(8)
     save_button = QPushButton("保存登录信息")
+    validate_button = QPushButton("校验接入")
+    broker_button = QPushButton("前往交易执行")
+    recommend_button = QPushButton("前往推荐池")
     window._set_button_role(save_button, "accent")
+    window._set_button_role(validate_button, "tonal")
+    window._set_button_role(broker_button, "ghost")
+    window._set_button_role(recommend_button, "ghost")
     save_button.setMinimumHeight(40)
+    validate_button.setMinimumHeight(40)
+    broker_button.setMinimumHeight(40)
+    recommend_button.setMinimumHeight(40)
     save_button.clicked.connect(window.save_login_profile)
-    form_grid.addWidget(save_button, 6, 1)
+    validate_button.clicked.connect(window.validate_login_connection)
+    broker_button.clicked.connect(lambda: window._navigate_to_workspace("broker", "orders_table"))
+    recommend_button.clicked.connect(lambda: window._navigate_to_workspace("recommend", "daily_pool_table"))
+    action_row.addWidget(save_button)
+    action_row.addWidget(validate_button)
+    action_row.addWidget(broker_button)
+    action_row.addWidget(recommend_button)
+    action_row.addStretch(1)
+    form_grid.addLayout(action_row, len(login_fields) + 2, 0, 1, 2)
     layout.addWidget(form_box)
 
     status_box = QGroupBox("连接状态")
@@ -210,6 +244,7 @@ def build_detail_workspace(window, build_table) -> None:
     layout.addWidget(tool_panel)
 
     metrics_box = QGroupBox("策略摘要")
+    window.detail_metrics_box = metrics_box
     window._style_terminal_panel(metrics_box)
     metrics_layout = QVBoxLayout(metrics_box)
     window.metrics_text = QTextEdit()
@@ -218,9 +253,8 @@ def build_detail_workspace(window, build_table) -> None:
     window.metrics_text.setMaximumHeight(260)
     window._style_terminal_console(window.metrics_text)
     metrics_layout.addWidget(window.metrics_text)
-    layout.addWidget(metrics_box)
-
     detail_recap_splitter = QSplitter(Qt.Horizontal)
+    window.detail_recap_splitter = detail_recap_splitter
     detail_recap_splitter.setChildrenCollapsible(False)
     decision_box = QGroupBox("交易决策画像")
     execution_box = QGroupBox("执行状态回放")
@@ -259,6 +293,7 @@ def build_detail_workspace(window, build_table) -> None:
     detail_recap_splitter.addWidget(conclusion_box)
     window._configure_splitter(detail_recap_splitter, [420, 420, 420])
     layout.addWidget(detail_recap_splitter)
+    layout.addWidget(metrics_box)
 
     signal_box = QGroupBox("近期信号")
     trade_box = QGroupBox("交易记录")
@@ -570,8 +605,6 @@ def build_broker_workspace(window, build_table, adapter_factory, project_root: P
     broker_control_splitter.addWidget(action_box)
     broker_control_splitter.addWidget(runtime_box)
     window._configure_splitter(broker_control_splitter, [520, 500, 360])
-    layout.addWidget(broker_control_splitter)
-
     holdings_box = QGroupBox("当前持仓")
     orders_box = QGroupBox("委托执行台")
     window._style_terminal_panel(holdings_box, orders_box)
@@ -695,6 +728,46 @@ def build_broker_workspace(window, build_table, adapter_factory, project_root: P
     recap_layout.addWidget(window.broker_recap_text)
     layout.addWidget(recap_box)
 
+    broker_setup_toggle_row = QHBoxLayout()
+    broker_setup_toggle_row.setContentsMargins(0, 0, 0, 0)
+    broker_setup_toggle_row.setSpacing(10)
+    window.broker_setup_toggle_button = QPushButton("展开账户与通道设置")
+    window._set_button_role(window.broker_setup_toggle_button, "ghost")
+    window.broker_setup_toggle_button.setMinimumHeight(38)
+    window.broker_setup_toggle_button.clicked.connect(window.toggle_broker_setup_panel)
+    window.broker_setup_status_label = QLabel("账户接入、SDK、导出与运行维护默认收起；盘中先看委托、风险闸门和回执。")
+    window.broker_setup_status_label.setObjectName("inlineHint")
+    window.broker_setup_status_label.setWordWrap(True)
+    window.broker_setup_profile_button = QPushButton("账户")
+    window.broker_setup_action_button = QPushButton("执行参数")
+    window.broker_setup_runtime_button = QPushButton("运行维护")
+    for button in (
+        window.broker_setup_profile_button,
+        window.broker_setup_action_button,
+        window.broker_setup_runtime_button,
+    ):
+        window._set_button_role(button, "ghost")
+        button.setMinimumHeight(34)
+    window.broker_setup_profile_button.clicked.connect(lambda: window.open_broker_setup_section("profile"))
+    window.broker_setup_action_button.clicked.connect(lambda: window.open_broker_setup_section("action"))
+    window.broker_setup_runtime_button.clicked.connect(lambda: window.open_broker_setup_section("runtime"))
+    broker_setup_toggle_row.addWidget(window.broker_setup_toggle_button)
+    broker_setup_toggle_row.addWidget(window.broker_setup_profile_button)
+    broker_setup_toggle_row.addWidget(window.broker_setup_action_button)
+    broker_setup_toggle_row.addWidget(window.broker_setup_runtime_button)
+    broker_setup_toggle_row.addWidget(window.broker_setup_status_label, stretch=1)
+    layout.addLayout(broker_setup_toggle_row)
+
+    broker_setup_drawer = QFrame()
+    broker_setup_drawer.setObjectName("brokerSetupDrawer")
+    broker_setup_drawer.setProperty("actionRow", True)
+    broker_setup_drawer_layout = QVBoxLayout(broker_setup_drawer)
+    broker_setup_drawer_layout.setContentsMargins(10, 10, 10, 10)
+    broker_setup_drawer_layout.setSpacing(0)
+    broker_setup_drawer_layout.addWidget(broker_control_splitter)
+    window.broker_setup_drawer = broker_setup_drawer
+    layout.addWidget(broker_setup_drawer)
+
 def build_overview_workspace(
     window,
     build_table,
@@ -716,8 +789,10 @@ def build_overview_workspace(
     root_layout.addWidget(window.overview_scroll_area)
     overview_content = QWidget()
     overview_content.setObjectName("overviewRoot")
+    window.overview_content = overview_content
     window.overview_scroll_area.setWidget(overview_content)
     layout = QVBoxLayout(overview_content)
+    window.overview_root_layout = layout
     layout.setContentsMargins(10, 10, 10, 18)
     layout.setSpacing(14)
     quick_row = QGridLayout()
@@ -855,9 +930,31 @@ def build_overview_workspace(
     window.overview_view_box = overview_view_box
     window.overview_search_box = overview_search_box
     window.overview_tag_box = overview_tag_box
-    layout.addWidget(controls_container)
+    overview_controls_toggle_row = QHBoxLayout()
+    overview_controls_toggle_row.setContentsMargins(0, 0, 0, 0)
+    overview_controls_toggle_row.setSpacing(10)
+    window.overview_controls_toggle_button = QPushButton("展开市场控制台")
+    window._set_button_role(window.overview_controls_toggle_button, "ghost")
+    window.overview_controls_toggle_button.setMinimumHeight(38)
+    window.overview_controls_toggle_button.clicked.connect(window.toggle_overview_controls_panel)
+    window.overview_controls_status_label = QLabel("首屏已聚焦市场洞察，搜索、刷新与策略快筛默认收起。")
+    window.overview_controls_status_label.setObjectName("inlineHint")
+    window.overview_controls_status_label.setWordWrap(True)
+    overview_controls_toggle_row.addWidget(window.overview_controls_toggle_button)
+    overview_controls_toggle_row.addWidget(window.overview_controls_status_label, stretch=1)
+    layout.addLayout(overview_controls_toggle_row)
+    overview_controls_drawer = QFrame()
+    overview_controls_drawer.setObjectName("overviewControlsDrawer")
+    overview_controls_drawer.setProperty("actionRow", True)
+    overview_controls_drawer_layout = QVBoxLayout(overview_controls_drawer)
+    overview_controls_drawer_layout.setContentsMargins(10, 10, 10, 10)
+    overview_controls_drawer_layout.setSpacing(0)
+    overview_controls_drawer_layout.addWidget(controls_container)
+    window.overview_controls_drawer = overview_controls_drawer
+    layout.addWidget(overview_controls_drawer)
     dashboard_metrics_box = QGroupBox("核心指标带")
     dashboard_metrics_box.setObjectName("dashboardMetricsBox")
+    window.dashboard_metrics_box = dashboard_metrics_box
     window._style_terminal_panel(dashboard_metrics_box)
     dashboard_metrics_box.setProperty("pageTone", "overview")
     dashboard_metrics_box.setProperty("surfaceRole", "metric-band")
@@ -879,6 +976,7 @@ def build_overview_workspace(
     layout.addWidget(dashboard_metrics_box)
     cockpit_box = QGroupBox("市场驾驶舱")
     cockpit_box.setObjectName("cockpitBox")
+    window.overview_cockpit_box = cockpit_box
     window._style_terminal_panel(cockpit_box)
     cockpit_box.setProperty("pageTone", "overview")
     cockpit_box.setProperty("surfaceRole", "spotlight")
@@ -899,7 +997,12 @@ def build_overview_workspace(
     cockpit_body.addWidget(window.overview_execution_text)
     window._configure_splitter(cockpit_body, [1, 1])
     cockpit_layout.addWidget(cockpit_body)
-    cockpit_action_row = QHBoxLayout()
+    cockpit_action_row_widget = QWidget()
+    cockpit_action_row_widget.setObjectName("overviewCockpitActionRow")
+    cockpit_action_row = QHBoxLayout(cockpit_action_row_widget)
+    cockpit_action_row.setContentsMargins(0, 0, 0, 0)
+    cockpit_action_row.setSpacing(10)
+    window.overview_cockpit_action_buttons = []
     for label, workspace in [
         ("前往推荐页", "recommend"),
         ("前往交易页", "broker"),
@@ -910,12 +1013,20 @@ def build_overview_workspace(
         button.setMinimumHeight(40)
         button.clicked.connect(lambda checked=False, target=workspace: window._navigate_to_workspace(target))
         cockpit_action_row.addWidget(button)
+        window.overview_cockpit_action_buttons.append(button)
+    window.overview_cockpit_more_button = QPushButton("更多")
+    window.overview_cockpit_more_button.setObjectName("overviewCockpitMoreButton")
+    window._set_button_role(window.overview_cockpit_more_button, "ghost")
+    window.overview_cockpit_more_button.setMinimumHeight(40)
+    window.overview_cockpit_more_button.hide()
+    cockpit_action_row.addWidget(window.overview_cockpit_more_button)
     cockpit_action_row.addStretch(1)
-    cockpit_layout.addLayout(cockpit_action_row)
+    cockpit_layout.addWidget(cockpit_action_row_widget)
     layout.addWidget(cockpit_box)
 
     playbook_box = QGroupBox("行动剧本")
     playbook_box.setObjectName("playbookBox")
+    window.overview_playbook_box = playbook_box
     window._style_terminal_panel(playbook_box)
     playbook_box.setProperty("pageTone", "overview")
     playbook_box.setProperty("surfaceRole", "spotlight")
@@ -929,7 +1040,12 @@ def build_overview_workspace(
         "先完成登录与交易通道配置，再刷新市场、查看主线和推荐池，最后进入交易执行页复核委托。"
     )
     playbook_layout.addWidget(window.overview_playbook_text)
-    playbook_action_row = QHBoxLayout()
+    playbook_action_row_widget = QWidget()
+    playbook_action_row_widget.setObjectName("overviewPlaybookActionRow")
+    playbook_action_row = QHBoxLayout(playbook_action_row_widget)
+    playbook_action_row.setContentsMargins(0, 0, 0, 0)
+    playbook_action_row.setSpacing(10)
+    window.overview_playbook_action_buttons = []
     for label, workspace, role in [
         ("前往登录配置", "auth", "accent"),
         ("前往推荐池", "recommend", "ghost"),
@@ -940,8 +1056,15 @@ def build_overview_workspace(
         button.setMinimumHeight(38)
         button.clicked.connect(lambda checked=False, target=workspace: window._navigate_to_workspace(target))
         playbook_action_row.addWidget(button)
+        window.overview_playbook_action_buttons.append(button)
+    window.overview_playbook_more_button = QPushButton("更多")
+    window.overview_playbook_more_button.setObjectName("overviewPlaybookMoreButton")
+    window._set_button_role(window.overview_playbook_more_button, "ghost")
+    window.overview_playbook_more_button.setMinimumHeight(38)
+    window.overview_playbook_more_button.hide()
+    playbook_action_row.addWidget(window.overview_playbook_more_button)
     playbook_action_row.addStretch(1)
-    playbook_layout.addLayout(playbook_action_row)
+    playbook_layout.addWidget(playbook_action_row_widget)
     layout.addWidget(playbook_box)
 
     window.overview_stage_container = QWidget()
@@ -955,13 +1078,16 @@ def build_overview_workspace(
     overview_stage_layout.addWidget(overview_detail_stage, stretch=2)
     layout.addWidget(window.overview_stage_container, stretch=5)
     command_stage_layout = QVBoxLayout(overview_command_stage)
+    window.overview_command_stage_layout = command_stage_layout
     command_stage_layout.setContentsMargins(0, 4, 0, 0)
     command_stage_layout.setSpacing(12)
     detail_stage_layout = QVBoxLayout(overview_detail_stage)
+    window.overview_detail_stage_layout = detail_stage_layout
     detail_stage_layout.setContentsMargins(0, 8, 0, 0)
     detail_stage_layout.setSpacing(14)
     overview_priority_box = QGroupBox("盘前优先级")
     overview_priority_box.setObjectName("overviewPriorityBox")
+    window.overview_priority_box = overview_priority_box
     window._style_terminal_panel(overview_priority_box)
     overview_priority_box.setProperty("pageTone", "overview")
     overview_priority_box.setProperty("surfaceRole", "priority-rail")
@@ -1040,8 +1166,8 @@ def build_overview_workspace(
     window.market_news_detail_button = QPushButton("消息详情")
     window._set_button_role(window.market_open_news_button, "ghost")
     window._set_button_role(window.market_news_detail_button, "ghost")
-    window.market_open_news_button.setToolTip("打开当前焦点消息的原文链接。已公告会优先打开公告 PDF，媒体催化则打开来源页面。")
-    window.market_news_detail_button.setToolTip("查看当前焦点消息的详情信息，包括分层、来源、时间、摘要和原文入口。")
+    window.market_open_news_button.setToolTip(window._news_source_button_base_tooltip())
+    window.market_news_detail_button.setToolTip(window._news_detail_button_base_tooltip())
     window.market_open_news_button.clicked.connect(window.open_overview_focus_news_source)
     window.market_news_detail_button.clicked.connect(window.open_overview_focus_news_detail)
     breadth_action_row.addWidget(window.market_open_news_button)
@@ -1426,7 +1552,7 @@ def build_recommend_workspace(
     import_theme_button.clicked.connect(window.import_theme_aliases_csv)
     edit_theme_button.clicked.connect(window.open_theme_alias_editor)
     refresh_button.clicked.connect(window.refresh_daily_pool)
-    load_sample_button.clicked.connect(window.load_sample_reference_data)
+    load_sample_button.clicked.connect(window.load_sample_universe)
     window.news_source_apply_button.clicked.connect(window.load_news_from_current_source)
     window.news_source_combo.currentIndexChanged.connect(lambda *_: window._on_news_source_changed())
     window._set_button_role(import_profile_button)
@@ -1472,7 +1598,7 @@ def build_recommend_workspace(
     window._set_button_role(window.recommend_empty_refresh_button, "ghost")
     window.recommend_empty_sample_button.setMinimumHeight(40)
     window.recommend_empty_refresh_button.setMinimumHeight(40)
-    window.recommend_empty_sample_button.clicked.connect(window.load_sample_reference_data)
+    window.recommend_empty_sample_button.clicked.connect(window.load_sample_universe)
     window.recommend_empty_refresh_button.clicked.connect(window.refresh_daily_pool)
     recommend_empty_action_row.addWidget(window.recommend_empty_sample_button)
     recommend_empty_action_row.addWidget(window.recommend_empty_refresh_button)
@@ -1664,8 +1790,8 @@ def build_recommend_workspace(
     window.recommend_news_detail_button = QPushButton("查看消息详情")
     window._set_button_role(window.recommend_news_source_button, "ghost")
     window._set_button_role(window.recommend_news_detail_button, "ghost")
-    window.recommend_news_source_button.setToolTip("打开当前焦点消息的原文链接。已公告会优先打开公告 PDF，媒体催化则打开来源页面。")
-    window.recommend_news_detail_button.setToolTip("查看当前焦点消息的详情信息，包括分层、来源、时间、摘要和原文入口。")
+    window.recommend_news_source_button.setToolTip(window._news_source_button_base_tooltip())
+    window.recommend_news_detail_button.setToolTip(window._news_detail_button_base_tooltip())
     window.recommend_news_source_button.clicked.connect(window.open_selected_recommend_news_source)
     window.recommend_news_detail_button.clicked.connect(window.open_selected_recommend_news_detail)
     focus_review_action_row.addWidget(window.recommend_news_source_button)
@@ -1691,7 +1817,6 @@ def build_recommend_workspace(
     dispatch_splitter.addWidget(focus_review_box)
     dispatch_splitter.addWidget(queue_box)
     window._configure_splitter(dispatch_splitter, [340, 460, 300])
-    layout.addWidget(dispatch_splitter, stretch=2)
 
     summary_splitter = QSplitter(Qt.Horizontal)
     window.recommend_summary_splitter = summary_splitter
@@ -1728,9 +1853,9 @@ def build_recommend_workspace(
     summary_splitter.addWidget(theme_box)
     summary_splitter.addWidget(leader_box)
     window._configure_splitter(summary_splitter, [410, 790])
-    layout.addWidget(summary_splitter, stretch=2)
 
     pool_box = QGroupBox("主线看板")
+    window.recommend_pool_box = pool_box
     window._style_terminal_panel(pool_box)
     pool_box.setProperty("surfaceRole", "analysis")
     pool_box.setProperty("pageTone", "recommend")
@@ -1747,9 +1872,9 @@ def build_recommend_workspace(
 
     section_hint = QLabel("推荐成交台只保留 3 个核心动作：选焦点、过门槛、进交易。辅助洞察按需展开。")
     section_hint.setObjectName("inlineHint")
-    layout.addWidget(section_hint)
 
     decision_summary_box = QGroupBox("单票成交卡")
+    window.recommend_decision_summary_box = decision_summary_box
     window._style_terminal_panel(decision_summary_box)
     decision_summary_box.setProperty("surfaceRole", "spotlight")
     decision_summary_box.setProperty("pageTone", "recommend")
@@ -1807,6 +1932,9 @@ def build_recommend_workspace(
     decision_action_row.addStretch(1)
     decision_summary_layout.addLayout(decision_action_row)
     layout.addWidget(decision_summary_box)
+    layout.addWidget(section_hint)
+    layout.addWidget(dispatch_splitter, stretch=2)
+    layout.addWidget(summary_splitter, stretch=2)
 
     stage_control_row = QHBoxLayout()
     stage_control_row.setContentsMargins(0, 2, 0, 0)
@@ -2334,7 +2462,6 @@ def build_board_workspace(window, build_table, header_view_cls) -> None:
     window._style_terminal_console(window.board_text)
     window.board_text.setPlainText("先生成每日推荐池，再生成打板候选。")
     candidate_layout.addWidget(window.board_text)
-    layout.addWidget(candidate_box, stretch=1)
 
     monitor_layout = QVBoxLayout(monitor_box)
     window.board_monitor_table = build_table(
@@ -2347,7 +2474,13 @@ def build_board_workspace(window, build_table, header_view_cls) -> None:
     window._style_terminal_console(window.board_monitor_text)
     window.board_monitor_text.setPlainText("专项监控会显示回封观察、炸板风险和强势连板候选。")
     monitor_layout.addWidget(window.board_monitor_text)
-    layout.addWidget(monitor_box, stretch=1)
+    board_workspace_splitter = QSplitter(Qt.Horizontal)
+    board_workspace_splitter.setChildrenCollapsible(False)
+    board_workspace_splitter.addWidget(candidate_box)
+    board_workspace_splitter.addWidget(monitor_box)
+    window._configure_splitter(board_workspace_splitter, [640, 620])
+    window.board_workspace_splitter = board_workspace_splitter
+    layout.addWidget(board_workspace_splitter, stretch=1)
 
 def _build_config_workspace_core(window) -> None:
     layout = QVBoxLayout(window.config_tab)

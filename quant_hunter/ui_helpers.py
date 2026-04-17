@@ -144,8 +144,8 @@ def build_workspace_hero(
     frame.setObjectName("workspaceHero")
     frame.setProperty("heroTone", hero_tone)
     layout = QHBoxLayout(frame)
-    layout.setContentsMargins(22, 18, 22, 18)
-    layout.setSpacing(18)
+    layout.setContentsMargins(18, 14, 18, 14)
+    layout.setSpacing(14)
 
     accent_strip = QFrame()
     accent_strip.setObjectName("workspaceHeroAccent")
@@ -154,7 +154,7 @@ def build_workspace_hero(
     layout.addWidget(accent_strip)
 
     text_layout = QVBoxLayout()
-    text_layout.setSpacing(4)
+    text_layout.setSpacing(3)
 
     top_row = QHBoxLayout()
     top_row.setContentsMargins(0, 0, 0, 0)
@@ -190,7 +190,7 @@ def build_workspace_hero(
         badge_rail.setProperty("heroTone", hero_tone)
         badge_row = QHBoxLayout()
         badge_row.setContentsMargins(0, 0, 0, 0)
-        badge_row.setSpacing(10)
+        badge_row.setSpacing(8)
         for value, caption in badges:
             badge_row.addWidget(build_workspace_badge(value, caption, hero_tone))
         badge_row.addStretch(1)
@@ -214,7 +214,9 @@ def set_button_role(button: QPushButton, role: str = "ghost") -> None:
 
 def style_terminal_panel(*boxes: QGroupBox) -> None:
     for box in boxes:
-        box.setObjectName("terminalPanel")
+        if not (box.objectName() or "").strip():
+            box.setObjectName("terminalPanel")
+        box.setProperty("terminalPanel", True)
 
 
 def style_terminal_console(*widgets: QTextEdit) -> None:
@@ -229,7 +231,7 @@ def build_overview_outline_style(accent: str) -> str:
         "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(18, 24, 33, 0.96), stop:1 rgba(13, 18, 26, 0.96));"
         "font-weight: 800; min-height: 20px; }"
         "QPushButton:hover { background: rgba(255,255,255,0.08); border-color: #dcecff; }"
-        "QPushButton:checked { background: rgba(255,255,255,0.10); border-color: #dcecff; }"
+        "QPushButton:checked { background: rgba(56,88,122,0.96); color:#f7fbff; border-color:#dcecff; }"
     )
 
 
@@ -240,7 +242,7 @@ def build_overview_filled_style(accent: str) -> str:
         f"background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {accent}, stop:1 #7fc8ff);"
         "font-weight: 800; min-height: 22px; }"
         "QPushButton:hover { border-color: #f4fbff; }"
-        "QPushButton:checked { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #0f7ea8, stop:1 #44b9ea); border-color: #b6eeff; }"
+        "QPushButton:checked { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2487c2, stop:1 #52c4ef); color:#f7fbff; border-color: #b6eeff; }"
     )
 
 
@@ -322,14 +324,16 @@ def create_shell_chip(label: str, value: str) -> dict[str, object]:
     frame = QFrame()
     frame.setObjectName("shellChip")
     layout = QVBoxLayout(frame)
-    layout.setContentsMargins(12, 10, 12, 10)
-    layout.setSpacing(2)
+    layout.setContentsMargins(12, 8, 12, 8)
+    layout.setSpacing(3)
+    frame.setMinimumHeight(46)
     label_widget = QLabel(label)
     label_widget.setObjectName("shellChipLabel")
     label_widget.setWordWrap(False)
     value_widget = QLabel(value)
     value_widget.setObjectName("shellChipValue")
     value_widget.setWordWrap(True)
+    value_widget.setMinimumHeight(18)
     frame.setToolTip(value)
     value_widget.setToolTip(value)
     layout.addWidget(label_widget)

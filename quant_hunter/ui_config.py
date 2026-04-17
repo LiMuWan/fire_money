@@ -41,34 +41,34 @@ DISPLAY_TEXT = {
 
 WORKSPACE_TAB_LABELS = [
     "市场机会工作台",
-    "策略扫描",
-    "每日推荐",
-    "打板专项",
     "统一登录",
-    "明细复盘",
+    "每日推荐",
     "交易执行",
+    "策略扫描",
+    "打板专项",
+    "明细复盘",
     "参数配置",
 ]
 
 WORKSPACE_TAB_ORDER = [
     "overview",
-    "scanner",
-    "recommend",
-    "board",
-    "config",
     "auth",
-    "detail",
+    "recommend",
     "broker",
+    "scanner",
+    "board",
+    "detail",
+    "config",
 ]
 
 WORKSPACE_LABEL_BY_KEY = {
     "overview": WORKSPACE_TAB_LABELS[0],
-    "scanner": WORKSPACE_TAB_LABELS[1],
+    "auth": WORKSPACE_TAB_LABELS[1],
     "recommend": WORKSPACE_TAB_LABELS[2],
-    "board": WORKSPACE_TAB_LABELS[3],
-    "auth": WORKSPACE_TAB_LABELS[4],
-    "detail": WORKSPACE_TAB_LABELS[5],
-    "broker": WORKSPACE_TAB_LABELS[6],
+    "broker": WORKSPACE_TAB_LABELS[3],
+    "scanner": WORKSPACE_TAB_LABELS[4],
+    "board": WORKSPACE_TAB_LABELS[5],
+    "detail": WORKSPACE_TAB_LABELS[6],
     "config": WORKSPACE_TAB_LABELS[7],
 }
 
@@ -103,7 +103,7 @@ RECOMMEND_DEFAULT_STATUS_TEXT = "推荐状态：先看主线、趋势、消息�
 RECOMMEND_DEFAULT_EMPTY_TITLE = "等待市场快照"
 RECOMMEND_DEFAULT_EMPTY_HINT = "先载入样例数据，或直接重算机会池。"
 RECOMMEND_DEFAULT_EMPTY_META = "刷新市场、导入样例或同步本地数据后，系统会生成今日综合机会池、送审优先级与执行链路。"
-RECOMMEND_EMPTY_SAMPLE_BUTTON_TEXT = "载入样例数据"
+RECOMMEND_EMPTY_SAMPLE_BUTTON_TEXT = "载入完整示例"
 RECOMMEND_EMPTY_REFRESH_BUTTON_TEXT = "重算机会池"
 RECOMMEND_DEFAULT_FOCUS_TEXT = "推荐焦点：等待高优先、观察与风险候选同步"
 TRADE_PLAN_DEFAULT_FOCUS_TEXT = "计划焦点：等待生成今日交易计划"
