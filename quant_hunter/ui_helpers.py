@@ -39,7 +39,18 @@ def _workspace_hero_stamp(hero_tone: str) -> str:
 try:
     from PySide6.QtCore import QTimer
     from PySide6.QtGui import QColor
-    from PySide6.QtWidgets import QFrame, QGroupBox, QHBoxLayout, QLabel, QPushButton, QTextEdit, QVBoxLayout, QWidget
+    from PySide6.QtWidgets import (
+        QFrame,
+        QGridLayout,
+        QGroupBox,
+        QHBoxLayout,
+        QLabel,
+        QPushButton,
+        QSizePolicy,
+        QTextEdit,
+        QVBoxLayout,
+        QWidget,
+    )
 except ModuleNotFoundError:  # pragma: no cover - enables pure-logic imports without Qt runtime
     class _QtStub:
         def __init__(self, *args, **kwargs) -> None:
@@ -95,6 +106,9 @@ except ModuleNotFoundError:  # pragma: no cover - enables pure-logic imports wit
     class QGroupBox(QWidget):  # type: ignore[override]
         pass
 
+    class QGridLayout(_QtStub):  # type: ignore[override]
+        pass
+
     class QLabel(QWidget):  # type: ignore[override]
         pass
 
@@ -109,6 +123,90 @@ except ModuleNotFoundError:  # pragma: no cover - enables pure-logic imports wit
 
     class QVBoxLayout(_QtStub):  # type: ignore[override]
         pass
+
+    class QSizePolicy:  # type: ignore[override]
+        Expanding = 0
+        Preferred = 0
+
+
+class AdaptivePanelGrid(QWidget):
+    def __init__(
+        self,
+        *,
+        min_item_width: int = 280,
+        compact_item_width: int = 220,
+        max_columns: int = 3,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._min_item_width = max(120, int(min_item_width))
+        self._compact_item_width = max(120, int(compact_item_width))
+        self._max_columns = max(1, int(max_columns))
+        self._items: list[QWidget] = []
+        self._last_columns = 0
+        self._grid = QGridLayout(self)
+        self._grid.setContentsMargins(0, 0, 0, 0)
+        self._grid.setHorizontalSpacing(10)
+        self._grid.setVerticalSpacing(10)
+        if hasattr(self, "setSizePolicy"):
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+
+    def set_grid_spacing(self, horizontal: int, vertical: int | None = None) -> None:
+        self._grid.setHorizontalSpacing(max(0, int(horizontal)))
+        self._grid.setVerticalSpacing(max(0, int(vertical if vertical is not None else horizontal)))
+        self._rebuild(force=True)
+
+    def set_grid_margins(self, left: int, top: int, right: int, bottom: int) -> None:
+        self._grid.setContentsMargins(int(left), int(top), int(right), int(bottom))
+        self._rebuild(force=True)
+
+    def set_max_columns(self, max_columns: int) -> None:
+        self._max_columns = max(1, int(max_columns))
+        self._rebuild(force=True)
+
+    def add_panel(self, widget: QWidget) -> None:
+        if not isinstance(widget, QWidget):
+            return
+        self._items.append(widget)
+        if hasattr(widget, "setSizePolicy"):
+            widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self._rebuild(force=True)
+
+    def _clear_grid(self) -> None:
+        while self._grid.count():
+            item = self._grid.takeAt(0)
+            child = item.widget()
+            if child is not None:
+                self._grid.removeWidget(child)
+
+    def _target_columns(self) -> int:
+        available_width = max(1, self.contentsRect().width())
+        if available_width <= self._compact_item_width * 1.5:
+            return 1
+        columns = min(self._max_columns, max(1, available_width // self._compact_item_width))
+        while columns > 1 and (available_width / columns) < (self._min_item_width * 0.88):
+            columns -= 1
+        return max(1, columns)
+
+    def _rebuild(self, force: bool = False) -> None:
+        columns = self._target_columns()
+        if not force and columns == self._last_columns:
+            return
+        self._clear_grid()
+        for index, widget in enumerate(self._items):
+            self._grid.addWidget(widget, index // columns, index % columns)
+        for column in range(columns):
+            self._grid.setColumnStretch(column, 1)
+        self._last_columns = columns
+        self.setProperty("adaptiveColumns", columns)
+        style = self.style()
+        if style is not None:
+            style.unpolish(self)
+            style.polish(self)
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        QTimer.singleShot(0, self._rebuild)
 
 
 def build_workspace_badge(value: str, caption: str, hero_tone: str = "default") -> QFrame:
@@ -130,7 +228,7 @@ def build_workspace_badge(value: str, caption: str, hero_tone: str = "default") 
 
     layout.addWidget(value_label)
     layout.addWidget(caption_label)
-    frame.setMinimumWidth(100)
+    frame.setMinimumWidth(132)
     return frame
 
 
@@ -186,16 +284,13 @@ def build_workspace_hero(
     layout.addLayout(text_layout, stretch=1)
 
     if badges:
-        badge_rail = QFrame()
+        badge_rail = AdaptivePanelGrid(min_item_width=152, compact_item_width=132, max_columns=2)
         badge_rail.setObjectName("workspaceBadgeRail")
         badge_rail.setProperty("heroTone", hero_tone)
-        badge_row = QHBoxLayout()
-        badge_row.setContentsMargins(6, 4, 6, 4)
-        badge_row.setSpacing(8)
+        badge_rail.set_grid_margins(6, 4, 6, 4)
+        badge_rail.set_grid_spacing(8, 8)
         for value, caption in badges:
-            badge_row.addWidget(build_workspace_badge(value, caption, hero_tone))
-        badge_row.addStretch(1)
-        badge_rail.setLayout(badge_row)
+            badge_rail.add_panel(build_workspace_badge(value, caption, hero_tone))
         layout.addWidget(badge_rail, stretch=0)
 
     return frame
@@ -340,6 +435,28 @@ def create_shell_chip(label: str, value: str) -> dict[str, object]:
     layout.addWidget(label_widget)
     layout.addWidget(value_widget)
     return {"frame": frame, "label": label_widget, "value": value_widget}
+
+
+def build_shell_chip_rail(
+    chips: list[dict[str, object]] | tuple[dict[str, object], ...],
+    *,
+    min_item_width: int = 176,
+    compact_item_width: int = 144,
+    max_columns: int = 3,
+) -> AdaptivePanelGrid:
+    rail = AdaptivePanelGrid(
+        min_item_width=min_item_width,
+        compact_item_width=compact_item_width,
+        max_columns=max_columns,
+    )
+    rail.setObjectName("shellChipRail")
+    rail.set_grid_margins(0, 0, 0, 0)
+    rail.set_grid_spacing(10, 8)
+    for chip in chips:
+        frame = chip.get("frame") if isinstance(chip, dict) else None
+        if isinstance(frame, QWidget):
+            rail.add_panel(frame)
+    return rail
 
 
 def set_shell_chip(chip: dict[str, object] | None, value: str) -> None:

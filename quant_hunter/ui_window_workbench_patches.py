@@ -148,7 +148,7 @@ def apply_workspace_workbench_patches(window_cls: type) -> None:
                 widget.setMaximumHeight(max(widget.maximumHeight(), max_height))
 
         if hasattr(self, "broker_workbench_banner"):
-            self.broker_workbench_banner.setMinimumHeight(max(self.broker_workbench_banner.minimumHeight(), 54))
+            self.broker_workbench_banner.hide()
 
     def _refresh_broker_auxiliary_panels_v27(self) -> None:
         original_refresh_broker_aux_panels_v27(self)

@@ -148,8 +148,8 @@ class LeaderboardCard(InsightCardBase):
 
     def set_density(self, compact: bool) -> None:
         self._compact_density = bool(compact)
-        self.setMinimumHeight(64 if self._compact_density else 152)
-        self.setMaximumHeight(76 if self._compact_density else 16777215)
+        self.setMinimumHeight(104 if self._compact_density else 152)
+        self.setMaximumHeight(116 if self._compact_density else 16777215)
         self._layout.setContentsMargins(
             10 if self._compact_density else 16,
             9 if self._compact_density else 15,
@@ -158,7 +158,7 @@ class LeaderboardCard(InsightCardBase):
         )
         self._layout.setSpacing(3 if self._compact_density else 6)
         self.strategy_label.setVisible(not self._compact_density)
-        self.fund_label.setVisible(False)
+        self.fund_label.setVisible(self._compact_density)
         self.flow_label.setVisible(not self._compact_density)
         self.rank_label.setMaximumHeight(12 if self._compact_density else 14)
         self.status_label.setMaximumHeight(18 if self._compact_density else 20)

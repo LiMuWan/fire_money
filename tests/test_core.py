@@ -3998,6 +3998,8 @@ class StrategyWorkflowTests(unittest.TestCase):
                 self.assertTrue(hasattr(window, "recommend_push_focus_button"))
                 self.assertTrue(hasattr(window, "right_intel_tabs"))
                 self.assertEqual(window.right_intel_tabs.count(), 3)
+                self.assertTrue(hasattr(window, "recommend_action_more_button"))
+                self.assertTrue(hasattr(window, "board_tool_more_button"))
                 self.assertTrue(hasattr(window, "left_signal_tabs"))
                 self.assertEqual(window.left_signal_tabs.count(), 3)
                 self.assertTrue(hasattr(window, "overview_chart_controls_tabs"))
@@ -4017,6 +4019,34 @@ class StrategyWorkflowTests(unittest.TestCase):
                 self.assertTrue(hasattr(window, "overview_playbook_action_buttons"))
                 self.assertEqual(len(window.overview_playbook_action_buttons), 3)
                 self.assertTrue(hasattr(window, "overview_playbook_more_button"))
+                self.assertTrue(hasattr(window, "broker_summary_metric_cards"))
+                self.assertEqual(set(window.broker_summary_metric_cards.keys()), {"stage", "gate", "queue", "receipt"})
+                self.assertTrue(hasattr(window, "broker_execution_summary_metric_cards"))
+                self.assertEqual(set(window.broker_execution_summary_metric_cards.keys()), {"blocker", "mainline", "action", "portfolio"})
+                self.assertTrue(hasattr(window, "broker_result_metric_cards"))
+                self.assertEqual(set(window.broker_result_metric_cards.keys()), {"stage", "status", "risk", "next"})
+                self.assertTrue(hasattr(window, "broker_replay_event_cards"))
+                self.assertEqual(set(window.broker_replay_event_cards.keys()), {"current", "previous", "exception"})
+                self.assertTrue(hasattr(window, "broker_replay_action_buttons"))
+                self.assertEqual(set(window.broker_replay_action_buttons.keys()), {"current", "previous", "exception"})
+                self.assertTrue(hasattr(window, "broker_recap_metric_cards"))
+                self.assertEqual(set(window.broker_recap_metric_cards.keys()), {"verdict", "mainline", "quality", "action"})
+                self.assertTrue(hasattr(window, "detail_summary_metric_cards"))
+                self.assertEqual(set(window.detail_summary_metric_cards.keys()), {"theme", "execution", "risk", "next"})
+                self.assertEqual(window.execution_table.horizontalHeaderItem(0).text(), "节点 / 时间")
+                self.assertNotEqual(window.broker_summary_metric_labels["stage"].text(), "--")
+                self.assertNotEqual(window.broker_execution_summary_metric_labels["blocker"].text(), "--")
+                self.assertNotEqual(window.broker_execution_summary_metric_labels["mainline"].text(), "--")
+                self.assertNotEqual(window.broker_execution_summary_metric_labels["action"].text(), "--")
+                self.assertNotEqual(window.broker_execution_summary_metric_labels["portfolio"].text(), "--")
+                self.assertNotEqual(window.broker_result_metric_labels["stage"].text(), "--")
+                self.assertNotEqual(window.broker_replay_event_labels["current"].text(), "--")
+                self.assertNotEqual(window.broker_recap_metric_labels["verdict"].text(), "--")
+                self.assertNotEqual(window.detail_summary_metric_labels["theme"].text(), "--")
+                self.assertIn("下一步", window.broker_gate_summary_text.toPlainText())
+                self.assertTrue(hasattr(window, "market_focus_metric_cards"))
+                self.assertEqual(set(window.market_focus_metric_cards.keys()), {"structure", "zone", "momentum", "flow"})
+                self.assertNotEqual(window.market_focus_metric_labels["structure"].text(), "--")
                 self.assertTrue(hasattr(window, "overview_root_layout"))
                 self.assertTrue(hasattr(window, "dashboard_metrics_box"))
                 self.assertTrue(hasattr(window, "overview_priority_box"))
@@ -4030,6 +4060,72 @@ class StrategyWorkflowTests(unittest.TestCase):
             finally:
                 window.close()
                 app.processEvents()
+
+    def test_qt_window_submission_table_uses_timeline_marker_and_risk_badge(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                app.processEvents()
+                window.order_submission_records = [
+                    {
+                        "symbol": "SZSE.300001",
+                        "side": "BUY",
+                        "price": "10.00",
+                        "quantity": "1000",
+                        "order_status": "SUBMITTED",
+                        "fill_status": "PENDING",
+                        "failure_reason": "",
+                        "message": "龙头样本处理中",
+                        "timestamp": "2026-04-16 10:01:00",
+                    }
+                ]
+                window._refresh_submission_table()
+                app.processEvents()
+                self.assertTrue(window.execution_table.item(0, 0).text().startswith("● "))
+                self.assertIn("待成交", window.execution_table.item(0, 7).text())
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_replay_event_card_previous_click_prefers_previous_record(self) -> None:
+        module = importlib.import_module("app_qt")
+        calls: list[tuple[str, object]] = []
+        window = SimpleNamespace(
+            order_submission_records=[{"symbol": "A"}, {"symbol": "B"}, {"symbol": "C"}],
+            execution_table=SimpleNamespace(currentRow=lambda: 2),
+            _select_execution_row_by_index_v1=lambda index: calls.append(("row", index)) or True,
+            _navigate_to_workspace=lambda workspace, widget=None, select_row=None: calls.append(("nav", (workspace, widget, select_row))),
+        )
+
+        module._qh_on_replay_event_card_clicked_v1(window, "previous")
+
+        self.assertEqual(calls[0], ("row", 1))
+        self.assertEqual(calls[1], ("nav", ("broker", "execution_table", "execution_table")))
+
+    def test_replay_event_card_exception_click_prefers_latest_exception_record(self) -> None:
+        module = importlib.import_module("app_qt")
+        calls: list[tuple[str, object]] = []
+        window = SimpleNamespace(
+            order_submission_records=[
+                {"symbol": "A", "failure_reason": "", "order_status": "SUBMITTED", "fill_status": "PENDING"},
+                {"symbol": "B", "failure_reason": "价格越界", "order_status": "FAILED", "fill_status": "REJECTED"},
+            ],
+            execution_table=SimpleNamespace(currentRow=lambda: 1),
+            _select_execution_row_by_index_v1=lambda index: calls.append(("row", index)) or True,
+            _navigate_to_workspace=lambda workspace, widget=None, select_row=None: calls.append(("nav", (workspace, widget, select_row))),
+            focus_first_broker_blocker=lambda: calls.append(("blocker", None)),
+        )
+
+        module._qh_on_replay_event_card_clicked_v1(window, "exception")
+
+        self.assertEqual(calls[0], ("row", 1))
+        self.assertEqual(calls[1], ("nav", ("broker", "execution_table", "execution_table")))
 
     def test_load_universe_folder_runs_local_scan(self) -> None:
         module = importlib.import_module("app_qt")
@@ -4149,6 +4245,8 @@ class StrategyWorkflowTests(unittest.TestCase):
             try:
                 app.processEvents()
                 layout = window.overview_root_layout
+                self.assertLess(layout.indexOf(window.market_focus_summary_box), layout.indexOf(window.dashboard_metrics_box))
+                self.assertLess(layout.indexOf(window.overview_summary_box), layout.indexOf(window.dashboard_metrics_box))
                 self.assertLess(layout.indexOf(window.overview_stage_container), layout.indexOf(window.overview_cockpit_box))
                 self.assertLess(layout.indexOf(window.overview_stage_container), layout.indexOf(window.overview_playbook_box))
             finally:
@@ -4493,11 +4591,11 @@ class StrategyWorkflowTests(unittest.TestCase):
                 self.assertLessEqual(window.market_search_input.maximumHeight(), 36)
                 self.assertLessEqual(window.market_theme_combo.maximumHeight(), 36)
                 self.assertLessEqual(window.market_refresh_button.maximumHeight(), 36)
-                self.assertLessEqual(next(iter(window.overview_quick_buttons.values())).maximumHeight(), 34)
-                self.assertLessEqual(next(iter(window.timeframe_buttons.values())).maximumHeight(), 34)
-                self.assertLessEqual(window.shell_workspace_chip["frame"].maximumWidth(), 176)
-                self.assertLessEqual(window.shell_market_chip["frame"].maximumWidth(), 176)
-                self.assertLessEqual(window.shell_pipeline_chip["frame"].maximumWidth(), 176)
+                self.assertLessEqual(next(iter(window.overview_quick_buttons.values())).maximumHeight(), 36)
+                self.assertLessEqual(next(iter(window.timeframe_buttons.values())).maximumHeight(), 36)
+                self.assertLessEqual(window.shell_workspace_chip["frame"].maximumWidth(), 198)
+                self.assertLessEqual(window.shell_market_chip["frame"].maximumWidth(), 198)
+                self.assertLessEqual(window.shell_pipeline_chip["frame"].maximumWidth(), 198)
                 self.assertGreaterEqual(window.shell_focus_chip["frame"].minimumHeight(), 42)
                 self.assertEqual(window.shell_workspace_chip["value"].text(), "总览")
                 self.assertEqual(window.market_search_input.placeholderText(), "代码/名称/题材")
@@ -4895,6 +4993,8 @@ class StrategyWorkflowTests(unittest.TestCase):
                 window._render_market_dashboard("000001")
                 app.processEvents()
                 self.assertIn("结构", window.market_quote_label.text())
+                self.assertNotEqual(window.market_focus_metric_labels["structure"].text(), "--")
+                self.assertNotEqual(window.market_focus_metric_labels["zone"].text(), "--")
             finally:
                 window.close()
                 app.processEvents()
@@ -5107,6 +5207,54 @@ class StrategyWorkflowTests(unittest.TestCase):
                 self.assertEqual(window.startup_loading_progress.value(), 77)
                 self.assertIn("启动进度", window.startup_loading_label.text())
                 self.assertIn("启动阶段", window.startup_loading_meta.text())
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_can_collapse_startup_loading_strip(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                app.processEvents()
+                window.startup_boot_progress = 72
+                window._set_startup_loading_mode("full")
+                window._collapse_startup_loading_if_pending()
+                app.processEvents()
+                self.assertEqual(window.startup_loading_frame.property("startupMode"), "compact")
+                self.assertFalse(window.startup_loading_frame.isHidden())
+                self.assertTrue(window.startup_loading_logo.isHidden())
+                self.assertTrue(window.startup_loading_brand.isHidden())
+                self.assertLessEqual(window.startup_loading_frame.maximumHeight(), 84)
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_hides_startup_strip_outside_overview_during_boot(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                app.processEvents()
+                window.startup_boot_progress = 72
+                window._set_startup_loading_mode("compact")
+                window.tabs.setCurrentIndex(3)
+                app.processEvents()
+                self.assertTrue(window.startup_loading_frame.isHidden())
+                window.tabs.setCurrentIndex(0)
+                app.processEvents()
+                self.assertFalse(window.startup_loading_frame.isHidden())
+                self.assertEqual(window.startup_loading_frame.property("startupMode"), "compact")
             finally:
                 window.close()
                 app.processEvents()
@@ -9083,12 +9231,12 @@ class StrategyWorkflowTests(unittest.TestCase):
         module.QuantHunterWindow._refresh_broker_order_focus(focus_window)
 
         self.assertIn("当前委托动作面板", focus_window.broker_order_focus_text.text)
-        self.assertIn("动作建议：先改数量", focus_window.broker_order_focus_text.text)
-        self.assertIn("主线状态：延续偏强 / 加速 | 继续跟", focus_window.broker_order_focus_text.text)
+        self.assertIn("结论：Risk Demo | 卖出 | 先改数量", focus_window.broker_order_focus_text.text)
+        self.assertIn("风险：主线 延续偏强 / 加速 | 继续跟", focus_window.broker_order_focus_text.text)
         self.assertIn("下一步：卖出数量超过可卖仓位，先改数量再提交。", focus_window.broker_order_focus_text.text)
         self.assertIn("组合影响：预计释放 1,200 资金 | 可卖 40", focus_window.broker_order_focus_text.text)
         self.assertIn("缓解动作：优先确认这是止盈或风控动作", focus_window.broker_order_focus_text.text)
-        self.assertIn("阻塞/预警：阻塞项：卖出数量超过可卖仓位", focus_window.broker_order_focus_text.text)
+        self.assertIn("阻塞项：卖出数量超过可卖仓位", focus_window.broker_order_focus_text.text)
         self.assertIn("可卖信息：可卖 40", focus_window.broker_order_focus_text.text)
         self.assertIn("委托焦点", focus_window.orders_focus_label.text)
         self.assertIn("状态 继续跟", focus_window.orders_focus_label.text)
@@ -9948,6 +10096,55 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         self.assertIn("优先复核龙头样本回执", window.broker_recap_text.toPlainText())
 
+    def test_refresh_trade_recap_updates_summary_cards_when_present(self) -> None:
+        from quant_hunter import ui_refresh
+
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+
+        focus_row = SimpleNamespace(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            mainline_flow_signal="延续偏强",
+            mainline_stage="加速",
+            mainline_tag="机器人",
+            mainline_risk_flag="低",
+        )
+        focus_intent = OrderIntent(
+            symbol="SZSE.300001",
+            side="BUY",
+            price=10.0,
+            quantity=1000,
+            stop_price=9.6,
+            target_price=10.8,
+            signal_date="2026-04-15",
+            reason="focus",
+        )
+        window = SimpleNamespace(
+            broker_recap_text=module.QTextEdit(),
+            broker_recap_metric_labels={key: module.QLabel("--") for key in ("verdict", "mainline", "quality", "action")},
+            broker_recap_metric_accents={key: module.QLabel("--") for key in ("verdict", "mainline", "quality", "action")},
+            order_submission_records=[
+                {"symbol": "SZSE.300001", "message": "优先复核龙头样本回执", "failure_reason": ""},
+            ],
+            holdings=[],
+            order_intents=[focus_intent],
+            order_submission_log=[],
+            daily_pool_rows=[focus_row],
+            _selected_order_intent=lambda: focus_intent,
+            _explicit_recommendation_focus=lambda: focus_row,
+            _stock_name_for_symbol=lambda symbol: {"SZSE.300001": "龙头样本"}.get(symbol, symbol),
+        )
+
+        ui_refresh.refresh_trade_recap(window)
+
+        self.assertEqual(window.broker_recap_metric_labels["verdict"].text(), "待复盘")
+        self.assertIn("延续偏强", window.broker_recap_metric_labels["mainline"].text())
+        self.assertIn("龙头样本", window.broker_recap_metric_accents["action"].text())
+
     def test_refresh_submission_focus_prefers_focus_symbol_record_when_none_selected(self) -> None:
         module = importlib.import_module("app_qt")
         app = module.QApplication.instance() or module.QApplication([])
@@ -10000,8 +10197,13 @@ class StrategyWorkflowTests(unittest.TestCase):
             ],
             daily_pool_rows=[focus_row],
             order_result_text=module.QTextEdit(),
+            broker_replay_event_cards={key: module.QFrame() for key in ("current", "previous", "exception")},
+            broker_replay_event_labels={key: module.QLabel("--") for key in ("current", "previous", "exception")},
+            broker_replay_event_accents={key: module.QLabel("--") for key in ("current", "previous", "exception")},
+            broker_replay_action_buttons={key: module.QPushButton() for key in ("current", "previous", "exception")},
             broker_recap_text=module.QTextEdit(),
             _update_broker_action_flow_v26=lambda: None,
+            _update_replay_action_buttons_v1=lambda **kwargs: module._qh_update_replay_action_buttons_v1(window, **kwargs),
             _selected_submission_record=lambda: {"symbol": "SZSE.300002"},
             _selected_order_intent=lambda: None,
             _explicit_recommendation_focus=lambda: focus_row,
@@ -10013,6 +10215,14 @@ class StrategyWorkflowTests(unittest.TestCase):
             _display_order_status=lambda value: value,
             _display_fill_status=lambda value: value,
             _display_action=lambda value: {"BUY": "买入", "SELL": "卖出"}.get(value, value),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text) if widget.text() != text else None,
+                widget.setToolTip(tooltip) if tooltip is not None and hasattr(widget, "setToolTip") and widget.toolTip() != tooltip else None,
+            ),
+            _set_replay_event_card_state_v1=lambda key, *, active, tone: (
+                window.broker_replay_event_cards[key].setProperty("replaySelected", active),
+                window.broker_replay_event_cards[key].setProperty("spotlight", tone),
+            ),
             _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text) if widget.toPlainText() != text else None,
             auth_channel_combo=SimpleNamespace(currentText=lambda: "东方财富"),
         )
@@ -10061,7 +10271,16 @@ class StrategyWorkflowTests(unittest.TestCase):
         ):
             module._qh_refresh_submission_focus_v26(window)
 
-        self.assertIn("龙头样本", window.order_result_text.toPlainText())
+        self.assertIn("执行回放 / 说明", window.order_result_text.toPlainText())
+        self.assertIn("下一步：继续盯回执", window.order_result_text.toPlainText())
+        self.assertIn("龙头样本 | 待成交跟踪", window.broker_replay_event_labels["current"].text())
+        self.assertIn("下一步 继续盯回执", window.broker_replay_event_accents["current"].text())
+        self.assertIn("跟随样本", window.broker_replay_event_labels["previous"].text())
+        self.assertTrue(window.broker_replay_action_buttons["current"].isEnabled())
+        self.assertTrue(window.broker_replay_action_buttons["previous"].isEnabled())
+        self.assertEqual(window.broker_replay_action_buttons["exception"].text(), "处置异常")
+        self.assertTrue(window.broker_replay_event_cards["current"].property("replaySelected"))
+        self.assertEqual(window.broker_replay_event_cards["current"].property("spotlight"), "watch")
         self.assertIn("龙头样本", window.broker_recap_text.toPlainText())
 
     def test_refresh_detail_workspace_panels_prefers_order_focus_symbol(self) -> None:
@@ -10101,6 +10320,8 @@ class StrategyWorkflowTests(unittest.TestCase):
         )
         window = SimpleNamespace(
             metrics_text=module.QTextEdit(),
+            detail_summary_metric_labels={key: module.QLabel("--") for key in ("theme", "execution", "risk", "next")},
+            detail_summary_metric_accents={key: module.QLabel("--") for key in ("theme", "execution", "risk", "next")},
             detail_decision_text=module.QTextEdit(),
             detail_execution_text=module.QTextEdit(),
             detail_conclusion_text=module.QTextEdit(),
@@ -10131,14 +10352,22 @@ class StrategyWorkflowTests(unittest.TestCase):
             _display_label=lambda value: value,
             _display_order_status=lambda value: value,
             _display_fill_status=lambda value: value,
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text) if widget.text() != text else None,
+                widget.setToolTip(tooltip) if tooltip is not None and hasattr(widget, "setToolTip") and widget.toolTip() != tooltip else None,
+            ),
             _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text) if widget.toPlainText() != text else None,
         )
 
         module._qh_refresh_detail_workspace_panels(window)
 
-        self.assertIn("龙头样本 (300001 / SZSE.300001)", window.detail_decision_text.toPlainText())
-        self.assertIn("委托焦点：占用 10,000", window.detail_execution_text.toPlainText())
-        self.assertIn("执行状态：SUBMITTED / PENDING | 龙头样本处理中", window.detail_conclusion_text.toPlainText())
+        self.assertIn("机器人 / 买入", window.detail_summary_metric_labels["theme"].text())
+        self.assertIn("买入 / SUBMITTED", window.detail_summary_metric_labels["execution"].text())
+        self.assertIn("单票决策", window.detail_decision_text.toPlainText())
+        self.assertIn("结论：机器人 | 买入", window.detail_decision_text.toPlainText())
+        self.assertIn("执行联动", window.detail_execution_text.toPlainText())
+        self.assertIn("下一步：SUBMITTED / PENDING", window.detail_execution_text.toPlainText())
+        self.assertIn("复盘结论", window.detail_conclusion_text.toPlainText())
 
     def test_workspace_focus_capsule_uses_same_stage_copy_across_pages(self) -> None:
         module = importlib.import_module("app_qt")
@@ -11226,6 +11455,155 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertTrue(window.paper_to_recommend_button.isEnabled())
         self.assertTrue(review_button.isEnabled())
         self.assertTrue(fund_button.isEnabled())
+
+    def test_refresh_action_button_states_prioritizes_recommend_primary_cta(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+
+        recommend = SimpleNamespace(stock_name="龙头样本", execution_status="待观察")
+        window = SimpleNamespace(
+            recommend_to_broker_button=module.QPushButton(),
+            plan_to_broker_button=module.QPushButton(),
+            focus_pending_button=module.QPushButton(),
+            retry_failed_button=module.QPushButton(),
+            push_priority_button=module.QPushButton(),
+            broker_focus_blocker_button=module.QPushButton(),
+            broker_focus_priority_button=module.QPushButton(),
+            paper_to_recommend_button=module.QPushButton(),
+            paper_to_detail_button=module.QPushButton(),
+            paper_to_broker_button=module.QPushButton(),
+            scanner_tab=module.QWidget(),
+            board_tab=module.QWidget(),
+            recommend_tab=module.QWidget(),
+            broker_tab=module.QWidget(),
+            detail_tab=module.QWidget(),
+            overview_tab=module.QWidget(),
+            recommend_status_label=module.QLabel(),
+            current_trade_plan=SimpleNamespace(decisions=[object()]),
+            order_intents=[],
+            daily_pool_rows=[recommend],
+            active_symbol="SZSE.300001",
+            last_broker_execution_summary={},
+            _selected_daily_pool_recommendation=lambda: recommend,
+            _has_pending_recommendations_v30=lambda: False,
+            _has_failed_recommendations_v30=lambda: False,
+            _selected_paper_symbol=lambda: "",
+            _selected_symbol_from_watchlist=lambda: "",
+            _selected_board_symbol=lambda: "",
+            _set_button_role=lambda button, role="ghost": setattr(button, "role", role),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text) if widget.text() != text else None,
+                widget.setToolTip(tooltip) if tooltip is not None and hasattr(widget, "setToolTip") and widget.toolTip() != tooltip else None,
+            ),
+        )
+
+        module.QuantHunterWindow._refresh_action_button_states_v30(window)
+
+        self.assertEqual(window.recommend_to_broker_button.role, "accent")
+        self.assertEqual(window.plan_to_broker_button.role, "tonal")
+        self.assertEqual(window.push_priority_button.role, "tonal")
+        self.assertEqual(window.recommend_to_broker_button.property("ctaPriority"), "primary")
+        self.assertIn("当前主操作", window.recommend_to_broker_button.toolTip())
+        self.assertIn("当前已有焦点票", window.recommend_status_label.text())
+
+    def test_refresh_action_button_states_prioritizes_board_tool_ctas(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+
+        window = SimpleNamespace(
+            recommend_to_broker_button=module.QPushButton(),
+            plan_to_broker_button=module.QPushButton(),
+            focus_pending_button=module.QPushButton(),
+            retry_failed_button=module.QPushButton(),
+            push_priority_button=module.QPushButton(),
+            board_refresh_button=module.QPushButton(),
+            board_plan_export_button=module.QPushButton(),
+            board_review_export_button=module.QPushButton(),
+            broker_focus_blocker_button=module.QPushButton(),
+            broker_focus_priority_button=module.QPushButton(),
+            paper_to_recommend_button=module.QPushButton(),
+            paper_to_detail_button=module.QPushButton(),
+            paper_to_broker_button=module.QPushButton(),
+            scanner_tab=module.QWidget(),
+            board_tab=module.QWidget(),
+            recommend_tab=module.QWidget(),
+            broker_tab=module.QWidget(),
+            detail_tab=module.QWidget(),
+            overview_tab=module.QWidget(),
+            recommend_status_label=module.QLabel(),
+            current_trade_plan=SimpleNamespace(decisions=[]),
+            order_intents=[],
+            daily_pool_rows=[SimpleNamespace(execution_status="待观察")],
+            scan_rows=[],
+            active_symbol="",
+            last_broker_execution_summary={},
+            _selected_daily_pool_recommendation=lambda: None,
+            _has_pending_recommendations_v30=lambda: False,
+            _has_failed_recommendations_v30=lambda: False,
+            _selected_paper_symbol=lambda: "",
+            _selected_symbol_from_watchlist=lambda: "",
+            _selected_board_symbol=lambda: "",
+            _set_button_role=lambda button, role="ghost": setattr(button, "role", role),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text) if widget.text() != text else None,
+                widget.setToolTip(tooltip) if tooltip is not None and hasattr(widget, "setToolTip") and widget.toolTip() != tooltip else None,
+            ),
+        )
+
+        module.QuantHunterWindow._refresh_action_button_states_v30(window)
+
+        self.assertEqual(window.board_refresh_button.role, "accent")
+        self.assertEqual(window.board_plan_export_button.role, "tonal")
+        self.assertEqual(window.board_review_export_button.role, "ghost")
+        self.assertEqual(window.board_refresh_button.property("ctaPriority"), "primary")
+        self.assertIn("主操作", window.board_refresh_button.toolTip())
+
+    def test_configure_priority_more_menu_prefers_primary_and_secondary_buttons(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+
+        buttons = [module.QPushButton(label) for label in ("A", "B", "C", "D")]
+        for button, priority in zip(buttons, ("secondary", "primary", "secondary", "tertiary")):
+            button.setProperty("ctaPriority", priority)
+        more_button = module.QPushButton()
+
+        visible_buttons = module._qh_configure_priority_more_menu_v67(SimpleNamespace(), buttons, more_button, max_visible=2)
+
+        self.assertEqual([button.text() for button in visible_buttons], ["B", "A"])
+        self.assertTrue(buttons[1].isVisible())
+        self.assertTrue(buttons[0].isVisible())
+        self.assertFalse(buttons[2].isVisible())
+        self.assertFalse(buttons[3].isVisible())
+        self.assertTrue(more_button.isVisible())
+        self.assertIsNotNone(more_button.menu())
+
+    def test_configure_priority_more_menu_can_group_hidden_actions(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+
+        buttons = [module.QPushButton(label) for label in ("刷新打板池", "导出盘前计划", "导出收盘复盘")]
+        for button, priority in zip(buttons, ("primary", "secondary", "tertiary")):
+            button.setProperty("ctaPriority", priority)
+        more_button = module.QPushButton()
+
+        module._qh_configure_priority_more_menu_v67(
+            SimpleNamespace(),
+            buttons,
+            more_button,
+            max_visible=1,
+            groups={
+                "导出盘前计划": "计划导出",
+                "导出收盘复盘": "复盘导出",
+            },
+        )
+
+        actions = more_button.menu().actions()
+        self.assertTrue(any(action.text() == "计划导出" for action in actions))
+        self.assertTrue(any(action.text() == "复盘导出" for action in actions))
 
     def test_hydrate_runtime_empty_states_populates_default_copy(self) -> None:
         module = importlib.import_module("app_qt")

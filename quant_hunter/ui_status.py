@@ -10,6 +10,137 @@ except ModuleNotFoundError:  # pragma: no cover - enables non-Qt test environmen
 from .ui_config import DISPLAY_TEXT
 
 
+def submission_stage_key(item: dict[str, str]) -> str:
+    order_status = str(item.get("order_status", "") or "").upper()
+    fill_status = str(item.get("fill_status", "") or "").upper()
+    failure_reason = str(item.get("failure_reason", "") or "").strip()
+    if failure_reason or order_status in {"FAILED", "REJECTED", "CANCELLED"} or fill_status in {"REJECTED", "CANCELLED"}:
+        return "exception"
+    if fill_status == "FILLED":
+        return "filled"
+    if fill_status in {"PARTIAL", "PART_FILLED", "PARTIALLY_FILLED"}:
+        return "partial"
+    if fill_status == "PENDING":
+        return "pending"
+    if order_status in {"SUBMITTED", "ACCEPTED", "QUEUED"}:
+        return "submitted"
+    return "idle"
+
+
+def submission_node_label(item: dict[str, str]) -> str:
+    mapping = {
+        "exception": "异常待处理",
+        "filled": "已成交",
+        "partial": "部分成交",
+        "pending": "待成交",
+        "submitted": "已送出",
+        "idle": "等待回执",
+    }
+    return mapping.get(submission_stage_key(item), "等待回执")
+
+
+def submission_table_snapshot(
+    item: dict[str, str],
+    *,
+    stock_name: str,
+    stock_id: str,
+    action_text: str,
+    order_status_text: str,
+    fill_status_text: str,
+) -> dict[str, str]:
+    symbol = str(item.get("symbol", "") or "")
+    timestamp_text = str(item.get("timestamp", "") or "--")
+    time_part = timestamp_text.split(" ", 1)[-1] if " " in timestamp_text else timestamp_text
+    failure_reason = str(item.get("failure_reason", "") or "").strip()
+    message_text = str(item.get("message", "") or "").strip() or "等待更多反馈"
+    timeline_value = f"{time_part}\n{submission_node_label(item)}"
+    focus_value = f"{stock_name}  {stock_id}\n标识 {symbol or '--'} | {order_status_text or '--'}"
+    action_value = f"{action_text}\n{order_status_text or '--'} / {fill_status_text or '--'}"
+    tooltip = "\n".join(
+        [
+            f"时间：{timestamp_text}",
+            f"股票：{stock_name} ({stock_id} / {symbol or '--'})",
+            f"动作：{action_text}",
+            f"订单状态：{order_status_text or '--'}",
+            f"成交状态：{fill_status_text or '--'}",
+            f"异常：{failure_reason or '无'}",
+            f"反馈：{message_text}",
+        ]
+    )
+    return {
+        "timeline": timeline_value,
+        "focus": focus_value,
+        "action": action_value,
+        "exception": failure_reason or "无",
+        "message": message_text,
+        "tooltip": tooltip,
+    }
+
+
+def submission_risk_badge_text_v2(item: dict[str, str]) -> str:
+    mapping = {
+        "exception": "\u7ea2\u706f \u5f02\u5e38",
+        "filled": "\u7eff\u706f \u5df2\u6210\u4ea4",
+        "partial": "\u9752\u706f \u90e8\u6210",
+        "pending": "\u9ec4\u706f \u5f85\u6210\u4ea4",
+        "submitted": "\u84dd\u706f \u5df2\u9001\u51fa",
+        "idle": "\u7070\u706f \u5f85\u56de\u5199",
+    }
+    return mapping.get(submission_stage_key(item), "\u7070\u706f \u5f85\u56de\u5199")
+
+
+def submission_risk_badge_palette_v2(item: dict[str, str]) -> tuple[QColor, QColor]:
+    palette = {
+        "exception": ("#5A1623", "#FFD7DD"),
+        "filled": ("#143624", "#A7F0C5"),
+        "partial": ("#123B33", "#A5F0DF"),
+        "pending": ("#4B3613", "#FFE08D"),
+        "submitted": ("#163552", "#B7DAFF"),
+        "idle": ("#27303A", "#D9E2EE"),
+    }
+    background, foreground = palette.get(submission_stage_key(item), palette["idle"])
+    return QColor(background), QColor(foreground)
+
+
+def submission_table_snapshot_v2(
+    item: dict[str, str],
+    *,
+    stock_name: str,
+    stock_id: str,
+    action_text: str,
+    order_status_text: str,
+    fill_status_text: str,
+) -> dict[str, str]:
+    symbol = str(item.get("symbol", "") or "")
+    timestamp_text = str(item.get("timestamp", "") or "--")
+    time_part = timestamp_text.split(" ", 1)[-1] if " " in timestamp_text else timestamp_text
+    failure_reason = str(item.get("failure_reason", "") or "").strip()
+    message_text = str(item.get("message", "") or "").strip() or "\u7b49\u5f85\u66f4\u591a\u53cd\u9988"
+    timeline_value = f"{time_part}\n{submission_node_label(item)}"
+    focus_value = f"{stock_name}  {stock_id}\n\u6807\u8bc6 {symbol or '--'} | {order_status_text or '--'}"
+    action_value = f"{action_text}\n{order_status_text or '--'} / {fill_status_text or '--'}"
+    tooltip = "\n".join(
+        [
+            f"\u65f6\u95f4\uff1a{timestamp_text}",
+            f"\u80a1\u7968\uff1a{stock_name} ({stock_id} / {symbol or '--'})",
+            f"\u52a8\u4f5c\uff1a{action_text}",
+            f"\u8ba2\u5355\u72b6\u6001\uff1a{order_status_text or '--'}",
+            f"\u6210\u4ea4\u72b6\u6001\uff1a{fill_status_text or '--'}",
+            f"\u5f02\u5e38\uff1a{failure_reason or '\u65e0'}",
+            f"\u53cd\u9988\uff1a{message_text}",
+        ]
+    )
+    return {
+        "timeline": timeline_value,
+        "focus": focus_value,
+        "action": action_value,
+        "risk_badge": submission_risk_badge_text_v2(item),
+        "exception_detail": failure_reason or "\u65e0",
+        "message": message_text,
+        "tooltip": tooltip,
+    }
+
+
 def signal_colors(action: str, label: str) -> tuple[QColor, QColor]:
     key = label or action
     if key == "RECLAIM_LONG" or action == "BUY":
@@ -24,17 +155,16 @@ def signal_colors(action: str, label: str) -> tuple[QColor, QColor]:
 
 
 def submission_colors(item: dict[str, str]) -> tuple[QColor, QColor]:
-    order_status = item.get("order_status", "")
-    fill_status = item.get("fill_status", "")
-    if order_status == "FAILED" or fill_status == "REJECTED":
-        return QColor("#FBEAEA"), QColor("#842029")
-    if fill_status == "PENDING":
-        return QColor("#FFF4DB"), QColor("#7C4A03")
-    if order_status == "SUBMITTED":
-        return QColor("#E7F1FF"), QColor("#084298")
-    if fill_status == "FILLED":
-        return QColor("#E8F7EC"), QColor("#0F5132")
-    return QColor("#F8F9FA"), QColor("#212529")
+    palette = {
+        "exception": ("#32151B", "#FFB4BC"),
+        "filled": ("#102B20", "#73E0A5"),
+        "partial": ("#12322A", "#7CE5C2"),
+        "pending": ("#34260F", "#FFD46B"),
+        "submitted": ("#12283E", "#8FCAFF"),
+        "idle": ("#1B222B", "#D9E2EE"),
+    }
+    background, foreground = palette.get(submission_stage_key(item), palette["idle"])
+    return QColor(background), QColor(foreground)
 
 
 def market_pool_colors(row) -> tuple[QColor, QColor]:
