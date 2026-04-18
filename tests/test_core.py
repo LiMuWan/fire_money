@@ -3996,10 +3996,14 @@ class StrategyWorkflowTests(unittest.TestCase):
                 self.assertTrue(hasattr(window, "paper_to_recommend_button"))
                 self.assertTrue(hasattr(window, "recommend_decision_summary_text"))
                 self.assertTrue(hasattr(window, "recommend_push_focus_button"))
+                self.assertTrue(hasattr(window, "recommend_controls_toggle_button"))
+                self.assertTrue(hasattr(window, "recommend_controls_drawer"))
                 self.assertTrue(hasattr(window, "right_intel_tabs"))
                 self.assertEqual(window.right_intel_tabs.count(), 3)
                 self.assertTrue(hasattr(window, "recommend_action_more_button"))
                 self.assertTrue(hasattr(window, "board_tool_more_button"))
+                self.assertTrue(hasattr(window, "board_controls_toggle_button"))
+                self.assertTrue(hasattr(window, "board_controls_drawer"))
                 self.assertTrue(hasattr(window, "left_signal_tabs"))
                 self.assertEqual(window.left_signal_tabs.count(), 3)
                 self.assertTrue(hasattr(window, "overview_chart_controls_tabs"))
@@ -4089,6 +4093,54 @@ class StrategyWorkflowTests(unittest.TestCase):
                 app.processEvents()
                 self.assertTrue(window.execution_table.item(0, 0).text().startswith("● "))
                 self.assertIn("待成交", window.execution_table.item(0, 7).text())
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_recommend_action_box_uses_more_button_on_wide_layout(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                app.processEvents()
+                window.resize(1600, 1000)
+                window._apply_recommend_page_polish_v32(narrow_overview=False, zoomed_layout=False)
+                app.processEvents()
+                visible_buttons = [button for button in window.recommend_action_buttons if not button.isHidden()]
+                self.assertEqual(len(visible_buttons), 2)
+                self.assertFalse(window.recommend_action_more_button.isHidden())
+                self.assertIsNotNone(window.recommend_action_more_button.menu())
+                self.assertEqual(window.recommend_action_more_button.text(), "更多操作")
+                self.assertIn("更多", window.recommend_action_more_button.toolTip())
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_board_tool_row_uses_more_button_for_secondary_actions(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                app.processEvents()
+                window.resize(1600, 1000)
+                window._apply_layout_polish_v19()
+                app.processEvents()
+                visible_buttons = [button for button in window.board_tool_action_buttons if not button.isHidden()]
+                self.assertEqual(len(visible_buttons), 1)
+                self.assertFalse(window.board_tool_more_button.isHidden())
+                self.assertIsNotNone(window.board_tool_more_button.menu())
+                self.assertEqual(window.board_tool_more_button.text(), "更多导出")
+                self.assertIn("导出", window.board_tool_more_button.toolTip())
             finally:
                 window.close()
                 app.processEvents()
@@ -4341,8 +4393,117 @@ class StrategyWorkflowTests(unittest.TestCase):
                 window.tabs.setCurrentWidget(window.recommend_tab)
                 app.processEvents()
                 layout = window.recommend_scroll_area.widget().layout()
-                self.assertLess(layout.indexOf(window.recommend_pool_box), layout.indexOf(window.recommend_dispatch_splitter))
+                self.assertLess(layout.indexOf(window.recommend_focus_cards_box), layout.indexOf(window.recommend_decision_summary_box))
+                self.assertLess(layout.indexOf(window.recommend_decision_summary_box), layout.indexOf(window.recommend_pool_box))
+                self.assertLess(layout.indexOf(window.recommend_pool_box), layout.indexOf(window.recommend_controls_section))
+                self.assertLess(layout.indexOf(window.recommend_controls_section), layout.indexOf(window.recommend_dispatch_splitter))
                 self.assertLess(layout.indexOf(window.recommend_decision_summary_box), layout.indexOf(window.recommend_summary_splitter))
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_first_screen_labels_follow_workspace_page_tones(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.tabs.setCurrentWidget(window.recommend_tab)
+                app.processEvents()
+                self.assertEqual(window.recommend_status_label.property("pageTone"), "recommend")
+                self.assertEqual(window.daily_pool_focus_label.property("pageTone"), "recommend")
+                self.assertEqual(window.recommend_decision_summary_label.property("pageTone"), "recommend")
+                window.tabs.setCurrentWidget(window.broker_tab)
+                app.processEvents()
+                self.assertEqual(window.broker_status_banner.property("pageTone"), "broker")
+                self.assertEqual(window.broker_stage_label.property("pageTone"), "broker")
+                self.assertEqual(window.orders_focus_label.property("pageTone"), "broker")
+                self.assertEqual(window.trade_plan_focus_label.property("pageTone"), "broker")
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_first_screen_pixel_polish_compacts_recommend_and_broker_spacing(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.resize(1360, 820)
+                window._apply_layout_polish_v19()
+                app.processEvents()
+                recommend_layout = window.recommend_scroll_area.widget().layout()
+                broker_layout = window.broker_scroll_area.widget().layout()
+                self.assertLessEqual(recommend_layout.spacing(), 8)
+                self.assertLessEqual(broker_layout.spacing(), 8)
+                self.assertLessEqual(window.recommend_controls_section.layout().spacing(), 6)
+                self.assertLessEqual(window.recommend_status_label.maximumHeight(), 58)
+                self.assertLessEqual(window.broker_status_banner.maximumHeight(), 58)
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_button_selection_contrast_styles_cover_checked_and_disabled_states(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window._apply_layout_polish_v19()
+                app.processEvents()
+                stylesheet = window.styleSheet()
+                self.assertEqual(module._terminal_theme_tokens("dark")["button_accent_text"], "#f8fbff")
+                self.assertIn("QPushButton:pressed", stylesheet)
+                self.assertIn("QPushButton#accentButton:pressed", stylesheet)
+                self.assertIn("QPushButton#tonalButton:pressed", stylesheet)
+                self.assertIn("QPushButton#ghostButton:pressed", stylesheet)
+                self.assertIn("QPushButton:checked:disabled", stylesheet)
+                self.assertIn("QPushButton#accentButton:disabled", stylesheet)
+                self.assertIn("QPushButton#accentButton:checked", stylesheet)
+                self.assertIn("QPushButton#tonalButton:checked", stylesheet)
+                self.assertIn("QPushButton#ghostButton:checked", stylesheet)
+                self.assertIn("QPushButton#tonalButton:disabled", stylesheet)
+                self.assertIn("QPushButton#ghostButton:disabled", stylesheet)
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_interactive_selection_contrast_styles_cover_tabs_lists_and_tables(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window._apply_layout_polish_v19()
+                app.processEvents()
+                stylesheet = window.styleSheet()
+                self.assertIn("QTabBar::tab:selected", stylesheet)
+                self.assertIn("QTabBar::tab:hover:!selected", stylesheet)
+                self.assertIn("QWidget#overviewRoot QPushButton#accentButton", stylesheet)
+                self.assertIn("QListWidget::item:selected", stylesheet)
+                self.assertIn("QListWidget::item:hover:!selected", stylesheet)
+                self.assertIn("QTableWidget#terminalTable::item:selected", stylesheet)
+                self.assertIn("QTableWidget#terminalTable::item:hover:!selected", stylesheet)
+                self.assertIn("QTableWidget#terminalTable::item:selected:active", stylesheet)
+                self.assertIn("QTableWidget#terminalTable::item:selected:!active", stylesheet)
+                self.assertIn("QTableWidget#terminalTable[pageTone=\"broker\"]::item:selected", stylesheet)
+                self.assertIn("QTableWidget#recommendPoolTable[pageTone=\"recommend\"]::item:selected", stylesheet)
             finally:
                 window.close()
                 app.processEvents()
@@ -4499,10 +4660,13 @@ class StrategyWorkflowTests(unittest.TestCase):
         card = LeaderboardCard()
         try:
             card.set_density(True)
-            self.assertGreaterEqual(card.minimumHeight(), 100)
-            self.assertLessEqual(card.maximumHeight(), 118)
-            self.assertFalse(card.fund_label.isHidden())
+            self.assertGreaterEqual(card.minimumHeight(), 140)
+            self.assertLessEqual(card.maximumHeight(), 176)
+            self.assertIsNotNone(card.findChild(module.QWidget, "leaderboardHeaderRow"))
+            self.assertFalse(card.strategy_label.isHidden())
+            self.assertTrue(card.fund_label.isHidden())
             self.assertTrue(card.flow_label.isHidden())
+            self.assertEqual(card.status_label.sizePolicy().horizontalPolicy(), module.QSizePolicy.Policy.Maximum)
         finally:
             card.deleteLater()
 
@@ -4585,9 +4749,13 @@ class StrategyWorkflowTests(unittest.TestCase):
                 self.assertLessEqual(window.market_pool_table.maximumHeight(), 234)
                 self.assertLessEqual(window.market_pool_table.verticalHeader().defaultSectionSize(), 64)
                 self.assertLessEqual(window.overview_left_panel.minimumWidth(), 232)
-                self.assertLessEqual(window.overview_right_panel.minimumWidth(), 276)
-                self.assertLessEqual(window.market_leaderboard_cards[0].maximumHeight(), 118)
-                self.assertLessEqual(window.overview_summary_cards["theme"].maximumHeight(), 82)
+                self.assertGreaterEqual(window.overview_right_panel.minimumWidth(), 320)
+                self.assertLessEqual(window.overview_right_panel.minimumWidth(), 360)
+                self.assertGreaterEqual(window.market_leaderboard_cards[0].maximumHeight(), 148)
+                self.assertLessEqual(window.market_leaderboard_cards[0].maximumHeight(), 214)
+                self.assertGreaterEqual(window.overview_summary_cards["theme"].maximumHeight(), 76)
+                self.assertLessEqual(window.overview_summary_cards["theme"].maximumHeight(), 100)
+                self.assertGreaterEqual(window.overview_priority_cards["market"].minimumHeight(), 96)
                 self.assertLessEqual(window.market_search_input.maximumHeight(), 36)
                 self.assertLessEqual(window.market_theme_combo.maximumHeight(), 36)
                 self.assertLessEqual(window.market_refresh_button.maximumHeight(), 36)
@@ -4597,6 +4765,7 @@ class StrategyWorkflowTests(unittest.TestCase):
                 self.assertLessEqual(window.shell_market_chip["frame"].maximumWidth(), 198)
                 self.assertLessEqual(window.shell_pipeline_chip["frame"].maximumWidth(), 198)
                 self.assertGreaterEqual(window.shell_focus_chip["frame"].minimumHeight(), 42)
+                self.assertFalse(window.shell_pulse_meta.isVisible())
                 self.assertEqual(window.shell_workspace_chip["value"].text(), "总览")
                 self.assertEqual(window.market_search_input.placeholderText(), "代码/名称/题材")
                 self.assertEqual(window.market_refresh_button.text(), "刷新市场")
@@ -11602,6 +11771,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         )
 
         actions = more_button.menu().actions()
+        self.assertEqual(more_button.text(), "更多导出")
         self.assertTrue(any(action.text() == "计划导出" for action in actions))
         self.assertTrue(any(action.text() == "复盘导出" for action in actions))
 
@@ -11762,6 +11932,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         app = module.QApplication.instance() or module.QApplication([])
         _ = app
         window = SimpleNamespace(
+            overview_controls_drawer=module.QWidget(),
             overview_controls_container=module.QWidget(),
             overview_controls_toggle_button=module.QPushButton(),
             overview_controls_status_label=module.QLabel(),
@@ -11775,8 +11946,114 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         module.QuantHunterWindow._set_overview_controls_visibility_v61(window, True)
         self.assertTrue(window.overview_controls_container.isVisible())
+        self.assertGreaterEqual(window.overview_controls_drawer.minimumHeight(), 280)
         self.assertEqual(window.overview_controls_toggle_button.text(), "收起市场控制台")
         self.assertIn("已展开", window.overview_controls_status_label.text())
+
+    def test_set_recommend_controls_visibility_updates_controls(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        window = SimpleNamespace(
+            recommend_controls_drawer=module.QWidget(),
+            recommend_controls_toggle_button=module.QPushButton(),
+            recommend_controls_status_label=module.QLabel(),
+            _set_label_text_if_changed=lambda label, text: label.setText(text) if label.text() != text else None,
+        )
+
+        module.QuantHunterWindow._set_recommend_controls_visibility_v1(window, False)
+        self.assertFalse(window.recommend_controls_drawer.isVisible())
+        self.assertEqual(window.recommend_controls_toggle_button.text(), "展开推荐控制台")
+        self.assertIn("默认收起", window.recommend_controls_status_label.text())
+
+        module.QuantHunterWindow._set_recommend_controls_visibility_v1(window, True)
+        self.assertTrue(window.recommend_controls_drawer.isVisible())
+        self.assertGreaterEqual(window.recommend_controls_drawer.minimumHeight(), 360)
+        self.assertEqual(window.recommend_controls_toggle_button.text(), "收起推荐控制台")
+        self.assertIn("已展开", window.recommend_controls_status_label.text())
+
+    def test_set_board_controls_visibility_updates_controls(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        window = SimpleNamespace(
+            board_controls_drawer=module.QWidget(),
+            board_controls_toggle_button=module.QPushButton(),
+            board_controls_status_label=module.QLabel(),
+            _set_label_text_if_changed=lambda label, text: label.setText(text) if label.text() != text else None,
+        )
+
+        module.QuantHunterWindow._set_board_controls_visibility_v1(window, False)
+        self.assertFalse(window.board_controls_drawer.isVisible())
+        self.assertEqual(window.board_controls_toggle_button.text(), "展开打板控制台")
+        self.assertIn("默认收起", window.board_controls_status_label.text())
+
+        module.QuantHunterWindow._set_board_controls_visibility_v1(window, True)
+        self.assertTrue(window.board_controls_drawer.isVisible())
+        self.assertGreaterEqual(window.board_controls_drawer.minimumHeight(), 270)
+        self.assertEqual(window.board_controls_toggle_button.text(), "收起打板控制台")
+        self.assertIn("已展开", window.board_controls_status_label.text())
+
+    def test_sync_first_screen_visibility_hides_secondary_boxes_when_data_exists(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        window = SimpleNamespace(
+            recommend_empty_box=module.QGroupBox(),
+            recommend_section_hint=module.QLabel(),
+            broker_recap_box=module.QGroupBox(),
+            daily_pool_rows=[object()],
+            order_submission_records=[],
+            width=lambda: 1360,
+            height=lambda: 820,
+        )
+
+        module.QuantHunterWindow._sync_first_screen_visibility_v69(window)
+
+        self.assertFalse(window.recommend_empty_box.isVisible())
+        self.assertFalse(window.recommend_section_hint.isVisible())
+        self.assertFalse(window.broker_recap_box.isVisible())
+
+    def test_sync_first_screen_visibility_shows_boxes_when_needed(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        window = SimpleNamespace(
+            recommend_empty_box=module.QGroupBox(),
+            recommend_section_hint=module.QLabel(),
+            broker_recap_box=module.QGroupBox(),
+            daily_pool_rows=[],
+            order_submission_records=[object()],
+            width=lambda: 1600,
+            height=lambda: 960,
+        )
+
+        module.QuantHunterWindow._sync_first_screen_visibility_v69(window)
+
+        self.assertTrue(window.recommend_empty_box.isVisible())
+        self.assertTrue(window.recommend_section_hint.isVisible())
+        self.assertTrue(window.broker_recap_box.isVisible())
+
+    def test_qt_window_hides_leaderboard_on_compact_layout(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                app.processEvents()
+                window.resize(1360, 820)
+                window._apply_layout_polish_v19()
+                app.processEvents()
+                leaderboard_box = window.findChild(module.QGroupBox, "leaderboardBox")
+                self.assertIsNotNone(leaderboard_box)
+                self.assertTrue(leaderboard_box.isHidden())
+            finally:
+                window.close()
+                app.processEvents()
 
     def test_build_paper_experiment_lines_highlights_verdict_and_next_round(self) -> None:
         module = importlib.import_module("app_qt")

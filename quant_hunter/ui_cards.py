@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import html
+
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 
 class InsightCardBase(QFrame):
@@ -108,16 +110,29 @@ class LeaderboardCard(InsightCardBase):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("leaderboardCard", parent)
         self._compact_density = False
-        self.setMinimumHeight(152)
+        self.setMinimumHeight(196)
         layout = QVBoxLayout(self)
         self._layout = layout
-        layout.setContentsMargins(16, 15, 16, 15)
-        layout.setSpacing(6)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
 
         self.rank_label = QLabel("TOP")
         self.rank_label.setObjectName("leaderboardRank")
         self.status_label = QLabel("LIVE")
         self.status_label.setObjectName("leaderboardBadge")
+        self.rank_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.status_label.setAlignment(Qt.AlignCenter)
+        self.rank_label.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+        self.status_label.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+        self.header_row = QWidget(self)
+        self.header_row.setObjectName("leaderboardHeaderRow")
+        self.header_row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.header_layout = QHBoxLayout(self.header_row)
+        self.header_layout.setContentsMargins(0, 0, 0, 0)
+        self.header_layout.setSpacing(10)
+        self.header_layout.addWidget(self.rank_label, 0, Qt.AlignLeft | Qt.AlignVCenter)
+        self.header_layout.addStretch(1)
+        self.header_layout.addWidget(self.status_label, 0, Qt.AlignRight | Qt.AlignVCenter)
         self.name_label = QLabel("等待刷新")
         self.name_label.setObjectName("leaderboardName")
         self.strategy_label = QLabel("题材方向")
@@ -131,16 +146,8 @@ class LeaderboardCard(InsightCardBase):
         self.flow_label = QLabel("主力净流入")
         self.flow_label.setObjectName("leaderboardFlow")
 
-        for widget in (
-            self.rank_label,
-            self.status_label,
-            self.name_label,
-            self.strategy_label,
-            self.reason_label,
-            self.fund_label,
-            self.metrics_label,
-            self.flow_label,
-        ):
+        layout.addWidget(self.header_row)
+        for widget in (self.name_label, self.strategy_label, self.reason_label, self.fund_label, self.metrics_label, self.flow_label):
             widget.setWordWrap(True)
             layout.addWidget(widget)
         layout.addStretch(1)
@@ -148,32 +155,41 @@ class LeaderboardCard(InsightCardBase):
 
     def set_density(self, compact: bool) -> None:
         self._compact_density = bool(compact)
-        self.setMinimumHeight(104 if self._compact_density else 152)
-        self.setMaximumHeight(116 if self._compact_density else 16777215)
+        self.setMinimumHeight(136 if self._compact_density else 184)
+        self.setMaximumHeight(160 if self._compact_density else 16777215)
         self._layout.setContentsMargins(
-            10 if self._compact_density else 16,
-            9 if self._compact_density else 15,
-            10 if self._compact_density else 16,
-            9 if self._compact_density else 15,
+            10 if self._compact_density else 12,
+            10 if self._compact_density else 12,
+            10 if self._compact_density else 12,
+            10 if self._compact_density else 12,
         )
-        self._layout.setSpacing(3 if self._compact_density else 6)
-        self.strategy_label.setVisible(not self._compact_density)
-        self.fund_label.setVisible(self._compact_density)
-        self.flow_label.setVisible(not self._compact_density)
-        self.rank_label.setMaximumHeight(12 if self._compact_density else 14)
-        self.status_label.setMaximumHeight(18 if self._compact_density else 20)
-        self.name_label.setMaximumHeight(16 if self._compact_density else 22)
-        self.reason_label.setMaximumHeight(12 if self._compact_density else 16)
-        self.metrics_label.setMaximumHeight(12 if self._compact_density else 16)
-        self.flow_label.setMaximumHeight(12 if self._compact_density else 16)
-        self._set_density_style(self.rank_label, color="#8fa0b6", compact_size=10, regular_size=11, weight=900, extra="letter-spacing:0.7px;")
-        self._set_density_style(self.status_label, color="#d8e7f6", compact_size=9, regular_size=10, weight=800, extra="letter-spacing:0.8px; background:rgba(255,255,255,0.025); border:1px solid rgba(126, 183, 255, 0.12); border-radius:9px; padding:3px 8px;")
-        self._set_density_style(self.name_label, color="#f5f7fa", compact_size=13, regular_size=15, weight=800)
-        self._set_density_style(self.strategy_label, color="#8ea2b8", compact_size=10, regular_size=11, weight=600)
-        self._set_density_style(self.reason_label, color="#bed0e2", compact_size=9, regular_size=10, weight=600)
-        self._set_density_style(self.fund_label, color="#8ea2b8", compact_size=10, regular_size=11, weight=600)
-        self._set_density_style(self.metrics_label, color="#dce8f5", compact_size=10, regular_size=11, weight=700)
-        self._set_density_style(self.flow_label, color="#93abc2", compact_size=10, regular_size=11, weight=700)
+        self._layout.setSpacing(6 if self._compact_density else 9)
+        self.strategy_label.setVisible(True)
+        self.reason_label.setVisible(False)
+        self.fund_label.setVisible(False)
+        self.flow_label.setVisible(False)
+        self.rank_label.setMinimumHeight(18 if self._compact_density else 20)
+        self.rank_label.setMaximumHeight(18 if self._compact_density else 20)
+        self.status_label.setMinimumHeight(22 if self._compact_density else 24)
+        self.status_label.setMaximumHeight(22 if self._compact_density else 24)
+        self.name_label.setMinimumHeight(24 if self._compact_density else 32)
+        self.name_label.setMaximumHeight(30 if self._compact_density else 42)
+        self.strategy_label.setMinimumHeight(18 if self._compact_density else 22)
+        self.strategy_label.setMaximumHeight(20 if self._compact_density else 26)
+        self.reason_label.setMinimumHeight(0)
+        self.reason_label.setMaximumHeight(0)
+        self.metrics_label.setMinimumHeight(18 if self._compact_density else 22)
+        self.metrics_label.setMaximumHeight(22 if self._compact_density else 26)
+        self.flow_label.setMinimumHeight(0)
+        self.flow_label.setMaximumHeight(0)
+        self._set_density_style(self.rank_label, color="#8fa0b6", compact_size=11, regular_size=12, weight=900, extra="letter-spacing:0.7px;")
+        self._set_density_style(self.status_label, color="#d8e7f6", compact_size=10, regular_size=11, weight=800, extra="letter-spacing:0.8px; background:rgba(255,255,255,0.03); border:1px solid rgba(126, 183, 255, 0.16); border-radius:9px; padding:4px 8px;")
+        self._set_density_style(self.name_label, color="#f5f7fa", compact_size=15, regular_size=18, weight=900)
+        self._set_density_style(self.strategy_label, color="#b7c8da", compact_size=12, regular_size=13, weight=650)
+        self._set_density_style(self.reason_label, color="#c8d7e6", compact_size=10, regular_size=12, weight=650)
+        self._set_density_style(self.fund_label, color="#9aaec2", compact_size=11, regular_size=12, weight=650)
+        self._set_density_style(self.metrics_label, color="#eef5fd", compact_size=12, regular_size=14, weight=800)
+        self._set_density_style(self.flow_label, color="#9bb3ca", compact_size=10, regular_size=12, weight=700)
 
     def set_row(self, rank_text: str, row) -> None:
         accent = {"TOP 1": "#f5c451", "TOP 2": "#cfd8e3", "TOP 3": "#b7835a"}.get(rank_text, "#7ed7ff")
@@ -287,6 +303,400 @@ class LeaderboardCard(InsightCardBase):
         self._set_label_if_changed(self.flow_label, "")
 
 
+def _leaderboard_set_density_v2(self: LeaderboardCard, compact: bool) -> None:
+    self._compact_density = bool(compact)
+    self.setMinimumHeight(136 if self._compact_density else 188)
+    self.setMaximumHeight(160 if self._compact_density else 16777215)
+    self._layout.setContentsMargins(
+        10 if self._compact_density else 12,
+        10 if self._compact_density else 12,
+        10 if self._compact_density else 12,
+        10 if self._compact_density else 12,
+    )
+    self._layout.setSpacing(6 if self._compact_density else 9)
+    self.strategy_label.setVisible(True)
+    self.reason_label.setVisible(False)
+    self.fund_label.setVisible(False)
+    self.flow_label.setVisible(False)
+    self.rank_label.setMinimumHeight(18 if self._compact_density else 20)
+    self.rank_label.setMaximumHeight(18 if self._compact_density else 20)
+    self.status_label.setMinimumHeight(22 if self._compact_density else 24)
+    self.status_label.setMaximumHeight(22 if self._compact_density else 24)
+    self.name_label.setMinimumHeight(24 if self._compact_density else 34)
+    self.name_label.setMaximumHeight(30 if self._compact_density else 44)
+    self.strategy_label.setMinimumHeight(18 if self._compact_density else 22)
+    self.strategy_label.setMaximumHeight(20 if self._compact_density else 26)
+    self.metrics_label.setMinimumHeight(18 if self._compact_density else 22)
+    self.metrics_label.setMaximumHeight(22 if self._compact_density else 26)
+    self.reason_label.setMinimumHeight(0)
+    self.reason_label.setMaximumHeight(0)
+    self.fund_label.setMinimumHeight(0)
+    self.fund_label.setMaximumHeight(0)
+    self.flow_label.setMinimumHeight(0)
+    self.flow_label.setMaximumHeight(0)
+    self._set_density_style(self.rank_label, color="#8fa0b6", compact_size=11, regular_size=12, weight=900, extra="letter-spacing:0.6px;")
+    self._set_density_style(
+        self.status_label,
+        color="#d8e7f6",
+        compact_size=10,
+        regular_size=11,
+        weight=800,
+        extra="letter-spacing:0.8px; background:rgba(255,255,255,0.03); border:1px solid rgba(126, 183, 255, 0.16); border-radius:9px; padding:4px 8px;",
+    )
+    self._set_density_style(self.name_label, color="#f5f7fa", compact_size=15, regular_size=18, weight=900)
+    self._set_density_style(self.strategy_label, color="#b7c8da", compact_size=12, regular_size=13, weight=650)
+    self._set_density_style(self.metrics_label, color="#eef5fd", compact_size=12, regular_size=14, weight=800)
+
+
+def _leaderboard_set_row_v2(self: LeaderboardCard, rank_text: str, row) -> None:
+    accent = {"TOP 1": "#f5c451", "TOP 2": "#cfd8e3", "TOP 3": "#b7835a"}.get(rank_text, "#7ed7ff")
+    strategy_name = getattr(row, "primary_strategy", "") or getattr(row, "strategy_tag", "")
+    theme_name = getattr(row, "mainline_tag", "") or getattr(row, "theme_name", "") or strategy_name or "待同步"
+    decision_score = float(getattr(row, "dragon_decision_score", getattr(row, "heat_score", 0.0)) or 0.0)
+    pct_change = float(getattr(row, "pct_change", 0.0) or 0.0)
+    heat_score = float(getattr(row, "heat_score", 0.0) or 0.0)
+    main_inflow = float(getattr(row, "main_inflow", 0.0) or 0.0)
+    action = str(getattr(row, "action", "") or "").upper()
+
+    if action == "BUY":
+        status_text = "可执行"
+    elif action in {"SELL", "REDUCE"}:
+        status_text = "高风险"
+    else:
+        status_text = "观察中"
+
+    reason_parts: list[str] = []
+    if heat_score >= 85:
+        reason_parts.append("主线强化")
+    elif heat_score >= 70:
+        reason_parts.append("热度上行")
+    if main_inflow > 0:
+        reason_parts.append("资金承接")
+    if pct_change >= 5:
+        reason_parts.append("趋势扩散")
+    if not reason_parts:
+        reason_parts.append(theme_name)
+
+    self._apply_card_styles(
+        border_color="rgba(110, 129, 151, 0.20)",
+        title_selector="leaderboardName",
+        title_color="#f5f7fa",
+        title_size=16,
+        subtitle_selector="leaderboardMeta",
+        subtitle_color="#b5c6d8",
+        subtitle_size=13,
+        emphasis_selector="leaderboardMetric",
+        emphasis_color="#eef5fd",
+        emphasis_size=14,
+    )
+    self._set_density_style(self.rank_label, color=accent, compact_size=11, regular_size=12, weight=900, extra="letter-spacing:0.6px;")
+    self._set_density_style(
+        self.status_label,
+        color=accent,
+        compact_size=10,
+        regular_size=11,
+        weight=800,
+        extra="letter-spacing:0.8px; background:rgba(255,255,255,0.03); border:1px solid rgba(126, 183, 255, 0.14); border-radius:9px; padding:4px 8px;",
+    )
+    self._set_label_if_changed(self.rank_label, rank_text)
+    self._set_label_if_changed(self.status_label, status_text)
+    full_name = f"{row.stock_name} {row.stock_id}"
+    headline = self._compact_copy(full_name, max_chars=14) if self._compact_density else full_name
+    theme_line = self._compact_copy(theme_name, max_chars=12, keep_segments=1) if self._compact_density else theme_name
+    metrics_line = f"决策 {decision_score:.1f} | 涨 {pct_change:.1f}%"
+    self._set_label_if_changed(self.name_label, headline)
+    self._set_label_if_changed(self.strategy_label, theme_line)
+    self._set_label_if_changed(self.metrics_label, metrics_line)
+    self.name_label.setToolTip(full_name)
+    self.strategy_label.setToolTip(theme_name)
+    self.metrics_label.setToolTip(f"决策 {decision_score:.1f} | 涨幅 {pct_change:.2f}% | 热度 {heat_score:.1f} | 资金 {main_inflow / 1e8:.2f} 亿")
+    self.status_label.setToolTip(
+        "\n".join(
+            [
+                f"动作：{getattr(row, 'action', '') or 'WAIT'}",
+                f"题材：{theme_name}",
+                f"原因：{' | '.join(reason_parts[:2])}",
+            ]
+        )
+    )
+    self._set_label_if_changed(self.reason_label, " | ".join(reason_parts[:2]))
+    self.reason_label.setToolTip(" | ".join(reason_parts[:2]))
+    self._set_label_if_changed(self.flow_label, f"资金 {main_inflow / 1e8:.2f} 亿")
+    self.flow_label.setToolTip(f"资金 {main_inflow / 1e8:.2f} 亿")
+    self._set_label_if_changed(self.fund_label, getattr(row, "fund_model", "") or "")
+    self.fund_label.setToolTip(getattr(row, "fund_model", "") or "")
+
+
+LeaderboardCard.set_density = _leaderboard_set_density_v2
+LeaderboardCard.set_row = _leaderboard_set_row_v2
+
+
+def _leaderboard_set_density_v3(self: LeaderboardCard, compact: bool) -> None:
+    self._compact_density = bool(compact)
+    self.setMinimumHeight(136 if self._compact_density else 188)
+    self.setMaximumHeight(162 if self._compact_density else 16777215)
+    self._layout.setContentsMargins(
+        10 if self._compact_density else 12,
+        10 if self._compact_density else 12,
+        10 if self._compact_density else 12,
+        10 if self._compact_density else 12,
+    )
+    self._layout.setSpacing(6 if self._compact_density else 9)
+    self.strategy_label.setVisible(True)
+    self.reason_label.setVisible(False)
+    self.fund_label.setVisible(False)
+    self.flow_label.setVisible(False)
+    self.rank_label.setMinimumHeight(18 if self._compact_density else 20)
+    self.rank_label.setMaximumHeight(18 if self._compact_density else 20)
+    self.status_label.setMinimumHeight(22 if self._compact_density else 24)
+    self.status_label.setMaximumHeight(22 if self._compact_density else 24)
+    self.name_label.setMinimumHeight(24 if self._compact_density else 34)
+    self.name_label.setMaximumHeight(30 if self._compact_density else 44)
+    self.strategy_label.setMinimumHeight(18 if self._compact_density else 22)
+    self.strategy_label.setMaximumHeight(20 if self._compact_density else 26)
+    self.metrics_label.setMinimumHeight(18 if self._compact_density else 22)
+    self.metrics_label.setMaximumHeight(22 if self._compact_density else 26)
+    self.reason_label.setMinimumHeight(0)
+    self.reason_label.setMaximumHeight(0)
+    self.fund_label.setMinimumHeight(0)
+    self.fund_label.setMaximumHeight(0)
+    self.flow_label.setMinimumHeight(0)
+    self.flow_label.setMaximumHeight(0)
+    self._set_density_style(self.rank_label, color="#8fa0b6", compact_size=11, regular_size=12, weight=900, extra="letter-spacing:0.6px;")
+    self._set_density_style(
+        self.status_label,
+        color="#d8e7f6",
+        compact_size=10,
+        regular_size=11,
+        weight=800,
+        extra="letter-spacing:0.8px; background:rgba(255,255,255,0.03); border:1px solid rgba(126, 183, 255, 0.16); border-radius:9px; padding:4px 8px;",
+    )
+    self._set_density_style(self.name_label, color="#f5f7fa", compact_size=15, regular_size=18, weight=900)
+    self._set_density_style(self.strategy_label, color="#b7c8da", compact_size=12, regular_size=13, weight=650)
+    self._set_density_style(self.metrics_label, color="#eef5fd", compact_size=12, regular_size=14, weight=800)
+
+
+def _leaderboard_set_row_v3(self: LeaderboardCard, rank_text: str, row) -> None:
+    accent = {"TOP 1": "#f5c451", "TOP 2": "#cfd8e3", "TOP 3": "#b7835a"}.get(rank_text, "#7ed7ff")
+    strategy_name = getattr(row, "primary_strategy", "") or getattr(row, "strategy_tag", "")
+    theme_name = getattr(row, "mainline_tag", "") or getattr(row, "theme_name", "") or strategy_name or "待同步"
+    decision_score = float(getattr(row, "dragon_decision_score", getattr(row, "heat_score", 0.0)) or 0.0)
+    pct_change = float(getattr(row, "pct_change", 0.0) or 0.0)
+    heat_score = float(getattr(row, "heat_score", 0.0) or 0.0)
+    main_inflow = float(getattr(row, "main_inflow", 0.0) or 0.0)
+    action = str(getattr(row, "action", "") or "").upper()
+
+    if action == "BUY":
+        status_text = "可执行"
+    elif action in {"SELL", "REDUCE"}:
+        status_text = "高风险"
+    else:
+        status_text = "观察中"
+
+    reason_parts: list[str] = []
+    if heat_score >= 85:
+        reason_parts.append("主线强化")
+    elif heat_score >= 70:
+        reason_parts.append("热度上行")
+    if main_inflow > 0:
+        reason_parts.append("资金承接")
+    if pct_change >= 5:
+        reason_parts.append("趋势扩散")
+    if not reason_parts:
+        reason_parts.append(theme_name)
+
+    self._apply_card_styles(
+        border_color="rgba(110, 129, 151, 0.20)",
+        title_selector="leaderboardName",
+        title_color="#f5f7fa",
+        title_size=16,
+        subtitle_selector="leaderboardMeta",
+        subtitle_color="#b5c6d8",
+        subtitle_size=13,
+        emphasis_selector="leaderboardMetric",
+        emphasis_color="#eef5fd",
+        emphasis_size=14,
+    )
+    self._set_density_style(self.rank_label, color=accent, compact_size=11, regular_size=12, weight=900, extra="letter-spacing:0.6px;")
+    self._set_density_style(
+        self.status_label,
+        color=accent,
+        compact_size=10,
+        regular_size=11,
+        weight=800,
+        extra="letter-spacing:0.8px; background:rgba(255,255,255,0.03); border:1px solid rgba(126, 183, 255, 0.14); border-radius:9px; padding:4px 8px;",
+    )
+
+    full_name = f"{row.stock_name} {row.stock_id}"
+    headline = self._compact_copy(full_name, max_chars=14) if self._compact_density else full_name
+    theme_line = self._compact_copy(theme_name, max_chars=12, keep_segments=1) if self._compact_density else theme_name
+    metrics_line = f"决策 {decision_score:.1f} | 涨 {pct_change:.1f}%"
+
+    self._set_label_if_changed(self.rank_label, rank_text)
+    self._set_label_if_changed(self.status_label, status_text)
+    self._set_label_if_changed(self.name_label, headline)
+    self._set_label_if_changed(self.strategy_label, theme_line)
+    self._set_label_if_changed(self.metrics_label, metrics_line)
+    self.name_label.setToolTip(full_name)
+    self.strategy_label.setToolTip(theme_name)
+    self.metrics_label.setToolTip(
+        f"决策 {decision_score:.1f} | 涨幅 {pct_change:.2f}% | 热度 {heat_score:.1f} | 资金 {main_inflow / 1e8:.2f} 亿"
+    )
+    self.status_label.setToolTip(
+        "\n".join(
+            [
+                f"动作：{getattr(row, 'action', '') or 'WAIT'}",
+                f"题材：{theme_name}",
+                f"原因：{' | '.join(reason_parts[:2])}",
+            ]
+        )
+    )
+
+
+LeaderboardCard.set_density = _leaderboard_set_density_v3
+LeaderboardCard.set_row = _leaderboard_set_row_v3
+
+
+def _leaderboard_set_density_v4(self: LeaderboardCard, compact: bool) -> None:
+    self._compact_density = bool(compact)
+    self.setMinimumHeight(148 if self._compact_density else 204)
+    self.setMaximumHeight(176 if self._compact_density else 16777215)
+    self._layout.setContentsMargins(
+        12 if self._compact_density else 14,
+        12 if self._compact_density else 14,
+        12 if self._compact_density else 14,
+        12 if self._compact_density else 14,
+    )
+    self._layout.setSpacing(7 if self._compact_density else 10)
+    self.strategy_label.setVisible(True)
+    self.reason_label.setVisible(False)
+    self.fund_label.setVisible(False)
+    self.flow_label.setVisible(False)
+    self.header_row.setMinimumHeight(24 if self._compact_density else 28)
+    self.header_row.setMaximumHeight(24 if self._compact_density else 30)
+    self.rank_label.setMinimumHeight(18 if self._compact_density else 20)
+    self.rank_label.setMaximumHeight(18 if self._compact_density else 20)
+    self.rank_label.setMaximumWidth(64)
+    self.status_label.setMinimumHeight(22 if self._compact_density else 24)
+    self.status_label.setMaximumHeight(22 if self._compact_density else 24)
+    self.status_label.setMaximumWidth(88 if self._compact_density else 104)
+    self.name_label.setMinimumHeight(34 if self._compact_density else 42)
+    self.name_label.setMaximumHeight(42 if self._compact_density else 54)
+    self.strategy_label.setMinimumHeight(18 if self._compact_density else 22)
+    self.strategy_label.setMaximumHeight(22 if self._compact_density else 26)
+    self.metrics_label.setMinimumHeight(20 if self._compact_density else 24)
+    self.metrics_label.setMaximumHeight(24 if self._compact_density else 28)
+    self.reason_label.setMinimumHeight(0)
+    self.reason_label.setMaximumHeight(0)
+    self.fund_label.setMinimumHeight(0)
+    self.fund_label.setMaximumHeight(0)
+    self.flow_label.setMinimumHeight(0)
+    self.flow_label.setMaximumHeight(0)
+    self._set_density_style(self.rank_label, color="#8fa0b6", compact_size=11, regular_size=12, weight=900, extra="letter-spacing:0.6px;")
+    self._set_density_style(
+        self.status_label,
+        color="#d8e7f6",
+        compact_size=10,
+        regular_size=11,
+        weight=800,
+        extra="letter-spacing:0.8px; background:rgba(255,255,255,0.03); border:1px solid rgba(126, 183, 255, 0.16); border-radius:11px; padding:3px 10px;",
+    )
+    self._set_density_style(self.name_label, color="#f5f7fa", compact_size=14, regular_size=16, weight=900, extra="line-height:1.22;")
+    self._set_density_style(self.strategy_label, color="#b7c8da", compact_size=11, regular_size=12, weight=650, extra="line-height:1.2;")
+    self._set_density_style(self.metrics_label, color="#eef5fd", compact_size=12, regular_size=13, weight=800, extra="line-height:1.2;")
+
+
+def _leaderboard_set_row_v4(self: LeaderboardCard, rank_text: str, row) -> None:
+    accent = {"TOP 1": "#f5c451", "TOP 2": "#cfd8e3", "TOP 3": "#b7835a"}.get(rank_text, "#7ed7ff")
+    strategy_name = getattr(row, "primary_strategy", "") or getattr(row, "strategy_tag", "")
+    theme_name = getattr(row, "mainline_tag", "") or getattr(row, "theme_name", "") or strategy_name or "待同步"
+    decision_score = float(getattr(row, "dragon_decision_score", getattr(row, "heat_score", 0.0)) or 0.0)
+    pct_change = float(getattr(row, "pct_change", 0.0) or 0.0)
+    heat_score = float(getattr(row, "heat_score", 0.0) or 0.0)
+    main_inflow = float(getattr(row, "main_inflow", 0.0) or 0.0)
+    action = str(getattr(row, "action", "") or "").upper()
+
+    if action == "BUY":
+        status_text = "可执行"
+    elif action in {"SELL", "REDUCE"}:
+        status_text = "高风险"
+    else:
+        status_text = "观察中"
+
+    reason_parts: list[str] = []
+    if heat_score >= 85:
+        reason_parts.append("主线强化")
+    elif heat_score >= 70:
+        reason_parts.append("热度上行")
+    if main_inflow > 0:
+        reason_parts.append("资金承接")
+    if pct_change >= 5:
+        reason_parts.append("趋势扩散")
+    if not reason_parts:
+        reason_parts.append(theme_name)
+
+    self._apply_card_styles(
+        border_color="rgba(110, 129, 151, 0.20)",
+        title_selector="leaderboardName",
+        title_color="#f5f7fa",
+        title_size=16,
+        subtitle_selector="leaderboardMeta",
+        subtitle_color="#b5c6d8",
+        subtitle_size=13,
+        emphasis_selector="leaderboardMetric",
+        emphasis_color="#eef5fd",
+        emphasis_size=14,
+    )
+    self._set_density_style(self.rank_label, color=accent, compact_size=11, regular_size=12, weight=900, extra="letter-spacing:0.6px;")
+    self._set_density_style(
+        self.status_label,
+        color=accent,
+        compact_size=10,
+        regular_size=11,
+        weight=800,
+        extra="letter-spacing:0.8px; background:rgba(255,255,255,0.03); border:1px solid rgba(126, 183, 255, 0.14); border-radius:9px; padding:4px 8px;",
+    )
+
+    stock_name = str(getattr(row, "stock_name", "") or "待同步")
+    stock_id = str(getattr(row, "stock_id", "") or "").strip()
+    compact_name = self._compact_copy(stock_name, max_chars=8 if self._compact_density else 12)
+    safe_name = html.escape(compact_name if self._compact_density else stock_name)
+    safe_stock_id = html.escape(stock_id)
+    full_name = f"{stock_name} {stock_id}".strip()
+    code_size = 11 if self._compact_density else 12
+    headline = (
+        f"{safe_name}<span style='color:#93a7bb; font-size:{code_size}px; font-weight:700;'>  {safe_stock_id}</span>"
+        if safe_stock_id
+        else safe_name
+    )
+    theme_line = self._compact_copy(theme_name, max_chars=12 if self._compact_density else 18, keep_segments=1)
+    metrics_line = f"决策 {decision_score:.1f} | 涨 {pct_change:.1f}%"
+
+    self._set_label_if_changed(self.rank_label, rank_text)
+    self._set_label_if_changed(self.status_label, status_text)
+    self._set_label_if_changed(self.name_label, headline)
+    self._set_label_if_changed(self.strategy_label, theme_line)
+    self._set_label_if_changed(self.metrics_label, metrics_line)
+    self.name_label.setToolTip(full_name)
+    self.strategy_label.setToolTip(theme_name)
+    self.metrics_label.setToolTip(
+        f"决策 {decision_score:.1f} | 涨幅 {pct_change:.2f}% | 热度 {heat_score:.1f} | 资金 {main_inflow / 1e8:.2f} 亿"
+    )
+    self.status_label.setToolTip(
+        "\n".join(
+            [
+                f"动作：{getattr(row, 'action', '') or 'WAIT'}",
+                f"题材：{theme_name}",
+                f"原因：{' | '.join(reason_parts[:2])}",
+            ]
+        )
+    )
+
+
+LeaderboardCard.set_density = _leaderboard_set_density_v4
+LeaderboardCard.set_row = _leaderboard_set_row_v4
+
+
 class StrategyWorkbenchCard(InsightCardBase):
     def __init__(self, title: str, subtitle: str, parent: QWidget | None = None) -> None:
         super().__init__("strategyWorkbenchCard", parent)
@@ -360,10 +770,12 @@ class ActionFlowCard(InsightCardBase):
     def __init__(self, title: str, accent: str, parent: QWidget | None = None) -> None:
         super().__init__("actionFlowCard", parent)
         self.accent = accent
-        self.setMinimumHeight(108)
+        self._compact_density = False
+        self.setMinimumHeight(124)
         layout = QVBoxLayout(self)
+        self._layout = layout
         layout.setContentsMargins(14, 12, 14, 12)
-        layout.setSpacing(5)
+        layout.setSpacing(7)
 
         self.accent_strip = self._create_accent_strip(accent)
         self.title_label = QLabel(title)
@@ -384,19 +796,44 @@ class ActionFlowCard(InsightCardBase):
         layout.addWidget(self.note_label)
         layout.addStretch(1)
         self._apply()
+        self.set_density(False)
 
     def _apply(self) -> None:
         self._apply_card_styles(
             border_color="rgba(110, 129, 151, 0.16)",
             title_selector="actionFlowTitle",
             title_color="#889db1",
-            title_size=11,
+            title_size=12,
             emphasis_selector="actionFlowCount",
             emphasis_color=self.accent,
-            emphasis_size=15,
+            emphasis_size=16,
         )
-        self.focus_label.setStyleSheet("color:#e8f0f8; font-size:11px; font-weight:800;")
-        self.note_label.setStyleSheet("color:#8ca0b3; font-size:10px; font-weight:600; line-height:1.4;")
+        self.focus_label.setStyleSheet("color:#e8f0f8; font-size:12px; font-weight:800;")
+        self.note_label.setStyleSheet("color:#8ca0b3; font-size:11px; font-weight:600; line-height:1.42;")
+
+    def set_density(self, compact: bool) -> None:
+        self._compact_density = bool(compact)
+        self.setMinimumHeight(96 if self._compact_density else 124)
+        self.setMaximumHeight(112 if self._compact_density else 16777215)
+        self._layout.setContentsMargins(
+            12 if self._compact_density else 14,
+            10 if self._compact_density else 12,
+            12 if self._compact_density else 14,
+            10 if self._compact_density else 12,
+        )
+        self._layout.setSpacing(5 if self._compact_density else 7)
+        self.title_label.setStyleSheet(
+            f"color:#889db1; font-size:{11 if self._compact_density else 12}px; font-weight:900;"
+        )
+        self.count_label.setStyleSheet(
+            f"color:{self.accent}; font-size:{14 if self._compact_density else 16}px; font-weight:900;"
+        )
+        self.focus_label.setStyleSheet(
+            f"color:#e8f0f8; font-size:{11 if self._compact_density else 12}px; font-weight:800; line-height:1.22;"
+        )
+        self.note_label.setStyleSheet(
+            f"color:#8ca0b3; font-size:{10 if self._compact_density else 11}px; font-weight:600; line-height:1.42;"
+        )
 
     def set_data(self, count_text: str, focus_text: str, note_text: str) -> None:
         self._set_label_if_changed(self.count_label, count_text)
@@ -446,28 +883,28 @@ class CompactSummaryCard(InsightCardBase):
 
     def set_density(self, compact: bool) -> None:
         self._compact_density = bool(compact)
-        self.setMinimumHeight(60 if self._compact_density else 108)
-        self.setMaximumHeight(72 if self._compact_density else 16777215)
+        self.setMinimumHeight(76 if self._compact_density else 114)
+        self.setMaximumHeight(92 if self._compact_density else 16777215)
         self._layout.setContentsMargins(
-            10 if self._compact_density else 16,
-            9 if self._compact_density else 15,
-            10 if self._compact_density else 16,
-            9 if self._compact_density else 15,
+            12 if self._compact_density else 16,
+            10 if self._compact_density else 15,
+            12 if self._compact_density else 16,
+            10 if self._compact_density else 15,
         )
-        self._layout.setSpacing(3 if self._compact_density else 6)
+        self._layout.setSpacing(5 if self._compact_density else 7)
         self.title_label.setStyleSheet(
             f"color:#98aec5; font-size:{11 if self._compact_density else 12}px; font-weight:900;"
         )
         self.headline_label.setStyleSheet(
-            f"color:#f4f8fc; font-size:{14 if self._compact_density else 16}px; font-weight:800;"
+            f"color:#f4f8fc; font-size:{15 if self._compact_density else 16}px; font-weight:800; line-height:1.18;"
         )
         self.detail_label.setStyleSheet(
-            f"color:#90a4b8; font-size:{10 if self._compact_density else 11}px; font-weight:600; line-height:1.35;"
+            f"color:#90a4b8; font-size:{11 if self._compact_density else 11}px; font-weight:600; line-height:1.38;"
         )
 
     def set_data(self, headline: str, detail: str) -> None:
-        headline_text = self._compact_copy(headline, max_chars=10, keep_segments=1) if self._compact_density else headline
-        detail_text = self._compact_copy(detail, max_chars=16, keep_segments=1) if self._compact_density else detail
+        headline_text = self._compact_copy(headline, max_chars=12, keep_segments=1) if self._compact_density else headline
+        detail_text = self._compact_copy(detail, max_chars=22, keep_segments=1) if self._compact_density else detail
         self._set_label_if_changed(self.headline_label, headline_text)
         self._set_label_if_changed(self.detail_label, detail_text)
         self.headline_label.setToolTip(headline)
