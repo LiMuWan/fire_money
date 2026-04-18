@@ -115,8 +115,14 @@ from quant_hunter.risk import (
     risk_profile_snapshot_text,
     risk_profile_projection_text,
 )
-from quant_hunter.reports import export_daily_trade_plan, export_end_of_day_review, export_workspace_report
+from quant_hunter.reports import (
+    export_daily_trade_plan,
+    export_end_of_day_review,
+    export_strategy_history_report,
+    export_workspace_report,
+)
 from quant_hunter.scanner import UniverseScanner
+from quant_hunter.strategy_history import StrategyHistoryReplayParams, StrategyHistoryReplayer
 from quant_hunter.storage import AppState, load_app_state, save_app_state
 from quant_hunter.strategy import AntiHarvestStrategy, StrategyParams
 from quant_hunter.theme import summarize_themes
@@ -3693,6 +3699,13 @@ class QuantHunterWindow(QMainWindow):
         self.active_symbol = ""
         self.bars: list[PriceBar] = []
         self.analyses: list[DailyAnalysis] = []
+        self.strategy_history_report = None
+        self.strategy_history_rows: list[dict[str, object]] = []
+        self.strategy_history_compare_rows: list[dict[str, object]] = []
+        self.strategy_history_leaderboard_rows: list[dict[str, object]] = []
+        self.strategy_history_trade_rows: list[dict[str, object]] = []
+        self.strategy_history_yearly_rows: list[dict[str, object]] = []
+        self.strategy_history_monthly_rows: list[dict[str, object]] = []
 
         self.strategy_inputs: dict[str, QLineEdit] = {}
         self.broker_inputs: dict[str, QLineEdit] = {}
@@ -5957,6 +5970,734 @@ class QuantHunterWindow(QMainWindow):
     def _on_detail_trade_selection_changed(self) -> None:
         self._refresh_detail_workspace_panels()
 
+    def _selected_strategy_history_name(self) -> str:
+        table = getattr(self, "strategy_history_table", None)
+        rows = list(getattr(self, "strategy_history_rows", []) or [])
+        if table is None or not rows:
+            return ""
+        current_row = table.currentRow() if hasattr(table, "currentRow") else -1
+        if 0 <= current_row < len(rows):
+            return str(rows[current_row].get("strategy_name", "") or "").strip()
+        return ""
+
+    def _strategy_history_selected_trades(self) -> list[dict[str, object]]:
+        strategy_name = self._selected_strategy_history_name()
+        rows = list(getattr(self, "strategy_history_trade_rows", []) or [])
+        if not strategy_name:
+            return rows
+        return [item for item in rows if str(item.get("strategy_name", "") or "") == strategy_name]
+
+    def _strategy_history_selected_yearly_rows(self) -> list[dict[str, object]]:
+        strategy_name = self._selected_strategy_history_name()
+        rows = list(getattr(self, "strategy_history_yearly_rows", []) or [])
+        if not strategy_name:
+            return rows
+        return [item for item in rows if str(item.get("strategy_name", "") or "") == strategy_name]
+
+    def _strategy_history_selected_monthly_rows(self) -> list[dict[str, object]]:
+        strategy_name = self._selected_strategy_history_name()
+        rows = list(getattr(self, "strategy_history_monthly_rows", []) or [])
+        if not strategy_name:
+            return rows
+        return [item for item in rows if str(item.get("strategy_name", "") or "") == strategy_name]
+
+    def _selected_strategy_history_trade_snapshot(self) -> dict[str, str] | None:
+        table = getattr(self, "strategy_history_trade_table", None)
+        rows = self._strategy_history_selected_trades()
+        if table is None or not rows:
+            return None
+        row = table.currentRow() if hasattr(table, "currentRow") else -1
+        if row < 0 or row >= len(rows):
+            return None
+        item = rows[row]
+        return {
+            "strategy_name": str(item.get("strategy_name", "") or "--"),
+            "stock_name": str(item.get("stock_name", "") or item.get("symbol", "") or "--"),
+            "signal_date": str(item.get("signal_date", "") or "--"),
+            "entry_date": str(item.get("entry_date", "") or "--"),
+            "exit_date": str(item.get("exit_date", "") or "--"),
+            "entry_price": f"{float(item.get('entry_price', 0.0) or 0.0):.4f}",
+            "exit_price": f"{float(item.get('exit_price', 0.0) or 0.0):.4f}",
+            "pnl_pct": f"{float(item.get('pnl_pct', 0.0) or 0.0):.2%}",
+            "hold_days": str(int(item.get("hold_days", 0) or 0)),
+            "exit_reason": str(item.get("exit_reason", "") or "--"),
+        }
+
+    def _on_strategy_history_selection_changed(self) -> None:
+        self._fill_strategy_history_compare_table()
+        self._fill_strategy_history_trade_table()
+        self._fill_strategy_history_period_tables()
+        self._render_strategy_history_curve()
+        self._refresh_detail_workspace_panels()
+
+    def _on_strategy_history_trade_selection_changed(self) -> None:
+        self._refresh_detail_workspace_panels()
+
+    def _strategy_history_runtime_params(self) -> dict[str, object]:
+        start_date = "2021-01-01"
+        end_date = "2099-12-31"
+        max_hold_days = 8
+        slippage_rate = 0.0005
+        commission_rate = 0.0003
+        stamp_duty_rate = 0.001
+        include_watch_only = False
+        block_limit_up_entry = True
+        block_limit_down_exit = True
+
+        start_widget = getattr(self, "strategy_history_start_input", None)
+        if start_widget is not None and hasattr(start_widget, "text"):
+            text = str(start_widget.text() or "").strip()
+            if text:
+                start_date = text
+
+        end_widget = getattr(self, "strategy_history_end_input", None)
+        if end_widget is not None and hasattr(end_widget, "text"):
+            text = str(end_widget.text() or "").strip()
+            if text:
+                end_date = text
+
+        max_hold_widget = getattr(self, "strategy_history_max_hold_input", None)
+        if max_hold_widget is not None and hasattr(max_hold_widget, "text"):
+            text = str(max_hold_widget.text() or "").strip()
+            if text:
+                try:
+                    max_hold_days = max(1, int(text))
+                except ValueError:
+                    max_hold_days = 8
+
+        slippage_widget = getattr(self, "strategy_history_slippage_input", None)
+        if slippage_widget is not None and hasattr(slippage_widget, "text"):
+            text = str(slippage_widget.text() or "").strip()
+            if text:
+                try:
+                    slippage_rate = max(0.0, float(text))
+                except ValueError:
+                    slippage_rate = 0.0005
+
+        commission_widget = getattr(self, "strategy_history_commission_input", None)
+        if commission_widget is not None and hasattr(commission_widget, "text"):
+            text = str(commission_widget.text() or "").strip()
+            if text:
+                try:
+                    commission_rate = max(0.0, float(text))
+                except ValueError:
+                    commission_rate = 0.0003
+
+        stamp_duty_widget = getattr(self, "strategy_history_stamp_duty_input", None)
+        if stamp_duty_widget is not None and hasattr(stamp_duty_widget, "text"):
+            text = str(stamp_duty_widget.text() or "").strip()
+            if text:
+                try:
+                    stamp_duty_rate = max(0.0, float(text))
+                except ValueError:
+                    stamp_duty_rate = 0.001
+
+        include_watch_widget = getattr(self, "strategy_history_include_watch_checkbox", None)
+        if include_watch_widget is not None and hasattr(include_watch_widget, "isChecked"):
+            include_watch_only = bool(include_watch_widget.isChecked())
+
+        limit_up_widget = getattr(self, "strategy_history_limit_up_checkbox", None)
+        if limit_up_widget is not None and hasattr(limit_up_widget, "isChecked"):
+            block_limit_up_entry = bool(limit_up_widget.isChecked())
+
+        limit_down_widget = getattr(self, "strategy_history_limit_down_checkbox", None)
+        if limit_down_widget is not None and hasattr(limit_down_widget, "isChecked"):
+            block_limit_down_exit = bool(limit_down_widget.isChecked())
+
+        return {
+            "start_date": start_date,
+            "end_date": end_date,
+            "max_hold_days": max_hold_days,
+            "slippage_rate": slippage_rate,
+            "commission_rate": commission_rate,
+            "stamp_duty_rate": stamp_duty_rate,
+            "include_watch_only": include_watch_only,
+            "block_limit_up_entry": block_limit_up_entry,
+            "block_limit_down_exit": block_limit_down_exit,
+        }
+
+
+    def _strategy_history_selected_summary(self):
+        report = getattr(self, "strategy_history_report", None)
+        if report is None:
+            return None
+        selected_strategy = self._selected_strategy_history_name() if hasattr(self, "_selected_strategy_history_name") else ""
+        if selected_strategy:
+            return StrategyHistoryReplayer.select_summary(report, selected_strategy)
+        symbol = getattr(self, "active_symbol", "") or ""
+        recommendation = next((row for row in getattr(self, "daily_pool_rows", []) if getattr(row, "symbol", "") == symbol), None)
+        strategy_name = str(getattr(recommendation, "primary_strategy", "") or "").strip() if recommendation is not None else ""
+        if strategy_name:
+            return StrategyHistoryReplayer.select_summary(report, strategy_name)
+        return StrategyHistoryReplayer.select_summary(report)
+
+    def _strategy_history_selected_compare_rows(self) -> list[dict[str, object]]:
+        rows = list(getattr(self, "strategy_history_compare_rows", []) or [])
+        strategy_name = self._selected_strategy_history_name() if hasattr(self, "_selected_strategy_history_name") else ""
+        if not strategy_name:
+            return rows
+        return [item for item in rows if str(item.get("strategy_name", "") or "") == strategy_name]
+
+    def _strategy_history_leaderboard_rows_view(self) -> list[dict[str, object]]:
+        return list(getattr(self, "strategy_history_leaderboard_rows", []) or [])
+
+    def _fill_strategy_history_table(self) -> None:
+        table = getattr(self, "strategy_history_table", None)
+        rows = list(getattr(self, "strategy_history_rows", []) or [])
+        if table is None:
+            return
+        selected_strategy = ""
+        current_row = table.currentRow() if hasattr(table, "currentRow") else -1
+        if 0 <= current_row < len(rows):
+            selected_strategy = str(rows[current_row].get("strategy_name", "") or "")
+        signature = tuple(
+            (
+                str(item.get("strategy_name", "") or ""),
+                int(item.get("signal_count", 0) or 0),
+                int(item.get("trade_count", 0) or 0),
+                float(item.get("filled_ratio", 0.0) or 0.0),
+                float(item.get("total_return", 0.0) or 0.0),
+                float(item.get("win_rate", 0.0) or 0.0),
+                float(item.get("max_drawdown", 0.0) or 0.0),
+                float(item.get("avg_hold_days", 0.0) or 0.0),
+            )
+            for item in rows
+        )
+        if getattr(self, "_strategy_history_table_signature", None) == signature:
+            return
+        updates_enabled = table.updatesEnabled()
+        table.setUpdatesEnabled(False)
+        table.blockSignals(True)
+        try:
+            table.setRowCount(len(rows))
+            for row_index, item in enumerate(rows):
+                values = [
+                    str(item.get("strategy_name", "") or "--"),
+                    str(int(item.get("signal_count", 0) or 0)),
+                    str(int(item.get("trade_count", 0) or 0)),
+                    f"{float(item.get('filled_ratio', 0.0) or 0.0):.2%}",
+                    f"{float(item.get('total_return', 0.0) or 0.0):.2%}",
+                    f"{float(item.get('win_rate', 0.0) or 0.0):.2%}",
+                    f"{float(item.get('max_drawdown', 0.0) or 0.0):.2%}",
+                    f"{float(item.get('avg_hold_days', 0.0) or 0.0):.2f} 天",
+                ]
+                for column, value in enumerate(values):
+                    table.setItem(row_index, column, QTableWidgetItem(value))
+        finally:
+            table.blockSignals(False)
+            table.setUpdatesEnabled(updates_enabled)
+        self._strategy_history_table_signature = signature
+        if rows:
+            target_row = next(
+                (index for index, item in enumerate(rows) if str(item.get("strategy_name", "") or "") == selected_strategy),
+                0,
+            )
+            table.selectRow(target_row)
+        self._fill_strategy_history_rank_table()
+
+    def _fill_strategy_history_rank_table(self) -> None:
+        table = getattr(self, "strategy_history_rank_table", None)
+        rows = list(getattr(self, "strategy_history_rows", []) or [])
+        if table is None:
+            return
+        signature = tuple(
+            (
+                str(item.get("strategy_name", "") or ""),
+                float(item.get("total_return", 0.0) or 0.0),
+                float(item.get("profit_factor", 0.0) or 0.0),
+                float(item.get("payoff_ratio", 0.0) or 0.0),
+                float(item.get("max_drawdown", 0.0) or 0.0),
+                int(item.get("max_consecutive_losses", 0) or 0),
+            )
+            for item in rows
+        )
+        if getattr(self, "_strategy_history_rank_signature", None) == signature:
+            return
+        updates_enabled = table.updatesEnabled()
+        table.setUpdatesEnabled(False)
+        table.blockSignals(True)
+        try:
+            table.setRowCount(len(rows))
+            for row_index, item in enumerate(rows):
+                values = [
+                    str(row_index + 1),
+                    str(item.get("strategy_name", "") or "--"),
+                    f"{float(item.get('total_return', 0.0) or 0.0):.2%}",
+                    f"{float(item.get('profit_factor', 0.0) or 0.0):.2f}",
+                    f"{float(item.get('payoff_ratio', 0.0) or 0.0):.2f}",
+                    f"{float(item.get('max_drawdown', 0.0) or 0.0):.2%}",
+                    str(int(item.get("max_consecutive_losses", 0) or 0)),
+                ]
+                for column, value in enumerate(values):
+                    table.setItem(row_index, column, QTableWidgetItem(value))
+        finally:
+            table.blockSignals(False)
+            table.setUpdatesEnabled(updates_enabled)
+        self._strategy_history_rank_signature = signature
+
+    def _fill_strategy_history_leaderboard_table(self) -> None:
+        table = getattr(self, "strategy_history_leaderboard_table", None)
+        rows = self._strategy_history_leaderboard_rows_view() if hasattr(self, "_strategy_history_leaderboard_rows_view") else []
+        if table is None:
+            return
+        signature = tuple(
+            (
+                str(item.get("strategy_name", "") or ""),
+                int(item.get("scenario_count", 0) or 0),
+                str(item.get("best_scenario_label", "") or ""),
+                float(item.get("best_total_return", 0.0) or 0.0),
+                str(item.get("worst_scenario_label", "") or ""),
+                float(item.get("worst_total_return", 0.0) or 0.0),
+                float(item.get("return_spread", 0.0) or 0.0),
+                float(item.get("avg_total_return", 0.0) or 0.0),
+            )
+            for item in rows
+        )
+        if getattr(self, "_strategy_history_leaderboard_signature", None) == signature:
+            return
+        updates_enabled = table.updatesEnabled()
+        table.setUpdatesEnabled(False)
+        table.blockSignals(True)
+        try:
+            table.setRowCount(len(rows))
+            for row_index, item in enumerate(rows):
+                values = [
+                    str(item.get("strategy_name", "") or "--"),
+                    str(int(item.get("scenario_count", 0) or 0)),
+                    str(item.get("best_scenario_label", "") or "--"),
+                    f"{float(item.get('best_total_return', 0.0) or 0.0):.2%}",
+                    str(item.get("worst_scenario_label", "") or "--"),
+                    f"{float(item.get('worst_total_return', 0.0) or 0.0):.2%}",
+                    f"{float(item.get('return_spread', 0.0) or 0.0):.2%}",
+                    f"{float(item.get('avg_total_return', 0.0) or 0.0):.2%}",
+                ]
+                for column, value in enumerate(values):
+                    table.setItem(row_index, column, QTableWidgetItem(value))
+        finally:
+            table.blockSignals(False)
+            table.setUpdatesEnabled(updates_enabled)
+        self._strategy_history_leaderboard_signature = signature
+
+    def _fill_strategy_history_compare_table(self) -> None:
+        table = getattr(self, "strategy_history_compare_table", None)
+        rows = self._strategy_history_selected_compare_rows() if hasattr(self, "_strategy_history_selected_compare_rows") else []
+        if table is None:
+            return
+        signature = tuple(
+            (
+                str(item.get("scenario_label", "") or ""),
+                str(item.get("strategy_name", "") or ""),
+                int(item.get("max_hold_days", 0) or 0),
+                float(item.get("total_return", 0.0) or 0.0),
+                float(item.get("win_rate", 0.0) or 0.0),
+                float(item.get("max_drawdown", 0.0) or 0.0),
+                float(item.get("profit_factor", 0.0) or 0.0),
+                float(item.get("payoff_ratio", 0.0) or 0.0),
+                int(item.get("max_consecutive_losses", 0) or 0),
+                str(item.get("scenario_note", "") or ""),
+            )
+            for item in rows
+        )
+        if getattr(self, "_strategy_history_compare_signature", None) == signature:
+            return
+        updates_enabled = table.updatesEnabled()
+        table.setUpdatesEnabled(False)
+        table.blockSignals(True)
+        try:
+            table.setRowCount(len(rows))
+            for row_index, item in enumerate(rows):
+                values = [
+                    str(item.get("scenario_label", "") or "--"),
+                    str(item.get("strategy_name", "") or "--"),
+                    f"{int(item.get('max_hold_days', 0) or 0)} 天",
+                    f"{float(item.get('total_return', 0.0) or 0.0):.2%}",
+                    f"{float(item.get('win_rate', 0.0) or 0.0):.2%}",
+                    f"{float(item.get('max_drawdown', 0.0) or 0.0):.2%}",
+                    f"{float(item.get('profit_factor', 0.0) or 0.0):.2f}",
+                    f"{float(item.get('payoff_ratio', 0.0) or 0.0):.2f}",
+                    str(int(item.get("max_consecutive_losses", 0) or 0)),
+                    str(item.get("scenario_note", "") or "--"),
+                ]
+                for column, value in enumerate(values):
+                    table.setItem(row_index, column, QTableWidgetItem(value))
+        finally:
+            table.blockSignals(False)
+            table.setUpdatesEnabled(updates_enabled)
+        self._strategy_history_compare_signature = signature
+
+    def _fill_strategy_history_trade_table(self) -> None:
+        table = getattr(self, "strategy_history_trade_table", None)
+        rows = self._strategy_history_selected_trades()
+        if table is None:
+            return
+        signature = tuple(
+            (
+                str(item.get("strategy_name", "") or ""),
+                str(item.get("stock_name", "") or item.get("symbol", "") or ""),
+                str(item.get("signal_date", "") or ""),
+                str(item.get("entry_date", "") or ""),
+                str(item.get("exit_date", "") or ""),
+                float(item.get("entry_price", 0.0) or 0.0),
+                float(item.get("exit_price", 0.0) or 0.0),
+                float(item.get("pnl_pct", 0.0) or 0.0),
+                int(item.get("hold_days", 0) or 0),
+                str(item.get("exit_reason", "") or ""),
+            )
+            for item in rows
+        )
+        if getattr(self, "_strategy_history_trade_table_signature", None) == signature:
+            return
+        updates_enabled = table.updatesEnabled()
+        table.setUpdatesEnabled(False)
+        table.blockSignals(True)
+        try:
+            table.setRowCount(len(rows))
+            for row_index, item in enumerate(rows):
+                values = [
+                    str(item.get("strategy_name", "") or "--"),
+                    str(item.get("stock_name", "") or item.get("symbol", "") or "--"),
+                    str(item.get("signal_date", "") or "--"),
+                    str(item.get("entry_date", "") or "--"),
+                    str(item.get("exit_date", "") or "--"),
+                    f"{float(item.get('entry_price', 0.0) or 0.0):.4f}",
+                    f"{float(item.get('exit_price', 0.0) or 0.0):.4f}",
+                    f"{float(item.get('pnl_pct', 0.0) or 0.0):.2%}",
+                    str(int(item.get("hold_days", 0) or 0)),
+                    str(item.get("exit_reason", "") or "--"),
+                ]
+                for column, value in enumerate(values):
+                    table.setItem(row_index, column, QTableWidgetItem(value))
+        finally:
+            table.blockSignals(False)
+            table.setUpdatesEnabled(updates_enabled)
+        self._strategy_history_trade_table_signature = signature
+        if rows:
+            table.selectRow(0)
+
+    def _fill_strategy_history_period_tables(self) -> None:
+        yearly_table = getattr(self, "strategy_history_yearly_table", None)
+        monthly_table = getattr(self, "strategy_history_monthly_table", None)
+        heatmap_table = getattr(self, "strategy_history_heatmap_table", None)
+        yearly_rows = self._strategy_history_selected_yearly_rows()
+        monthly_rows = self._strategy_history_selected_monthly_rows()
+
+        if yearly_table is not None:
+            yearly_signature = tuple(
+                (
+                    str(item.get("strategy_name", "") or ""),
+                    str(item.get("period", "") or ""),
+                    int(item.get("trade_count", 0) or 0),
+                    float(item.get("win_rate", 0.0) or 0.0),
+                    float(item.get("total_return", 0.0) or 0.0),
+                    float(item.get("avg_return", 0.0) or 0.0),
+                )
+                for item in yearly_rows
+            )
+            if getattr(self, "_strategy_history_yearly_signature", None) != yearly_signature:
+                updates_enabled = yearly_table.updatesEnabled()
+                yearly_table.setUpdatesEnabled(False)
+                yearly_table.blockSignals(True)
+                try:
+                    yearly_table.setRowCount(len(yearly_rows))
+                    for row_index, item in enumerate(yearly_rows):
+                        values = [
+                            str(item.get("strategy_name", "") or "--"),
+                            str(item.get("period", "") or "--"),
+                            str(int(item.get("trade_count", 0) or 0)),
+                            f"{float(item.get('win_rate', 0.0) or 0.0):.2%}",
+                            f"{float(item.get('total_return', 0.0) or 0.0):.2%}",
+                            f"{float(item.get('avg_return', 0.0) or 0.0):.2%}",
+                        ]
+                        for column, value in enumerate(values):
+                            yearly_table.setItem(row_index, column, QTableWidgetItem(value))
+                finally:
+                    yearly_table.blockSignals(False)
+                    yearly_table.setUpdatesEnabled(updates_enabled)
+                self._strategy_history_yearly_signature = yearly_signature
+
+        if monthly_table is not None:
+            monthly_signature = tuple(
+                (
+                    str(item.get("strategy_name", "") or ""),
+                    str(item.get("period", "") or ""),
+                    int(item.get("trade_count", 0) or 0),
+                    float(item.get("win_rate", 0.0) or 0.0),
+                    float(item.get("total_return", 0.0) or 0.0),
+                    float(item.get("avg_return", 0.0) or 0.0),
+                )
+                for item in monthly_rows
+            )
+            if getattr(self, "_strategy_history_monthly_signature", None) != monthly_signature:
+                updates_enabled = monthly_table.updatesEnabled()
+                monthly_table.setUpdatesEnabled(False)
+                monthly_table.blockSignals(True)
+                try:
+                    monthly_table.setRowCount(len(monthly_rows))
+                    for row_index, item in enumerate(monthly_rows):
+                        values = [
+                            str(item.get("strategy_name", "") or "--"),
+                            str(item.get("period", "") or "--"),
+                            str(int(item.get("trade_count", 0) or 0)),
+                            f"{float(item.get('win_rate', 0.0) or 0.0):.2%}",
+                            f"{float(item.get('total_return', 0.0) or 0.0):.2%}",
+                            f"{float(item.get('avg_return', 0.0) or 0.0):.2%}",
+                        ]
+                        for column, value in enumerate(values):
+                            monthly_table.setItem(row_index, column, QTableWidgetItem(value))
+                finally:
+                    monthly_table.blockSignals(False)
+                    monthly_table.setUpdatesEnabled(updates_enabled)
+                self._strategy_history_monthly_signature = monthly_signature
+
+        if heatmap_table is not None:
+            heatmap_map: dict[tuple[str, str], dict[str, str]] = {}
+            for item in monthly_rows:
+                strategy_name = str(item.get("strategy_name", "") or "--")
+                period = str(item.get("period", "") or "")
+                year, _sep, month = period.partition("-")
+                if not year or not month:
+                    continue
+                bucket = heatmap_map.setdefault((strategy_name, year), {})
+                bucket[month] = f"{float(item.get('total_return', 0.0) or 0.0):.1%}"
+            heatmap_rows = sorted(heatmap_map.items(), key=lambda item: (item[0][0], item[0][1]))
+            heatmap_signature = tuple(
+                (
+                    strategy_name,
+                    year,
+                    *tuple(month_values.get(f"{month:02d}", "--") for month in range(1, 13)),
+                )
+                for (strategy_name, year), month_values in heatmap_rows
+            )
+            if getattr(self, "_strategy_history_heatmap_signature", None) != heatmap_signature:
+                updates_enabled = heatmap_table.updatesEnabled()
+                heatmap_table.setUpdatesEnabled(False)
+                heatmap_table.blockSignals(True)
+                try:
+                    heatmap_table.setRowCount(len(heatmap_rows))
+                    for row_index, ((strategy_name, year), month_values) in enumerate(heatmap_rows):
+                        values = [strategy_name, year] + [month_values.get(f"{month:02d}", "--") for month in range(1, 13)]
+                        for column, value in enumerate(values):
+                            heatmap_table.setItem(row_index, column, QTableWidgetItem(value))
+                finally:
+                    heatmap_table.blockSignals(False)
+                    heatmap_table.setUpdatesEnabled(updates_enabled)
+                self._strategy_history_heatmap_signature = heatmap_signature
+
+    def _render_strategy_history_curve(self) -> None:
+        view = getattr(self, "strategy_history_curve_view", None)
+        report = getattr(self, "strategy_history_report", None)
+        if view is None:
+            return
+        chart = QChart()
+        chart.legend().hide()
+        chart.setTitle("历史战法收益曲线")
+        if report is None:
+            view.setChart(chart)
+            return
+        selected_strategy = self._selected_strategy_history_name() if hasattr(self, "_selected_strategy_history_name") else ""
+        points = [
+            item
+            for item in getattr(report, "equity_points", []) or []
+            if not selected_strategy or getattr(item, "strategy_name", "") == selected_strategy
+        ]
+        series = QLineSeries()
+        if points:
+            chart.setTitle(f"历史战法收益曲线 - {selected_strategy or getattr(points[0], 'strategy_name', '全部战法')}")
+            for index, item in enumerate(points):
+                series.append(float(index), float(getattr(item, "equity", 1.0) or 1.0))
+        else:
+            series.append(0.0, 1.0)
+        chart.addSeries(series)
+        axis_x = QValueAxis()
+        axis_x.setLabelFormat("%d")
+        axis_x.setTitleText("成交序号")
+        axis_y = QValueAxis()
+        axis_y.setLabelFormat("%.2f")
+        axis_y.setTitleText("净值")
+        chart.addAxis(axis_x, Qt.AlignBottom)
+        chart.addAxis(axis_y, Qt.AlignLeft)
+        series.attachAxis(axis_x)
+        series.attachAxis(axis_y)
+        max_x = max(len(points) - 1, 1)
+        axis_x.setRange(0, max_x)
+        y_values = [float(getattr(item, "equity", 1.0) or 1.0) for item in points] or [1.0]
+        y_min = min(y_values)
+        y_max = max(y_values)
+        padding = max((y_max - y_min) * 0.1, 0.05)
+        axis_y.setRange(max(0.0, y_min - padding), y_max + padding)
+        view.setChart(chart)
+
+    def _apply_strategy_history_report(self, report) -> None:
+        self.strategy_history_report = report
+        self.strategy_history_rows = StrategyHistoryReplayer.report_as_table_rows(report)
+        self.strategy_history_compare_rows = []
+        self.strategy_history_leaderboard_rows = []
+        self.strategy_history_trade_rows = StrategyHistoryReplayer.trade_as_table_rows(report)
+        self.strategy_history_yearly_rows = [item.__dict__ for item in getattr(report, "yearly_stats", [])]
+        self.strategy_history_monthly_rows = [item.__dict__ for item in getattr(report, "monthly_stats", [])]
+        self._fill_strategy_history_table()
+        self._fill_strategy_history_leaderboard_table()
+        self._fill_strategy_history_compare_table()
+        self._fill_strategy_history_period_tables()
+        self._render_strategy_history_curve()
+        self._fill_strategy_history_trade_table()
+        self._refresh_detail_workspace_panels()
+        if hasattr(self, "active_symbol_label"):
+            current_text = self.active_symbol_label.text() if hasattr(self.active_symbol_label, "text") else "当前标的：未选择"
+            suffix = f" | 历史战法 {len(getattr(report, 'summaries', []) or [])} 组"
+            if suffix not in current_text:
+                self._set_label_text_if_changed(self.active_symbol_label, current_text + suffix)
+
+    def _handle_strategy_history_error(self, message: str) -> None:
+        if hasattr(self, "metrics_text"):
+            current = self.metrics_text.toPlainText().strip()
+            text = f"{current}\n\n历史战法回测失败：{message}" if current else f"历史战法回测失败：{message}"
+            self._set_plain_text_if_changed(self.metrics_text, text)
+        QMessageBox.critical(self, "历史战法回测失败", message)
+
+    def _apply_strategy_history_parameter_compare(self, rows) -> None:
+        self.strategy_history_compare_rows = StrategyHistoryReplayer.comparison_as_table_rows(rows)
+        self.strategy_history_leaderboard_rows = StrategyHistoryReplayer.leaderboard_as_table_rows(
+            StrategyHistoryReplayer.comparison_leaderboard(rows)
+        )
+        self._fill_strategy_history_leaderboard_table()
+        self._fill_strategy_history_compare_table()
+        if hasattr(self, "metrics_text"):
+            existing = self.metrics_text.toPlainText().strip()
+            line = f"战法参数对比已完成：{len(self.strategy_history_compare_rows)} 条场景结果。"
+            merged = f"{existing}\n\n{line}".strip() if existing else line
+            self._set_plain_text_if_changed(self.metrics_text, merged)
+        self._refresh_detail_workspace_panels()
+
+    def run_strategy_history_backtest(self) -> None:
+        runtime_params = self._strategy_history_runtime_params() if hasattr(self, "_strategy_history_runtime_params") else {
+            "start_date": "2021-01-01",
+            "end_date": "2099-12-31",
+            "max_hold_days": 8,
+            "include_watch_only": False,
+        }
+        if hasattr(self, "metrics_text"):
+            self._set_plain_text_if_changed(
+                self.metrics_text,
+                "历史战法回测\n\n"
+                f"正在按战法回放 {runtime_params['start_date']} 以来的每日荐股信号、计划买卖点与止盈止损，"
+                f"最长持有 {runtime_params['max_hold_days']} 天，"
+                f"滑点 {float(runtime_params['slippage_rate']):.4%}，手续费 {float(runtime_params['commission_rate']):.4%}，"
+                f"印花税 {float(runtime_params['stamp_duty_rate']):.4%}，"
+                f"{'纳入' if runtime_params['include_watch_only'] else '不纳入'}观察信号。"
+                "计算的是规则化信号收益，不依赖真实下单记录，请稍候...",
+            )
+
+        def build_report():
+            replayer = StrategyHistoryReplayer(
+                params=StrategyHistoryReplayParams(
+                    start_date=str(runtime_params["start_date"]),
+                    end_date=str(runtime_params["end_date"]),
+                    max_hold_days=int(runtime_params["max_hold_days"]),
+                    slippage_rate=float(runtime_params["slippage_rate"]),
+                    commission_rate=float(runtime_params["commission_rate"]),
+                    stamp_duty_rate=float(runtime_params["stamp_duty_rate"]),
+                    include_watch_only=bool(runtime_params["include_watch_only"]),
+                    block_limit_up_entry=bool(runtime_params["block_limit_up_entry"]),
+                    block_limit_down_exit=bool(runtime_params["block_limit_down_exit"]),
+                )
+            )
+            return replayer.build_report(
+                start_date=str(runtime_params["start_date"]),
+                end_date=str(runtime_params["end_date"]),
+                include_watch_only=bool(runtime_params["include_watch_only"]),
+            )
+
+        started = self._run_background_job(
+            "strategy_history_backtest",
+            build_report,
+            self._apply_strategy_history_report,
+            self._handle_strategy_history_error,
+        )
+        if not started and hasattr(self, "metrics_text"):
+            current = self.metrics_text.toPlainText().strip()
+            self._set_plain_text_if_changed(self.metrics_text, f"{current}\n\n历史战法回测仍在运行，请稍候。".strip())
+
+    def run_strategy_history_parameter_compare(self) -> None:
+        runtime_params = self._strategy_history_runtime_params() if hasattr(self, "_strategy_history_runtime_params") else {
+            "start_date": "2021-01-01",
+            "end_date": "2099-12-31",
+            "max_hold_days": 8,
+            "slippage_rate": 0.0005,
+            "commission_rate": 0.0003,
+            "stamp_duty_rate": 0.001,
+            "include_watch_only": False,
+            "block_limit_up_entry": True,
+            "block_limit_down_exit": True,
+        }
+        if hasattr(self, "metrics_text"):
+            self._set_plain_text_if_changed(
+                self.metrics_text,
+                "战法参数对比\n\n"
+                f"正在基于 {runtime_params['start_date']} 以来的每日荐股信号，"
+                "对同一批战法做多组参数场景回放，请稍候...",
+            )
+
+        def build_compare_rows():
+            replayer = StrategyHistoryReplayer(
+                params=StrategyHistoryReplayParams(
+                    start_date=str(runtime_params["start_date"]),
+                    end_date=str(runtime_params["end_date"]),
+                    max_hold_days=int(runtime_params["max_hold_days"]),
+                    slippage_rate=float(runtime_params["slippage_rate"]),
+                    commission_rate=float(runtime_params["commission_rate"]),
+                    stamp_duty_rate=float(runtime_params["stamp_duty_rate"]),
+                    include_watch_only=bool(runtime_params["include_watch_only"]),
+                    block_limit_up_entry=bool(runtime_params["block_limit_up_entry"]),
+                    block_limit_down_exit=bool(runtime_params["block_limit_down_exit"]),
+                )
+            )
+            return replayer.compare_parameter_scenarios(
+                start_date=str(runtime_params["start_date"]),
+                end_date=str(runtime_params["end_date"]),
+                include_watch_only=bool(runtime_params["include_watch_only"]),
+            )
+
+        started = self._run_background_job(
+            "strategy_history_parameter_compare",
+            build_compare_rows,
+            self._apply_strategy_history_parameter_compare,
+            self._handle_strategy_history_error,
+        )
+        if not started and hasattr(self, "metrics_text"):
+            current = self.metrics_text.toPlainText().strip()
+            self._set_plain_text_if_changed(self.metrics_text, f"{current}\n\n战法参数对比仍在运行，请稍候。".strip())
+
+    def export_strategy_history_report_from_ui(self, show_dialog: bool = True):
+        report = getattr(self, "strategy_history_report", None)
+        if report is None:
+            if show_dialog:
+                QMessageBox.information(self, "提示", "请先运行历史战法回测。")
+            return None
+        selected_strategy = self._selected_strategy_history_name() if hasattr(self, "_selected_strategy_history_name") else ""
+        artifacts = export_strategy_history_report(
+            report=report,
+            output_dir=self._strategy_history_output_dir(),
+            selected_strategy=selected_strategy,
+            comparison_rows=list(getattr(self, "strategy_history_compare_rows", []) or []),
+            leaderboard_rows=list(getattr(self, "strategy_history_leaderboard_rows", []) or []),
+        )
+        headline = "历史战法报表已导出："
+        if selected_strategy:
+            headline = f"历史战法报表已导出（{selected_strategy}）："
+        export_lines = [
+            headline,
+            f"Markdown：{artifacts.markdown_path}",
+            f"CSV：{artifacts.csv_path}",
+            f"JSON：{artifacts.json_path}",
+        ]
+        if hasattr(self, "metrics_text"):
+            existing = self.metrics_text.toPlainText().strip()
+            merged = "\n".join([existing, "", *export_lines]) if existing else "\n".join(export_lines)
+            self._set_plain_text_if_changed(self.metrics_text, merged)
+        if show_dialog:
+            QMessageBox.information(self, "导出完成", "\n".join(export_lines))
+        return artifacts
 
     def load_single_csv(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "选择行情 CSV", str(PROJECT_ROOT), "CSV 文件 (*.csv);;所有文件 (*)")
@@ -7347,6 +8088,12 @@ class QuantHunterWindow(QMainWindow):
             return Path(export_dir) / "daily_plans"
         return REPORT_DIR / "daily_plans"
 
+    def _strategy_history_output_dir(self) -> Path:
+        export_dir = self.current_broker_profile().export_dir.strip()
+        if export_dir:
+            return Path(export_dir) / "strategy_history"
+        return REPORT_DIR / "strategy_history"
+
     def _board_risk_colors(self, risk_level: str) -> tuple[QColor, QColor]:
         if risk_level == "低":
             return QColor("#E9F7EF"), QColor("#146C43")
@@ -7640,18 +8387,30 @@ class QuantHunterWindow(QMainWindow):
         cache_hit = "是" if source_code in {"cache_fresh", "cache_stale", "cache_only"} else "否"
         pool_count = len(getattr(self.market_screen_result, 'algorithmic_pool', []))
         source_name = self._market_source_mode_label()
+        mode_name = self._market_mode_label()
         cache_mb = float(cache_stats.get('bytes', 0) or 0.0) / (1024 * 1024)
         lines = [
-            f"结论：{source_name} | 模式 {self._market_mode_label()} | 候选 {pool_count} 只",
+            f"结论：{source_name} | 模式 {mode_name} | 候选 {pool_count} 只",
             f"风险：缓存 {'命中' if cache_hit == '是' else '未命中'} | 文件 {cache_stats.get('files', 0)} | 体量 {cache_mb:.1f} MB",
             f"下一步：{(self.last_market_error[:72] if self.last_market_error else '继续刷新市场，确认图表、主线和候选同步。')}",
         ]
+        source_detail = f"{mode_name} / 缓存 {'命中' if cache_hit == '是' else '未命中'} / 候选 {pool_count} 只"
+        status_signature = (
+            source_name,
+            mode_name,
+            pool_count,
+            cache_hit,
+            int(cache_stats.get('files', 0) or 0),
+            round(cache_mb, 3),
+            str(self.last_market_error[:72] if self.last_market_error else ""),
+            tuple(extra_lines or []),
+        )
+        if getattr(self, "_market_source_status_signature_v2", None) == status_signature:
+            return
+        self._market_source_status_signature_v2 = status_signature
         self._set_plain_text_if_changed(self.market_source_status_text, "\n".join(lines))
         if hasattr(self, "overview_summary_cards"):
-            self.overview_summary_cards["source"].set_data(
-                source_name,
-                f"{self._market_mode_label()} / 缓存 {'命中' if cache_hit == '是' else '未命中'} / 候选 {len(getattr(self.market_screen_result, 'algorithmic_pool', []))} 只",
-            )
+            self.overview_summary_cards["source"].set_data(source_name, source_detail)
 
     def _market_mode_label(self) -> str:
         return {"auto": "自动", "cache": "仅缓存", "sample": "示例模式"}.get(getattr(self, "market_data_mode", "auto"), "自动")
@@ -7746,6 +8505,10 @@ class QuantHunterWindow(QMainWindow):
             return
         themes = ["全部"] + [item.theme_name for item in self.theme_heat_rows]
         current = self.recommend_theme_filter if self.recommend_theme_filter in themes else "全部"
+        theme_signature = (tuple(themes), current)
+        if getattr(self, "_recommend_theme_option_signature_v1", None) == theme_signature:
+            self.recommend_theme_filter = current
+            return
         self.recommend_theme_combo.blockSignals(True)
         self.recommend_theme_combo.clear()
         for theme in themes:
@@ -7753,6 +8516,7 @@ class QuantHunterWindow(QMainWindow):
         self.recommend_theme_combo.setCurrentText(current)
         self.recommend_theme_combo.blockSignals(False)
         self.recommend_theme_filter = current
+        self._recommend_theme_option_signature_v1 = theme_signature
 
     def _on_recommend_theme_filter_changed(self, value: str) -> None:
         self.recommend_theme_filter = value or "全部"
@@ -10431,6 +11195,10 @@ QPushButton#accentButton:hover {
             return
         themes = ["全部"] + sorted({(getattr(row, "theme_name", "") or row.strategy_tag) for row in getattr(self.market_screen_result, "algorithmic_pool", []) if (getattr(row, "theme_name", "") or row.strategy_tag)})
         current = self.market_theme_filter if self.market_theme_filter in themes else "全部"
+        theme_signature = (tuple(themes), current)
+        if getattr(self, "_market_theme_option_signature_v1", None) == theme_signature:
+            self.market_theme_filter = current
+            return
         self.market_theme_combo.blockSignals(True)
         self.market_theme_combo.clear()
         for theme in themes:
@@ -10438,6 +11206,7 @@ QPushButton#accentButton:hover {
         self.market_theme_combo.setCurrentText(current)
         self.market_theme_combo.blockSignals(False)
         self.market_theme_filter = current
+        self._market_theme_option_signature_v1 = theme_signature
 
     def _on_market_theme_filter_changed(self, value: str) -> None:
         self.market_theme_filter = value or "全部"
@@ -10789,6 +11558,8 @@ QPushButton#accentButton:hover {
         self._ensure_selection_hook(getattr(self, "execution_table", None), self._on_execution_selection_changed)
         self._ensure_selection_hook(getattr(self, "signal_table", None), self._on_detail_signal_selection_changed)
         self._ensure_selection_hook(getattr(self, "trades_table", None), self._on_detail_trade_selection_changed)
+        self._ensure_selection_hook(getattr(self, "strategy_history_table", None), self._on_strategy_history_selection_changed)
+        self._ensure_selection_hook(getattr(self, "strategy_history_trade_table", None), self._on_strategy_history_trade_selection_changed)
         self._tune_workspace_splitters()
         self.set_market_timeframe(getattr(self, "market_timeframe_mode", "日线"))
         self.set_overview_focus(getattr(self, "overview_focus_mode", "市场总览"))
@@ -11937,6 +12708,7 @@ QPushButton#accentButton:hover {
             "detail_conclusion_text": "复盘结论",
             "signal_table": "近期信号",
             "trades_table": "交易记录",
+            "strategy_history_table": "历史战法统计",
         }
         for attr_name, title in title_map.items():
             widget = getattr(self, attr_name, None)
@@ -11952,6 +12724,22 @@ QPushButton#accentButton:hover {
             self.signal_table.setHorizontalHeaderLabels(["日期", "信号", "评分", "收盘价", "原因"])
         if hasattr(self, "trades_table"):
             self.trades_table.setHorizontalHeaderLabels(["入场日期", "离场日期", "买入价", "卖出价", "股数", "盈亏", "退出原因"])
+        if hasattr(self, "strategy_history_table"):
+            self.strategy_history_table.setHorizontalHeaderLabels(["战法", "信号数", "成交数", "成交率", "总收益", "胜率", "最大回撤", "平均持有"])
+        if hasattr(self, "strategy_history_rank_table"):
+            self.strategy_history_rank_table.setHorizontalHeaderLabels(["排名", "战法", "总收益", "收益因子", "盈亏比", "最大回撤", "最大连亏"])
+        if hasattr(self, "strategy_history_leaderboard_table"):
+            self.strategy_history_leaderboard_table.setHorizontalHeaderLabels(["战法", "场景数", "最佳场景", "最佳收益", "最差场景", "最差收益", "收益差", "平均收益"])
+        if hasattr(self, "strategy_history_compare_table"):
+            self.strategy_history_compare_table.setHorizontalHeaderLabels(["场景", "战法", "最长持有", "总收益", "胜率", "最大回撤", "收益因子", "盈亏比", "最大连亏", "备注"])
+        if hasattr(self, "strategy_history_yearly_table"):
+            self.strategy_history_yearly_table.setHorizontalHeaderLabels(["战法", "年度", "交易数", "胜率", "总收益", "平均收益"])
+        if hasattr(self, "strategy_history_monthly_table"):
+            self.strategy_history_monthly_table.setHorizontalHeaderLabels(["战法", "月度", "交易数", "胜率", "总收益", "平均收益"])
+        if hasattr(self, "strategy_history_heatmap_table"):
+            self.strategy_history_heatmap_table.setHorizontalHeaderLabels(["战法", "年份", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"])
+        if hasattr(self, "strategy_history_trade_table"):
+            self.strategy_history_trade_table.setHorizontalHeaderLabels(["战法", "股票", "信号日期", "入场日期", "离场日期", "买入价", "卖出价", "收益率", "持有天数", "退出原因"])
         if not getattr(self, "active_symbol", ""):
             if hasattr(self, "detail_decision_text"):
                 self._set_plain_text_if_changed(
@@ -12212,6 +13000,7 @@ QPushButton#accentButton:hover {
             self.market_theme_combo.clear()
             self.market_theme_combo.addItem("全部")
             self.market_theme_combo.blockSignals(False)
+            self._market_theme_option_signature_v1 = None
         if hasattr(self, "market_history_date_combo"):
             self.market_history_date_combo.blockSignals(True)
             self.market_history_date_combo.clear()
@@ -13447,15 +14236,19 @@ QPushButton#accentButton:hover {
         if hasattr(self, "daily_pool_table"):
             self._populate_daily_pool_table()
         if hasattr(self, "recommend_status_label"):
-            self.recommend_status_label.setText(f"已切换为程序自动筛选股票池，共 {len(self.daily_pool_rows)} 只候选。")
+            self._set_label_text_if_changed(
+                self.recommend_status_label,
+                f"已切换为程序自动筛选股票池，共 {len(self.daily_pool_rows)} 只候选。",
+            )
         if hasattr(self, "daily_pool_focus_label"):
             if self.daily_pool_rows:
                 top = self.daily_pool_rows[0]
-                self.daily_pool_focus_label.setText(
-                    f"当前焦点：{top.stock_name} | {top.opportunity_tier or '待确认'} | 主线 {top.mainline_tag or top.theme_name or '待确认'}"
+                self._set_label_text_if_changed(
+                    self.daily_pool_focus_label,
+                    f"当前焦点：{top.stock_name} | {top.opportunity_tier or '待确认'} | 主线 {top.mainline_tag or top.theme_name or '待确认'}",
                 )
             else:
-                self.daily_pool_focus_label.setText(RECOMMEND_DEFAULT_FOCUS_TEXT)
+                self._set_label_text_if_changed(self.daily_pool_focus_label, RECOMMEND_DEFAULT_FOCUS_TEXT)
         if hasattr(self, "daily_pool_text"):
             if self.daily_pool_rows:
                 top = self.daily_pool_rows[0]
@@ -14880,6 +15673,7 @@ QPushButton#accentButton:hover {
             self.market_theme_combo.clear()
             self.market_theme_combo.addItem("全部")
             self.market_theme_combo.blockSignals(False)
+            self._market_theme_option_signature_v1 = None
         if hasattr(self, "market_history_date_combo"):
             self.market_history_date_combo.blockSignals(True)
             self.market_history_date_combo.clear()
@@ -15884,6 +16678,10 @@ QPushButton#accentButton:hover {
             return
         target = symbol or self._selected_symbol_from_watchlist() or self.active_symbol or ""
         if not target:
+            empty_signature = ("empty",)
+            if getattr(self, "_monitor_summary_signature_v2", None) == empty_signature:
+                return
+            self._monitor_summary_signature_v2 = empty_signature
             self._set_plain_text_if_changed(
                 self.monitor_summary_text,
                 "盘中监控摘要\n\n"
@@ -15899,6 +16697,36 @@ QPushButton#accentButton:hover {
         recommendation = next((row for row in getattr(self, "daily_pool_rows", []) if row.symbol == target), None)
         analyses = list(getattr(self, "universe_analyses", {}).get(target, []))
         latest = next((item for item in reversed(analyses) if item.label != "NONE"), analyses[-1] if analyses else None)
+        board_candidate = self._board_candidate_snapshot_for_symbol(target)
+        board_monitor = self._board_monitor_snapshot_for_symbol(target)
+        summary_signature = (
+            target,
+            str(getattr(scan_row, "action", "") or ""),
+            str(getattr(scan_row, "label", "") or ""),
+            float(getattr(scan_row, "score", 0.0) or 0.0),
+            float(getattr(scan_row, "close", 0.0) or 0.0),
+            str(getattr(scan_row, "signal_date", "") or ""),
+            str(getattr(scan_row, "reason", "") or ""),
+            str(getattr(latest, "label", "") or ""),
+            float(getattr(latest, "score", 0.0) or 0.0),
+            float(getattr(latest, "close", 0.0) or 0.0),
+            str(getattr(latest, "reason", "") or ""),
+            str(getattr(recommendation, "action", "") or ""),
+            str(getattr(recommendation, "mainline_tag", "") or getattr(recommendation, "theme_name", "") or ""),
+            str(getattr(recommendation, "opportunity_tier", "") or ""),
+            str(getattr(recommendation, "catalyst", "") or ""),
+            str(board_candidate.get("trigger_style", "") if board_candidate is not None else ""),
+            str(board_candidate.get("risk_level", "") if board_candidate is not None else ""),
+            str(board_candidate.get("planned_entry", "") if board_candidate is not None else ""),
+            str(board_candidate.get("planned_stop", "") if board_candidate is not None else ""),
+            str(board_candidate.get("planned_target", "") if board_candidate is not None else ""),
+            str(board_monitor.get("monitor_state", "") if board_monitor is not None else ""),
+            str(board_monitor.get("strength", "") if board_monitor is not None else ""),
+            str(board_monitor.get("continuity", "") if board_monitor is not None else ""),
+        )
+        if getattr(self, "_monitor_summary_signature_v2", None) == summary_signature:
+            return
+        self._monitor_summary_signature_v2 = summary_signature
         lines = [f"盘中焦点：{self._symbol_identity_text(target)}"]
         if scan_row is not None:
             lines.append(f"动作：{self._display_action(scan_row.action)} | 信号：{self._display_label(scan_row.label)} | 评分：{scan_row.score}")
@@ -15917,12 +16745,10 @@ QPushButton#accentButton:hover {
                 f"推荐联动：{self._display_action(recommendation.action)} | 主线 {recommendation.mainline_tag or recommendation.theme_name or '待确认'} | 分层 {recommendation.opportunity_tier or '待确认'}"
             )
             lines.append(f"催化：{recommendation.catalyst or '等待消息催化'}")
-        board_candidate = self._board_candidate_snapshot_for_symbol(target)
         if board_candidate is not None:
             lines.append(
                 f"打板联动：{board_candidate['trigger_style']} | 风险 {board_candidate['risk_level']} | 入场 {board_candidate['planned_entry']} | 止损 {board_candidate['planned_stop']} | 目标 {board_candidate['planned_target']}"
             )
-        board_monitor = self._board_monitor_snapshot_for_symbol(target)
         if board_monitor is not None:
             lines.append(
                 f"打板监控：{board_monitor['monitor_state']} | 强度 {board_monitor['strength']} | 持续性 {board_monitor['continuity']}"
@@ -16314,11 +17140,23 @@ QPushButton#accentButton:hover {
         if hasattr(self, "shell_workspace_chip"):
             _set_shell_chip_copy(self.shell_workspace_chip, current_name, workspace_compact_map.get(page_key, current_name))
         if hasattr(self, "shell_focus_chip"):
-            focus_tone, focus_html, focus_plain = _qh_shell_focus_chip_html_v46(self, page_key)
+            focus_context = _qh_current_focus_context_v40(self)
+            focus_plain_capsule = _qh_workspace_focus_capsule_v40(self, page_key, focus_context=focus_context)
+            focus_tone, focus_html, focus_plain = _qh_shell_focus_chip_html_v46(
+                self,
+                page_key,
+                focus_context=focus_context,
+                plain_capsule=focus_plain_capsule,
+            )
             chip = getattr(self, "shell_focus_chip", None)
             if isinstance(chip, dict):
                 _qh_bind_shell_focus_chip_v47(self)
-                _qh_update_shell_focus_hover_card_v49(self, page_key)
+                _qh_update_shell_focus_hover_card_v49(
+                    self,
+                    page_key,
+                    focus_context=focus_context,
+                    chip_snapshot=(focus_tone, focus_html, focus_plain),
+                )
                 value_widget = chip.get("value")
                 if isinstance(value_widget, QLabel):
                     focus_display = focus_html
@@ -18591,6 +19429,10 @@ def _qh_refresh_broker_auxiliary_panels(self: QuantHunterWindow) -> None:
 def _qh_refresh_detail_workspace_panels(self: QuantHunterWindow) -> None:
     if not hasattr(self, "metrics_text"):
         return
+    selected_strategy_name = self._selected_strategy_history_name() if hasattr(self, "_selected_strategy_history_name") else ""
+    selected_strategy_trade = (
+        self._selected_strategy_history_trade_snapshot() if hasattr(self, "_selected_strategy_history_trade_snapshot") else None
+    )
     symbol = ""
     order_focus = self._selected_order_intent() if hasattr(self, "_selected_order_intent") else None
     if order_focus is not None:
@@ -18612,6 +19454,60 @@ def _qh_refresh_detail_workspace_panels(self: QuantHunterWindow) -> None:
     selected_trade = self._selected_detail_trade_snapshot() if hasattr(self, "_selected_detail_trade_snapshot") else None
     order_intent = next((item for item in getattr(self, "order_intents", []) if getattr(item, "symbol", "") == symbol), None)
     execution_row = next((item for item in reversed(getattr(self, "order_submission_records", [])) if str(item.get("symbol", "")) == symbol), None)
+    strategy_history_summary = self._strategy_history_selected_summary() if hasattr(self, "_strategy_history_selected_summary") else None
+    compare_rows = self._strategy_history_selected_compare_rows() if hasattr(self, "_strategy_history_selected_compare_rows") else []
+    detail_signature = (
+        symbol,
+        str(selected_strategy_name or ""),
+        str(stock_name or ""),
+        str(stock_id or ""),
+        str(getattr(recommendation, "mainline_tag", "") or getattr(recommendation, "theme_name", "") or ""),
+        str(getattr(recommendation, "action", "") or ""),
+        str(getattr(recommendation, "primary_strategy", "") or ""),
+        str(getattr(recommendation, "opportunity_tier", "") or ""),
+        str(getattr(recommendation, "next_focus", "") or ""),
+        str(getattr(recommendation, "rationale", "") or ""),
+        float(getattr(recommendation, "entry_price", 0.0) or getattr(recommendation, "close", 0.0) or 0.0),
+        float(getattr(recommendation, "stop_price", 0.0) or 0.0),
+        float(getattr(recommendation, "target_price", 0.0) or 0.0),
+        str(getattr(latest_signal, "date", "") or ""),
+        str(getattr(latest_signal, "label", "") or ""),
+        float(getattr(latest_signal, "score", 0.0) or 0.0),
+        str(getattr(latest_signal, "reason", "") or ""),
+        tuple(selected_signal.items()) if isinstance(selected_signal, dict) else selected_signal,
+        tuple(selected_trade.items()) if isinstance(selected_trade, dict) else selected_trade,
+        str(getattr(order_intent, "side", "") or ""),
+        float(getattr(order_intent, "price", 0.0) or 0.0),
+        int(getattr(order_intent, "quantity", 0) or 0),
+        float(getattr(order_intent, "stop_price", 0.0) or 0.0),
+        float(getattr(order_intent, "target_price", 0.0) or 0.0),
+        str(execution_row.get("order_status", "") if execution_row is not None else ""),
+        str(execution_row.get("fill_status", "") if execution_row is not None else ""),
+        str(execution_row.get("message", "") if execution_row is not None else ""),
+        str(execution_row.get("failure_reason", "") if execution_row is not None else ""),
+        str(getattr(strategy_history_summary, "strategy_name", "") or ""),
+        float(getattr(strategy_history_summary, "total_return", 0.0) or 0.0),
+        float(getattr(strategy_history_summary, "win_rate", 0.0) or 0.0),
+        float(getattr(strategy_history_summary, "max_drawdown", 0.0) or 0.0),
+        float(getattr(strategy_history_summary, "filled_ratio", 0.0) or 0.0),
+        float(getattr(strategy_history_summary, "avg_hold_days", 0.0) or 0.0),
+        float(getattr(strategy_history_summary, "profit_factor", 0.0) or 0.0),
+        float(getattr(strategy_history_summary, "payoff_ratio", 0.0) or 0.0),
+        int(getattr(strategy_history_summary, "max_consecutive_wins", 0) or 0),
+        int(getattr(strategy_history_summary, "max_consecutive_losses", 0) or 0),
+        tuple(
+            (
+                str(item.get("scenario_label", "") or ""),
+                float(item.get("total_return", 0.0) or 0.0),
+                int(item.get("max_hold_days", 0) or 0),
+            )
+            for item in compare_rows
+        ),
+        tuple(selected_strategy_trade.items()) if isinstance(selected_strategy_trade, dict) else selected_strategy_trade,
+    )
+    if getattr(self, "_detail_workspace_signature_v2", None) == detail_signature:
+        return
+    self._detail_workspace_signature_v2 = detail_signature
 
     if hasattr(self, "detail_summary_metric_labels"):
         theme_value = (
@@ -18659,6 +19555,54 @@ def _qh_refresh_detail_workspace_panels(self: QuantHunterWindow) -> None:
         self._set_label_text_if_changed(self.detail_summary_metric_labels["next"], next_value)
         self._set_label_text_if_changed(self.detail_summary_metric_accents["next"], next_accent)
 
+    if hasattr(self, "metrics_text"):
+        lines = [f"策略摘要：{stock_name} ({stock_id} / {symbol})"]
+        if selected_strategy_name:
+            lines.append(f"当前历史战法视角：{selected_strategy_name} | 基于 2021 年以来每日推荐信号的规则化回测收益")
+        if latest_signal is not None:
+            lines.append(f"当前信号：{getattr(latest_signal, 'date', '--')} | {self._display_label(getattr(latest_signal, 'label', ''))} | 评分 {getattr(latest_signal, 'score', '--')}")
+        if recommendation is not None:
+            lines.append(
+                f"当前计划：{getattr(recommendation, 'primary_strategy', '') or '掘龙决策'} | 买 {(getattr(recommendation, 'entry_price', 0.0) or getattr(recommendation, 'close', 0.0)):.2f} | "
+                f"止 {(getattr(recommendation, 'stop_price', 0.0) or getattr(recommendation, 'close', 0.0) * 0.95):.2f} | "
+                f"目 {(getattr(recommendation, 'target_price', 0.0) or getattr(recommendation, 'close', 0.0) * 1.08):.2f}"
+            )
+        if strategy_history_summary is not None:
+            lines.extend(
+                [
+                    "",
+                    f"历史战法：{getattr(strategy_history_summary, 'strategy_name', '--')}",
+                    f"总收益：{float(getattr(strategy_history_summary, 'total_return', 0.0) or 0.0):.2%} | 胜率：{float(getattr(strategy_history_summary, 'win_rate', 0.0) or 0.0):.2%} | 最大回撤：{float(getattr(strategy_history_summary, 'max_drawdown', 0.0) or 0.0):.2%}",
+                    f"信号 {int(getattr(strategy_history_summary, 'signal_count', 0) or 0)} | 成交 {int(getattr(strategy_history_summary, 'trade_count', 0) or 0)} | 成交率 {float(getattr(strategy_history_summary, 'filled_ratio', 0.0) or 0.0):.2%} | 平均持有 {float(getattr(strategy_history_summary, 'avg_hold_days', 0.0) or 0.0):.2f} 天",
+                    f"收益因子 {float(getattr(strategy_history_summary, 'profit_factor', 0.0) or 0.0):.2f} | 盈亏比 {float(getattr(strategy_history_summary, 'payoff_ratio', 0.0) or 0.0):.2f} | 最大连赢 {int(getattr(strategy_history_summary, 'max_consecutive_wins', 0) or 0)} | 最大连亏 {int(getattr(strategy_history_summary, 'max_consecutive_losses', 0) or 0)}",
+                    f"最大单笔收益 {float(getattr(strategy_history_summary, 'best_trade_return', 0.0) or 0.0):.2%} | 最大单笔亏损 {float(getattr(strategy_history_summary, 'worst_trade_return', 0.0) or 0.0):.2%}",
+                    f"止盈 {int(getattr(strategy_history_summary, 'target_hits', 0) or 0)} | 止损 {int(getattr(strategy_history_summary, 'stop_hits', 0) or 0)} | 超时 {int(getattr(strategy_history_summary, 'timeout_exits', 0) or 0)}",
+                ]
+            )
+            if compare_rows:
+                best_compare = max(compare_rows, key=lambda item: float(item.get("total_return", 0.0) or 0.0))
+                worst_compare = min(compare_rows, key=lambda item: float(item.get("total_return", 0.0) or 0.0))
+                lines.append(
+                    f"参数对比：最佳场景 {best_compare.get('scenario_label', '--')} | 总收益 {float(best_compare.get('total_return', 0.0) or 0.0):.2%} | "
+                    f"最长持有 {int(best_compare.get('max_hold_days', 0) or 0)} 天"
+                )
+                lines.append(
+                    f"参数敏感度：最差场景 {worst_compare.get('scenario_label', '--')} | 收益差 "
+                    f"{(float(best_compare.get('total_return', 0.0) or 0.0) - float(worst_compare.get('total_return', 0.0) or 0.0)):.2%}"
+                )
+            if selected_strategy_trade is not None:
+                lines.append(
+                    f"逐笔焦点：{selected_strategy_trade['stock_name']} | {selected_strategy_trade['entry_date']} -> {selected_strategy_trade['exit_date']} | "
+                    f"{selected_strategy_trade['pnl_pct']} | {selected_strategy_trade['exit_reason']}"
+                )
+        else:
+            report = getattr(self, "strategy_history_report", None)
+            if report is None:
+                lines.extend(["", "历史战法：尚未运行统计", "可点击上方“历史战法统计”，按 2021 年以来每日推荐信号回放长期表现。"])
+            else:
+                lines.extend(["", "历史战法：当前标的暂无对应统计", "可先检查该票是否有主策略映射，或看表格中的其他战法表现。"])
+        self._set_plain_text_if_changed(self.metrics_text, "\n".join(lines))
+
     if hasattr(self, "detail_decision_text"):
         lines = ["单票决策"]
         if recommendation is not None:
@@ -18680,6 +19624,13 @@ def _qh_refresh_detail_workspace_panels(self: QuantHunterWindow) -> None:
             lines.extend(["结论：待同步", "下一步：先从下方信号表选中一条记录。"])
         if selected_signal is not None:
             lines.append(f"焦点：{selected_signal['date']} | {selected_signal['label']} | {selected_signal['score']}")
+        if strategy_history_summary is not None:
+            lines.append(f"历史：{getattr(strategy_history_summary, 'strategy_name', '--')} | 胜率 {float(getattr(strategy_history_summary, 'win_rate', 0.0) or 0.0):.2%} | 总收益 {float(getattr(strategy_history_summary, 'total_return', 0.0) or 0.0):.2%}")
+            lines.append(
+                f"质量：收益因子 {float(getattr(strategy_history_summary, 'profit_factor', 0.0) or 0.0):.2f} | 盈亏比 {float(getattr(strategy_history_summary, 'payoff_ratio', 0.0) or 0.0):.2f}"
+            )
+        if selected_strategy_trade is not None:
+            lines.append(f"逐笔：{selected_strategy_trade['stock_name']} | 收益 {selected_strategy_trade['pnl_pct']} | {selected_strategy_trade['exit_reason']}")
         self._set_plain_text_if_changed(self.detail_decision_text, "\n".join(lines))
 
     if hasattr(self, "detail_execution_text"):
@@ -18697,6 +19648,16 @@ def _qh_refresh_detail_workspace_panels(self: QuantHunterWindow) -> None:
             lines.extend(["结论：待执行", "下一步：先去交易页生成委托建议。"])
         if selected_trade is not None:
             lines.append(f"成交：{selected_trade['entry_price']} -> {selected_trade['exit_price']} | {selected_trade['exit_reason']}")
+        if strategy_history_summary is not None:
+            lines.append(f"历史纪律：成交率 {float(getattr(strategy_history_summary, 'filled_ratio', 0.0) or 0.0):.2%} | 平均持有 {float(getattr(strategy_history_summary, 'avg_hold_days', 0.0) or 0.0):.2f} 天")
+            lines.append(
+                f"连续性：最大连赢 {int(getattr(strategy_history_summary, 'max_consecutive_wins', 0) or 0)} | 最大连亏 {int(getattr(strategy_history_summary, 'max_consecutive_losses', 0) or 0)}"
+            )
+        if selected_strategy_trade is not None:
+            lines.append(
+                f"历史逐笔：{selected_strategy_trade['entry_price']} -> {selected_strategy_trade['exit_price']} | "
+                f"持有 {selected_strategy_trade['hold_days']} 天 | {selected_strategy_trade['exit_reason']}"
+            )
         self._set_plain_text_if_changed(self.detail_execution_text, "\n".join(lines))
 
     if hasattr(self, "detail_conclusion_text"):
@@ -18709,6 +19670,10 @@ def _qh_refresh_detail_workspace_panels(self: QuantHunterWindow) -> None:
             lines.append(f"下一步：{self._display_order_status(execution_row.get('order_status', ''))} / {self._display_fill_status(execution_row.get('fill_status', ''))}")
         else:
             lines.append("下一步：回推荐页看同主线候选，或去交易页核对委托。")
+        if strategy_history_summary is not None:
+            lines.append(f"历史战法复盘：{getattr(strategy_history_summary, 'strategy_name', '--')} | 最大回撤 {float(getattr(strategy_history_summary, 'max_drawdown', 0.0) or 0.0):.2%}")
+        if selected_strategy_trade is not None:
+            lines.append(f"历史逐笔结论：{selected_strategy_trade['stock_name']} | {selected_strategy_trade['pnl_pct']} | {selected_strategy_trade['exit_reason']}")
         self._set_plain_text_if_changed(self.detail_conclusion_text, "\n".join(lines))
 
 
@@ -18760,6 +19725,10 @@ def _qh_refresh_scanner_focus_cards(self: QuantHunterWindow, symbol: str = "") -
         return
     target = symbol or self._selected_symbol_from_watchlist() or getattr(self, "active_symbol", "") or ""
     if not target:
+        empty_signature = ("empty",)
+        if getattr(self, "_scanner_focus_cards_signature_v1", None) == empty_signature:
+            return
+        self._scanner_focus_cards_signature_v1 = empty_signature
         self._set_label_text_if_changed(labels["symbol"], "--")
         self._set_label_text_if_changed(accents["symbol"], "等待焦点同步")
         self._set_label_text_if_changed(labels["signal"], "--")
@@ -18774,6 +19743,25 @@ def _qh_refresh_scanner_focus_cards(self: QuantHunterWindow, symbol: str = "") -
     recommendation = next((row for row in getattr(self, "daily_pool_rows", []) if getattr(row, "symbol", "") == target), None)
     latest = next((item for item in reversed(list(getattr(self, "universe_analyses", {}).get(target, []))) if getattr(item, "label", "") != "NONE"), None)
     board_candidate = self._board_candidate_snapshot_for_symbol(target)
+    focus_signature = (
+        target,
+        str(self._stock_name_for_symbol(target) or ""),
+        str(self._stock_id_for_symbol(target) or ""),
+        str(getattr(scan_row, "action", "") or ""),
+        str(getattr(scan_row, "label", "") or ""),
+        float(getattr(scan_row, "score", 0.0) or 0.0),
+        str(getattr(latest, "label", "") or ""),
+        float(getattr(latest, "score", 0.0) or 0.0),
+        str(getattr(recommendation, "action", "") or ""),
+        str(getattr(recommendation, "mainline_tag", "") or getattr(recommendation, "theme_name", "") or ""),
+        str(getattr(recommendation, "opportunity_tier", "") or ""),
+        str(board_candidate.get("trigger_style", "") if board_candidate is not None else ""),
+        str(board_candidate.get("risk_level", "") if board_candidate is not None else ""),
+        str(board_candidate.get("board_score", "") if board_candidate is not None else ""),
+    )
+    if getattr(self, "_scanner_focus_cards_signature_v1", None) == focus_signature:
+        return
+    self._scanner_focus_cards_signature_v1 = focus_signature
 
     self._set_label_text_if_changed(labels["symbol"], self._stock_name_for_symbol(target))
     self._set_label_text_if_changed(accents["symbol"], f"{self._stock_id_for_symbol(target)} / {target}")
@@ -18819,6 +19807,33 @@ def _qh_refresh_scanner_summary_cards(self: QuantHunterWindow, symbol: str = "")
     watch_count = self.watchlist_widget.count() if hasattr(self, "watchlist_widget") else 0
     summary_count = len(getattr(self, "backtest_summaries", []))
     monitor_count = self.monitor_table.rowCount() if hasattr(self, "monitor_table") else 0
+    stock_name = self._stock_name_for_symbol(target) if target else ""
+    stock_id = self._stock_id_for_symbol(target) if target else ""
+    recommendation = next((row for row in getattr(self, "daily_pool_rows", []) if getattr(row, "symbol", "") == target), None)
+    latest_summary = next((item for item in getattr(self, "backtest_summaries", []) if getattr(item, "symbol", "") == target), None)
+    board_candidate = self._board_candidate_snapshot_for_symbol(target) if target else None
+    board_monitor = self._board_monitor_snapshot_for_symbol(target) if target else None
+
+    summary_signature = (
+        target,
+        scan_count,
+        watch_count,
+        summary_count,
+        monitor_count,
+        str(stock_name),
+        str(stock_id),
+        str(getattr(recommendation, "action", "") or ""),
+        str(getattr(recommendation, "mainline_tag", "") or getattr(recommendation, "theme_name", "") or ""),
+        int(getattr(latest_summary, "trades", 0) or 0),
+        float(getattr(latest_summary, "total_return", 0.0) or 0.0),
+        str(board_candidate.get("trigger_style", "") if board_candidate is not None else ""),
+        str(board_candidate.get("risk_level", "") if board_candidate is not None else ""),
+        str(board_monitor.get("monitor_state", "") if board_monitor is not None else ""),
+        str(board_monitor.get("strength", "") if board_monitor is not None else ""),
+    )
+    if getattr(self, "_scanner_summary_cards_signature_v1", None) == summary_signature:
+        return
+    self._scanner_summary_cards_signature_v1 = summary_signature
 
     self._set_label_text_if_changed(labels["scan"], str(scan_count))
     self._set_label_text_if_changed(labels["watch"], str(watch_count))
@@ -18831,13 +19846,6 @@ def _qh_refresh_scanner_summary_cards(self: QuantHunterWindow, symbol: str = "")
         self._set_label_text_if_changed(accents["summary"], "等待回测摘要")
         self._set_label_text_if_changed(accents["monitor"], "等待监控链路")
         return
-
-    stock_name = self._stock_name_for_symbol(target)
-    stock_id = self._stock_id_for_symbol(target)
-    recommendation = next((row for row in getattr(self, "daily_pool_rows", []) if getattr(row, "symbol", "") == target), None)
-    latest_summary = next((item for item in getattr(self, "backtest_summaries", []) if getattr(item, "symbol", "") == target), None)
-    board_candidate = self._board_candidate_snapshot_for_symbol(target)
-    board_monitor = self._board_monitor_snapshot_for_symbol(target)
 
     self._set_label_text_if_changed(accents["scan"], f"{stock_name} / {stock_id}")
     if recommendation is not None:
@@ -19481,6 +20489,49 @@ def _qh_broker_primary_cta_tooltips_v54(
     }
 
 
+def _qh_broker_submission_focus_signature_v55(
+    *,
+    symbol: str,
+    stock_id: str,
+    stock_name: str,
+    record,
+    recommendation,
+    intent,
+    price_brief: str,
+    news_lines: list[str],
+    channel_text: str,
+) -> tuple:
+    recommendation = recommendation or None
+    intent = intent or None
+    return (
+        str(symbol or ""),
+        str(stock_id or ""),
+        str(stock_name or ""),
+        str(record.get("timestamp", "") or ""),
+        str(record.get("order_status", "") or ""),
+        str(record.get("fill_status", "") or ""),
+        str(record.get("failure_reason", "") or ""),
+        str(record.get("message", "") or ""),
+        str(record.get("side", "") or ""),
+        str(record.get("quantity", "") or ""),
+        str(record.get("price", "") or ""),
+        str(getattr(recommendation, "action", "") or ""),
+        str(getattr(recommendation, "mainline_flow_signal", "") or ""),
+        str(getattr(recommendation, "mainline_stage", "") or ""),
+        str(getattr(recommendation, "mainline_tag", "") or getattr(recommendation, "theme_name", "") or ""),
+        str(getattr(recommendation, "mainline_role", "") or ""),
+        str(getattr(recommendation, "entry_price", "") or ""),
+        str(getattr(recommendation, "stop_price", "") or ""),
+        str(getattr(recommendation, "target_price", "") or ""),
+        str(getattr(intent, "symbol", "") or ""),
+        str(getattr(intent, "side", "") or ""),
+        str(getattr(intent, "status", "") or ""),
+        str(price_brief or ""),
+        tuple(str(line or "") for line in news_lines or []),
+        str(channel_text or ""),
+    )
+
+
 def _qh_focus_symbol_in_broker_workspace(self: QuantHunterWindow, symbol: str) -> None:
     if not symbol:
         return
@@ -19928,6 +20979,7 @@ def _qh_normalize_overview_builder_texts_v2(self: QuantHunterWindow) -> None:
         self.market_theme_combo.clear()
         self.market_theme_combo.addItem("全部")
         self.market_theme_combo.blockSignals(False)
+        self._market_theme_option_signature_v1 = None
     if hasattr(self, "market_history_date_combo"):
         self.market_history_date_combo.blockSignals(True)
         self.market_history_date_combo.clear()
@@ -20765,24 +21817,57 @@ def _qh_refresh_overview_focus_cards_v4(self: QuantHunterWindow, symbol: str, sn
         source = getattr(latest_news, "source", "") or "来源待接入"
         visual = news_source_visual_label(source)
         action_target, action_headline, _action_detail = self._news_recommended_action(latest_news if latest_news is not None else recommendation)
-        self.overview_summary_cards["theme"].set_data(signal, f"{theme_name} | {role_name} | 位次 {getattr(recommendation, 'mainline_rank', '--')}")
         symbol_key = getattr(recommendation, "symbol", "") or symbol
-        self.overview_summary_cards["source"].set_data(
-            self._prepend_card_badge("消息分层", symbol_key),
-            f"{visual} | {action_headline} | {source[:8]}",
+        source_headline = self._prepend_card_badge("消息分层", symbol_key)
+        theme_detail = f"{theme_name} | {role_name} | 位次 {getattr(recommendation, 'mainline_rank', '--')}"
+        source_detail = f"{visual} | {action_headline} | {source[:8]}"
+        capital_detail = f"窗口 {float(getattr(recommendation, 'mainline_window_score', 0.0) or 0.0):.1f} | 总分 {float(getattr(recommendation, 'total_score', 0.0) or 0.0):.1f}"
+        decision_detail = f"下一步 {next_focus[:20]}"
+        focus_signature = (
+            "recommend",
+            str(symbol_key),
+            signal,
+            action_text,
+            theme_detail,
+            source_headline,
+            source_detail,
+            capital_detail,
+            decision_detail,
         )
-        self.overview_summary_cards["capital"].set_data("窗口/总分", f"窗口 {float(getattr(recommendation, 'mainline_window_score', 0.0) or 0.0):.1f} | 总分 {float(getattr(recommendation, 'total_score', 0.0) or 0.0):.1f}")
-        self.overview_summary_cards["decision"].set_data(action_text, f"下一步 {next_focus[:20]}")
+        if getattr(self, "_overview_focus_card_signature_v5", None) == focus_signature:
+            return
+        self._overview_focus_card_signature_v5 = focus_signature
+        self.overview_summary_cards["theme"].set_data(signal, theme_detail)
+        self.overview_summary_cards["source"].set_data(source_headline, source_detail)
+        self.overview_summary_cards["capital"].set_data("窗口/总分", capital_detail)
+        self.overview_summary_cards["decision"].set_data(action_text, decision_detail)
         return
     if snapshot is not None:
         pct = float(getattr(snapshot, "pct_change", 0.0) or 0.0)
         inflow = float(getattr(snapshot, "main_inflow", 0.0) or 0.0) / 1e8
-        self.overview_summary_cards["theme"].set_data("市场快照", f"{snapshot.stock_name} | 热度 {float(getattr(snapshot, 'heat_score', 0.0) or 0.0):.1f}")
-        self.overview_summary_cards["source"].set_data("题材/涨跌", f"{snapshot.strategy_tag or '未分类'} | 涨跌 {pct:.2f}%")
-        self.overview_summary_cards["capital"].set_data("资金流", f"净流入 {inflow:.2f} 亿 | 换手 {float(getattr(snapshot, 'turnover', 0.0) or 0.0):.2f}%")
-        self.overview_summary_cards["decision"].set_data("先观察", "下一步 先看量价承接")
+        theme_detail = f"{snapshot.stock_name} | 热度 {float(getattr(snapshot, 'heat_score', 0.0) or 0.0):.1f}"
+        source_detail = f"{snapshot.strategy_tag or '未分类'} | 涨跌 {pct:.2f}%"
+        capital_detail = f"净流入 {inflow:.2f} 亿 | 换手 {float(getattr(snapshot, 'turnover', 0.0) or 0.0):.2f}%"
+        decision_detail = "下一步 先看量价承接"
+        focus_signature = ("snapshot", str(symbol or ""), theme_detail, source_detail, capital_detail, decision_detail)
+        if getattr(self, "_overview_focus_card_signature_v5", None) == focus_signature:
+            return
+        self._overview_focus_card_signature_v5 = focus_signature
+        self.overview_summary_cards["theme"].set_data("市场快照", theme_detail)
+        self.overview_summary_cards["source"].set_data("题材/涨跌", source_detail)
+        self.overview_summary_cards["capital"].set_data("资金流", capital_detail)
+        self.overview_summary_cards["decision"].set_data("先观察", decision_detail)
         return
     stock_name = self._stock_name_for_symbol(symbol) if symbol else "等待标的同步"
+    focus_signature = (
+        "empty",
+        str(symbol or ""),
+        stock_name,
+        "等待行情、消息和资金接入",
+    )
+    if getattr(self, "_overview_focus_card_signature_v5", None) == focus_signature:
+        return
+    self._overview_focus_card_signature_v5 = focus_signature
     self.overview_summary_cards["theme"].set_data("等待主线", f"{stock_name} | 等待主线、趋势和消息同步")
     self.overview_summary_cards["source"].set_data("等待催化", "等待行情、消息和资金接入")
     self.overview_summary_cards["capital"].set_data("等待窗口", "下一步 先刷新市场")
@@ -20845,6 +21930,31 @@ def _qh_refresh_trade_plan_v4(self: QuantHunterWindow) -> None:
 
 def _qh_populate_market_depth_texts_v5(self: QuantHunterWindow, rows: list) -> None:
     top_row = rows[0] if rows else None
+    depth_signature = tuple(
+        (
+            str(getattr(row, "symbol", "") or ""),
+            str(getattr(row, "stock_name", "") or ""),
+            str(getattr(row, "mainline_tag", "") or getattr(row, "theme_name", "") or getattr(row, "strategy_tag", "") or ""),
+            str(getattr(row, "catalyst", "") or ""),
+            str(getattr(row, "rationale", "") or ""),
+            str(getattr(row, "next_focus", "") or ""),
+            str(getattr(row, "mainline_risk_flag", "") or ""),
+            float(getattr(row, "pct_change", 0.0) or 0.0),
+            tuple(
+                (
+                    str(getattr(item, "title", "") or ""),
+                    str(getattr(item, "source", "") or ""),
+                    str(getattr(item, "published_at", "") or ""),
+                    str(getattr(item, "summary", "") or ""),
+                )
+                for item in list(getattr(self, "news_catalysts", {}).get(getattr(row, "symbol", "") or "", []) or [])[:2]
+            ),
+        )
+        for row in list(rows or [])[:6]
+    )
+    if getattr(self, "_market_depth_signature_v6", None) == depth_signature:
+        return
+    self._market_depth_signature_v6 = depth_signature
     top_tone = (
         "buy"
         if top_row is not None and _qh_mainline_signal_brief_v4(top_row) == "继续跟"
@@ -20922,7 +22032,7 @@ def _qh_populate_market_depth_texts_v5(self: QuantHunterWindow, rows: list) -> N
                 "\n".join(
                     [
                         f"结论：{tier_label} | {confidence}",
-                        f"风险：{top_row.stock_name} | {recommended_copy}",
+                        f"风险：焦点：{top_row.stock_name} | {recommended_copy}",
                         f"下一步：{digest_lines[0] if digest_lines else logic_lines[0]}",
                     ]
                 ),
@@ -20933,6 +22043,30 @@ def _qh_populate_market_depth_texts_v5(self: QuantHunterWindow, rows: list) -> N
 
 def _qh_refresh_overview_side_panels_v5(self: QuantHunterWindow, rows: list) -> None:
     self._render_leaderboard_cards(rows)
+    overview_side_signature = tuple(
+        (
+            str(getattr(row, "symbol", "") or ""),
+            str(getattr(row, "stock_name", "") or ""),
+            str(getattr(row, "mainline_tag", "") or getattr(row, "theme_name", "") or getattr(row, "strategy_tag", "") or ""),
+            str(getattr(row, "strategy_tag", "") or ""),
+            float(getattr(row, "pct_change", 0.0) or 0.0),
+            float(getattr(row, "main_inflow", 0.0) or 0.0),
+            tuple(
+                (
+                    str(getattr(item, "title", "") or ""),
+                    str(getattr(item, "source", "") or ""),
+                    str(getattr(item, "published_at", "") or ""),
+                    str(getattr(item, "summary", "") or ""),
+                )
+                for item in list(getattr(self, "news_catalysts", {}).get(getattr(row, "symbol", "") or "", []) or [])[:1]
+            ),
+        )
+        for row in list(rows or [])[:6]
+    )
+    if getattr(self, "_overview_side_signature_v6", None) == overview_side_signature:
+        self._refresh_market_source_status()
+        return
+    self._overview_side_signature_v6 = overview_side_signature
 
     if hasattr(self, "market_theme_brief_text"):
         self._set_note_panel_tone_v5(self.market_theme_brief_text, _qh_mainline_signal_brief_v4(rows[0]).replace("继续跟", "buy").replace("只观察", "watch").replace("防切换", "risk") if rows else "idle")
@@ -20975,6 +22109,7 @@ def _qh_update_market_text_panels_v5(self: QuantHunterWindow, symbol: str, snaps
         getattr(recommendation, "mainline_tag", "") or getattr(recommendation, "theme_name", "") or getattr(snapshot, "strategy_tag", "") or "待确认"
     )
     catalyst = getattr(recommendation, "catalyst", "") or getattr(latest_news, "title", "") or "等待消息与资金共振"
+    source_name = str(getattr(latest_news, "source", "") or "") if latest_news is not None else ""
     hype_logic = build_hype_logic_summary(
         theme_name=theme_name,
         catalyst=getattr(recommendation, "catalyst", "") if recommendation is not None else "",
@@ -21000,62 +22135,79 @@ def _qh_update_market_text_panels_v5(self: QuantHunterWindow, symbol: str, snaps
         capital_line = "资金：等待行情同步"
         price_line = "价格：等待行情同步"
 
-    if hasattr(self, "overview_command_text"):
-        self._set_note_panel_tone_v5(self.overview_command_text, tone)
-        self._set_plain_text_if_changed(
-            self.overview_command_text,
-            "\n".join(
-                [
-                    f"结论：{stock_name} | {theme_name} | {signal}",
-                    f"风险：{visual} | {confidence} | {catalyst[:20]}",
-                    f"下一步：{action_text}",
-                ]
-            ),
+    overview_command_text = "\n".join(
+        [
+            f"结论：{stock_name} | {theme_name} | {signal}",
+            f"风险：{visual} | {confidence} | {catalyst[:20]}",
+            f"下一步：{action_text}",
+        ]
+    )
+    if recommendation is not None:
+        entry_price = float(getattr(recommendation, "entry_price", 0.0) or getattr(recommendation, "close", 0.0) or 0.0)
+        stop_price = float(getattr(recommendation, "stop_price", 0.0) or (getattr(recommendation, "close", 0.0) or 0.0) * 0.95)
+        target_price = float(getattr(recommendation, "target_price", 0.0) or (getattr(recommendation, "close", 0.0) or 0.0) * 1.08)
+        overview_execution_text = "\n".join(
+            [
+                f"结论：买点 {entry_price:.2f} | 催化 {catalyst}",
+                f"风险：止损 {stop_price:.2f} | 目标 {target_price:.2f}",
+                f"下一步：{getattr(recommendation, 'next_focus', '') or logic_lines[1].split('：', 1)[-1] or '继续盯量能、承接和风险灯'}",
+            ]
         )
+    else:
+        overview_execution_text = "\n".join(
+            [
+                f"结论：{price_line.split('：', 1)[-1]}",
+                f"风险：{capital_line.split('：', 1)[-1]}",
+                "下一步：继续盯量能、承接和风险灯",
+            ]
+        )
+    market_capital_text = "\n".join(
+        [
+            f"结论：{signal}",
+            f"风险：{capital_line.split('：', 1)[-1]} | {price_line.split('：', 1)[-1]}",
+            f"下一步：消息层级：{visual} | {source_name or '来源待确认'} | {news_lines[0] if news_lines else catalyst[:28] or '等待消息与资金共振'}",
+        ]
+    )
+    risk_flag = getattr(recommendation, "mainline_risk_flag", "") or "待评估"
+    market_decision_text = "\n".join(
+        [
+            f"结论：{action_text}",
+            f"风险：{risk_flag} | {logic_lines[2].split('：', 1)[-1]}",
+            f"下一步：炒作逻辑：{logic_lines[0].split('：', 1)[-1]}",
+        ]
+    )
+
     if hasattr(self, "market_open_news_button"):
         self._update_news_action_button(getattr(self, "market_open_news_button", None), latest_news)
     if hasattr(self, "market_news_detail_button"):
         self._update_news_detail_button(getattr(self, "market_news_detail_button", None), latest_news)
+    panel_signature = (
+        str(symbol or ""),
+        tone,
+        overview_command_text,
+        overview_execution_text,
+        market_capital_text,
+        market_decision_text,
+    )
+    if getattr(self, "_market_text_panel_signature_v6", None) == panel_signature:
+        return
+    self._market_text_panel_signature_v6 = panel_signature
+
+    if hasattr(self, "overview_command_text"):
+        self._set_note_panel_tone_v5(self.overview_command_text, tone)
+        self._set_plain_text_if_changed(self.overview_command_text, overview_command_text)
 
     if hasattr(self, "overview_execution_text"):
         self._set_note_panel_tone_v5(self.overview_execution_text, tone)
-        self._set_plain_text_if_changed(
-            self.overview_execution_text,
-            "\n".join(
-                [
-                    f"结论：{price_line.split('：', 1)[-1]}",
-                    f"风险：{capital_line.split('：', 1)[-1]}",
-                    f"下一步：{getattr(recommendation, 'next_focus', '') or '继续盯量能、承接和风险灯'}",
-                ]
-            ),
-        )
+        self._set_plain_text_if_changed(self.overview_execution_text, overview_execution_text)
 
     if hasattr(self, "market_capital_text"):
         self._set_note_panel_tone_v5(self.market_capital_text, tone)
-        self._set_plain_text_if_changed(
-            self.market_capital_text,
-            "\n".join(
-                [
-                    f"结论：{signal}",
-                    f"风险：{capital_line.split('：', 1)[-1]} | {price_line.split('：', 1)[-1]}",
-                    f"下一步：{news_lines[0] if news_lines else catalyst[:28] or '等待消息与资金共振'}",
-                ]
-            ),
-        )
+        self._set_plain_text_if_changed(self.market_capital_text, market_capital_text)
 
     if hasattr(self, "market_decision_text"):
         self._set_note_panel_tone_v5(self.market_decision_text, tone)
-        risk_flag = getattr(recommendation, "mainline_risk_flag", "") or "待评估"
-        self._set_plain_text_if_changed(
-            self.market_decision_text,
-            "\n".join(
-                [
-                    f"结论：{action_text}",
-                    f"风险：{risk_flag} | {logic_lines[2].split('：', 1)[-1]}",
-                    f"下一步：{getattr(recommendation, 'next_focus', '') or '是否继续维持主线前排'}",
-                ]
-            ),
-        )
+        self._set_plain_text_if_changed(self.market_decision_text, market_decision_text)
 
 
 def _qh_refresh_recommend_story_panels_v5(self: QuantHunterWindow, row=None) -> None:
@@ -21210,7 +22362,9 @@ def _qh_set_tooltip_v7(widget, text: str) -> None:
     if widget is None:
         return
     setter = getattr(widget, "setToolTip", None)
-    if callable(setter):
+    current_getter = getattr(widget, "toolTip", None)
+    current_text = current_getter() if callable(current_getter) else None
+    if callable(setter) and current_text != text:
         setter(text)
 
 
@@ -23951,6 +25105,7 @@ def _qh_apply_layout_polish_v19(self: QuantHunterWindow) -> None:
             for index, label in enumerate(right_labels):
                 if index < right_intel_tabs.count() and right_intel_tabs.tabText(index) != label:
                     right_intel_tabs.setTabText(index, label)
+            right_intel_tabs.setMaximumHeight(332 if compact_height else (348 if overview_density_compact else 16777215))
         if hasattr(self, "market_pool_table") and isinstance(self.market_pool_table, QTableWidget):
             pool_height = 148 if ultra_compact_height else (204 if compact_height else (228 if overview_density_compact else 260))
             self.market_pool_table.setMinimumHeight(pool_height)
@@ -27025,6 +28180,7 @@ def _qh_refresh_submission_focus_v26(self: QuantHunterWindow) -> None:
     if record is None and hasattr(self, "_selected_submission_record"):
         record = self._selected_submission_record()
     if record is None:
+        self._broker_submission_focus_signature_v55 = None
         return
 
     symbol = str(record.get("symbol", "") or "")
@@ -27041,6 +28197,21 @@ def _qh_refresh_submission_focus_v26(self: QuantHunterWindow) -> None:
         price_brief=price_brief,
         news_lines=news_lines,
     )
+    channel_text = self.auth_channel_combo.currentText() if hasattr(self, "auth_channel_combo") else "东方财富"
+    focus_signature = _qh_broker_submission_focus_signature_v55(
+        symbol=symbol,
+        stock_id=stock_id,
+        stock_name=stock_name,
+        record=record,
+        recommendation=recommendation,
+        intent=intent,
+        price_brief=price_brief,
+        news_lines=news_lines,
+        channel_text=channel_text,
+    )
+    if getattr(self, "_broker_submission_focus_signature_v55", None) == focus_signature:
+        return
+    self._broker_submission_focus_signature_v55 = focus_signature
     summary = _qh_broker_execution_summary_v41(
         stock_name=stock_name,
         stock_id=stock_id,
@@ -27072,7 +28243,7 @@ def _qh_refresh_submission_focus_v26(self: QuantHunterWindow) -> None:
         repair_headline=repair_hint["headline"],
         parameter_headline=parameter_alignment["headline"],
         has_recommendation=recommendation is not None,
-        channel_text=self.auth_channel_combo.currentText() if hasattr(self, "auth_channel_combo") else "东方财富",
+        channel_text=channel_text,
     )
     terminal_brief = _qh_broker_terminal_brief_v48(
         stock_name=stock_name,
@@ -27975,6 +29146,11 @@ QWidget#overviewRoot QLabel#workspaceFocusBanner {
             "background:rgba(11,16,22,0.98); color:#eef5fd; border:1px solid rgba(120,142,166,0.18); border-radius:18px; selection-background-color:rgba(38,72,108,0.98); selection-color:#f8fbff;",
         )
 
+    current_style = self.styleSheet() or ""
+    normalized_override = override.strip()
+    if normalized_override and normalized_override not in current_style:
+        self.setStyleSheet((current_style + "\n" + normalized_override).strip())
+
     self._qh_readability_override_applied_v29 = True
 
 
@@ -28727,6 +29903,7 @@ def _qh_refresh_recommendation_focus_panels_v38(self: QuantHunterWindow, row=Non
     action_button = getattr(self, "recommend_news_source_button", None)
     detail_button = getattr(self, "recommend_news_detail_button", None)
     if not isinstance(review_widget, QTextEdit):
+        self._recommend_focus_panel_signature_v39 = ("missing-review",)
         if hasattr(self, "_update_news_action_button"):
             self._update_news_action_button(action_button, None)
         if hasattr(self, "_update_news_detail_button"):
@@ -28734,6 +29911,10 @@ def _qh_refresh_recommendation_focus_panels_v38(self: QuantHunterWindow, row=Non
         return
     current = row or (self._current_recommend_focus() if hasattr(self, "_current_recommend_focus") else None)
     if current is None:
+        empty_signature = ("empty",)
+        if getattr(self, "_recommend_focus_panel_signature_v39", None) == empty_signature:
+            return
+        self._recommend_focus_panel_signature_v39 = empty_signature
         if hasattr(self, "_update_news_action_button"):
             self._update_news_action_button(action_button, None)
         if hasattr(self, "_update_news_detail_button"):
@@ -28757,6 +29938,31 @@ def _qh_refresh_recommendation_focus_panels_v38(self: QuantHunterWindow, row=Non
     symbol_news = list(getattr(self, "news_catalysts", {}).get(symbol, []) or [])
     profile_loader = getattr(self, "_stock_profile_for_symbol", None)
     profile = profile_loader(symbol) if callable(profile_loader) and symbol else None
+    signature = (
+        symbol,
+        str(getattr(current, "stock_name", "") or ""),
+        execution_state,
+        primary_headline,
+        primary_detail,
+        str(getattr(current, "mainline_tag", "") or getattr(current, "theme_name", "") or ""),
+        str(getattr(current, "catalyst", "") or ""),
+        str(getattr(current, "rationale", "") or ""),
+        str(getattr(current, "next_focus", "") or ""),
+        str(getattr(current, "mainline_risk_flag", "") or ""),
+        str(getattr(profile, "notes", "") if profile is not None else ""),
+        tuple(
+            (
+                str(getattr(item, "title", "") or ""),
+                str(getattr(item, "source", "") or ""),
+                str(getattr(item, "published_at", "") or ""),
+                str(getattr(item, "summary", "") or ""),
+            )
+            for item in symbol_news[:2]
+        ),
+    )
+    if getattr(self, "_recommend_focus_panel_signature_v39", None) == signature:
+        return
+    self._recommend_focus_panel_signature_v39 = signature
     logic_lines = build_hype_logic_lines(
         theme_name=getattr(current, "mainline_tag", "") or getattr(current, "theme_name", "") or "",
         catalyst=getattr(current, "catalyst", "") or "",
@@ -29030,16 +30236,30 @@ def _qh_focus_aux_chip_html_v45(kind: str, text: str, page: str = "") -> str:
     )
 
 
-def _qh_workspace_focus_capsule_html_v44(self: QuantHunterWindow, page: str) -> tuple[str, str]:
-    symbol, recommendation, intent, execution_row = _qh_current_focus_context_v40(self)
+def _qh_workspace_focus_capsule_html_v44(
+    self: QuantHunterWindow,
+    page: str,
+    *,
+    focus_context: tuple[str, object | None, object | None, dict | None] | None = None,
+    scan_row=None,
+    plain_capsule: tuple[str, str] | None = None,
+) -> tuple[str, str]:
+    symbol, recommendation, intent, execution_row = focus_context or _qh_current_focus_context_v40(self)
     if not symbol:
-        _, plain_text = _qh_workspace_focus_capsule_v40(self, page)
+        _, plain_text = plain_capsule or _qh_workspace_focus_capsule_v40(
+            self,
+            page,
+            focus_context=(symbol, recommendation, intent, execution_row),
+            scan_row=scan_row,
+        )
         return "idle", plain_text
 
     stock_name = self._stock_name_for_symbol(symbol)
     stock_id = self._stock_id_for_symbol(symbol)
-    scan_row = next((row for row in getattr(self, "scan_rows", []) if getattr(row, "symbol", "") == symbol), None)
-    tone = self._focus_banner_tone(symbol=symbol, recommendation=recommendation, scan_row=scan_row)
+    current_scan_row = scan_row
+    if current_scan_row is None:
+        current_scan_row = next((row for row in getattr(self, "scan_rows", []) if getattr(row, "symbol", "") == symbol), None)
+    tone = self._focus_banner_tone(symbol=symbol, recommendation=recommendation, scan_row=current_scan_row)
     stage_key = _qh_focus_stage_key_v44(
         recommendation=recommendation,
         intent=intent,
@@ -29063,6 +30283,12 @@ def _qh_workspace_focus_capsule_html_v44(self: QuantHunterWindow, page: str) -> 
     news_brief = self._news_action_brief(symbol) if hasattr(self, "_news_action_brief") else ""
     prefix_map = {"overview": "总览焦点", "recommend": "推荐焦点", "detail": "复盘焦点"}
     chip = _qh_focus_stage_chip_html_v44(stage_key, badge, page)
+    _base_capsule = plain_capsule or _qh_workspace_focus_capsule_v40(
+        self,
+        page,
+        focus_context=(symbol, recommendation, intent, execution_row),
+        scan_row=current_scan_row,
+    )
     if recommendation is not None:
         risk_flag = str(getattr(recommendation, "mainline_risk_flag", "") or "").strip()
         if risk_flag in {"低", "LOW"}:
@@ -29085,8 +30311,14 @@ def _qh_workspace_focus_capsule_html_v44(self: QuantHunterWindow, page: str) -> 
     )
 
 
-def _qh_shell_focus_chip_html_v46(self: QuantHunterWindow, page: str) -> tuple[str, str, str]:
-    symbol, recommendation, intent, execution_row = _qh_current_focus_context_v40(self)
+def _qh_shell_focus_chip_html_v46(
+    self: QuantHunterWindow,
+    page: str,
+    *,
+    focus_context: tuple[str, object | None, object | None, dict | None] | None = None,
+    plain_capsule: tuple[str, str] | None = None,
+) -> tuple[str, str, str]:
+    symbol, recommendation, intent, execution_row = focus_context or _qh_current_focus_context_v40(self)
     if not symbol:
         return "idle", "等待联动", "焦点状态：等待从推荐、交易或复盘链路同步当前标的。"
     stock_name = self._stock_name_for_symbol(symbol)
@@ -29117,7 +30349,12 @@ def _qh_shell_focus_chip_html_v46(self: QuantHunterWindow, page: str) -> tuple[s
         aux_chip = _qh_focus_aux_chip_html_v45("action", "回执跟踪", page)
     else:
         aux_chip = _qh_focus_aux_chip_html_v45("next", "等待联动", page)
-    plain_lines = [f"焦点状态：{stock_name} ({stock_id} / {symbol})", _qh_workspace_focus_capsule_v40(self, page)[1]]
+    base_capsule = plain_capsule or _qh_workspace_focus_capsule_v40(
+        self,
+        page,
+        focus_context=(symbol, recommendation, intent, execution_row),
+    )
+    plain_lines = [f"焦点状态：{stock_name} ({stock_id} / {symbol})", base_capsule[1]]
     if recommendation is not None:
         entry_price = float(getattr(recommendation, "entry_price", 0.0) or getattr(recommendation, "close", 0.0) or 0.0)
         stop_price = float(getattr(recommendation, "stop_price", 0.0) or 0.0)
@@ -29151,13 +30388,13 @@ def _qh_shell_focus_chip_html_v46(self: QuantHunterWindow, page: str) -> tuple[s
         stock_name=stock_name,
         stock_id=stock_id,
         symbol=symbol,
-        summary_text=_qh_workspace_focus_capsule_v40(self, page)[1],
+        summary_text=base_capsule[1],
         recommendation=recommendation,
         intent=intent,
         execution_row=execution_row,
         recent_action=recent_action,
     )
-    return _qh_workspace_focus_capsule_v40(self, page)[0], html, tooltip_html
+    return base_capsule[0], html, tooltip_html
 
 
 def _qh_shell_focus_tooltip_html_v48(
@@ -29269,14 +30506,20 @@ def _qh_bind_shell_focus_chip_v47(self: QuantHunterWindow) -> None:
         hover_card._qh_shell_chip_click_bound_v47 = True
 
 
-def _qh_update_shell_focus_hover_card_v49(self: QuantHunterWindow, page: str) -> None:
+def _qh_update_shell_focus_hover_card_v49(
+    self: QuantHunterWindow,
+    page: str,
+    *,
+    focus_context: tuple[str, object | None, object | None, dict | None] | None = None,
+    chip_snapshot: tuple[str, str, str] | None = None,
+) -> None:
     card = getattr(self, "shell_focus_hover_card", None)
     content = getattr(self, "shell_focus_hover_content", None)
     if not isinstance(card, QFrame) or not isinstance(content, QLabel):
         return
-    _tone, _html, tooltip_html = _qh_shell_focus_chip_html_v46(self, page)
+    _tone, _html, tooltip_html = chip_snapshot or _qh_shell_focus_chip_html_v46(self, page, focus_context=focus_context)
     content.setText(tooltip_html)
-    symbol, _recommendation, _intent, execution_row = _qh_current_focus_context_v40(self)
+    symbol, _recommendation, _intent, execution_row = focus_context or _qh_current_focus_context_v40(self)
     primary_action = "execution" if execution_row is not None else ("broker" if symbol else "recommend")
     recent_target = _qh_shell_focus_route_target_v47(self)
     remembered_map = dict(getattr(self, "_qh_shell_focus_preferred_actions_v51", {}) or {})
@@ -29413,8 +30656,14 @@ def _qh_on_shell_chip_clicked_v47(self: QuantHunterWindow, chip_name: str) -> No
         self._navigate_to_workspace("recommend", "daily_pool_table", "daily_pool_table")
 
 
-def _qh_workspace_focus_capsule_v40(self: QuantHunterWindow, page: str) -> tuple[str, str]:
-    symbol, recommendation, intent, execution_row = _qh_current_focus_context_v40(self)
+def _qh_workspace_focus_capsule_v40(
+    self: QuantHunterWindow,
+    page: str,
+    *,
+    focus_context: tuple[str, object | None, object | None, dict | None] | None = None,
+    scan_row=None,
+) -> tuple[str, str]:
+    symbol, recommendation, intent, execution_row = focus_context or _qh_current_focus_context_v40(self)
     if not symbol:
         empty_map = {
             "overview": "市场池摘要：等待从机会池、推荐池或扫描页联动一只股票",
@@ -29425,8 +30674,10 @@ def _qh_workspace_focus_capsule_v40(self: QuantHunterWindow, page: str) -> tuple
 
     stock_name = self._stock_name_for_symbol(symbol)
     stock_id = self._stock_id_for_symbol(symbol)
-    scan_row = next((row for row in getattr(self, "scan_rows", []) if getattr(row, "symbol", "") == symbol), None)
-    tone = self._focus_banner_tone(symbol=symbol, recommendation=recommendation, scan_row=scan_row)
+    current_scan_row = scan_row
+    if current_scan_row is None:
+        current_scan_row = next((row for row in getattr(self, "scan_rows", []) if getattr(row, "symbol", "") == symbol), None)
+    tone = self._focus_banner_tone(symbol=symbol, recommendation=recommendation, scan_row=current_scan_row)
     badge, stage = _qh_focus_stage_badge_v43(
         self,
         recommendation=recommendation,
@@ -29576,16 +30827,29 @@ def _qh_refresh_workspace_focus_banners_v40(self: QuantHunterWindow) -> None:
         ("recommend_focus_banner", "recommend"),
         ("detail_focus_banner", "detail"),
     ]
+    focus_context = _qh_current_focus_context_v40(self)
+    symbol, recommendation, intent, execution_row = focus_context
+    scan_row = next((row for row in getattr(self, "scan_rows", []) if getattr(row, "symbol", "") == symbol), None) if symbol else None
+    stage_key = _qh_focus_stage_key_v44(
+        recommendation=recommendation,
+        intent=intent,
+        execution_row=execution_row,
+    )
     for attr_name, page in banner_specs:
         banner = getattr(self, attr_name, None)
         if isinstance(banner, QLabel):
-            tone, text = _qh_workspace_focus_capsule_v40(self, page)
-            _chip_tone, rich_text = _qh_workspace_focus_capsule_html_v44(self, page)
-            symbol, recommendation, intent, execution_row = _qh_current_focus_context_v40(self)
-            stage_key = _qh_focus_stage_key_v44(
-                recommendation=recommendation,
-                intent=intent,
-                execution_row=execution_row,
+            tone, text = _qh_workspace_focus_capsule_v40(
+                self,
+                page,
+                focus_context=focus_context,
+                scan_row=scan_row,
+            )
+            _chip_tone, rich_text = _qh_workspace_focus_capsule_html_v44(
+                self,
+                page,
+                focus_context=focus_context,
+                scan_row=scan_row,
+                plain_capsule=(tone, text),
             )
             _qh_bind_focus_banner_click_v41(self, banner, attr_name)
             route_hint = _qh_focus_banner_route_hint_v41(attr_name)

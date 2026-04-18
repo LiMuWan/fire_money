@@ -135,12 +135,6 @@ def apply_broker_workspace_patches(window_cls: type) -> None:
                 else "执行明细已折叠，先看焦点委托、阶段判断和风险闸门。"
             )
             self._set_label_text_if_changed(status_label, text)
-            self._set_label_text_if_changed(
-                status_label,
-                "账户与通道设置已展开：现在可以继续校验连接、调整参数和运行维护。"
-                if visible
-                else "账户接入、SDK、导出与运行维护默认收起；盘中先看委托、闸门和回执。",
-            )
 
     def _toggle_broker_execution_detail_v40(self) -> None:
         current = bool(getattr(self, "_qh_broker_detail_visible_v40", False))

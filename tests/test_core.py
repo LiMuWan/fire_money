@@ -39,7 +39,7 @@ from quant_hunter.broker import (
     summarize_trade_recap,
     summarize_broker_execution,
 )
-from quant_hunter.backtest import Backtester, BacktestParams
+from quant_hunter.backtest import Backtester, BacktestParams, PortfolioBacktester
 from quant_hunter.board import BoardModeEngine
 from quant_hunter.decision import DecisionEngine
 from quant_hunter.decision import TradeDecision
@@ -53,7 +53,24 @@ from quant_hunter.data import (
 )
 from quant_hunter.market_feed import EastmoneyMarketFeed, LocalMarketCache, MarketScreenResult, MarketSnapshot, RemoteMarketScreener
 from quant_hunter.news_sources import get_news_source_descriptor, load_news_from_source, resolve_news_source_label, NewsSourceConfig
-from quant_hunter.models import BacktestResult, BrokerProfile, CashSnapshot, DailyAnalysis, HoldingRecord, PriceBar, RecommendationRow, ScanRow, SymbolBacktestSummary
+from quant_hunter.models import (
+    BacktestResult,
+    BrokerProfile,
+    CashSnapshot,
+    DailyAnalysis,
+    HoldingRecord,
+    OptimizationRun,
+    PortfolioBacktestResult,
+    PriceBar,
+    RecommendationRow,
+    ScanRow,
+    StrategyHistoryPeriodStat,
+    StrategyHistoryReport,
+    StrategyHistoryScenarioComparison,
+    StrategyHistorySummary,
+    StrategyHistoryTrade,
+    SymbolBacktestSummary,
+)
 from quant_hunter.models import OrderIntent
 from quant_hunter.optimizer import ParameterOptimizer
 from quant_hunter.paper_trading import (
@@ -78,8 +95,9 @@ from quant_hunter.risk import (
     risk_profile_brief,
     resolve_risk_controls,
 )
-from quant_hunter.reports import export_daily_trade_plan, export_end_of_day_review
+from quant_hunter.reports import export_daily_trade_plan, export_end_of_day_review, export_optimization_report, export_strategy_history_report
 from quant_hunter.scanner import UniverseScanner
+from quant_hunter.strategy_history import StrategyHistoryReplayParams, StrategyHistoryReplayer, StrategyHistoryScenarioPreset
 from quant_hunter.storage import AppState, load_app_state, save_app_state
 from quant_hunter.strategy import AntiHarvestStrategy, StrategyParams
 from quant_hunter.theme import ThemeHeatEngine, display_mainline_role, infer_mainline_flow_signal, infer_mainline_stage, summarize_themes
@@ -247,6 +265,1022 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         self.assertEqual(result.trades, [])
         self.assertEqual(result.ending_equity, 200000.0)
+
+    def test_backtest_blocks_limit_up_entry_when_enabled(self) -> None:
+        bars = [
+            PriceBar(date="2026-04-01", symbol="SHSE.600000", open=10.0, high=10.2, low=9.9, close=10.1, volume=10000),
+            PriceBar(date="2026-04-02", symbol="SHSE.600000", open=10.1, high=10.3, low=10.0, close=10.2, volume=12000),
+            PriceBar(date="2026-04-03", symbol="SHSE.600000", open=10.8, high=10.8, low=10.8, close=10.8, volume=15000),
+        ]
+        analyses = [
+            DailyAnalysis(
+                date="2026-04-01",
+                symbol="SHSE.600000",
+                close=10.1,
+                atr=0.3,
+                ma_fast=10.0,
+                ma_slow=9.9,
+                breakout_level=10.0,
+                volume_ratio=1.0,
+                upper_shadow_pct=0.1,
+                close_location=0.7,
+                label="NONE",
+                score=0,
+                reason="",
+            ),
+            DailyAnalysis(
+                date="2026-04-02",
+                symbol="SHSE.600000",
+                close=10.2,
+                atr=0.35,
+                ma_fast=10.1,
+                ma_slow=10.0,
+                breakout_level=10.1,
+                volume_ratio=1.5,
+                upper_shadow_pct=0.1,
+                close_location=0.8,
+                label="RECLAIM_LONG",
+                score=88,
+                reason="demo",
+                entry_price=10.2,
+                stop_price=9.8,
+                target_price=11.0,
+            ),
+            DailyAnalysis(
+                date="2026-04-03",
+                symbol="SHSE.600000",
+                close=10.8,
+                atr=0.4,
+                ma_fast=10.4,
+                ma_slow=10.1,
+                breakout_level=10.2,
+                volume_ratio=2.0,
+                upper_shadow_pct=0.0,
+                close_location=1.0,
+                label="NONE",
+                score=0,
+                reason="",
+            ),
+        ]
+
+        result = Backtester(backtest_params=BacktestParams(block_limit_up_entry=True)).run(bars, analyses)
+
+        self.assertEqual(result.trades, [])
+        self.assertEqual(result.ending_equity, 200000.0)
+
+    def test_backtest_defers_exit_when_limit_down_blocks_sell(self) -> None:
+        bars = [
+            PriceBar(date="2026-04-01", symbol="SHSE.600000", open=10.0, high=10.2, low=9.9, close=10.0, volume=20000),
+            PriceBar(date="2026-04-02", symbol="SHSE.600000", open=10.0, high=10.2, low=9.95, close=10.1, volume=22000),
+            PriceBar(date="2026-04-03", symbol="SHSE.600000", open=10.0, high=10.2, low=9.98, close=10.05, volume=25000),
+            PriceBar(date="2026-04-04", symbol="SHSE.600000", open=9.2, high=9.2, low=9.2, close=9.2, volume=28000),
+            PriceBar(date="2026-04-05", symbol="SHSE.600000", open=9.3, high=9.6, low=9.0, close=9.25, volume=26000),
+        ]
+        analyses = [
+            DailyAnalysis(
+                date="2026-04-01",
+                symbol="SHSE.600000",
+                close=10.0,
+                atr=0.3,
+                ma_fast=10.0,
+                ma_slow=9.9,
+                breakout_level=10.0,
+                volume_ratio=1.0,
+                upper_shadow_pct=0.1,
+                close_location=0.6,
+                label="NONE",
+                score=0,
+                reason="",
+            ),
+            DailyAnalysis(
+                date="2026-04-02",
+                symbol="SHSE.600000",
+                close=10.1,
+                atr=0.35,
+                ma_fast=10.1,
+                ma_slow=10.0,
+                breakout_level=10.0,
+                volume_ratio=1.5,
+                upper_shadow_pct=0.1,
+                close_location=0.8,
+                label="RECLAIM_LONG",
+                score=88,
+                reason="demo",
+                entry_price=10.1,
+                stop_price=9.5,
+                target_price=11.0,
+            ),
+            DailyAnalysis(
+                date="2026-04-03",
+                symbol="SHSE.600000",
+                close=10.05,
+                atr=0.35,
+                ma_fast=10.1,
+                ma_slow=10.0,
+                breakout_level=10.1,
+                volume_ratio=1.1,
+                upper_shadow_pct=0.1,
+                close_location=0.5,
+                label="NONE",
+                score=0,
+                reason="",
+            ),
+            DailyAnalysis(
+                date="2026-04-04",
+                symbol="SHSE.600000",
+                close=9.2,
+                atr=0.6,
+                ma_fast=9.8,
+                ma_slow=9.9,
+                breakout_level=10.0,
+                volume_ratio=2.0,
+                upper_shadow_pct=0.0,
+                close_location=0.0,
+                label="NONE",
+                score=0,
+                reason="",
+            ),
+            DailyAnalysis(
+                date="2026-04-05",
+                symbol="SHSE.600000",
+                close=9.25,
+                atr=0.6,
+                ma_fast=9.6,
+                ma_slow=9.8,
+                breakout_level=9.9,
+                volume_ratio=1.4,
+                upper_shadow_pct=0.1,
+                close_location=0.2,
+                label="NONE",
+                score=0,
+                reason="",
+            ),
+        ]
+
+        result = Backtester(backtest_params=BacktestParams(block_limit_down_exit=True)).run(bars, analyses)
+
+        self.assertEqual(len(result.trades), 1)
+        self.assertEqual(result.trades[0].exit_date, "2026-04-05")
+        self.assertEqual(result.trades[0].exit_reason, "跌破止损")
+
+    def test_backtest_caps_position_size_by_volume_participation(self) -> None:
+        bars = [
+            PriceBar(date="2026-04-01", symbol="SHSE.600000", open=10.0, high=10.1, low=9.9, close=10.0, volume=5000),
+            PriceBar(date="2026-04-02", symbol="SHSE.600000", open=10.0, high=10.2, low=9.95, close=10.1, volume=5000),
+            PriceBar(date="2026-04-03", symbol="SHSE.600000", open=10.0, high=10.1, low=9.9, close=10.0, volume=3500),
+            PriceBar(date="2026-04-04", symbol="SHSE.600000", open=10.1, high=10.5, low=10.0, close=10.4, volume=6000),
+        ]
+        analyses = [
+            DailyAnalysis(
+                date="2026-04-01",
+                symbol="SHSE.600000",
+                close=10.0,
+                atr=0.3,
+                ma_fast=10.0,
+                ma_slow=9.9,
+                breakout_level=10.0,
+                volume_ratio=1.0,
+                upper_shadow_pct=0.1,
+                close_location=0.6,
+                label="NONE",
+                score=0,
+                reason="",
+            ),
+            DailyAnalysis(
+                date="2026-04-02",
+                symbol="SHSE.600000",
+                close=10.1,
+                atr=0.35,
+                ma_fast=10.1,
+                ma_slow=10.0,
+                breakout_level=10.0,
+                volume_ratio=1.5,
+                upper_shadow_pct=0.1,
+                close_location=0.8,
+                label="RECLAIM_LONG",
+                score=88,
+                reason="demo",
+                entry_price=10.0,
+                stop_price=9.5,
+                target_price=11.0,
+            ),
+            DailyAnalysis(
+                date="2026-04-03",
+                symbol="SHSE.600000",
+                close=10.0,
+                atr=0.35,
+                ma_fast=10.05,
+                ma_slow=10.0,
+                breakout_level=10.1,
+                volume_ratio=1.1,
+                upper_shadow_pct=0.1,
+                close_location=0.5,
+                label="NONE",
+                score=0,
+                reason="",
+            ),
+            DailyAnalysis(
+                date="2026-04-04",
+                symbol="SHSE.600000",
+                close=10.4,
+                atr=0.4,
+                ma_fast=10.2,
+                ma_slow=10.0,
+                breakout_level=10.1,
+                volume_ratio=1.2,
+                upper_shadow_pct=0.1,
+                close_location=0.8,
+                label="NONE",
+                score=0,
+                reason="",
+            ),
+        ]
+
+        result = Backtester(
+            backtest_params=BacktestParams(
+                risk_fraction=1.0,
+                max_position_fraction=1.0,
+                max_volume_participation=0.1,
+            )
+        ).run(bars, analyses)
+
+        self.assertEqual(len(result.trades), 1)
+        self.assertEqual(result.trades[0].shares, 300)
+
+    def test_portfolio_backtester_tracks_multi_position_equity_curve(self) -> None:
+        bars_by_symbol = {
+            "SHSE.600000": [
+                PriceBar(date="2026-04-01", symbol="SHSE.600000", open=10.0, high=10.1, low=9.9, close=10.0, volume=50000),
+                PriceBar(date="2026-04-02", symbol="SHSE.600000", open=10.0, high=10.2, low=9.95, close=10.1, volume=52000),
+                PriceBar(date="2026-04-03", symbol="SHSE.600000", open=10.0, high=10.2, low=9.98, close=10.05, volume=54000),
+                PriceBar(date="2026-04-04", symbol="SHSE.600000", open=10.2, high=11.1, low=10.1, close=10.9, volume=56000),
+            ],
+            "SZSE.000001": [
+                PriceBar(date="2026-04-01", symbol="SZSE.000001", open=12.0, high=12.1, low=11.9, close=12.0, volume=60000),
+                PriceBar(date="2026-04-02", symbol="SZSE.000001", open=12.0, high=12.2, low=11.95, close=12.1, volume=62000),
+                PriceBar(date="2026-04-03", symbol="SZSE.000001", open=12.0, high=12.1, low=11.95, close=12.02, volume=64000),
+                PriceBar(date="2026-04-04", symbol="SZSE.000001", open=12.2, high=13.2, low=12.1, close=12.9, volume=66000),
+            ],
+        }
+        analyses_by_symbol = {
+            "SHSE.600000": [
+                DailyAnalysis("2026-04-01", "SHSE.600000", 10.0, 0.3, 10.0, 9.9, 10.0, 1.0, 0.1, 0.6, "NONE", 0, ""),
+                DailyAnalysis("2026-04-02", "SHSE.600000", 10.1, 0.35, 10.1, 10.0, 10.0, 1.5, 0.1, 0.8, "RECLAIM_LONG", 90, "", 10.0, 9.5, 11.0),
+                DailyAnalysis("2026-04-03", "SHSE.600000", 10.05, 0.35, 10.1, 10.0, 10.1, 1.1, 0.1, 0.5, "NONE", 0, ""),
+                DailyAnalysis("2026-04-04", "SHSE.600000", 10.9, 0.4, 10.3, 10.1, 10.1, 1.3, 0.1, 0.8, "NONE", 0, ""),
+            ],
+            "SZSE.000001": [
+                DailyAnalysis("2026-04-01", "SZSE.000001", 12.0, 0.3, 12.0, 11.9, 12.0, 1.0, 0.1, 0.6, "NONE", 0, ""),
+                DailyAnalysis("2026-04-02", "SZSE.000001", 12.1, 0.35, 12.1, 12.0, 12.0, 1.5, 0.1, 0.8, "RECLAIM_LONG", 87, "", 12.0, 11.4, 13.0),
+                DailyAnalysis("2026-04-03", "SZSE.000001", 12.02, 0.35, 12.1, 12.0, 12.1, 1.1, 0.1, 0.5, "NONE", 0, ""),
+                DailyAnalysis("2026-04-04", "SZSE.000001", 12.9, 0.4, 12.3, 12.1, 12.1, 1.3, 0.1, 0.8, "NONE", 0, ""),
+            ],
+        }
+
+        result = PortfolioBacktester(
+            backtest_params=BacktestParams.realistic_cn_equity(
+                initial_capital=200000.0,
+                max_positions=2,
+                max_position_fraction=0.3,
+                max_volume_participation=1.0,
+                block_limit_up_entry=False,
+                block_limit_down_exit=False,
+                stamp_duty_rate=0.0,
+            )
+        ).run(bars_by_symbol, analyses_by_symbol)
+
+        self.assertEqual(len(result.trades), 2)
+        self.assertGreaterEqual(result.max_concurrent_positions, 2)
+        self.assertGreater(result.avg_exposure, 0.0)
+        self.assertGreater(result.ending_equity, result.initial_capital)
+        self.assertTrue(any(snapshot.position_count == 2 for snapshot in result.snapshots))
+
+    def test_universe_scanner_builds_portfolio_backtest_summary(self) -> None:
+        sample_dir = self._temp_dir() / "portfolio_universe"
+        sample_dir.mkdir(exist_ok=True)
+        for filename, rows in {
+            "SHSE.600000_demo.csv": generate_rows("SHSE.600000", "reclaim"),
+            "SZSE.000001_demo.csv": generate_rows("SZSE.000001", "reclaim"),
+        }.items():
+            path = sample_dir / filename
+            with path.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["date", "symbol", "open", "high", "low", "close", "volume"])
+                writer.writerows(rows)
+            self.addCleanup(lambda target=path: target.unlink(missing_ok=True))
+
+        scanner = UniverseScanner(StrategyParams())
+        _, bars_by_symbol, analyses_by_symbol, _ = scanner.scan_folder(sample_dir)
+        portfolio = scanner.summarize_portfolio_backtest(bars_by_symbol, analyses_by_symbol)
+
+        self.assertGreaterEqual(portfolio.max_concurrent_positions, 1)
+        self.assertEqual(len(portfolio.equity_curve), max(len(items) for items in bars_by_symbol.values()))
+
+    def test_strategy_history_replayer_builds_strategy_summary(self) -> None:
+        temp_dir = self._temp_dir() / "strategy_history_reports"
+        temp_dir.mkdir(exist_ok=True)
+        report_path = temp_dir / "daily_plan_20260415_003539.json"
+        report_path.write_text(
+            json.dumps(
+                {
+                    "generated_at": "2026-04-15T09:00:00",
+                    "recommendations": [
+                        {
+                            "symbol": "SHSE.600000",
+                            "stock_id": "600000",
+                            "stock_name": "浦发银行",
+                            "action": "BUY",
+                            "signal_date": "2026-04-15",
+                            "close": 10.0,
+                            "entry_price": 10.0,
+                            "stop_price": 9.5,
+                            "target_price": 11.0,
+                            "primary_strategy": "尾盘买入",
+                            "rationale": "demo",
+                        }
+                    ],
+                    "trade_plan": {
+                        "decisions": [
+                            {
+                                "symbol": "SHSE.600000",
+                                "stock_id": "600000",
+                                "stock_name": "浦发银行",
+                                "action": "BUY",
+                                "planned_entry": 10.0,
+                                "planned_stop": 9.5,
+                                "planned_target": 11.0,
+                                "rationale": "demo",
+                            }
+                        ]
+                    },
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        self.addCleanup(lambda: report_path.unlink(missing_ok=True))
+
+        bars = [
+            PriceBar(date="2026-04-15", symbol="SHSE.600000", open=10.0, high=10.2, low=9.9, close=10.0, volume=1000),
+            PriceBar(date="2026-04-16", symbol="SHSE.600000", open=9.98, high=10.4, low=9.96, close=10.3, volume=1200),
+            PriceBar(date="2026-04-17", symbol="SHSE.600000", open=10.35, high=11.2, low=10.2, close=11.0, volume=1500),
+        ]
+
+        class StubFeed:
+            def fetch_daily_bars(self, symbol: str, start: str = "20200101", end: str = "20500101"):
+                return list(bars)
+
+        report = StrategyHistoryReplayer(market_feed=StubFeed()).build_report(roots=[temp_dir], start_date="2021-01-01")
+
+        self.assertEqual(len(report.signals), 1)
+        self.assertEqual(len(report.trades), 1)
+        self.assertEqual(report.summaries[0].strategy_name, "尾盘买入法")
+        self.assertGreater(report.summaries[0].total_return, 0.0)
+        self.assertEqual(report.trades[0].exit_reason, "止盈")
+        self.assertGreater(report.summaries[0].profit_factor, 0.0)
+        self.assertGreater(report.summaries[0].payoff_ratio, 0.0)
+
+    def test_strategy_history_replayer_skips_watch_signals_by_default(self) -> None:
+        temp_dir = self._temp_dir() / "strategy_history_watch"
+        temp_dir.mkdir(exist_ok=True)
+        report_path = temp_dir / "end_of_day_review_20260415_003539.json"
+        report_path.write_text(
+            json.dumps(
+                {
+                    "generated_at": "2026-04-15T15:10:00",
+                    "recommendations": [
+                        {
+                            "symbol": "SZSE.000001",
+                            "stock_id": "000001",
+                            "stock_name": "平安银行",
+                            "action": "WATCH",
+                            "signal_date": "2026-04-15",
+                            "close": 12.0,
+                            "primary_strategy": "掘龙决策",
+                        }
+                    ],
+                    "trade_plan": {"decisions": []},
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        self.addCleanup(lambda: report_path.unlink(missing_ok=True))
+
+        class EmptyFeed:
+            def fetch_daily_bars(self, symbol: str, start: str = "20200101", end: str = "20500101"):
+                return []
+
+        report = StrategyHistoryReplayer(market_feed=EmptyFeed()).build_report(roots=[temp_dir], start_date="2021-01-01")
+
+        self.assertEqual(report.signals, [])
+        self.assertEqual(report.trades, [])
+        self.assertEqual(report.summaries, [])
+
+    def test_strategy_history_replayer_filters_trades_by_selected_strategy(self) -> None:
+        report = StrategyHistoryReport(
+            start_date="2021-01-01",
+            end_date="2026-04-18",
+            trades=[
+                StrategyHistoryTrade(
+                    strategy_name="尾盘买入法",
+                    symbol="SHSE.600000",
+                    stock_id="600000",
+                    stock_name="浦发银行",
+                    signal_date="2026-04-15",
+                    entry_date="2026-04-16",
+                    exit_date="2026-04-17",
+                    entry_price=10.0,
+                    exit_price=10.8,
+                    pnl_pct=0.08,
+                    hold_days=2,
+                    exit_reason="止盈",
+                    source_file="demo_a.json",
+                ),
+                StrategyHistoryTrade(
+                    strategy_name="龙头模型",
+                    symbol="SZSE.000001",
+                    stock_id="000001",
+                    stock_name="平安银行",
+                    signal_date="2026-04-15",
+                    entry_date="2026-04-16",
+                    exit_date="2026-04-18",
+                    entry_price=12.0,
+                    exit_price=11.4,
+                    pnl_pct=-0.05,
+                    hold_days=3,
+                    exit_reason="止损",
+                    source_file="demo_b.json",
+                ),
+            ],
+            summaries=[
+                StrategyHistorySummary(
+                    strategy_name="尾盘买入法",
+                    signal_count=1,
+                    trade_count=1,
+                    filled_ratio=1.0,
+                    win_rate=1.0,
+                    total_return=0.08,
+                    avg_return=0.08,
+                    max_drawdown=0.0,
+                    avg_hold_days=2.0,
+                    symbol_count=1,
+                    target_hits=1,
+                ),
+                StrategyHistorySummary(
+                    strategy_name="龙头模型",
+                    signal_count=1,
+                    trade_count=1,
+                    filled_ratio=1.0,
+                    win_rate=0.0,
+                    total_return=-0.05,
+                    avg_return=-0.05,
+                    max_drawdown=0.05,
+                    avg_hold_days=3.0,
+                    symbol_count=1,
+                    stop_hits=1,
+                ),
+            ],
+        )
+
+        filtered = StrategyHistoryReplayer.trade_as_table_rows(report, "尾盘买入法")
+
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0]["strategy_name"], "尾盘买入法")
+        self.assertEqual(filtered[0]["stock_name"], "浦发银行")
+
+    def test_export_strategy_history_report_filters_selected_strategy(self) -> None:
+        output_dir = self._temp_dir() / "strategy_history_exports"
+        output_dir.mkdir(exist_ok=True)
+        report = StrategyHistoryReport(
+            start_date="2021-01-01",
+            end_date="2026-04-18",
+            source_files=["demo_a.json", "demo_b.json"],
+            trades=[
+                StrategyHistoryTrade(
+                    strategy_name="尾盘买入法",
+                    symbol="SHSE.600000",
+                    stock_id="600000",
+                    stock_name="浦发银行",
+                    signal_date="2026-04-15",
+                    entry_date="2026-04-16",
+                    exit_date="2026-04-17",
+                    entry_price=10.0,
+                    exit_price=10.8,
+                    pnl_pct=0.08,
+                    hold_days=2,
+                    exit_reason="止盈",
+                    source_file="demo_a.json",
+                ),
+                StrategyHistoryTrade(
+                    strategy_name="龙头模型",
+                    symbol="SZSE.000001",
+                    stock_id="000001",
+                    stock_name="平安银行",
+                    signal_date="2026-04-15",
+                    entry_date="2026-04-16",
+                    exit_date="2026-04-18",
+                    entry_price=12.0,
+                    exit_price=11.4,
+                    pnl_pct=-0.05,
+                    hold_days=3,
+                    exit_reason="止损",
+                    source_file="demo_b.json",
+                ),
+            ],
+            summaries=[
+                StrategyHistorySummary(
+                    strategy_name="尾盘买入法",
+                    signal_count=1,
+                    trade_count=1,
+                    filled_ratio=1.0,
+                    win_rate=1.0,
+                    total_return=0.08,
+                    avg_return=0.08,
+                    max_drawdown=0.0,
+                    avg_hold_days=2.0,
+                    symbol_count=1,
+                    target_hits=1,
+                ),
+                StrategyHistorySummary(
+                    strategy_name="龙头模型",
+                    signal_count=1,
+                    trade_count=1,
+                    filled_ratio=1.0,
+                    win_rate=0.0,
+                    total_return=-0.05,
+                    avg_return=-0.05,
+                    max_drawdown=0.05,
+                    avg_hold_days=3.0,
+                    symbol_count=1,
+                    stop_hits=1,
+                ),
+            ],
+            yearly_stats=[
+                StrategyHistoryPeriodStat(
+                    strategy_name="尾盘买入法",
+                    period="2026",
+                    trade_count=1,
+                    win_rate=1.0,
+                    total_return=0.08,
+                    avg_return=0.08,
+                ),
+                StrategyHistoryPeriodStat(
+                    strategy_name="龙头模型",
+                    period="2026",
+                    trade_count=1,
+                    win_rate=0.0,
+                    total_return=-0.05,
+                    avg_return=-0.05,
+                ),
+            ],
+            monthly_stats=[
+                StrategyHistoryPeriodStat(
+                    strategy_name="尾盘买入法",
+                    period="2026-04",
+                    trade_count=1,
+                    win_rate=1.0,
+                    total_return=0.08,
+                    avg_return=0.08,
+                ),
+                StrategyHistoryPeriodStat(
+                    strategy_name="龙头模型",
+                    period="2026-04",
+                    trade_count=1,
+                    win_rate=0.0,
+                    total_return=-0.05,
+                    avg_return=-0.05,
+                ),
+            ],
+        )
+
+        artifacts = export_strategy_history_report(
+            report=report,
+            output_dir=output_dir,
+            selected_strategy="尾盘买入法",
+            comparison_rows=[
+                {
+                    "scenario_label": "短持快出",
+                    "scenario_note": "持有 3 天",
+                    "strategy_name": "尾盘买入法",
+                    "max_hold_days": 3,
+                    "slippage_rate": 0.0005,
+                    "commission_rate": 0.0003,
+                    "stamp_duty_rate": 0.001,
+                    "block_limit_up_entry": True,
+                    "block_limit_down_exit": True,
+                    "signal_count": 1,
+                    "trade_count": 1,
+                    "filled_ratio": 1.0,
+                    "total_return": 0.05,
+                    "win_rate": 1.0,
+                    "max_drawdown": 0.01,
+                    "profit_factor": 2.5,
+                    "payoff_ratio": 1.8,
+                    "avg_hold_days": 3.0,
+                    "max_consecutive_losses": 0,
+                }
+            ],
+            leaderboard_rows=[
+                {
+                    "strategy_name": "尾盘买入法",
+                    "scenario_count": 2,
+                    "best_scenario_label": "低摩擦",
+                    "best_total_return": 0.09,
+                    "worst_scenario_label": "短持快出",
+                    "worst_total_return": 0.05,
+                    "return_spread": 0.04,
+                    "avg_total_return": 0.07,
+                }
+            ],
+        )
+        self.addCleanup(lambda: Path(artifacts.csv_path).unlink(missing_ok=True))
+        self.addCleanup(lambda: Path(artifacts.json_path).unlink(missing_ok=True))
+        self.addCleanup(lambda: Path(artifacts.markdown_path).unlink(missing_ok=True))
+
+        csv_text = Path(artifacts.csv_path).read_text(encoding="utf-8-sig")
+        json_payload = json.loads(Path(artifacts.json_path).read_text(encoding="utf-8"))
+        markdown_text = Path(artifacts.markdown_path).read_text(encoding="utf-8")
+
+        self.assertIn("尾盘买入法", csv_text)
+        self.assertNotIn("龙头模型", csv_text)
+        self.assertIn("profit_factor", csv_text.splitlines()[0])
+        self.assertIn("scenario_label", csv_text.splitlines()[0])
+        self.assertIn("comparison", csv_text)
+        self.assertEqual(json_payload["selected_strategy"], "尾盘买入法")
+        self.assertEqual(len(json_payload["summary_rows"]), 1)
+        self.assertEqual(json_payload["summary_rows"][0]["strategy_name"], "尾盘买入法")
+        self.assertIn("profit_factor", json_payload["summary_rows"][0])
+        self.assertEqual(len(json_payload["yearly_rows"]), 1)
+        self.assertEqual(json_payload["yearly_rows"][0]["period"], "2026")
+        self.assertEqual(len(json_payload["monthly_rows"]), 1)
+        self.assertEqual(json_payload["monthly_rows"][0]["period"], "2026-04")
+        self.assertEqual(len(json_payload["comparison_rows"]), 1)
+        self.assertEqual(json_payload["comparison_rows"][0]["scenario_label"], "短持快出")
+        self.assertIn("leaderboard", csv_text)
+        self.assertEqual(len(json_payload["leaderboard_rows"]), 1)
+        self.assertEqual(json_payload["leaderboard_rows"][0]["best_scenario_label"], "低摩擦")
+        self.assertIn("参数排行榜", markdown_text)
+
+    def test_strategy_history_replayer_respects_custom_hold_days(self) -> None:
+        temp_dir = self._temp_dir() / "strategy_history_custom_hold"
+        temp_dir.mkdir(exist_ok=True)
+        report_path = temp_dir / "daily_plan_20260415_003539.json"
+        report_path.write_text(
+            json.dumps(
+                {
+                    "generated_at": "2026-04-15T09:00:00",
+                    "recommendations": [
+                        {
+                            "symbol": "SHSE.600000",
+                            "stock_id": "600000",
+                            "stock_name": "浦发银行",
+                            "action": "BUY",
+                            "signal_date": "2026-04-15",
+                            "close": 10.0,
+                            "entry_price": 10.0,
+                            "stop_price": 9.0,
+                            "target_price": 12.0,
+                            "primary_strategy": "尾盘买入",
+                            "rationale": "demo",
+                        }
+                    ],
+                    "trade_plan": {"decisions": []},
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        self.addCleanup(lambda: report_path.unlink(missing_ok=True))
+
+        bars = [
+            PriceBar(date="2026-04-15", symbol="SHSE.600000", open=10.0, high=10.2, low=9.9, close=10.0, volume=1000),
+            PriceBar(date="2026-04-16", symbol="SHSE.600000", open=10.0, high=10.3, low=9.9, close=10.2, volume=1200),
+            PriceBar(date="2026-04-17", symbol="SHSE.600000", open=10.2, high=10.4, low=10.1, close=10.3, volume=1200),
+            PriceBar(date="2026-04-18", symbol="SHSE.600000", open=10.3, high=10.5, low=10.2, close=10.4, volume=1200),
+        ]
+
+        class StubFeed:
+            def fetch_daily_bars(self, symbol: str, start: str = "20200101", end: str = "20500101"):
+                return list(bars)
+
+        report = StrategyHistoryReplayer(
+            market_feed=StubFeed(),
+            params=StrategyHistoryReplayParams(max_hold_days=2),
+        ).build_report(roots=[temp_dir], start_date="2021-01-01")
+
+        self.assertEqual(len(report.trades), 1)
+        self.assertEqual(report.trades[0].hold_days, 2)
+        self.assertEqual(report.trades[0].exit_reason, "超时")
+
+    def test_strategy_history_replayer_applies_costs_to_return(self) -> None:
+        temp_dir = self._temp_dir() / "strategy_history_costs"
+        temp_dir.mkdir(exist_ok=True)
+        report_path = temp_dir / "daily_plan_20260415_003539.json"
+        report_path.write_text(
+            json.dumps(
+                {
+                    "generated_at": "2026-04-15T09:00:00",
+                    "recommendations": [
+                        {
+                            "symbol": "SHSE.600000",
+                            "stock_id": "600000",
+                            "stock_name": "浦发银行",
+                            "action": "BUY",
+                            "signal_date": "2026-04-15",
+                            "close": 10.0,
+                            "entry_price": 10.0,
+                            "stop_price": 9.0,
+                            "target_price": 10.8,
+                            "primary_strategy": "尾盘买入",
+                        }
+                    ],
+                    "trade_plan": {"decisions": []},
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        self.addCleanup(lambda: report_path.unlink(missing_ok=True))
+
+        bars = [
+            PriceBar(date="2026-04-15", symbol="SHSE.600000", open=10.0, high=10.2, low=9.9, close=10.0, volume=1000),
+            PriceBar(date="2026-04-16", symbol="SHSE.600000", open=10.0, high=10.9, low=9.95, close=10.8, volume=1200),
+        ]
+
+        class StubFeed:
+            def fetch_daily_bars(self, symbol: str, start: str = "20200101", end: str = "20500101"):
+                return list(bars)
+
+        report = StrategyHistoryReplayer(
+            market_feed=StubFeed(),
+            params=StrategyHistoryReplayParams(
+                slippage_rate=0.0,
+                commission_rate=0.001,
+                stamp_duty_rate=0.001,
+            ),
+        ).build_report(roots=[temp_dir], start_date="2021-01-01")
+
+        self.assertEqual(len(report.trades), 1)
+        self.assertLess(report.trades[0].pnl_pct, 0.08)
+
+    def test_strategy_history_replayer_blocks_limit_up_entry_when_enabled(self) -> None:
+        temp_dir = self._temp_dir() / "strategy_history_limit_up"
+        temp_dir.mkdir(exist_ok=True)
+        report_path = temp_dir / "daily_plan_20260415_003539.json"
+        report_path.write_text(
+            json.dumps(
+                {
+                    "generated_at": "2026-04-15T09:00:00",
+                    "recommendations": [
+                        {
+                            "symbol": "SHSE.600000",
+                            "stock_id": "600000",
+                            "stock_name": "浦发银行",
+                            "action": "BUY",
+                            "signal_date": "2026-04-15",
+                            "close": 10.0,
+                            "entry_price": 10.0,
+                            "stop_price": 9.0,
+                            "target_price": 12.0,
+                            "primary_strategy": "尾盘买入",
+                        }
+                    ],
+                    "trade_plan": {"decisions": []},
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        self.addCleanup(lambda: report_path.unlink(missing_ok=True))
+
+        bars = [
+            PriceBar(date="2026-04-15", symbol="SHSE.600000", open=10.0, high=10.2, low=9.9, close=10.0, volume=1000),
+            PriceBar(date="2026-04-16", symbol="SHSE.600000", open=11.0, high=11.0, low=11.0, close=11.0, volume=1200),
+            PriceBar(date="2026-04-17", symbol="SHSE.600000", open=10.1, high=10.6, low=9.9, close=10.3, volume=1200),
+        ]
+
+        class StubFeed:
+            def fetch_daily_bars(self, symbol: str, start: str = "20200101", end: str = "20500101"):
+                return list(bars)
+
+        blocked_report = StrategyHistoryReplayer(
+            market_feed=StubFeed(),
+            params=StrategyHistoryReplayParams(block_limit_up_entry=True),
+        ).build_report(roots=[temp_dir], start_date="2021-01-01")
+        allowed_report = StrategyHistoryReplayer(
+            market_feed=StubFeed(),
+            params=StrategyHistoryReplayParams(block_limit_up_entry=False),
+        ).build_report(roots=[temp_dir], start_date="2021-01-01")
+
+        self.assertEqual(len(blocked_report.trades), 1)
+        self.assertEqual(blocked_report.trades[0].entry_date, "2026-04-17")
+        self.assertEqual(len(allowed_report.trades), 1)
+        self.assertEqual(allowed_report.trades[0].entry_date, "2026-04-17")
+
+    def test_strategy_history_parameter_comparison_reflects_hold_day_difference(self) -> None:
+        temp_dir = self._temp_dir() / "strategy_history_compare"
+        temp_dir.mkdir(exist_ok=True)
+        report_path = temp_dir / "daily_plan_20260415_003539.json"
+        report_path.write_text(
+            json.dumps(
+                {
+                    "generated_at": "2026-04-15T09:00:00",
+                    "recommendations": [
+                        {
+                            "symbol": "SHSE.600000",
+                            "stock_id": "600000",
+                            "stock_name": "浦发银行",
+                            "action": "BUY",
+                            "signal_date": "2026-04-15",
+                            "close": 10.0,
+                            "entry_price": 10.0,
+                            "stop_price": 9.0,
+                            "target_price": 12.0,
+                            "primary_strategy": "尾盘买入",
+                        }
+                    ],
+                    "trade_plan": {"decisions": []},
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        self.addCleanup(lambda: report_path.unlink(missing_ok=True))
+
+        bars = [
+            PriceBar(date="2026-04-15", symbol="SHSE.600000", open=10.0, high=10.1, low=9.9, close=10.0, volume=1000),
+            PriceBar(date="2026-04-16", symbol="SHSE.600000", open=10.0, high=10.3, low=9.9, close=10.2, volume=1200),
+            PriceBar(date="2026-04-17", symbol="SHSE.600000", open=10.2, high=10.4, low=10.1, close=10.3, volume=1200),
+            PriceBar(date="2026-04-18", symbol="SHSE.600000", open=10.3, high=10.5, low=10.2, close=10.4, volume=1200),
+            PriceBar(date="2026-04-19", symbol="SHSE.600000", open=10.4, high=10.6, low=10.3, close=10.5, volume=1200),
+            PriceBar(date="2026-04-20", symbol="SHSE.600000", open=10.5, high=10.7, low=10.4, close=10.6, volume=1200),
+        ]
+
+        class StubFeed:
+            def fetch_daily_bars(self, symbol: str, start: str = "20200101", end: str = "20500101"):
+                return list(bars)
+
+        replayer = StrategyHistoryReplayer(market_feed=StubFeed())
+        comparisons = replayer.compare_parameter_scenarios(
+            scenarios=[
+                StrategyHistoryScenarioPreset(
+                    label="短持",
+                    note="2 天离场",
+                    params=StrategyHistoryReplayParams(max_hold_days=2),
+                ),
+                StrategyHistoryScenarioPreset(
+                    label="长持",
+                    note="5 天离场",
+                    params=StrategyHistoryReplayParams(max_hold_days=5),
+                ),
+            ],
+            roots=[temp_dir],
+            start_date="2021-01-01",
+        )
+
+        self.assertEqual(len(comparisons), 2)
+        short_row = next(item for item in comparisons if item.scenario_label == "短持")
+        long_row = next(item for item in comparisons if item.scenario_label == "长持")
+        self.assertEqual(short_row.strategy_name, "尾盘买入法")
+        self.assertLess(short_row.total_return, long_row.total_return)
+
+    def test_strategy_history_comparison_leaderboard_summarizes_by_strategy(self) -> None:
+        leaderboard = StrategyHistoryReplayer.comparison_leaderboard(
+            [
+                StrategyHistoryScenarioComparison(
+                    scenario_label="当前参数",
+                    scenario_note="基准",
+                    strategy_name="尾盘买入法",
+                    max_hold_days=8,
+                    slippage_rate=0.001,
+                    commission_rate=0.0003,
+                    stamp_duty_rate=0.001,
+                    block_limit_up_entry=True,
+                    block_limit_down_exit=True,
+                    signal_count=20,
+                    trade_count=12,
+                    filled_ratio=0.6,
+                    total_return=0.12,
+                    win_rate=0.58,
+                    max_drawdown=0.08,
+                    profit_factor=1.6,
+                    payoff_ratio=1.4,
+                    avg_hold_days=4.2,
+                    max_consecutive_losses=2,
+                ),
+                StrategyHistoryScenarioComparison(
+                    scenario_label="短持快出",
+                    scenario_note="短线",
+                    strategy_name="尾盘买入法",
+                    max_hold_days=3,
+                    slippage_rate=0.0005,
+                    commission_rate=0.0003,
+                    stamp_duty_rate=0.001,
+                    block_limit_up_entry=True,
+                    block_limit_down_exit=True,
+                    signal_count=20,
+                    trade_count=13,
+                    filled_ratio=0.65,
+                    total_return=0.05,
+                    win_rate=0.62,
+                    max_drawdown=0.04,
+                    profit_factor=1.3,
+                    payoff_ratio=1.2,
+                    avg_hold_days=2.5,
+                    max_consecutive_losses=1,
+                ),
+                StrategyHistoryScenarioComparison(
+                    scenario_label="波段持有",
+                    scenario_note="趋势",
+                    strategy_name="龙头模型",
+                    max_hold_days=12,
+                    slippage_rate=0.001,
+                    commission_rate=0.0003,
+                    stamp_duty_rate=0.001,
+                    block_limit_up_entry=True,
+                    block_limit_down_exit=True,
+                    signal_count=15,
+                    trade_count=9,
+                    filled_ratio=0.6,
+                    total_return=0.18,
+                    win_rate=0.55,
+                    max_drawdown=0.1,
+                    profit_factor=1.8,
+                    payoff_ratio=1.5,
+                    avg_hold_days=6.0,
+                    max_consecutive_losses=2,
+                ),
+                StrategyHistoryScenarioComparison(
+                    scenario_label="低摩擦",
+                    scenario_note="费用低",
+                    strategy_name="龙头模型",
+                    max_hold_days=8,
+                    slippage_rate=0.0001,
+                    commission_rate=0.0001,
+                    stamp_duty_rate=0.0005,
+                    block_limit_up_entry=False,
+                    block_limit_down_exit=False,
+                    signal_count=15,
+                    trade_count=10,
+                    filled_ratio=0.67,
+                    total_return=0.1,
+                    win_rate=0.52,
+                    max_drawdown=0.06,
+                    profit_factor=1.4,
+                    payoff_ratio=1.1,
+                    avg_hold_days=4.5,
+                    max_consecutive_losses=2,
+                ),
+            ]
+        )
+
+        self.assertEqual(len(leaderboard), 2)
+        self.assertEqual(leaderboard[0].strategy_name, "龙头模型")
+        self.assertEqual(leaderboard[0].best_scenario_label, "波段持有")
+        self.assertEqual(leaderboard[0].worst_scenario_label, "低摩擦")
+        self.assertAlmostEqual(leaderboard[0].return_spread, 0.08, places=4)
+
+        tail_buy = next(item for item in leaderboard if item.strategy_name == "尾盘买入法")
+        self.assertEqual(tail_buy.scenario_count, 2)
+        self.assertEqual(tail_buy.best_scenario_label, "当前参数")
+        self.assertEqual(tail_buy.worst_scenario_label, "短持快出")
+        self.assertAlmostEqual(tail_buy.avg_total_return, 0.085, places=4)
+
+    def test_market_feed_fetch_daily_bars_refreshes_short_cache_when_range_is_longer(self) -> None:
+        cache = LocalMarketCache(root=self._temp_dir() / "market_cache_strategy_history", bars_ttl_seconds=3600)
+        symbol = "SHSE.600000"
+        cache.put_daily_bars(
+            symbol,
+            [
+                PriceBar(date="2024-01-02", symbol=symbol, open=10.0, high=10.3, low=9.9, close=10.1, volume=1000),
+                PriceBar(date="2024-01-03", symbol=symbol, open=10.1, high=10.4, low=10.0, close=10.2, volume=1200),
+            ],
+        )
+
+        class StubFeed(EastmoneyMarketFeed):
+            def __init__(self, cache_obj):
+                super().__init__(cache=cache_obj)
+                self.called = False
+
+            def _fetch_daily_bars_eastmoney(self, symbol: str, start: str = "20240101", end: str = "20500101"):
+                self.called = True
+                return [
+                    PriceBar(date="2021-01-04", symbol=symbol, open=8.0, high=8.2, low=7.9, close=8.1, volume=900),
+                    PriceBar(date="2024-01-03", symbol=symbol, open=10.1, high=10.4, low=10.0, close=10.2, volume=1200),
+                ]
+
+        feed = StubFeed(cache)
+        bars = feed.fetch_daily_bars(symbol, start="20210101", end="20240103")
+
+        self.assertTrue(feed.called)
+        self.assertEqual(bars[0].date, "2021-01-04")
 
     def test_universe_scanner_finds_ranked_rows(self) -> None:
         sample_dir = self._temp_dir() / "universe"
@@ -3108,6 +4142,8 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(results[0].rank, 1)
         self.assertLessEqual(len(results), 3)
         self.assertTrue(all(result.symbols_tested == 2 for result in results))
+        self.assertTrue(all(0.0 <= result.robustness_score <= 1.0 for result in results))
+        self.assertTrue(all(result.portfolio_max_concurrent_positions >= 0 for result in results))
 
     def test_optimizer_prefers_more_stable_parameter_set(self) -> None:
         bars = [
@@ -3158,7 +4194,33 @@ class StrategyWorkflowTests(unittest.TestCase):
                     equity_curve=[],
                 )
 
-        with patch("quant_hunter.optimizer.AntiHarvestStrategy", FakeStrategy), patch("quant_hunter.optimizer.Backtester", FakeBacktester):
+        class FakePortfolioBacktester:
+            def __init__(self, strategy_params=None, backtest_params=None):
+                self.params = strategy_params
+
+            def run(self, bars_by_symbol, analyses_by_symbol):
+                sample_symbol = next(iter(bars_by_symbol))
+                series = bars_by_symbol[sample_symbol]
+                first_date = series[0].date
+                key = int(self.params.breakout_lookback)
+                if len(series) == 12:
+                    total_return = 0.09 if key == 4 else 0.1
+                elif first_date == "2026-04-01":
+                    total_return = 0.07 if key == 4 else 0.18
+                else:
+                    total_return = 0.06 if key == 4 else -0.08
+                return PortfolioBacktestResult(
+                    initial_capital=200000.0,
+                    ending_equity=200000.0 * (1 + total_return),
+                    total_return=total_return,
+                    max_drawdown=0.05 if key == 4 else 0.12,
+                    win_rate=0.6,
+                    profit_factor=1.7 if key == 4 else 1.2,
+                    avg_exposure=0.32 if key == 4 else 0.18,
+                    max_concurrent_positions=1,
+                )
+
+        with patch("quant_hunter.optimizer.AntiHarvestStrategy", FakeStrategy), patch("quant_hunter.optimizer.Backtester", FakeBacktester), patch("quant_hunter.optimizer.PortfolioBacktester", FakePortfolioBacktester):
             results = ParameterOptimizer(StrategyParams(slow_ma_window=4)).optimize(
                 bars_by_symbol,
                 grid={"breakout_lookback": [4, 5]},
@@ -3166,6 +4228,210 @@ class StrategyWorkflowTests(unittest.TestCase):
             )
 
         self.assertEqual(results[0].params["breakout_lookback"], 4)
+
+    def test_optimizer_surfaces_out_of_sample_robustness_metrics(self) -> None:
+        bars = [
+            PriceBar(
+                date=f"2026-04-{index:02d}",
+                symbol="SHSE.600000",
+                open=10.0,
+                high=10.5,
+                low=9.8,
+                close=10.2,
+                volume=1000 + index,
+            )
+            for index in range(1, 13)
+        ]
+        bars_by_symbol = {"SHSE.600000": bars}
+
+        class FakeStrategy:
+            def __init__(self, params):
+                self.params = params
+
+            def analyze(self, series):
+                return [None] * len(series)
+
+        class FakeBacktester:
+            def __init__(self, strategy_params=None, backtest_params=None):
+                self.params = strategy_params
+
+            def run(self, series, analyses):
+                first_date = series[0].date
+                key = int(self.params.breakout_lookback)
+                if len(series) == 12:
+                    total_return = 0.11 if key == 4 else 0.14
+                elif first_date == "2026-04-01":
+                    total_return = 0.08 if key == 4 else 0.19
+                else:
+                    total_return = 0.07 if key == 4 else -0.09
+                return BacktestResult(
+                    initial_capital=200000.0,
+                    ending_equity=200000.0 * (1 + total_return),
+                    total_return=total_return,
+                    max_drawdown=0.04,
+                    win_rate=0.6,
+                    profit_factor=1.8,
+                    trades=[],
+                    equity_curve=[],
+                )
+
+        class FakePortfolioBacktester:
+            def __init__(self, strategy_params=None, backtest_params=None):
+                self.params = strategy_params
+
+            def run(self, bars_by_symbol, analyses_by_symbol):
+                sample_symbol = next(iter(bars_by_symbol))
+                series = bars_by_symbol[sample_symbol]
+                first_date = series[0].date
+                key = int(self.params.breakout_lookback)
+                if len(series) == 12:
+                    total_return = 0.1 if key == 4 else 0.13
+                elif first_date == "2026-04-01":
+                    total_return = 0.07 if key == 4 else 0.18
+                else:
+                    total_return = 0.06 if key == 4 else -0.1
+                return PortfolioBacktestResult(
+                    initial_capital=200000.0,
+                    ending_equity=200000.0 * (1 + total_return),
+                    total_return=total_return,
+                    max_drawdown=0.05 if key == 4 else 0.13,
+                    win_rate=0.6,
+                    profit_factor=1.8 if key == 4 else 1.1,
+                    avg_exposure=0.34 if key == 4 else 0.2,
+                    max_concurrent_positions=1,
+                )
+
+        with patch("quant_hunter.optimizer.AntiHarvestStrategy", FakeStrategy), patch("quant_hunter.optimizer.Backtester", FakeBacktester), patch("quant_hunter.optimizer.PortfolioBacktester", FakePortfolioBacktester):
+            results = ParameterOptimizer(StrategyParams(slow_ma_window=4)).optimize(
+                bars_by_symbol,
+                grid={"breakout_lookback": [4, 5]},
+                top_n=2,
+            )
+
+        stable = next(item for item in results if item.params["breakout_lookback"] == 4)
+        unstable = next(item for item in results if item.params["breakout_lookback"] == 5)
+
+        self.assertGreater(stable.robustness_score, unstable.robustness_score)
+        self.assertGreater(stable.avg_out_of_sample_return, unstable.avg_out_of_sample_return)
+        self.assertLess(stable.avg_return_std, unstable.avg_return_std)
+        self.assertGreater(stable.avg_positive_window_ratio, unstable.avg_positive_window_ratio)
+        self.assertGreater(stable.portfolio_out_of_sample_return, unstable.portfolio_out_of_sample_return)
+        self.assertLess(stable.portfolio_max_drawdown, unstable.portfolio_max_drawdown)
+
+    def test_optimizer_prefers_stronger_portfolio_profile_even_when_single_name_return_is_close(self) -> None:
+        bars = [
+            PriceBar(
+                date=f"2026-04-{index:02d}",
+                symbol="SHSE.600000",
+                open=10.0,
+                high=10.5,
+                low=9.8,
+                close=10.2,
+                volume=1000 + index,
+            )
+            for index in range(1, 13)
+        ]
+        bars_by_symbol = {
+            "SHSE.600000": list(bars),
+            "SZSE.000001": [PriceBar(**{**item.__dict__, "symbol": "SZSE.000001"}) for item in bars],
+        }
+
+        class FakeStrategy:
+            def __init__(self, params):
+                self.params = params
+
+            def analyze(self, series):
+                return [None] * len(series)
+
+        class FakeBacktester:
+            def __init__(self, strategy_params=None, backtest_params=None):
+                self.params = strategy_params
+
+            def run(self, series, analyses):
+                key = int(self.params.breakout_lookback)
+                total_return = 0.11 if key == 4 else 0.115
+                return BacktestResult(
+                    initial_capital=200000.0,
+                    ending_equity=200000.0 * (1 + total_return),
+                    total_return=total_return,
+                    max_drawdown=0.05,
+                    win_rate=0.58,
+                    profit_factor=1.7,
+                    trades=[],
+                    equity_curve=[],
+                )
+
+        class FakePortfolioBacktester:
+            def __init__(self, strategy_params=None, backtest_params=None):
+                self.params = strategy_params
+
+            def run(self, bars_by_symbol, analyses_by_symbol):
+                key = int(self.params.breakout_lookback)
+                total_return = 0.12 if key == 4 else 0.06
+                return PortfolioBacktestResult(
+                    initial_capital=200000.0,
+                    ending_equity=200000.0 * (1 + total_return),
+                    total_return=total_return,
+                    max_drawdown=0.04 if key == 4 else 0.16,
+                    win_rate=0.6 if key == 4 else 0.45,
+                    profit_factor=1.9 if key == 4 else 1.05,
+                    avg_exposure=0.38 if key == 4 else 0.22,
+                    max_concurrent_positions=2,
+                )
+
+        with patch("quant_hunter.optimizer.AntiHarvestStrategy", FakeStrategy), patch("quant_hunter.optimizer.Backtester", FakeBacktester), patch("quant_hunter.optimizer.PortfolioBacktester", FakePortfolioBacktester):
+            results = ParameterOptimizer(StrategyParams(slow_ma_window=4)).optimize(
+                bars_by_symbol,
+                grid={"breakout_lookback": [4, 5]},
+                top_n=2,
+            )
+
+        self.assertEqual(results[0].params["breakout_lookback"], 4)
+        self.assertGreater(results[0].portfolio_return, results[1].portfolio_return)
+
+    def test_export_optimization_report_includes_robustness_columns(self) -> None:
+        output_dir = self._temp_dir() / "optimization_exports"
+        output_dir.mkdir(exist_ok=True)
+
+        artifacts = export_optimization_report(
+            [
+                OptimizationRun(
+                    rank=1,
+                    params={"breakout_lookback": 20},
+                    objective=0.1234,
+                    avg_return=0.08,
+                    avg_drawdown=0.03,
+                    avg_win_rate=0.62,
+                    trade_count=11,
+                    symbols_tested=4,
+                    robustness_score=0.84,
+                    avg_out_of_sample_return=0.06,
+                    avg_median_window_return=0.05,
+                    avg_worst_window_return=0.02,
+                    avg_return_std=0.03,
+                    avg_positive_window_ratio=0.75,
+                    avg_profit_factor=1.9,
+                    portfolio_return=0.09,
+                    portfolio_out_of_sample_return=0.07,
+                    portfolio_worst_window_return=0.03,
+                    portfolio_return_std=0.02,
+                    portfolio_max_drawdown=0.04,
+                    portfolio_profit_factor=1.7,
+                    portfolio_avg_exposure=0.36,
+                    portfolio_max_concurrent_positions=3,
+                )
+            ],
+            output_dir=output_dir,
+        )
+
+        markdown_text = Path(artifacts.markdown_path).read_text(encoding="utf-8")
+        csv_text = Path(artifacts.csv_path).read_text(encoding="utf-8-sig")
+
+        self.assertIn("Robustness", markdown_text)
+        self.assertIn("Portfolio Return", markdown_text)
+        self.assertIn("avg_out_of_sample_return", csv_text)
+        self.assertIn("robustness_score", csv_text)
+        self.assertIn("portfolio_return", csv_text)
 
     def test_broker_generates_gm_strategy_script(self) -> None:
         adapter = EastmoneyBrokerAdapter()
@@ -5255,6 +6521,8 @@ class StrategyWorkflowTests(unittest.TestCase):
 
     def test_refresh_workspace_focus_banners_append_news_action_brief(self) -> None:
         module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
         window = SimpleNamespace(
             active_symbol="SZSE.300001",
             daily_pool_table=SimpleNamespace(rowCount=lambda: 5),
@@ -8029,6 +9297,159 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(window.market_open_news_button.text(), "查看媒体原文")
         self.assertIn("分层：媒体催化", window.market_open_news_button.toolTip())
 
+    def test_update_market_text_panels_v5_skips_repeated_same_signature(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-16",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.4,
+            target_price=10.9,
+            technical_score=82.0,
+            position_score=80.0,
+            persistence_score=78.0,
+            news_score=76.0,
+            leader_score=88.0,
+            total_score=87.0,
+            mainline_tag="机器人",
+            catalyst="订单超预期",
+            rationale="主线前排加速，资金回流明显",
+            next_focus="继续盯量能和承接",
+            mainline_risk_flag="中",
+        )
+        news_item = SimpleNamespace(
+            title="机器人主线继续扩散",
+            source="财联社",
+            published_at="2026-04-16 09:31",
+            summary="前排个股持续放量，板块热度维持高位。",
+        )
+        calls: list[str] = []
+
+        def record_set(widget, text) -> None:
+            calls.append(text)
+            widget.setPlainText(text)
+
+        window = SimpleNamespace(
+            overview_command_text=module.QTextEdit(),
+            overview_execution_text=module.QTextEdit(),
+            market_capital_text=module.QTextEdit(),
+            market_decision_text=module.QTextEdit(),
+            market_open_news_button=module.QPushButton(),
+            market_news_detail_button=module.QPushButton(),
+            news_catalysts={"SZSE.300001": [news_item]},
+            _stock_name_for_symbol=lambda symbol: "龙头样本",
+            _stock_profile_for_symbol=lambda symbol: SimpleNamespace(notes="公告驱动后转成主线博弈"),
+            _news_digest_lines_for_symbol=lambda symbol, limit=2: [f"- {news_item.title} (财联社 / 可信度 B级)"],
+            _update_news_action_button=lambda button, item: None,
+            _update_news_detail_button=lambda button, item: None,
+            _set_note_panel_tone_v5=lambda widget, tone: None,
+            _set_plain_text_if_changed=record_set,
+        )
+
+        module.QuantHunterWindow._update_market_text_panels(window, "SZSE.300001", None, row)
+        first_call_count = len(calls)
+        module.QuantHunterWindow._update_market_text_panels(window, "SZSE.300001", None, row)
+
+        self.assertEqual(len(calls), first_call_count)
+
+    def test_refresh_overview_focus_cards_v4_skips_repeated_same_signature(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-16",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.4,
+            target_price=10.9,
+            technical_score=82.0,
+            position_score=80.0,
+            persistence_score=78.0,
+            news_score=76.0,
+            leader_score=88.0,
+            total_score=87.0,
+            mainline_tag="机器人",
+            catalyst="订单超预期",
+            rationale="主线前排加速，资金回流明显",
+            next_focus="继续盯量能和承接",
+            mainline_risk_flag="中",
+            mainline_role="CORE",
+            mainline_rank=1,
+            mainline_window_score=82.0,
+        )
+        news_item = SimpleNamespace(title="机器人主线继续扩散", source="财联社")
+        calls: list[tuple[str, str]] = []
+
+        class DummyCard:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            def set_data(self, headline: str, detail: str) -> None:
+                calls.append((headline, detail))
+
+        window = SimpleNamespace(
+            news_catalysts={"SZSE.300001": [news_item]},
+            overview_summary_cards={
+                "theme": DummyCard("theme"),
+                "source": DummyCard("source"),
+                "capital": DummyCard("capital"),
+                "decision": DummyCard("decision"),
+            },
+            _display_mainline_role=lambda role: "核心龙头",
+            _news_recommended_action=lambda item: ("recommend", "先看推荐页", "这类催化更适合先看机会分层"),
+            _prepend_card_badge=lambda label, symbol: f"[badge]{label}",
+        )
+
+        module.QuantHunterWindow._refresh_overview_focus_cards(window, "SZSE.300001", None, row)
+        first_call_count = len(calls)
+        module.QuantHunterWindow._refresh_overview_focus_cards(window, "SZSE.300001", None, row)
+
+        self.assertEqual(len(calls), first_call_count)
+
+    def test_refresh_market_source_status_skips_repeated_same_signature(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        calls: list[tuple[str, str]] = []
+
+        class DummyCard:
+            def set_data(self, headline: str, detail: str) -> None:
+                calls.append((headline, detail))
+
+        def record_set(widget, text) -> None:
+            calls.append(("text", text))
+            widget.setPlainText(text)
+
+        window = SimpleNamespace(
+            market_source_status_text=module.QTextEdit(),
+            market_screen_result=SimpleNamespace(algorithmic_pool=[1, 2, 3]),
+            market_data_source="cache_fresh",
+            last_market_error="",
+            overview_summary_cards={"source": DummyCard()},
+            _market_source_mode_label=lambda: "本地新缓存",
+            _market_mode_label=lambda: "自动",
+            _set_plain_text_if_changed=record_set,
+        )
+
+        with patch.object(module, "LocalMarketCache", return_value=SimpleNamespace(cache_stats=lambda: {"files": 2, "bytes": 1048576})):
+            module.QuantHunterWindow._refresh_market_source_status(window)
+            first_call_count = len(calls)
+            module.QuantHunterWindow._refresh_market_source_status(window)
+
+        self.assertEqual(len(calls), first_call_count)
+
     def test_populate_market_depth_texts_v5_surfaces_recommended_next_workspace(self) -> None:
         module = importlib.import_module("app_qt")
         app = module.QApplication.instance() or module.QApplication([])
@@ -8067,6 +9488,93 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn("建议：先看推荐页 | 这类催化更适合先看机会分层", text)
         self.assertIn("结论：已公告 | 可信度 A级", text)
         self.assertIn("焦点：浦发银行", text)
+
+    def test_populate_market_depth_texts_v5_skips_repeated_same_signature(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        top_row = SimpleNamespace(
+            symbol="SHSE.600000",
+            stock_name="浦发银行",
+            mainline_tag="银行修复",
+            theme_name="银行修复",
+            strategy_tag="龙头模型",
+            catalyst="利润分配预案",
+            rationale="分红稳住预期，资金回流",
+            next_focus="盯承接和量能",
+            mainline_risk_flag="低",
+            pct_change=0.0,
+        )
+        news_item = SimpleNamespace(
+            title="2025年度利润分配方案公告",
+            source="巨潮资讯",
+            published_at="2026-04-17 09:31:00",
+            summary="分红预案 | 偏稳健催化",
+        )
+        calls: list[str] = []
+
+        def record_set(widget, text) -> None:
+            calls.append(text)
+            widget.setPlainText(text)
+
+        window = SimpleNamespace(
+            market_buy_text=module.QTextEdit(),
+            market_sell_text=module.QTextEdit(),
+            market_breadth_text=module.QTextEdit(),
+            news_catalysts={"SHSE.600000": [news_item]},
+            _set_note_panel_tone_v5=lambda widget, tone: None,
+            _news_recommended_action=lambda item: ("recommend", "先看推荐页", "这类催化更适合先看机会分层"),
+            _news_digest_lines_for_symbol=lambda symbol, limit=2: [f"- [已公告] {news_item.title}"],
+            _set_plain_text_if_changed=record_set,
+        )
+
+        module._qh_populate_market_depth_texts_v5(window, [top_row])
+        first_call_count = len(calls)
+        module._qh_populate_market_depth_texts_v5(window, [top_row])
+
+        self.assertEqual(len(calls), first_call_count)
+
+    def test_refresh_overview_side_panels_v5_skips_repeated_same_signature(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        row = SimpleNamespace(
+            symbol="SZSE.300001",
+            stock_name="龙头样本",
+            mainline_tag="机器人",
+            theme_name="机器人",
+            strategy_tag="龙头模型",
+            pct_change=6.2,
+            main_inflow=230000000.0,
+        )
+        news_item = SimpleNamespace(
+            title="机器人主线继续扩散",
+            source="财联社",
+            published_at="2026-04-18 09:31",
+            summary="前排个股持续放量，板块热度维持高位。",
+        )
+        calls: list[str] = []
+
+        def record_set(widget, text) -> None:
+            calls.append(text)
+            widget.setPlainText(text)
+
+        window = SimpleNamespace(
+            news_catalysts={"SZSE.300001": [news_item]},
+            market_theme_brief_text=module.QTextEdit(),
+            _set_note_panel_tone_v5=lambda widget, tone: None,
+            _set_plain_text_if_changed=record_set,
+            _render_leaderboard_cards=lambda rows: None,
+            _refresh_market_source_status=lambda: calls.append("source-status"),
+        )
+
+        module._qh_refresh_overview_side_panels_v5(window, [row])
+        first_set_calls = len([item for item in calls if item != "source-status"])
+        module._qh_refresh_overview_side_panels_v5(window, [row])
+        second_set_calls = len([item for item in calls if item != "source-status"])
+
+        self.assertEqual(first_set_calls, second_set_calls)
+        self.assertGreaterEqual(calls.count("source-status"), 2)
 
     def test_refresh_news_source_status_panel_renders_provider_runtime(self) -> None:
         module = importlib.import_module("app_qt")
@@ -8168,6 +9676,118 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(pool[0].stock_name, "Strong Demo")
         self.assertGreater(pool[0].backtest_quality_score, pool[1].backtest_quality_score)
 
+    def test_daily_pool_builder_portfolio_context_penalizes_crowded_theme_under_stress(self) -> None:
+        rows = [
+            ScanRow(
+                stock_name="Crowded Demo",
+                stock_id="300011",
+                symbol="SZSE.300011",
+                action="BUY",
+                label="RECLAIM_LONG",
+                score=84,
+                close=20.0,
+                signal_date="2026-04-05",
+                entry_price=20.0,
+                stop_price=19.0,
+                target_price=22.5,
+                reason="主线回流",
+                source_path="demo",
+            ),
+            ScanRow(
+                stock_name="Balanced Demo",
+                stock_id="300012",
+                symbol="SZSE.300012",
+                action="BUY",
+                label="RECLAIM_LONG",
+                score=84,
+                close=20.0,
+                signal_date="2026-04-05",
+                entry_price=20.0,
+                stop_price=19.0,
+                target_price=22.5,
+                reason="主线回流",
+                source_path="demo",
+            ),
+        ]
+        analyses_by_symbol = {"SZSE.300011": [], "SZSE.300012": []}
+        profiles = {
+            "SZSE.300011": type("Profile", (), {"stock_id": "300011", "name": "Crowded Demo", "industry": "AI", "notes": "机器人", "is_leader": True})(),
+            "SZSE.300012": type("Profile", (), {"stock_id": "300012", "name": "Balanced Demo", "industry": "消费", "notes": "修复", "is_leader": True})(),
+        }
+        summaries = [
+            SymbolBacktestSummary(symbol="SZSE.300011", trades=8, total_return=0.24, max_drawdown=0.06, win_rate=0.68, ending_equity=124000.0),
+            SymbolBacktestSummary(symbol="SZSE.300012", trades=8, total_return=0.22, max_drawdown=0.05, win_rate=0.66, ending_equity=122000.0),
+        ]
+        portfolio_backtest = PortfolioBacktestResult(
+            initial_capital=200000.0,
+            ending_equity=206000.0,
+            total_return=0.03,
+            max_drawdown=0.16,
+            win_rate=0.55,
+            profit_factor=1.2,
+            avg_exposure=0.36,
+            max_concurrent_positions=3,
+        )
+
+        class FakeThemeEngine:
+            def __init__(self, theme_aliases=None):
+                self.theme_aliases = theme_aliases
+
+            def analyze(self, candidates):
+                themed = []
+                for item in candidates:
+                    if item.symbol == "SZSE.300011":
+                        themed.append(
+                            RecommendationRow(
+                                **{
+                                    **item.__dict__,
+                                    "theme_name": "机器人",
+                                    "theme_rank": 1,
+                                    "mainline_rank": 1,
+                                    "mainline_role": "CORE",
+                                    "mainline_window_score": 84.0,
+                                    "theme_failure_risk": 72.0,
+                                    "theme_divergence_score": 36.0,
+                                }
+                            )
+                        )
+                    else:
+                        themed.append(
+                            RecommendationRow(
+                                **{
+                                    **item.__dict__,
+                                    "theme_name": "消费复苏",
+                                    "theme_rank": 1,
+                                    "mainline_rank": 1,
+                                    "mainline_role": "CORE",
+                                    "mainline_window_score": 82.0,
+                                    "theme_failure_risk": 28.0,
+                                    "theme_divergence_score": 8.0,
+                                }
+                            )
+                        )
+                return themed, [
+                    SimpleNamespace(theme_name="机器人", stock_count=6, leader_count=3),
+                    SimpleNamespace(theme_name="消费复苏", stock_count=2, leader_count=1),
+                ], []
+
+        with patch("quant_hunter.recommend.ThemeHeatEngine", FakeThemeEngine):
+            pool = DailyPoolBuilder(stock_profiles=profiles).build(
+                rows,
+                analyses_by_symbol,
+                summaries,
+                top_n=5,
+                portfolio_backtest=portfolio_backtest,
+            )
+
+        crowded = next(item for item in pool if item.symbol == "SZSE.300011")
+        balanced = next(item for item in pool if item.symbol == "SZSE.300012")
+
+        self.assertEqual(pool[0].symbol, "SZSE.300012")
+        self.assertGreater(balanced.portfolio_fit_score, crowded.portfolio_fit_score)
+        self.assertGreater(crowded.concentration_penalty_score, balanced.concentration_penalty_score)
+        self.assertIn("组合适配", balanced.rationale)
+
     def test_daily_pool_builder_risk_profile_changes_opportunity_tier(self) -> None:
         rows = [
             ScanRow(
@@ -8230,6 +9850,111 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         self.assertEqual(conservative_pool[0].opportunity_tier, "风险回避")
         self.assertEqual(aggressive_pool[0].opportunity_tier, "跟踪确认")
+
+    def test_refresh_daily_pool_controller_passes_portfolio_context_to_builder(self) -> None:
+        from quant_hunter import ui_controllers
+
+        captured: dict[str, object] = {}
+
+        class FakeBuilder:
+            def __init__(self, *args, **kwargs):
+                self.last_build_meta = {
+                    "risk_profile": kwargs.get("risk_profile", "standard"),
+                    "buy_ready_count": 1,
+                    "rejected_count": 0,
+                }
+
+            def build(self, scan_rows, analyses_by_symbol, backtest_summaries, top_n=15, as_of=None, portfolio_backtest=None):
+                captured.setdefault("portfolio_returns", []).append(None if portfolio_backtest is None else portfolio_backtest.total_return)
+                return [
+                    RecommendationRow(
+                        symbol="SZSE.300021",
+                        stock_id="300021",
+                        stock_name="Context Demo",
+                        action="BUY",
+                        label="RECLAIM_LONG",
+                        signal_date="2026-04-05",
+                        close=12.0,
+                        entry_price=12.0,
+                        stop_price=11.4,
+                        target_price=13.2,
+                        technical_score=82.0,
+                        position_score=80.0,
+                        persistence_score=78.0,
+                        news_score=60.0,
+                        leader_score=70.0,
+                        total_score=80.0,
+                    )
+                ]
+
+        class FakePortfolioBacktester:
+            def __init__(self, strategy_params=None, backtest_params=None):
+                captured["max_positions"] = getattr(backtest_params, "max_positions", 0)
+
+            def run(self, bars_by_symbol, analyses_by_symbol):
+                captured["symbols"] = sorted(bars_by_symbol)
+                return PortfolioBacktestResult(
+                    initial_capital=200000.0,
+                    ending_equity=212000.0,
+                    total_return=0.06,
+                    max_drawdown=0.05,
+                    win_rate=0.6,
+                    profit_factor=1.6,
+                    avg_exposure=0.34,
+                    max_concurrent_positions=2,
+                )
+
+        applied_payloads: list[object] = []
+        bars = [
+            PriceBar(date="2026-04-01", symbol="SZSE.300021", open=12.0, high=12.2, low=11.9, close=12.1, volume=12000),
+            PriceBar(date="2026-04-02", symbol="SZSE.300021", open=12.1, high=12.4, low=12.0, close=12.3, volume=12500),
+            PriceBar(date="2026-04-03", symbol="SZSE.300021", open=12.3, high=12.8, low=12.2, close=12.7, volume=13000),
+        ]
+        analyses = [
+            DailyAnalysis("2026-04-01", "SZSE.300021", 12.1, 0.4, 12.0, 11.8, 12.0, 1.2, 0.1, 0.7, "NONE", 0, ""),
+            DailyAnalysis("2026-04-02", "SZSE.300021", 12.3, 0.45, 12.2, 11.9, 12.1, 1.4, 0.1, 0.8, "RECLAIM_LONG", 88, "", 12.2, 11.6, 13.1),
+            DailyAnalysis("2026-04-03", "SZSE.300021", 12.7, 0.5, 12.4, 12.0, 12.2, 1.3, 0.1, 0.8, "NONE", 0, ""),
+        ]
+        window = SimpleNamespace(
+            scan_rows=[
+                ScanRow(
+                    symbol="SZSE.300021",
+                    stock_id="300021",
+                    stock_name="Context Demo",
+                    action="BUY",
+                    label="RECLAIM_LONG",
+                    score=88,
+                    close=12.3,
+                    signal_date="2026-04-02",
+                    entry_price=12.2,
+                    stop_price=11.6,
+                    target_price=13.1,
+                    reason="主线回流",
+                    source_path="demo",
+                )
+            ],
+            universe_bars={"SZSE.300021": bars},
+            universe_analyses={"SZSE.300021": analyses},
+            backtest_summaries=[],
+            stock_profiles={},
+            news_catalysts={},
+            theme_aliases={},
+            state=SimpleNamespace(
+                focus_themes=[],
+                strategy_risk_profile="standard",
+                paper_trading_state=PaperTradingState(),
+            ),
+            _license_capabilities=lambda: {"focus_theme_boost": 0.0},
+            _apply_daily_pool_rows=lambda payload: applied_payloads.append(payload),
+        )
+
+        with patch.object(ui_controllers, "PortfolioBacktester", FakePortfolioBacktester):
+            ui_controllers.refresh_daily_pool_controller(window, False, daily_pool_builder_cls=FakeBuilder)
+
+        self.assertEqual(captured["symbols"], ["SZSE.300021"])
+        self.assertEqual(captured["max_positions"], 1)
+        self.assertEqual(captured["portfolio_returns"], [0.06, 0.06, 0.06])
+        self.assertEqual(len(applied_payloads), 1)
 
     def test_daily_pool_builder_applies_strategy_rotation_bias(self) -> None:
         rows = [
@@ -9916,6 +11641,59 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn("宁德时代", in_flight["generate_tooltip"])
         self.assertIn("再次核对后提交", in_flight["confirm_tooltip"])
 
+    def test_broker_submission_focus_signature_captures_record_and_context(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        recommendation = SimpleNamespace(
+            action="BUY",
+            mainline_flow_signal="继续跟",
+            mainline_stage="强化中",
+            mainline_tag="机器人",
+            mainline_role="主升",
+            entry_price=10.0,
+            stop_price=9.6,
+            target_price=10.8,
+            theme_name="机器人",
+        )
+        intent = SimpleNamespace(symbol="SZSE.300001", side="BUY", status="pending")
+        record = {
+            "timestamp": "2026-04-18 20:31:00",
+            "order_status": "已提交",
+            "fill_status": "待成交",
+            "failure_reason": "",
+            "message": "等待回执",
+            "side": "BUY",
+            "quantity": "1000",
+            "price": "10.00",
+        }
+
+        first = module._qh_broker_submission_focus_signature_v55(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            record=record,
+            recommendation=recommendation,
+            intent=intent,
+            price_brief="买 10.00 | 损 9.60 | 目标 10.80",
+            news_lines=["- 机器人订单放量"],
+            channel_text="东方财富",
+        )
+        changed = module._qh_broker_submission_focus_signature_v55(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            record={**record, "message": "柜台已接收"},
+            recommendation=recommendation,
+            intent=intent,
+            price_brief="买 10.00 | 损 9.60 | 目标 10.80",
+            news_lines=["- 机器人订单放量"],
+            channel_text="东方财富",
+        )
+
+        self.assertNotEqual(first, changed)
+        self.assertIn("SZSE.300001", first)
+        self.assertIn("东方财富", first)
+
     def test_update_broker_action_flow_resets_shortcut_labels_when_no_execution_focus(self) -> None:
         module = importlib.import_module("app_qt")
         app = module.QApplication.instance() or module.QApplication([])
@@ -10537,6 +12315,93 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn("执行联动", window.detail_execution_text.toPlainText())
         self.assertIn("下一步：SUBMITTED / PENDING", window.detail_execution_text.toPlainText())
         self.assertIn("复盘结论", window.detail_conclusion_text.toPlainText())
+
+    def test_refresh_detail_workspace_panels_skips_repeated_same_signature(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        calls = {"label": 0, "text": 0}
+        focus_row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-15",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.6,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=77.0,
+            persistence_score=82.0,
+            news_score=73.0,
+            leader_score=90.0,
+            total_score=88.0,
+            mainline_tag="机器人",
+            rationale="主线延续",
+            next_focus="继续盯量能和承接。",
+        )
+        focus_intent = OrderIntent(
+            symbol="SZSE.300001",
+            side="BUY",
+            price=10.0,
+            quantity=1000,
+            stop_price=9.6,
+            target_price=10.8,
+            signal_date="2026-04-15",
+            reason="focus",
+        )
+        window = SimpleNamespace(
+            metrics_text=module.QTextEdit(),
+            detail_summary_metric_labels={key: module.QLabel("--") for key in ("theme", "execution", "risk", "next")},
+            detail_summary_metric_accents={key: module.QLabel("--") for key in ("theme", "execution", "risk", "next")},
+            detail_decision_text=module.QTextEdit(),
+            detail_execution_text=module.QTextEdit(),
+            detail_conclusion_text=module.QTextEdit(),
+            active_symbol="SZSE.300001",
+            daily_pool_rows=[focus_row],
+            scan_rows=[],
+            analyses=[],
+            order_intents=[focus_intent],
+            order_submission_records=[
+                {
+                    "symbol": "SZSE.300001",
+                    "order_status": "SUBMITTED",
+                    "fill_status": "PENDING",
+                    "message": "龙头样本处理中",
+                }
+            ],
+            _selected_order_intent=lambda: focus_intent,
+            _explicit_recommendation_focus=lambda: focus_row,
+            _selected_detail_signal_snapshot=lambda: None,
+            _selected_detail_trade_snapshot=lambda: None,
+            _selected_strategy_history_name=lambda: "",
+            _selected_strategy_history_trade_snapshot=lambda: None,
+            _strategy_history_selected_summary=lambda: None,
+            _strategy_history_selected_compare_rows=lambda: [],
+            _stock_name_for_symbol=lambda symbol: "龙头样本",
+            _stock_id_for_symbol=lambda symbol: "300001",
+            _display_action=lambda value: {"BUY": "买入", "WATCH": "观察", "SELL": "卖出"}.get(value, value),
+            _display_label=lambda value: value,
+            _display_order_status=lambda value: value,
+            _display_fill_status=lambda value: value,
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                calls.__setitem__("label", calls["label"] + 1),
+                widget.setText(text),
+                widget.setToolTip(tooltip) if tooltip is not None and hasattr(widget, "setToolTip") else None,
+            ),
+            _set_plain_text_if_changed=lambda widget, text: (
+                calls.__setitem__("text", calls["text"] + 1),
+                widget.setPlainText(text),
+            ),
+        )
+
+        module._qh_refresh_detail_workspace_panels(window)
+        first_counts = dict(calls)
+        module._qh_refresh_detail_workspace_panels(window)
+
+        self.assertEqual(calls, first_counts)
 
     def test_workspace_focus_capsule_uses_same_stage_copy_across_pages(self) -> None:
         module = importlib.import_module("app_qt")
@@ -11274,6 +13139,75 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(window.recommend_news_detail_button.text(), "查看公告详情")
         self.assertIn("点击查看详情弹窗", window.recommend_news_detail_button.toolTip())
         self.assertIn("消息驱动", window.daily_pool_focus_label.text())
+
+    def test_refresh_recommendation_focus_panels_v38_skips_repeated_same_signature(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-14",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.6,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=77.0,
+            persistence_score=82.0,
+            news_score=73.0,
+            leader_score=90.0,
+            total_score=88.0,
+            mainline_tag="机器人",
+            mainline_risk_flag="低",
+            confidence_score=84.0,
+            execution_readiness=81.0,
+            opportunity_tier="优先处理",
+            primary_strategy="龙头低吸",
+            catalyst="主线强化 + 量能回流",
+            rationale="主线强度和位置都在前排",
+            next_focus="继续盯换手与承接。",
+        )
+        calls = {"set_text": 0, "news_action": 0, "news_detail": 0, "render": 0}
+        review = module.QTextEdit()
+        focus_label = module.QLabel()
+
+        def _fake_original(self, current=None) -> None:
+            review.setPlainText("单票审查：龙头样本\n总分 88.0 | 风险 低 | 主策略 龙头低吸")
+
+        window = SimpleNamespace(
+            recommend_focus_review_text=review,
+            recommend_news_source_button=module.QPushButton(),
+            recommend_news_detail_button=module.QPushButton(),
+            daily_pool_focus_label=focus_label,
+            news_catalysts={"SZSE.300001": [SimpleNamespace(source="巨潮资讯", published_at="2026-04-17 09:31:00", title="利润分配方案公告", summary="分红预案", url="https://example.com/notice.pdf")]},
+            _current_recommend_focus=lambda: row,
+            _stock_profile_for_symbol=lambda symbol: None,
+            _news_digest_lines_for_symbol=lambda symbol, limit=2: [f"- [已公告] 利润分配方案公告 (巨潮资讯 / 2026-04-17 09:31:00 / 可信度 A级)"],
+            _news_focus_context_suffix=lambda symbol: " | 【消息驱动】",
+            _news_focus_context_tooltip=lambda symbol: "消息来自公告原文",
+            _render_text_with_news_badge=lambda text, symbol, compact=False: calls.__setitem__("render", calls["render"] + 1) or text,
+            _update_news_action_button=lambda button, item: calls.__setitem__("news_action", calls["news_action"] + 1),
+            _update_news_detail_button=lambda button, item: calls.__setitem__("news_detail", calls["news_detail"] + 1),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                calls.__setitem__("set_text", calls["set_text"] + 1),
+                widget.setText(text),
+                widget.setToolTip(tooltip) if tooltip is not None else None,
+            ),
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+        )
+
+        with patch.object(module, "_ORIGINAL_QH_REFRESH_RECOMMENDATION_FOCUS_PANELS_V38", _fake_original):
+            module._qh_refresh_recommendation_focus_panels_v38(window, row)
+            first_counts = dict(calls)
+            module._qh_refresh_recommendation_focus_panels_v38(window, row)
+
+        self.assertEqual(calls["news_action"], first_counts["news_action"])
+        self.assertEqual(calls["news_detail"], first_counts["news_detail"])
+        self.assertEqual(calls["render"], first_counts["render"])
 
     def test_refresh_broker_order_focus_uses_recommendation_when_intent_missing(self) -> None:
         module = importlib.import_module("app_qt")
@@ -12514,6 +14448,85 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(window.strategy_detail_combo.value, "尾盘买入法")
         self.assertEqual(captured["populated"], 1)
 
+    def test_refresh_recommend_theme_options_skips_repeated_same_signature(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        class DummyCombo:
+            def __init__(self) -> None:
+                self.items: list[str] = []
+                self.value = ""
+                self.clear_count = 0
+
+            def blockSignals(self, _value: bool) -> None:
+                return None
+
+            def clear(self) -> None:
+                self.clear_count += 1
+                self.items.clear()
+
+            def addItem(self, value: str) -> None:
+                self.items.append(value)
+
+            def setCurrentText(self, value: str) -> None:
+                self.value = value
+
+        combo = DummyCombo()
+        window = SimpleNamespace(
+            recommend_theme_combo=combo,
+            theme_heat_rows=[SimpleNamespace(theme_name="机器人"), SimpleNamespace(theme_name="银行")],
+            recommend_theme_filter="全部",
+        )
+
+        module.QuantHunterWindow._refresh_recommend_theme_options(window)
+        first_clear_count = combo.clear_count
+        module.QuantHunterWindow._refresh_recommend_theme_options(window)
+
+        self.assertEqual(combo.items, ["全部", "机器人", "银行"])
+        self.assertEqual(combo.value, "全部")
+        self.assertEqual(combo.clear_count, first_clear_count)
+
+    def test_refresh_market_theme_options_skips_repeated_same_signature(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        class DummyCombo:
+            def __init__(self) -> None:
+                self.items: list[str] = []
+                self.value = ""
+                self.clear_count = 0
+
+            def blockSignals(self, _value: bool) -> None:
+                return None
+
+            def clear(self) -> None:
+                self.clear_count += 1
+                self.items.clear()
+
+            def addItem(self, value: str) -> None:
+                self.items.append(value)
+
+            def setCurrentText(self, value: str) -> None:
+                self.value = value
+
+        combo = DummyCombo()
+        window = SimpleNamespace(
+            market_theme_combo=combo,
+            market_screen_result=SimpleNamespace(
+                algorithmic_pool=[
+                    SimpleNamespace(theme_name="机器人", strategy_tag="龙头模型"),
+                    SimpleNamespace(theme_name="银行", strategy_tag="主力雷达"),
+                ]
+            ),
+            market_theme_filter="全部",
+        )
+
+        module.QuantHunterWindow._refresh_market_theme_options(window)
+        first_clear_count = combo.clear_count
+        module.QuantHunterWindow._refresh_market_theme_options(window)
+
+        self.assertEqual(combo.items, ["全部", "机器人", "银行"])
+        self.assertEqual(combo.value, "全部")
+        self.assertEqual(combo.clear_count, first_clear_count)
+
     def test_overview_quick_routes_cover_trend_and_review_views(self) -> None:
         from quant_hunter.ui_config import OVERVIEW_QUICK_ROUTE_SPECS
 
@@ -12569,6 +14582,8 @@ class StrategyWorkflowTests(unittest.TestCase):
 
     def test_scanner_focus_status_surfaces_scan_warning_count(self) -> None:
         module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
         window = SimpleNamespace(
             scan_summary_label=module.QLabel(),
             scan_rows=[SimpleNamespace(symbol="SHSE.600000") for _ in range(2)],
@@ -12584,6 +14599,147 @@ class StrategyWorkflowTests(unittest.TestCase):
         module._qh_refresh_scanner_focus_status(window)
 
         self.assertIn("异常文件 1", window.scan_summary_label.text())
+
+    def test_refresh_monitor_summary_skips_repeated_same_signature(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        calls = {"text": 0, "status": 0, "focus": 0, "summary": 0}
+
+        def record_text(widget, text) -> None:
+            calls["text"] += 1
+            widget.setPlainText(text)
+
+        scan_row = SimpleNamespace(
+            symbol="SZSE.300001",
+            action="BUY",
+            label="RECLAIM_LONG",
+            score=88.0,
+            close=10.2,
+            signal_date="2026-04-18",
+            reason="量价共振",
+        )
+        recommendation = SimpleNamespace(
+            symbol="SZSE.300001",
+            action="BUY",
+            mainline_tag="机器人",
+            theme_name="机器人",
+            opportunity_tier="优先处理",
+            catalyst="订单超预期",
+        )
+        window = SimpleNamespace(
+            monitor_summary_text=module.QTextEdit(),
+            active_symbol="SZSE.300001",
+            scan_rows=[scan_row],
+            daily_pool_rows=[recommendation],
+            universe_analyses={"SZSE.300001": []},
+            _selected_symbol_from_watchlist=lambda: "",
+            _symbol_identity_text=lambda symbol: "龙头样本 (300001 / SZSE.300001)",
+            _display_action=lambda value: {"BUY": "买入", "WATCH": "观察"}.get(value, value),
+            _display_label=lambda value: {"RECLAIM_LONG": "回踩转强"}.get(value, value),
+            _board_candidate_snapshot_for_symbol=lambda symbol: {"trigger_style": "回封关注", "risk_level": "中", "planned_entry": "10.10", "planned_stop": "9.60", "planned_target": "10.80"},
+            _board_monitor_snapshot_for_symbol=lambda symbol: {"monitor_state": "回封观察", "strength": "强", "continuity": "良好"},
+            _refresh_scanner_focus_status=lambda symbol="": calls.__setitem__("status", calls["status"] + 1),
+            _refresh_scanner_focus_cards=lambda symbol="": calls.__setitem__("focus", calls["focus"] + 1),
+            _refresh_scanner_summary_cards=lambda symbol="": calls.__setitem__("summary", calls["summary"] + 1),
+            _set_plain_text_if_changed=record_text,
+        )
+
+        module.QuantHunterWindow._refresh_monitor_summary(window, "SZSE.300001")
+        first_counts = dict(calls)
+        module.QuantHunterWindow._refresh_monitor_summary(window, "SZSE.300001")
+
+        self.assertEqual(calls, first_counts)
+
+    def test_refresh_scanner_focus_cards_skips_repeated_same_signature(self) -> None:
+        module = importlib.import_module("app_qt")
+        calls: list[str] = []
+
+        class DummyLabel:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def text(self) -> str:
+                return self.value
+
+            def setText(self, value: str) -> None:
+                self.value = value
+
+        def record_set(widget, text, tooltip=None) -> None:
+            calls.append(text)
+            widget.setText(text)
+
+        row = SimpleNamespace(symbol="SZSE.300001", action="BUY", label="RECLAIM_LONG", score=88.0)
+        recommendation = SimpleNamespace(symbol="SZSE.300001", action="BUY", mainline_tag="机器人", opportunity_tier="优先处理")
+        labels = {key: DummyLabel() for key in ["symbol", "signal", "action", "monitor"]}
+        accents = {key: DummyLabel() for key in ["symbol", "signal", "action", "monitor"]}
+        window = SimpleNamespace(
+            scanner_focus_metric_labels=labels,
+            scanner_focus_metric_accents=accents,
+            scan_rows=[row],
+            daily_pool_rows=[recommendation],
+            universe_analyses={},
+            active_symbol="SZSE.300001",
+            _selected_symbol_from_watchlist=lambda: "",
+            _stock_name_for_symbol=lambda symbol: "龙头样本",
+            _stock_id_for_symbol=lambda symbol: "300001",
+            _display_action=lambda value: {"BUY": "买入", "WATCH": "观察"}.get(value, value),
+            _display_label=lambda value: {"RECLAIM_LONG": "回踩转强"}.get(value, value),
+            _board_candidate_snapshot_for_symbol=lambda symbol: {"trigger_style": "回封关注", "risk_level": "中", "board_score": "81.0"},
+            _set_label_text_if_changed=record_set,
+        )
+
+        module._qh_refresh_scanner_focus_cards(window, "SZSE.300001")
+        first_call_count = len(calls)
+        module._qh_refresh_scanner_focus_cards(window, "SZSE.300001")
+
+        self.assertEqual(len(calls), first_call_count)
+
+    def test_refresh_scanner_summary_cards_skips_repeated_same_signature(self) -> None:
+        module = importlib.import_module("app_qt")
+        calls: list[str] = []
+
+        class DummyLabel:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def text(self) -> str:
+                return self.value
+
+            def setText(self, value: str) -> None:
+                self.value = value
+
+        def record_set(widget, text, tooltip=None) -> None:
+            calls.append(text)
+            widget.setText(text)
+
+        recommendation = SimpleNamespace(symbol="SZSE.300001", action="BUY", mainline_tag="机器人", theme_name="机器人")
+        summary = SimpleNamespace(symbol="SZSE.300001", trades=5, total_return=0.12)
+        labels = {key: DummyLabel() for key in ["scan", "watch", "summary", "monitor"]}
+        accents = {key: DummyLabel() for key in ["scan", "watch", "summary", "monitor"]}
+        window = SimpleNamespace(
+            scanner_summary_metric_labels=labels,
+            scanner_summary_metric_accents=accents,
+            scan_rows=[SimpleNamespace(symbol="SZSE.300001") for _ in range(3)],
+            daily_pool_rows=[recommendation],
+            backtest_summaries=[summary],
+            monitor_table=SimpleNamespace(rowCount=lambda: 2),
+            watchlist_widget=SimpleNamespace(count=lambda: 1),
+            active_symbol="SZSE.300001",
+            _selected_symbol_from_watchlist=lambda: "",
+            _stock_name_for_symbol=lambda symbol: "龙头样本",
+            _stock_id_for_symbol=lambda symbol: "300001",
+            _display_action=lambda value: {"BUY": "买入", "WATCH": "观察"}.get(value, value),
+            _board_candidate_snapshot_for_symbol=lambda symbol: {"trigger_style": "回封关注", "risk_level": "中"},
+            _board_monitor_snapshot_for_symbol=lambda symbol: None,
+            _set_label_text_if_changed=record_set,
+        )
+
+        module._qh_refresh_scanner_summary_cards(window, "SZSE.300001")
+        first_call_count = len(calls)
+        module._qh_refresh_scanner_summary_cards(window, "SZSE.300001")
+
+        self.assertEqual(len(calls), first_call_count)
 
     def test_decision_engine_prefers_continuation_signal_over_switch_warning(self) -> None:
         recommendations = [
@@ -13293,6 +15449,30 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn("回流", intraday_hint)
         self.assertEqual(next_day_phase, "次日开盘兑现窗")
         self.assertIn("弱开直接走", next_day_hint)
+
+    def test_set_tooltip_v7_skips_repeated_same_text(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        class DummyWidget:
+            def __init__(self) -> None:
+                self.value = ""
+                self.calls = 0
+
+            def toolTip(self) -> str:
+                return self.value
+
+            def setToolTip(self, value: str) -> None:
+                self.calls += 1
+                self.value = value
+
+        widget = DummyWidget()
+
+        module._qh_set_tooltip_v7(widget, "同步提示")
+        module._qh_set_tooltip_v7(widget, "同步提示")
+        module._qh_set_tooltip_v7(widget, "新的提示")
+
+        self.assertEqual(widget.calls, 2)
+        self.assertEqual(widget.toolTip(), "新的提示")
 
     def test_tail_buy_runtime_panel_lines_build_execution_board(self) -> None:
         recommendation = RecommendationRow(

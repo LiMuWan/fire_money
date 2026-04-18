@@ -7,7 +7,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .models import HoldingRecord, OptimizationRun, RecommendationRow, ReportArtifacts, ScanRow, SymbolBacktestSummary
+from .models import (
+    HoldingRecord,
+    OptimizationRun,
+    RecommendationRow,
+    ReportArtifacts,
+    ScanRow,
+    StrategyHistoryReport,
+    SymbolBacktestSummary,
+)
 from .theme import infer_mainline_flow_signal, infer_mainline_stage, summarize_themes
 
 
@@ -241,9 +249,24 @@ def export_optimization_report(
             [
                 "rank",
                 "objective",
+                "robustness_score",
                 "avg_return",
+                "avg_out_of_sample_return",
+                "avg_median_window_return",
+                "avg_worst_window_return",
+                "avg_return_std",
                 "avg_drawdown",
                 "avg_win_rate",
+                "avg_positive_window_ratio",
+                "avg_profit_factor",
+                "portfolio_return",
+                "portfolio_out_of_sample_return",
+                "portfolio_worst_window_return",
+                "portfolio_return_std",
+                "portfolio_max_drawdown",
+                "portfolio_profit_factor",
+                "portfolio_avg_exposure",
+                "portfolio_max_concurrent_positions",
                 "trade_count",
                 "symbols_tested",
                 "params",
@@ -254,9 +277,24 @@ def export_optimization_report(
                 [
                     item.rank,
                     item.objective,
+                    item.robustness_score,
                     item.avg_return,
+                    item.avg_out_of_sample_return,
+                    item.avg_median_window_return,
+                    item.avg_worst_window_return,
+                    item.avg_return_std,
                     item.avg_drawdown,
                     item.avg_win_rate,
+                    item.avg_positive_window_ratio,
+                    item.avg_profit_factor,
+                    item.portfolio_return,
+                    item.portfolio_out_of_sample_return,
+                    item.portfolio_worst_window_return,
+                    item.portfolio_return_std,
+                    item.portfolio_max_drawdown,
+                    item.portfolio_profit_factor,
+                    item.portfolio_avg_exposure,
+                    item.portfolio_max_concurrent_positions,
                     item.trade_count,
                     item.symbols_tested,
                     json.dumps(item.params, ensure_ascii=False),
@@ -271,13 +309,15 @@ def export_optimization_report(
     markdown_lines = [
         f"# {title}",
         "",
-        "| Rank | Objective | Avg Return | Avg Drawdown | Avg Win Rate | Trades | Params |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| Rank | Objective | Robustness | Portfolio Return | Portfolio OOS | Portfolio DD | Avg Return | OOS Return | Worst Window | Trades | Params |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for item in results:
         markdown_lines.append(
-            f"| {item.rank} | {item.objective:.4f} | {item.avg_return:.2%} | {item.avg_drawdown:.2%} | "
-            f"{item.avg_win_rate:.2%} | {item.trade_count} | `{json.dumps(item.params, ensure_ascii=False)}` |"
+            f"| {item.rank} | {item.objective:.4f} | {item.robustness_score:.0%} | {item.portfolio_return:.2%} | "
+            f"{item.portfolio_out_of_sample_return:.2%} | {item.portfolio_max_drawdown:.2%} | {item.avg_return:.2%} | "
+            f"{item.avg_out_of_sample_return:.2%} | {item.avg_worst_window_return:.2%} | {item.trade_count} | "
+            f"`{json.dumps(item.params, ensure_ascii=False)}` |"
         )
     markdown_path.write_text("\n".join(markdown_lines), encoding="utf-8")
 
@@ -341,6 +381,294 @@ def export_workspace_report(
 
     markdown_path.write_text("\n".join(lines), encoding="utf-8")
 
+    return ReportArtifacts(str(markdown_path), str(csv_path), str(json_path))
+
+
+def export_strategy_history_report(
+    *,
+    report: StrategyHistoryReport,
+    output_dir: str | Path,
+    selected_strategy: str = "",
+    comparison_rows: list[dict[str, Any]] | None = None,
+    leaderboard_rows: list[dict[str, Any]] | None = None,
+    title: str = "历史战法统计",
+) -> ReportArtifacts:
+    root = Path(output_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    csv_path, json_path, markdown_path = _unique_report_paths(root, "strategy_history")
+
+    target_strategy = str(selected_strategy or "").strip()
+    summary_rows = list(report.summaries)
+    trade_rows = list(report.trades)
+    if target_strategy:
+        summary_rows = [item for item in summary_rows if item.strategy_name == target_strategy]
+        trade_rows = [item for item in trade_rows if item.strategy_name == target_strategy]
+    equity_rows = [item for item in report.equity_points if not target_strategy or item.strategy_name == target_strategy]
+    yearly_rows = [item for item in report.yearly_stats if not target_strategy or item.strategy_name == target_strategy]
+    monthly_rows = [item for item in report.monthly_stats if not target_strategy or item.strategy_name == target_strategy]
+    compare_rows: list[dict[str, Any]] = []
+    for item in (comparison_rows or []):
+        payload = _to_payload(item)
+        if isinstance(payload, dict):
+            compare_rows.append(payload)
+    board_rows: list[dict[str, Any]] = []
+    for item in (leaderboard_rows or []):
+        payload = _to_payload(item)
+        if isinstance(payload, dict):
+            board_rows.append(payload)
+    if target_strategy:
+        compare_rows = [item for item in compare_rows if str(item.get("strategy_name", "") or "") == target_strategy]
+        board_rows = [item for item in board_rows if str(item.get("strategy_name", "") or "") == target_strategy]
+
+    with csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.writer(handle)
+        headers = [
+            "section",
+            "strategy_name",
+            "symbol",
+            "stock_id",
+            "stock_name",
+            "signal_date",
+            "entry_date",
+            "exit_date",
+            "entry_price",
+            "exit_price",
+            "pnl_pct",
+            "hold_days",
+            "exit_reason",
+            "signal_count",
+            "trade_count",
+            "filled_ratio",
+            "win_rate",
+            "total_return",
+            "avg_return",
+            "max_drawdown",
+            "avg_hold_days",
+            "symbol_count",
+            "no_fill_count",
+            "missing_data_count",
+            "profit_factor",
+            "payoff_ratio",
+            "max_consecutive_wins",
+            "max_consecutive_losses",
+            "target_hits",
+            "stop_hits",
+            "timeout_exits",
+            "end_exits",
+            "source_file",
+            "scenario_label",
+            "scenario_note",
+            "scenario_max_hold_days",
+            "scenario_slippage_rate",
+            "scenario_commission_rate",
+            "scenario_stamp_duty_rate",
+            "scenario_block_limit_up_entry",
+            "scenario_block_limit_down_exit",
+            "leaderboard_best_scenario_label",
+            "leaderboard_best_total_return",
+            "leaderboard_worst_scenario_label",
+            "leaderboard_worst_total_return",
+            "leaderboard_return_spread",
+            "leaderboard_avg_total_return",
+            "leaderboard_scenario_count",
+        ]
+        writer.writerow(headers)
+
+        def write_row(section: str, values: dict[str, Any]) -> None:
+            row = {"section": section}
+            row.update(values)
+            writer.writerow([row.get(key, "") for key in headers])
+
+        for item in summary_rows:
+            write_row(
+                "summary",
+                {
+                    "strategy_name": item.strategy_name,
+                    "signal_count": item.signal_count,
+                    "trade_count": item.trade_count,
+                    "filled_ratio": item.filled_ratio,
+                    "win_rate": item.win_rate,
+                    "total_return": item.total_return,
+                    "avg_return": item.avg_return,
+                    "max_drawdown": item.max_drawdown,
+                    "avg_hold_days": item.avg_hold_days,
+                    "symbol_count": item.symbol_count,
+                    "no_fill_count": item.no_fill_count,
+                    "missing_data_count": item.missing_data_count,
+                    "profit_factor": item.profit_factor,
+                    "payoff_ratio": item.payoff_ratio,
+                    "max_consecutive_wins": item.max_consecutive_wins,
+                    "max_consecutive_losses": item.max_consecutive_losses,
+                    "target_hits": item.target_hits,
+                    "stop_hits": item.stop_hits,
+                    "timeout_exits": item.timeout_exits,
+                    "end_exits": item.end_exits,
+                },
+            )
+        for item in trade_rows:
+            write_row(
+                "trade",
+                {
+                    "strategy_name": item.strategy_name,
+                    "symbol": item.symbol,
+                    "stock_id": item.stock_id,
+                    "stock_name": item.stock_name,
+                    "signal_date": item.signal_date,
+                    "entry_date": item.entry_date,
+                    "exit_date": item.exit_date,
+                    "entry_price": item.entry_price,
+                    "exit_price": item.exit_price,
+                    "pnl_pct": item.pnl_pct,
+                    "hold_days": item.hold_days,
+                    "exit_reason": item.exit_reason,
+                    "source_file": item.source_file,
+                },
+            )
+        for item in compare_rows:
+            write_row(
+                "comparison",
+                {
+                    "strategy_name": item.get("strategy_name", ""),
+                    "signal_count": item.get("signal_count", ""),
+                    "trade_count": item.get("trade_count", ""),
+                    "filled_ratio": item.get("filled_ratio", ""),
+                    "win_rate": item.get("win_rate", ""),
+                    "total_return": item.get("total_return", ""),
+                    "max_drawdown": item.get("max_drawdown", ""),
+                    "avg_hold_days": item.get("avg_hold_days", ""),
+                    "profit_factor": item.get("profit_factor", ""),
+                    "payoff_ratio": item.get("payoff_ratio", ""),
+                    "max_consecutive_losses": item.get("max_consecutive_losses", ""),
+                    "scenario_label": item.get("scenario_label", ""),
+                    "scenario_note": item.get("scenario_note", ""),
+                    "scenario_max_hold_days": item.get("max_hold_days", ""),
+                    "scenario_slippage_rate": item.get("slippage_rate", ""),
+                    "scenario_commission_rate": item.get("commission_rate", ""),
+                    "scenario_stamp_duty_rate": item.get("stamp_duty_rate", ""),
+                    "scenario_block_limit_up_entry": item.get("block_limit_up_entry", ""),
+                    "scenario_block_limit_down_exit": item.get("block_limit_down_exit", ""),
+                },
+            )
+        for item in board_rows:
+            write_row(
+                "leaderboard",
+                {
+                    "strategy_name": item.get("strategy_name", ""),
+                    "leaderboard_best_scenario_label": item.get("best_scenario_label", ""),
+                    "leaderboard_best_total_return": item.get("best_total_return", ""),
+                    "leaderboard_worst_scenario_label": item.get("worst_scenario_label", ""),
+                    "leaderboard_worst_total_return": item.get("worst_total_return", ""),
+                    "leaderboard_return_spread": item.get("return_spread", ""),
+                    "leaderboard_avg_total_return": item.get("avg_total_return", ""),
+                    "leaderboard_scenario_count": item.get("scenario_count", ""),
+                },
+            )
+
+    payload = {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "title": title,
+        "selected_strategy": target_strategy,
+        "report": _to_payload(report),
+        "summary_rows": [_to_payload(item) for item in summary_rows],
+        "trade_rows": [_to_payload(item) for item in trade_rows],
+        "equity_rows": [_to_payload(item) for item in equity_rows],
+        "yearly_rows": [_to_payload(item) for item in yearly_rows],
+        "monthly_rows": [_to_payload(item) for item in monthly_rows],
+        "comparison_rows": compare_rows,
+        "leaderboard_rows": board_rows,
+    }
+    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    lines = [
+        f"# {title}",
+        "",
+        f"- 导出时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"- 回放区间: {report.start_date} -> {report.end_date}",
+        f"- 样本文件: {len(report.source_files)}",
+        f"- 信号数: {len(report.signals)}",
+        f"- 成交数: {len(report.trades)}",
+    ]
+    if target_strategy:
+        lines.append(f"- 当前战法: {target_strategy}")
+    lines.extend(["", "## 战法汇总", ""])
+    if summary_rows:
+        lines.append("| 战法 | 信号数 | 成交数 | 成交率 | 总收益 | 胜率 | 最大回撤 | 平均持有 |")
+        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
+        for item in summary_rows:
+            lines.append(
+                f"| {item.strategy_name} | {item.signal_count} | {item.trade_count} | {item.filled_ratio:.2%} | "
+                f"{item.total_return:.2%} | {item.win_rate:.2%} | {item.max_drawdown:.2%} | {item.avg_hold_days:.2f} 天 |"
+            )
+    else:
+        lines.append("- 当前筛选下暂无战法汇总。")
+    lines.extend(["", "## 逐笔成交", ""])
+    if trade_rows:
+        lines.append("| 战法 | 股票 | 信号日 | 入场日 | 离场日 | 买入价 | 卖出价 | 收益率 | 持有天数 | 退出原因 |")
+        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+        for item in trade_rows:
+            stock_label = item.stock_name or item.symbol
+            lines.append(
+                f"| {item.strategy_name} | {stock_label} | {item.signal_date} | {item.entry_date} | {item.exit_date} | "
+                f"{item.entry_price:.4f} | {item.exit_price:.4f} | {item.pnl_pct:.2%} | {item.hold_days} | {item.exit_reason} |"
+            )
+    else:
+        lines.append("- 当前筛选下暂无逐笔成交。")
+    lines.extend(["", "## 年度统计", ""])
+    if yearly_rows:
+        lines.append("| 战法 | 年度 | 交易数 | 胜率 | 总收益 | 平均收益 |")
+        lines.append("| --- | --- | --- | --- | --- | --- |")
+        for item in yearly_rows:
+            lines.append(
+                f"| {item.strategy_name} | {item.period} | {item.trade_count} | {item.win_rate:.2%} | {item.total_return:.2%} | {item.avg_return:.2%} |"
+            )
+    else:
+        lines.append("- 当前筛选下暂无年度统计。")
+    lines.extend(["", "## 月度统计", ""])
+    if monthly_rows:
+        lines.append("| 战法 | 月度 | 交易数 | 胜率 | 总收益 | 平均收益 |")
+        lines.append("| --- | --- | --- | --- | --- | --- |")
+        for item in monthly_rows:
+            lines.append(
+                f"| {item.strategy_name} | {item.period} | {item.trade_count} | {item.win_rate:.2%} | {item.total_return:.2%} | {item.avg_return:.2%} |"
+            )
+    else:
+        lines.append("- 当前筛选下暂无月度统计。")
+    lines.extend(["", "## 参数排行榜", ""])
+    if board_rows:
+        lines.append("| 战法 | 场景数 | 最佳场景 | 最佳收益 | 最差场景 | 最差收益 | 收益差 | 平均收益 |")
+        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
+        for item in board_rows:
+            lines.append(
+                f"| {item.get('strategy_name', '--')} | {int(item.get('scenario_count', 0) or 0)} | "
+                f"{item.get('best_scenario_label', '--')} | {float(item.get('best_total_return', 0.0) or 0.0):.2%} | "
+                f"{item.get('worst_scenario_label', '--')} | {float(item.get('worst_total_return', 0.0) or 0.0):.2%} | "
+                f"{float(item.get('return_spread', 0.0) or 0.0):.2%} | {float(item.get('avg_total_return', 0.0) or 0.0):.2%} |"
+            )
+    else:
+        lines.append("- 当前暂无参数排行榜结果。")
+    lines.extend(["", "## 参数对比", ""])
+    if compare_rows:
+        lines.append("| 场景 | 战法 | 最长持有 | 总收益 | 胜率 | 最大回撤 | 收益因子 | 盈亏比 | 最大连亏 | 备注 |")
+        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+        for item in compare_rows:
+            lines.append(
+                f"| {item.get('scenario_label', '--')} | {item.get('strategy_name', '--')} | "
+                f"{int(item.get('max_hold_days', 0) or 0)} 天 | "
+                f"{float(item.get('total_return', 0.0) or 0.0):.2%} | "
+                f"{float(item.get('win_rate', 0.0) or 0.0):.2%} | "
+                f"{float(item.get('max_drawdown', 0.0) or 0.0):.2%} | "
+                f"{float(item.get('profit_factor', 0.0) or 0.0):.2f} | "
+                f"{float(item.get('payoff_ratio', 0.0) or 0.0):.2f} | "
+                f"{int(item.get('max_consecutive_losses', 0) or 0)} | "
+                f"{item.get('scenario_note', '--')} |"
+            )
+    else:
+        lines.append("- 当前暂无参数对比结果，可先在界面运行“战法参数对比”。")
+    if report.notes:
+        lines.extend(["", "## 备注", ""])
+        lines.extend(f"- {item}" for item in report.notes[:20])
+
+    markdown_path.write_text("\n".join(lines), encoding="utf-8")
     return ReportArtifacts(str(markdown_path), str(csv_path), str(json_path))
 
 

@@ -83,6 +83,31 @@ class BacktestResult:
 
 
 @dataclass(frozen=True)
+class PortfolioSnapshot:
+    date: str
+    cash: float
+    market_value: float
+    total_equity: float
+    position_count: int
+    exposure_ratio: float
+
+
+@dataclass(frozen=True)
+class PortfolioBacktestResult:
+    initial_capital: float
+    ending_equity: float
+    total_return: float
+    max_drawdown: float
+    win_rate: float
+    profit_factor: float
+    avg_exposure: float = 0.0
+    max_concurrent_positions: int = 0
+    trades: list[Trade] = field(default_factory=list)
+    equity_curve: list[EquityPoint] = field(default_factory=list)
+    snapshots: list[PortfolioSnapshot] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class BrokerStatus:
     name: str
     mode: str
@@ -158,6 +183,9 @@ class RecommendationRow:
     leader_score: float
     total_score: float
     backtest_quality_score: float = 0.0
+    portfolio_fit_score: float = 0.0
+    diversification_score: float = 0.0
+    concentration_penalty_score: float = 0.0
     theme_name: str = ""
     theme_score: float = 0.0
     theme_rank: int = 0
@@ -382,6 +410,21 @@ class OptimizationRun:
     avg_win_rate: float
     trade_count: int
     symbols_tested: int
+    robustness_score: float = 0.0
+    avg_out_of_sample_return: float = 0.0
+    avg_median_window_return: float = 0.0
+    avg_worst_window_return: float = 0.0
+    avg_return_std: float = 0.0
+    avg_positive_window_ratio: float = 0.0
+    avg_profit_factor: float = 0.0
+    portfolio_return: float = 0.0
+    portfolio_out_of_sample_return: float = 0.0
+    portfolio_worst_window_return: float = 0.0
+    portfolio_return_std: float = 0.0
+    portfolio_max_drawdown: float = 0.0
+    portfolio_profit_factor: float = 0.0
+    portfolio_avg_exposure: float = 0.0
+    portfolio_max_concurrent_positions: int = 0
 
 
 @dataclass(frozen=True)
@@ -389,3 +432,130 @@ class ReportArtifacts:
     markdown_path: str
     csv_path: str
     json_path: str
+
+
+@dataclass(frozen=True)
+class StrategyHistorySignal:
+    symbol: str
+    stock_id: str
+    stock_name: str
+    signal_date: str
+    generated_at: str
+    strategy_name: str
+    action: str
+    entry_price: float
+    stop_price: float
+    target_price: float
+    source_file: str
+    source_kind: str = ""
+    rationale: str = ""
+
+
+@dataclass(frozen=True)
+class StrategyHistoryTrade:
+    strategy_name: str
+    symbol: str
+    stock_id: str
+    stock_name: str
+    signal_date: str
+    entry_date: str
+    exit_date: str
+    entry_price: float
+    exit_price: float
+    pnl_pct: float
+    hold_days: int
+    exit_reason: str
+    source_file: str
+
+
+@dataclass(frozen=True)
+class StrategyHistorySummary:
+    strategy_name: str
+    signal_count: int
+    trade_count: int
+    filled_ratio: float
+    win_rate: float
+    total_return: float
+    avg_return: float
+    max_drawdown: float
+    avg_hold_days: float
+    symbol_count: int
+    no_fill_count: int = 0
+    missing_data_count: int = 0
+    target_hits: int = 0
+    stop_hits: int = 0
+    timeout_exits: int = 0
+    end_exits: int = 0
+    profit_factor: float = 0.0
+    payoff_ratio: float = 0.0
+    max_consecutive_wins: int = 0
+    max_consecutive_losses: int = 0
+    best_trade_return: float = 0.0
+    worst_trade_return: float = 0.0
+
+
+@dataclass(frozen=True)
+class StrategyHistoryEquityPoint:
+    strategy_name: str
+    date: str
+    equity: float
+    trade_index: int
+
+
+@dataclass(frozen=True)
+class StrategyHistoryPeriodStat:
+    strategy_name: str
+    period: str
+    trade_count: int
+    win_rate: float
+    total_return: float
+    avg_return: float
+
+
+@dataclass(frozen=True)
+class StrategyHistoryReport:
+    start_date: str
+    end_date: str
+    source_files: list[str] = field(default_factory=list)
+    signals: list[StrategyHistorySignal] = field(default_factory=list)
+    trades: list[StrategyHistoryTrade] = field(default_factory=list)
+    summaries: list[StrategyHistorySummary] = field(default_factory=list)
+    equity_points: list[StrategyHistoryEquityPoint] = field(default_factory=list)
+    yearly_stats: list[StrategyHistoryPeriodStat] = field(default_factory=list)
+    monthly_stats: list[StrategyHistoryPeriodStat] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class StrategyHistoryScenarioComparison:
+    scenario_label: str
+    scenario_note: str
+    strategy_name: str
+    max_hold_days: int
+    slippage_rate: float
+    commission_rate: float
+    stamp_duty_rate: float
+    block_limit_up_entry: bool
+    block_limit_down_exit: bool
+    signal_count: int
+    trade_count: int
+    filled_ratio: float
+    total_return: float
+    win_rate: float
+    max_drawdown: float
+    profit_factor: float = 0.0
+    payoff_ratio: float = 0.0
+    avg_hold_days: float = 0.0
+    max_consecutive_losses: int = 0
+
+
+@dataclass(frozen=True)
+class StrategyHistoryScenarioLeaderboard:
+    strategy_name: str
+    scenario_count: int
+    best_scenario_label: str
+    best_total_return: float
+    worst_scenario_label: str
+    worst_total_return: float
+    return_spread: float
+    avg_total_return: float = 0.0

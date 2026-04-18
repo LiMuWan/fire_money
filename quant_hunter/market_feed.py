@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from .backtest import Backtester
+from .backtest import BacktestParams, Backtester, PortfolioBacktester
 from .data import extract_stock_id, normalize_symbol
 from .models import DailyAnalysis, PriceBar, RecommendationRow, ScanRow, StockProfile, SymbolBacktestSummary
 from .recommend import DailyPoolBuilder
@@ -400,21 +400,21 @@ class EastmoneyMarketFeed:
 
     def fetch_daily_bars(self, symbol: str, start: str = "20240101", end: str = "20500101") -> list[PriceBar]:
         cached_bars = self.cache.get_daily_bars(symbol)
-        if cached_bars:
-            return cached_bars
+        if cached_bars and self._bars_cover_range(cached_bars, start=start, end=end):
+            return self._slice_bars_by_range(cached_bars, start=start, end=end)
         try:
             bars = self._fetch_daily_bars_eastmoney(symbol, start=start, end=end)
         except Exception:
             try:
-                bars = self._fetch_daily_bars_tencent(symbol, count=180)
+                bars = self._fetch_daily_bars_tencent(symbol, count=self._tencent_count_for_range(start, end))
             except Exception:
                 stale_bars = self.cache.get_daily_bars(symbol, allow_stale=True)
                 if stale_bars:
-                    return stale_bars
+                    return self._slice_bars_by_range(stale_bars, start=start, end=end)
                 raise
         if bars:
             self.cache.put_daily_bars(symbol, bars)
-        return bars
+        return self._slice_bars_by_range(bars, start=start, end=end)
 
 
     def _fetch_daily_bars_eastmoney(self, symbol: str, start: str = "20240101", end: str = "20500101") -> list[PriceBar]:
@@ -520,6 +520,43 @@ class EastmoneyMarketFeed:
         close_position = (latest_price - low_price) / price_span
         trend = 0.0 if prev_close <= 0 else (latest_price - prev_close) / prev_close * 100
         return round(close_position * 60 + max(min(trend, 15), -10) * 2.5, 2)
+
+    @staticmethod
+    def _bars_cover_range(bars: list[PriceBar], *, start: str, end: str) -> bool:
+        if not bars:
+            return False
+        first_date = EastmoneyMarketFeed._normalize_date_key(str(getattr(bars[0], "date", "") or ""))
+        last_date = EastmoneyMarketFeed._normalize_date_key(str(getattr(bars[-1], "date", "") or ""))
+        start_key = EastmoneyMarketFeed._normalize_date_key(start)
+        end_key = EastmoneyMarketFeed._normalize_date_key(end)
+        return (not start_key or first_date <= start_key) and (not end_key or last_date >= end_key)
+
+    @staticmethod
+    def _slice_bars_by_range(bars: list[PriceBar], *, start: str, end: str) -> list[PriceBar]:
+        start_key = EastmoneyMarketFeed._normalize_date_key(start)
+        end_key = EastmoneyMarketFeed._normalize_date_key(end)
+        return [
+            bar
+            for bar in bars
+            if (not start_key or EastmoneyMarketFeed._normalize_date_key(bar.date) >= start_key)
+            and (not end_key or EastmoneyMarketFeed._normalize_date_key(bar.date) <= end_key)
+        ]
+
+    @staticmethod
+    def _tencent_count_for_range(start: str, end: str) -> int:
+        if not start:
+            return 300
+        try:
+            start_year = int(str(start)[:4])
+            end_year = int(str(end or "")[:4] or 2050)
+        except ValueError:
+            return 300
+        years = max(end_year - start_year + 1, 1)
+        return min(max(years * 260, 300), 5000)
+
+    @staticmethod
+    def _normalize_date_key(value: str) -> str:
+        return "".join(ch for ch in str(value or "") if ch.isdigit())
 
     @staticmethod
     def _heat_score(
@@ -657,11 +694,20 @@ class RemoteMarketScreener:
         summaries.sort(key=lambda item: (item.total_return, item.win_rate, item.symbol), reverse=True)
 
         stock_profiles = self._build_profiles(snapshot_map, scan_rows)
+        portfolio_backtest = PortfolioBacktester(
+            backtest_params=BacktestParams.realistic_cn_equity(
+                max_positions=min(max(len(bars_by_symbol), 1), 5),
+                max_position_fraction=0.42 if len(bars_by_symbol) <= 1 else 0.22,
+                max_volume_participation=0.12,
+            )
+        ).run(bars_by_symbol, analyses_by_symbol) if bars_by_symbol else None
+
         recommendations = DailyPoolBuilder(stock_profiles=stock_profiles, news_map={}).build(
             scan_rows,
             analyses_by_symbol,
             summaries,
             top_n=top_n,
+            portfolio_backtest=portfolio_backtest,
         )
         recommendations = self._enrich_recommendations(recommendations, snapshot_map)[:top_n]
         algorithmic_pool = self._build_algorithmic_pool(recommendations, scan_rows, snapshot_map)

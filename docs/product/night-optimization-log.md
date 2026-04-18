@@ -710,3 +710,86 @@
 - `app_qt.py` restores lightweight compatibility hooks for recommend focus-card refresh and relaxes a few recommend-focus helpers to better tolerate test and fallback window stubs.
 - `tests/test_core.py` adds focused regression coverage for the stage-based action-strip labels, the stage-aware CTA texts/tooltips, and the empty-state reset path.
 - Verification: `py_compile` passed and `python -m unittest discover -s tests -v` passed (`172` tests).
+
+## 2026-04-18 20:35 Regression Baseline Recovery + Market Transparency
+- `quant_hunter/ui_window_broker_patches.py` fixes the broker execution-detail toggle so the detail status label no longer gets overwritten by setup-drawer copy; folded and expanded states now stay semantically correct.
+- `app_qt.py` restores recommendation-aware market panels: the execution panel again surfaces catalyst-driven price-plan context, the capital panel now exposes `消息层级 / 来源 / 摘要`, and the decision panel explicitly shows `炒作逻辑`.
+- `app_qt.py` upgrades `market_breadth_text` with a visible `焦点` marker while preserving the recommended next-workspace guidance, improving recommend-to-trade continuity from market news cards.
+- `app_qt.py` tightens compact overview geometry by capping `right_intel_tabs` height in short windows, removing redundant overflow without reducing information density.
+- `app_qt.py` hardens `_apply_readability_override_v29` to always append its overview contrast selectors into the live stylesheet, restoring the expected compact-info tab contrast in runtime and tests.
+- Verification:
+- `python -m py_compile app_qt.py tests\test_core.py quant_hunter\ui_window_broker_patches.py`
+- `python -m unittest discover -s tests -v` passed (`376` tests)
+- Next: continue on high-frequency refresh cost, focusing on overview/market side-panel signature guards and avoiding redundant Qt text/table repaints during repeated intraday refresh.
+
+## 2026-04-18 20:52 Overview / Market Refresh Signature Guards
+- `app_qt.py` adds `_market_depth_signature_v6`, so repeated intraday calls to `_qh_populate_market_depth_texts_v5` now skip all three QTextEdit updates when rows and linked catalyst context are unchanged.
+- `app_qt.py` adds `_overview_side_signature_v6`, so `_qh_refresh_overview_side_panels_v5` no longer rewrites the overview side-rail text blocks on identical market inputs; it still refreshes the source-status panel so runtime state remains visible.
+- `tests/test_core.py` adds focused regression coverage for both signature guards and confirms the existing market-breadth guidance path still renders correctly.
+- Verification:
+- `python -m py_compile app_qt.py tests\test_core.py`
+- targeted `unittest` cases passed for the new signature guards and existing market-breadth coverage.
+- Next: continue on `_qh_update_market_text_panels_v5` and adjacent overview focus-card refreshes, aiming to skip repeated recommendation/snapshot text rebuilds during high-frequency polling.
+
+## 2026-04-18 21:18 Market Panel / Focus Card Signature Guards
+- `app_qt.py` adds `_market_text_panel_signature_v6`, so repeated calls to `_qh_update_market_text_panels_v5` now skip four overview/market text panel rewrites when recommendation, snapshot, and linked news context are unchanged.
+- `app_qt.py` adds `_overview_focus_card_signature_v5`, so `_qh_refresh_overview_focus_cards_v4` no longer repeats the same summary-card `set_data` work for identical recommend / snapshot / empty states.
+- `app_qt.py` adds `_market_source_status_signature_v2`, reducing redundant source-status text and summary-card refreshes during repeated overview polling while still updating when cache state, pool count, mode, or error context changes.
+- `tests/test_core.py` adds focused regression coverage for all three guards and keeps the existing news-tier / recommend-focus / source-status scenarios green.
+- Verification:
+- `python -m py_compile app_qt.py tests\test_core.py`
+- `python -m unittest discover -s tests -v` passed (`381` tests)
+- Next: continue into `market_pool_table` and adjacent binder paths to check whether the overview table refresh is still doing avoidable full-row rebuilds.
+
+## 2026-04-18 21:34 Scanner Focus / Summary Card Guards
+- `app_qt.py` adds `_scanner_focus_cards_signature_v1`, so repeated scanner-focus card refreshes now skip the four metric-label updates when the target symbol, signal, recommendation linkage, and board snapshot are unchanged.
+- `app_qt.py` adds `_scanner_summary_cards_signature_v1`, so repeated scanner summary-card refreshes no longer rewrite scan/watch/summary/monitor counters and accents when the linked symbol context has not changed.
+- `app_qt.py` also switches `_populate_existing_views_from_market` to `_set_label_text_if_changed` for recommend status and recommend focus labels, trimming two remaining direct label rewrites in the market-result landing path.
+- `tests/test_core.py` adds focused regression coverage for both scanner guards and also makes the existing scan-warning status test self-sufficient by creating its own `QApplication`, so it can run standalone.
+- Verification:
+- `python -m py_compile app_qt.py tests\test_core.py`
+- targeted `unittest` cases passed for scanner focus cards, scanner summary cards, and scan-warning status.
+- Next: continue checking whether market-result binder paths still have any direct label rewrites or avoidable cross-workspace cascades after the existing table signatures.
+
+## 2026-04-18 21:53 Theme Combo Guards + Tooltip Write Dedup
+- `app_qt.py` adds `_recommend_theme_option_signature_v1` and `_market_theme_option_signature_v1`, so the recommend / overview theme filter combos no longer `clear + addItem` on every identical refresh.
+- `app_qt.py` resets the market-theme signature in the empty/normalize paths that manually clear the combo, preventing stale-signature false positives after builder/compact resets.
+- `app_qt.py` upgrades `_qh_set_tooltip_v7` to write only when tooltip text actually changes, reducing repeated tooltip churn across recommend-focus status and related helper flows.
+- `tests/test_core.py` adds focused regression coverage for both theme-combo guards and the tooltip helper dedup behavior.
+- Verification:
+- `python -m py_compile app_qt.py tests\test_core.py`
+- `python -m unittest discover -s tests -v` passed (`388` tests)
+- Next: continue from the market-result landing path into recommend-focus and cross-workspace post-processing, looking for any remaining repeated summary rebuilds that are still outside existing signature guards.
+
+## 2026-04-18 22:07 Recommend Focus Post-Processing Guard
+- `app_qt.py` adds `_recommend_focus_panel_signature_v39`, so `_qh_refresh_recommendation_focus_panels_v38` now skips repeated hype-logic/news-line rebuilds, news-button refreshes, and focus-label re-rendering when the same recommendation + news context is revisited.
+- `tests/test_core.py` adds focused regression coverage for the new recommend-focus post-processing guard and keeps the existing recommend focus panel rendering scenario green.
+- Verification:
+- `python -m py_compile app_qt.py tests\test_core.py`
+- targeted `unittest` cases passed for the new recommend-focus guard and the existing recommend-focus rendering path.
+- Next: continue checking cross-workspace post-processing around recommend / scanner / overview focus chains, prioritizing places where identical symbol context still triggers repeated summary rebuilds.
+
+## 2026-04-18 22:26 Focus Context Reuse In Banner / Shell Helpers
+- `app_qt.py` lets `_qh_workspace_focus_capsule_v40`, `_qh_workspace_focus_capsule_html_v44`, `_qh_shell_focus_chip_html_v46`, and `_qh_update_shell_focus_hover_card_v49` accept precomputed focus context, so a single banner/header refresh no longer repeatedly resolves the same symbol / recommendation / execution context.
+- `app_qt.py` updates `_qh_refresh_workspace_focus_banners_v40` and `_refresh_shell_header` to pass one shared focus-context snapshot through those helpers, trimming repeated focus resolution during high-frequency status refresh.
+- `tests/test_core.py` makes the existing workspace-focus-banner test self-sufficient by creating its own `QApplication`, keeping the banner/shell verification path reliable when run standalone.
+- Verification:
+- `python -m py_compile app_qt.py tests\test_core.py`
+- targeted `unittest` cases passed for workspace focus banners and shell header focus chip sync.
+- Next: continue down the cross-workspace focus chain, especially places where repeated status refresh still re-enters detail/recommend/scanner summary helpers for the same active symbol.
+
+## 2026-04-18 22:43 Monitor Summary Signature Guard
+- `app_qt.py` adds `_monitor_summary_signature_v2`, so `_refresh_monitor_summary` now skips repeated intraday summary rebuilds and avoids re-triggering downstream scanner focus/summary refreshes when the same symbol context, scan signal, recommend context, and board linkage are unchanged.
+- `tests/test_core.py` adds focused regression coverage for the new monitor-summary guard while preserving the scanner focus-card / summary-card guard coverage around it.
+- Verification:
+- `python -m py_compile app_qt.py tests\test_core.py`
+- `python -m unittest discover -s tests -v` passed (`396` tests)
+- Next: continue checking same-symbol status chains, especially recommend / detail summary refreshes that still rebuild text after identical active-symbol transitions.
+
+## 2026-04-18 22:57 Detail Workspace Signature Guard
+- `app_qt.py` adds `_detail_workspace_signature_v2`, so `_qh_refresh_detail_workspace_panels` now skips repeated detail-summary metric updates and decision/execution/conclusion text rebuilds when the same symbol, recommendation, execution row, selected signal/trade, and strategy-history context are unchanged.
+- `tests/test_core.py` adds focused regression coverage for the new detail-workspace guard and keeps the existing order-focus-symbol detail refresh scenario green.
+- Verification:
+- `python -m py_compile app_qt.py tests\test_core.py`
+- `python -m unittest discover -s tests -v` passed (`397` tests)
+- Next: continue on the remaining same-symbol status chain, prioritizing recommend-status / decision-summary style post-processing where identical focus context may still trigger secondary UI work.

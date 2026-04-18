@@ -785,8 +785,14 @@ class QuantHunterApp(tk.Tk):
         lines = ["Optimization Top 8", ""]
         for item in self.optimization_results:
             lines.append(
-                f"{item.rank}. objective={item.objective:.4f} | return={item.avg_return:.2%} | "
-                f"drawdown={item.avg_drawdown:.2%} | win={item.avg_win_rate:.2%} | params={item.params}"
+                f"{item.rank}. objective={item.objective:.4f} | robustness={item.robustness_score:.0%} | "
+                f"portfolio={item.portfolio_return:.2%} | portfolio_oos={item.portfolio_out_of_sample_return:.2%} | "
+                f"portfolio_dd={item.portfolio_max_drawdown:.2%}"
+            )
+            lines.append(
+                f"   return={item.avg_return:.2%} | drawdown={item.avg_drawdown:.2%} | win={item.avg_win_rate:.2%} | "
+                f"oos={item.avg_out_of_sample_return:.2%} | worst_window={item.avg_worst_window_return:.2%} | "
+                f"return_std={item.avg_return_std:.2%} | positive_windows={item.avg_positive_window_ratio:.0%} | params={item.params}"
             )
         artifacts = optimizer.export_report(self.optimization_results, REPORT_DIR)
         lines.extend(["", f"Report exported: {artifacts.markdown_path}"])

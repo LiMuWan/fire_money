@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from quant_hunter.backtest import BacktestParams, PortfolioBacktester
 from quant_hunter.broker import build_submission_intents
 from quant_hunter.broker_status import build_broker_execution_summary
 from quant_hunter.models import OrderIntent, PaperTradingState
@@ -614,6 +615,7 @@ def run_background_job_controller(
 
 def refresh_daily_pool_controller(window, async_mode: bool, *, daily_pool_builder_cls) -> None:
     scan_rows = list(window.scan_rows)
+    bars_by_symbol = {symbol: list(items) for symbol, items in window.universe_bars.items()}
     analyses_by_symbol = {symbol: list(items) for symbol, items in window.universe_analyses.items()}
     backtest_summaries = list(window.backtest_summaries)
     stock_profiles = dict(window.stock_profiles)
@@ -627,6 +629,18 @@ def refresh_daily_pool_controller(window, async_mode: bool, *, daily_pool_builde
         for item in rotation_rows
         if str(item.get("strategy_name", "") or "")
     }
+    portfolio_backtest = None
+    if bars_by_symbol and analyses_by_symbol:
+        try:
+            portfolio_backtest = PortfolioBacktester(
+                backtest_params=BacktestParams.realistic_cn_equity(
+                    max_positions=min(max(len(bars_by_symbol), 1), 5),
+                    max_position_fraction=0.42 if len(bars_by_symbol) <= 1 else 0.22,
+                    max_volume_participation=0.12,
+                )
+            ).run(bars_by_symbol, analyses_by_symbol)
+        except Exception:
+            portfolio_backtest = None
 
     def build_pool():
         focus_themes = list(window.state.focus_themes)
@@ -643,7 +657,12 @@ def refresh_daily_pool_controller(window, async_mode: bool, *, daily_pool_builde
                 strategy_bias_by_name=strategy_bias_by_name,
                 risk_profile=profile_key,
             )
-            rows = builder.build(scan_rows, analyses_by_symbol, backtest_summaries)
+            rows = builder.build(
+                scan_rows,
+                analyses_by_symbol,
+                backtest_summaries,
+                portfolio_backtest=portfolio_backtest,
+            )
             return rows, dict(getattr(builder, "last_build_meta", {}) or {})
 
         rows, meta = _build_for_profile(current_risk_profile)
@@ -764,6 +783,12 @@ def run_parameter_optimization_controller(
                 f"回撤={item.avg_drawdown:.2%} | 胜率={item.avg_win_rate:.2%} | 参数={item.params}"
             )
         lines.extend(["", f"报告已导出：{artifacts.markdown_path}"])
+        for item in window.optimization_results:
+            lines.append(
+                f"   绋冲仴={item.robustness_score:.0%} | 鏍锋湰澶栨敹鐩?={item.avg_out_of_sample_return:.2%} | "
+                f"鏈€宸獥鍙?={item.avg_worst_window_return:.2%} | 鏀剁泭娉㈠姩={item.avg_return_std:.2%} | "
+                f"姝ｆ敹绐楀彛={item.avg_positive_window_ratio:.0%}"
+            )
         window.optimization_text.setPlainText("\n".join(lines))
         window._append_runtime_log(f"参数优化完成：输出 {len(results)} 组结果")
 

@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import date, datetime
 
 from .data import extract_stock_id
-from .models import DailyAnalysis, NewsCatalyst, RecommendationRow, ScanRow, StockProfile, SymbolBacktestSummary
+from .models import DailyAnalysis, NewsCatalyst, PortfolioBacktestResult, RecommendationRow, ScanRow, StockProfile, SymbolBacktestSummary
 from .risk import DEFAULT_RISK_CONTROLS, RiskControls, normalize_risk_profile, resolve_risk_controls, risk_profile_brief
 from .theme import ThemeHeatEngine, infer_mainline_flow_signal, infer_mainline_stage, infer_theme_name
 
@@ -77,6 +77,8 @@ def _recommendation_sort_key(item: RecommendationRow) -> tuple[object, ...]:
         _mainline_stage_priority(stage_label),
         _mainline_flow_priority(flow_signal),
         *_one_day_hold_sort_priority(item),
+        -(getattr(item, "portfolio_fit_score", 0.0) or 0.0),
+        -(getattr(item, "diversification_score", 0.0) or 0.0),
         -(getattr(item, "backtest_quality_score", 0.0) or 0.0),
         -(getattr(item, "setup_quality_score", 0.0) or 0.0),
         -(getattr(item, "freshness_score", 0.0) or 0.0),
@@ -130,6 +132,7 @@ class DailyPoolBuilder:
         backtest_summaries: list[SymbolBacktestSummary],
         top_n: int = 15,
         as_of: date | None = None,
+        portfolio_backtest: PortfolioBacktestResult | None = None,
     ) -> list[RecommendationRow]:
         as_of = as_of or date.today()
         summary_map = {item.symbol: item for item in backtest_summaries}
@@ -251,11 +254,17 @@ class DailyPoolBuilder:
             )
 
         themed_candidates, theme_rows, leader_rows = ThemeHeatEngine(theme_aliases=self.theme_aliases).analyze(candidates)
+        themed_candidates = self._apply_portfolio_context(
+            themed_candidates,
+            theme_rows=theme_rows,
+            portfolio_backtest=portfolio_backtest,
+        )
         themed_candidates = [self._enrich_user_focus(item) for item in themed_candidates]
         themed_candidates.sort(key=_recommendation_sort_key)
         self.last_theme_rows = theme_rows
         self.last_leader_rows = leader_rows
         final_rows = themed_candidates[:top_n]
+        portfolio_health_score = self._portfolio_health_score(portfolio_backtest)
         self.last_build_meta = {
             "risk_profile": self.risk_profile,
             "risk_profile_brief": risk_profile_brief(self.risk_profile),
@@ -267,8 +276,98 @@ class DailyPoolBuilder:
             "rejected_count": sum(1 for item in themed_candidates if item.reject_reason),
             "watch_count": sum(1 for item in themed_candidates if item.action in {"WATCH", "HOLD"}),
             "top_theme": (theme_rows[0].theme_name if theme_rows else ""),
+            "portfolio_health_score": portfolio_health_score,
+            "portfolio_health_text": self._portfolio_health_text(portfolio_backtest),
+            "portfolio_return": round(float(getattr(portfolio_backtest, "total_return", 0.0) or 0.0), 4),
+            "portfolio_max_drawdown": round(float(getattr(portfolio_backtest, "max_drawdown", 0.0) or 0.0), 4),
+            "portfolio_avg_exposure": round(float(getattr(portfolio_backtest, "avg_exposure", 0.0) or 0.0), 4),
+            "portfolio_max_concurrent_positions": int(getattr(portfolio_backtest, "max_concurrent_positions", 0) or 0),
         }
         return final_rows
+
+    def _apply_portfolio_context(
+        self,
+        rows: list[RecommendationRow],
+        *,
+        theme_rows,
+        portfolio_backtest: PortfolioBacktestResult | None,
+    ) -> list[RecommendationRow]:
+        theme_map = {
+            str(getattr(item, "theme_name", "") or ""): item
+            for item in (theme_rows or [])
+            if str(getattr(item, "theme_name", "") or "")
+        }
+        buy_candidates = [item for item in rows if str(getattr(item, "action", "") or "").upper() == "BUY"]
+        total_buy_candidates = len(buy_candidates)
+        theme_counts: dict[str, int] = {}
+        for item in buy_candidates:
+            theme_key = str(getattr(item, "theme_name", "") or getattr(item, "mainline_tag", "") or "未分类")
+            theme_counts[theme_key] = theme_counts.get(theme_key, 0) + 1
+
+        portfolio_health_score = self._portfolio_health_score(portfolio_backtest)
+        enriched: list[RecommendationRow] = []
+        for row in rows:
+            theme_key = str(getattr(row, "theme_name", "") or getattr(row, "mainline_tag", "") or "未分类")
+            theme_count = theme_counts.get(theme_key, 0)
+            theme_share = (theme_count / total_buy_candidates) if total_buy_candidates > 0 else 0.0
+            theme_row = theme_map.get(theme_key)
+            breadth = float(getattr(theme_row, "stock_count", 0) or 0.0)
+            leaders = float(getattr(theme_row, "leader_count", 0) or 0.0)
+            theme_support = min(min(breadth, 4.0) * 5.0 + leaders * 7.0, 24.0)
+            rank = int(getattr(row, "mainline_rank", getattr(row, "theme_rank", 0)) or 0)
+            rank_bonus = 8.0 if rank == 1 else 5.0 if 1 < rank <= 3 else 2.0 if 3 < rank <= 5 else 0.0
+            concentration_penalty = max(theme_share - 0.34, 0.0) * 70.0
+            concentration_penalty += max(breadth - 4.0, 0.0) * 2.4
+            concentration_penalty += max(float(getattr(row, "theme_failure_risk", 0.0) or 0.0) - 60.0, 0.0) * 0.12
+            concentration_penalty += max(float(getattr(row, "theme_divergence_score", 0.0) or 0.0) - 30.0, 0.0) * 0.08
+            if portfolio_backtest is not None:
+                concentration_penalty += (
+                    max(float(getattr(portfolio_backtest, "max_drawdown", 0.0) or 0.0) - 0.08, 0.0)
+                    * 220.0
+                    * max(theme_share, 0.25)
+                )
+                concentration_penalty += (
+                    max(breadth - 4.0, 0.0)
+                    * max(float(getattr(portfolio_backtest, "max_drawdown", 0.0) or 0.0) - 0.08, 0.0)
+                    * 35.0
+                )
+
+            diversification_score = round(
+                self._bounded_score(
+                    58.0
+                    + theme_support
+                    + rank_bonus
+                    + max(0.0, 0.45 - theme_share) * 18.0
+                    - concentration_penalty * 0.45
+                ),
+                2,
+            )
+            portfolio_fit_score = round(
+                self._bounded_score(
+                    row.backtest_quality_score * 0.58
+                    + portfolio_health_score * 0.20
+                    + diversification_score * 0.14
+                    + min(float(getattr(row, "mainline_window_score", 0.0) or 0.0), 99.0) * 0.08
+                    - concentration_penalty * 0.35
+                ),
+                2,
+            )
+            rationale = row.rationale
+            if portfolio_backtest is not None or total_buy_candidates > 1:
+                rationale = (
+                    f"{rationale} | 组合适配 {portfolio_fit_score:.0f} | 分散度 {diversification_score:.0f} | "
+                    f"集中惩罚 {concentration_penalty:.0f}"
+                )
+            enriched.append(
+                replace(
+                    row,
+                    portfolio_fit_score=portfolio_fit_score,
+                    diversification_score=diversification_score,
+                    concentration_penalty_score=round(self._bounded_score(concentration_penalty), 2),
+                    rationale=rationale,
+                )
+            )
+        return enriched
 
     def _stock_pool_profile(
         self,
@@ -428,6 +527,28 @@ class DailyPoolBuilder:
             + trade_sample
         )
         return max(28.0, min(quality, 96.0))
+
+    def _portfolio_health_score(self, portfolio_backtest: PortfolioBacktestResult | None) -> float:
+        if portfolio_backtest is None:
+            return 52.0
+        quality = (
+            56.0
+            + min(float(getattr(portfolio_backtest, "total_return", 0.0) or 0.0) * 95.0, 18.0)
+            - min(float(getattr(portfolio_backtest, "max_drawdown", 0.0) or 0.0) * 100.0 * 0.8, 18.0)
+            + min(float(getattr(portfolio_backtest, "avg_exposure", 0.0) or 0.0) * 24.0, 10.0)
+            + min(float(getattr(portfolio_backtest, "profit_factor", 0.0) or 0.0) * 4.0, 10.0)
+        )
+        return round(max(28.0, min(quality, 96.0)), 2)
+
+    def _portfolio_health_text(self, portfolio_backtest: PortfolioBacktestResult | None) -> str:
+        if portfolio_backtest is None:
+            return "组合回测待生成"
+        return (
+            f"组合回测 {float(getattr(portfolio_backtest, 'total_return', 0.0) or 0.0):.2%} | "
+            f"回撤 {float(getattr(portfolio_backtest, 'max_drawdown', 0.0) or 0.0):.2%} | "
+            f"暴露 {float(getattr(portfolio_backtest, 'avg_exposure', 0.0) or 0.0):.2%} | "
+            f"并发 {int(getattr(portfolio_backtest, 'max_concurrent_positions', 0) or 0)}"
+        )
 
     def _news_score(self, symbol: str, as_of: date) -> tuple[float, str]:
         items = self.news_map.get(symbol, [])

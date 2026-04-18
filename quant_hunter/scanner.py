@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .backtest import Backtester
+from .backtest import Backtester, BacktestParams, PortfolioBacktester
 from .data import discover_csv_files, extract_stock_id, load_bars_from_csv
-from .models import DailyAnalysis, PriceBar, ScanRow, SymbolBacktestSummary
+from .models import DailyAnalysis, PortfolioBacktestResult, PriceBar, ScanRow, SymbolBacktestSummary
 from .strategy import AntiHarvestStrategy, StrategyParams
 
 
@@ -87,6 +87,18 @@ class UniverseScanner:
             )
         summaries.sort(key=lambda item: (item.total_return, item.win_rate, item.symbol), reverse=True)
         return summaries
+
+    def summarize_portfolio_backtest(
+        self,
+        bars_by_symbol: dict[str, list[PriceBar]],
+        analyses_by_symbol: dict[str, list[DailyAnalysis]],
+        backtest_params: BacktestParams | None = None,
+    ) -> PortfolioBacktestResult:
+        portfolio_params = backtest_params or BacktestParams.realistic_cn_equity(max_positions=min(max(len(bars_by_symbol), 1), 5))
+        return PortfolioBacktester(strategy_params=self.params, backtest_params=portfolio_params).run(
+            bars_by_symbol,
+            analyses_by_symbol,
+        )
 
     def _pick_recent_signal(self, analyses: list[DailyAnalysis]) -> DailyAnalysis | None:
         if not analyses:
