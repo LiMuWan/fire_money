@@ -135,10 +135,12 @@ def apply_cross_workspace_focus_patches(
 
         focus_recommend = self._explicit_recommendation_focus() if hasattr(self, "_explicit_recommendation_focus") else None
         if focus_recommend is None:
+            self._live_workspace_summary_signature_v18 = ("empty",)
             return
 
         focus_symbol = getattr(focus_recommend, "symbol", "") or ""
         if not focus_symbol:
+            self._live_workspace_summary_signature_v18 = ("empty-symbol",)
             return
 
         stock_name = getattr(focus_recommend, "stock_name", "") or self._stock_name_for_symbol(focus_symbol)
@@ -162,6 +164,32 @@ def apply_cross_workspace_focus_patches(
             None,
         )
         latest_signal = self._latest_signal_for_symbol(focus_symbol) if hasattr(self, "_latest_signal_for_symbol") else None
+        summary_signature = (
+            focus_symbol,
+            stock_name,
+            stock_id,
+            signal,
+            action_text,
+            theme_name,
+            news_badge,
+            risk_flag,
+            next_focus,
+            readiness,
+            confidence,
+            price_brief,
+            str(getattr(matching_intent, "symbol", "") if matching_intent is not None else ""),
+            float(getattr(matching_intent, "price", 0.0) if matching_intent is not None else 0.0),
+            int(getattr(matching_intent, "quantity", 0) if matching_intent is not None else 0),
+            str(matching_record.get("symbol", "") if matching_record is not None else ""),
+            str(matching_record.get("order_status", "") if matching_record is not None else ""),
+            str(matching_record.get("fill_status", "") if matching_record is not None else ""),
+            str(matching_record.get("message", "") if matching_record is not None else ""),
+            str(getattr(latest_signal, "label", "") if latest_signal is not None else ""),
+            float(getattr(latest_signal, "score", 0.0) if latest_signal is not None else 0.0),
+        )
+        if getattr(self, "_live_workspace_summary_signature_v18", None) == summary_signature:
+            return
+        self._live_workspace_summary_signature_v18 = summary_signature
 
         if hasattr(self, "recommend_live_summary_detail"):
             self._set_label_text_if_changed(

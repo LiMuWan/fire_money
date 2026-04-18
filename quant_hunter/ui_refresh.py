@@ -37,7 +37,7 @@ except ModuleNotFoundError:  # pragma: no cover - enables pure-logic tests witho
         def text(self) -> str:
             return str(self._value)
 
-from quant_hunter.broker import describe_order_intent, summarize_trade_recap
+from quant_hunter.broker import describe_order_intent, submission_record_execution_delta, summarize_trade_recap
 from quant_hunter.broker_status import build_broker_execution_summary
 from quant_hunter.risk import RISK_PROFILE_LABELS, risk_profile_brief
 from quant_hunter.models import ScanRow
@@ -1640,6 +1640,10 @@ def refresh_strategy_focus_detail(window, strategy_score_fields) -> None:
     ranked = sorted(window.daily_pool_rows, key=lambda item: getattr(item, field_name, 0.0), reverse=True)
     focus_row = selected_row or (ranked[0] if ranked else None)
     if focus_row is None:
+        empty_signature = ("empty", canonical_strategy_name)
+        if getattr(window, "_strategy_focus_detail_signature_v1", None) == empty_signature:
+            return
+        window._strategy_focus_detail_signature_v1 = empty_signature
         _set_plain_text_if_changed(window.strategy_detail_text, "等待机会池同步后更新。")
         return
     strategy_count = sum(
@@ -1660,6 +1664,49 @@ def refresh_strategy_focus_detail(window, strategy_score_fields) -> None:
     mainline_summary = _strategy_mainline_summary(window, focus_row, strategy_count)
     execution_summary = _strategy_execution_summary(window, focus_row)
     attention_focus = _strategy_attention_focus(focus_row)
+    tripwire_metrics = list(one_day_hold_tripwire_metrics(focus_row) or [])
+    tail_runtime_panel = list(tail_buy_runtime_panel_lines(focus_row) or [])
+    tail_checklist = list(tail_buy_execution_checklist(focus_row) or [])
+    detail_signature = (
+        canonical_strategy_name,
+        field_name,
+        getattr(focus_row, "symbol", ""),
+        getattr(focus_row, "stock_name", ""),
+        getattr(focus_row, "theme_name", ""),
+        getattr(focus_row, "mainline_tag", ""),
+        getattr(focus_row, "action", ""),
+        getattr(focus_row, "primary_strategy", ""),
+        getattr(focus_row, "catalyst", ""),
+        getattr(focus_row, "rationale", ""),
+        getattr(focus_row, "next_focus", ""),
+        getattr(focus_row, "mainline_risk_flag", ""),
+        float(getattr(focus_row, field_name, 0.0) or 0.0),
+        float(getattr(focus_row, "total_score", 0.0) or 0.0),
+        float(getattr(focus_row, "mainline_window_score", 0.0) or 0.0),
+        float(getattr(focus_row, "leader_model_score", 0.0) or 0.0),
+        float(getattr(focus_row, "main_force_score", 0.0) or 0.0),
+        float(getattr(focus_row, "board_attack_score", 0.0) or 0.0),
+        float(getattr(focus_row, "value_recovery_score", 0.0) or 0.0),
+        float(getattr(focus_row, "tail_buy_score", 0.0) or 0.0),
+        float(getattr(focus_row, "one_day_hold_score", 0.0) or 0.0),
+        strategy_count,
+        tuple(
+            (
+                getattr(item, "symbol", ""),
+                getattr(item, "stock_name", ""),
+                getattr(item, "theme_name", ""),
+                getattr(item, "action", ""),
+                float(getattr(item, field_name, 0.0) or 0.0),
+            )
+            for item in top_examples
+        ),
+        tuple(tripwire_metrics),
+        tuple(tail_runtime_panel),
+        tuple(tail_checklist),
+    )
+    if getattr(window, "_strategy_focus_detail_signature_v1", None) == detail_signature:
+        return
+    window._strategy_focus_detail_signature_v1 = detail_signature
     lines = [
         "战法定位",
         f"- 产品定位：{_strategy_product_positioning(canonical_strategy_name)}",
@@ -1697,7 +1744,6 @@ def refresh_strategy_focus_detail(window, strategy_score_fields) -> None:
         f"- 低吸 {getattr(focus_row, 'value_recovery_score', 0.0):.1f} | 尾盘 {getattr(focus_row, 'tail_buy_score', 0.0):.1f} | 一日 {getattr(focus_row, 'one_day_hold_score', 0.0):.1f}",
         "",
     ]
-    tripwire_metrics = one_day_hold_tripwire_metrics(focus_row)
     if tripwire_metrics:
         lines.extend(
             [
@@ -1708,7 +1754,6 @@ def refresh_strategy_focus_detail(window, strategy_score_fields) -> None:
                 "",
             ]
         )
-    tail_runtime_panel = tail_buy_runtime_panel_lines(focus_row)
     if tail_runtime_panel:
         lines.extend(
             [
@@ -1717,7 +1762,6 @@ def refresh_strategy_focus_detail(window, strategy_score_fields) -> None:
                 "",
             ]
         )
-    tail_checklist = tail_buy_execution_checklist(focus_row)
     if tail_checklist:
         lines.extend(
             [
@@ -2792,7 +2836,7 @@ def refresh_trade_recap(window) -> None:
         order_log=window.order_submission_log,
     )
     conclusion = (
-        f"提交 {summary['submitted_count']} | 失败 {summary['failed_count']} | 待成 {summary['pending_count']}"
+        f"提交 {summary['submitted_count']} | 失败 {summary['failed_count']} | 待成 {summary['pending_count']} | 偏差 {summary['deviation_count']}"
         if summary["submitted_count"] or summary["pending_count"] or summary["failed_count"]
         else "等待提交后生成回顾"
     )
@@ -2815,7 +2859,9 @@ def refresh_trade_recap(window) -> None:
         if matching_record is not None:
             record_message = str(matching_record.get("message", "") or "").strip()
             record_failure = str(matching_record.get("failure_reason", "") or "").strip()
-            next_step = record_message or record_failure or f"优先复核 {focus_name} 的成交回执与执行偏差"
+            deviation_snapshot = submission_record_execution_delta(matching_record)
+            deviation_note = deviation_snapshot.get("note", "") if deviation_snapshot.get("has_baseline") else ""
+            next_step = record_message or record_failure or deviation_note or f"优先复核 {focus_name} 的成交回执与执行偏差"
             risk = record_failure or risk
     if hasattr(window, "order_intents") and hasattr(window, "daily_pool_rows"):
         recommendation_map = {getattr(item, "symbol", ""): item for item in getattr(window, "daily_pool_rows", [])}
@@ -2853,7 +2899,7 @@ def refresh_trade_recap(window) -> None:
             else "等待主线、回执和成交联动"
         )
         quality_value = "有偏差" if summary["failed_count"] else ("待回写" if not summary["submitted_count"] else "已回写")
-        quality_accent = risk
+        quality_accent = summary["latest_deviation_note"] or risk
         action_value = "先看回执" if summary["submitted_count"] else "继续观察"
         action_accent = next_step
         _set_label_text_if_changed(window.broker_recap_metric_labels["verdict"], verdict_value)
@@ -2889,6 +2935,24 @@ def refresh_broker_execution_panel(window, summary: dict[str, object]) -> None:
     portfolio_rows = list(portfolio_review.get("rows", []))
     portfolio_status = str(portfolio_review.get("status", "待评估") or "待评估")
     total_loss_ratio = float(portfolio_review.get("total_loss_ratio", 0.0) or 0.0)
+    portfolio_fit_review = dict(summary.get("portfolio_fit_review", {}) or {})
+    portfolio_fit_rows = list(portfolio_fit_review.get("rows", []))
+    portfolio_fit_status = str(portfolio_fit_review.get("status", "待评估") or "待评估")
+    avg_fit_score = float(portfolio_fit_review.get("avg_fit_score", 0.0) or 0.0)
+    avg_diversification_score = float(portfolio_fit_review.get("avg_diversification_score", 0.0) or 0.0)
+    max_concentration_penalty_score = float(portfolio_fit_review.get("max_concentration_penalty_score", 0.0) or 0.0)
+    fit_pass_count = int(portfolio_fit_review.get("pass_count", 0) or 0)
+    fit_caution_count = int(portfolio_fit_review.get("caution_count", 0) or 0)
+    fit_blocked_count = int(portfolio_fit_review.get("blocked_count", 0) or 0)
+    fit_unevaluated_count = int(portfolio_fit_review.get("unevaluated_count", 0) or 0)
+    top_fit_row = max(
+        portfolio_fit_rows,
+        key=lambda item: (
+            float(item.get("concentration_penalty_score", 0.0) or 0.0),
+            -float(item.get("fit_score", 0.0) or 0.0),
+        ),
+        default={},
+    )
     top_portfolio_row = max(
         portfolio_rows,
         key=lambda item: (
@@ -2911,7 +2975,7 @@ def refresh_broker_execution_panel(window, summary: dict[str, object]) -> None:
     if hasattr(window, "broker_summary_metric_labels"):
         has_execution_focus = bool(symbols) or submission_count > 0
         stage_value = headline = ("先处理阻塞" if blockers else ("建议复核" if warnings else readiness))
-        stage_accent = f"准备 {readiness_score}% | 组合 {portfolio_status}"
+        stage_accent = f"准备 {readiness_score}% | 组合 {portfolio_status} | 适配 {portfolio_fit_status}"
         if not has_execution_focus:
             stage_value = "待委托"
             stage_accent = "先从推荐页或交易计划生成第一批委托"
@@ -2962,7 +3026,7 @@ def refresh_broker_execution_panel(window, summary: dict[str, object]) -> None:
         _set_label_text_if_changed(window.broker_metric_accents["risk_reward"], risk_reward_hint)
 
         risk_budget_value = f"{estimated_loss:,.0f}" if estimated_loss > 0 else "待风控"
-        portfolio_hint = f"组合{portfolio_status} | 止损 {total_loss_ratio * 100:.1f}%"
+        portfolio_hint = f"组合{portfolio_status} | 止损 {total_loss_ratio * 100:.1f}% | 适配 {portfolio_fit_status}"
         if not has_execution_focus:
             portfolio_hint = "等待委托链路后评估组合止损"
         elif top_portfolio_symbol:
@@ -2970,6 +3034,8 @@ def refresh_broker_execution_panel(window, summary: dict[str, object]) -> None:
             portfolio_hint += f" | {symbol_tail} 占资 {top_portfolio_asset_ratio * 100:.1f}%"
             if top_portfolio_cash_ratio > 0:
                 portfolio_hint += f" / 资金 {top_portfolio_cash_ratio * 100:.1f}%"
+        if has_execution_focus and avg_fit_score > 0:
+            portfolio_hint += f" | 均值适配 {avg_fit_score:.0f}"
         _set_label_text_if_changed(window.broker_metric_labels["risk_budget"], risk_budget_value)
         _set_label_text_if_changed(window.broker_metric_accents["risk_budget"], portfolio_hint)
 
@@ -2982,8 +3048,8 @@ def refresh_broker_execution_panel(window, summary: dict[str, object]) -> None:
         next_step = blockers[0] if blockers else (warnings[0] if warnings else (f"优先核对 {symbols[0]}" if symbols else "继续确认委托"))
         if available_cash <= 0 and estimated_capital > 0:
             next_step = "先同步资金，再确认委托占用"
-        risk = f"{risk_lamp} | {risk_profile_label}档 | 组合 {portfolio_status} | {risk_note}"
-        conclusion = f"{headline} | 准备 {readiness_score}% | 闸门 {review_status} | 组合 {portfolio_status}"
+        risk = f"{risk_lamp} | {risk_profile_label}档 | 组合 {portfolio_status} | 适配 {portfolio_fit_status} | {risk_note}"
+        conclusion = f"{headline} | 准备 {readiness_score}% | 闸门 {review_status} | 组合 {portfolio_status} | 适配 {portfolio_fit_status}"
         _set_plain_text_if_changed(window.broker_gate_summary_text, _brief_panel_text("闸门提要", conclusion, risk, next_step))
 
     if hasattr(window, "broker_execution_summary_metric_labels"):
@@ -3003,8 +3069,14 @@ def refresh_broker_execution_panel(window, summary: dict[str, object]) -> None:
             if first_review_row
             else f"{review_status} | 通过 {review_pass_count} | 待核对 {review_missing_count}"
         )
-        portfolio_value = "先同步资金" if available_cash <= 0 and estimated_capital > 0 else headline
-        portfolio_accent = next_step if next_step else f"止损 {total_loss_ratio * 100:.1f}% | 占资 {asset_usage_ratio * 100:.1f}%"
+        portfolio_value = "先同步资金" if available_cash <= 0 and estimated_capital > 0 else portfolio_fit_status
+        portfolio_accent = (
+            next_step
+            if not has_execution_focus
+            else f"通过 {fit_pass_count} | 谨慎 {fit_caution_count} | 拦截 {fit_blocked_count} | 待核对 {fit_unevaluated_count}"
+        )
+        if has_execution_focus and avg_fit_score > 0:
+            portfolio_accent += f" | 均值适配 {avg_fit_score:.0f}"
         _set_label_text_if_changed(window.broker_execution_summary_metric_labels["blocker"], blocker_value)
         _set_label_text_if_changed(window.broker_execution_summary_metric_accents["blocker"], blocker_accent)
         _set_label_text_if_changed(window.broker_execution_summary_metric_labels["mainline"], mainline_value)
@@ -3054,13 +3126,24 @@ def refresh_broker_execution_panel(window, summary: dict[str, object]) -> None:
         _set_plain_text_if_changed(window.broker_mainline_review_text, "\n".join(review_lines))
 
     if hasattr(window, "broker_execution_text"):
-        conclusion = f"{readiness} | 委托 {len(symbols)} 笔 | 主线闸门 {review_status} | 组合 {portfolio_status}"
-        risk = f"{risk_lamp} | {risk_profile_label}档 | 止损 {estimated_loss:,.0f} | 组合止损 {total_loss_ratio * 100:.1f}% | 资产占比 {asset_usage_ratio * 100:.1f}%"
+        fit_focus_name = str(top_fit_row.get("name", top_fit_row.get("symbol", "")) or "")
+        fit_focus_detail = str(top_fit_row.get("detail", "") or "")
+        conclusion = f"{readiness} | 委托 {len(symbols)} 笔 | 主线闸门 {review_status} | 组合 {portfolio_status} | 适配 {portfolio_fit_status}"
+        risk = (
+            f"{risk_lamp} | {risk_profile_label}档 | 止损 {estimated_loss:,.0f} | 组合止损 {total_loss_ratio * 100:.1f}% | "
+            f"资产占比 {asset_usage_ratio * 100:.1f}% | 均值适配 {avg_fit_score:.0f}"
+        )
         next_step = blockers[0] if blockers else (warnings[0] if warnings else (f"继续确认 {symbols[0]}" if symbols else "等待新的委托建议"))
         execution_lines = [
             "执行中控",
             f"结论：{conclusion}",
             f"风险：{risk}",
+            f"组合适配：通过 {fit_pass_count} | 谨慎 {fit_caution_count} | 拦截 {fit_blocked_count} | 待核对 {fit_unevaluated_count}",
+            (
+                f"焦点委托：{fit_focus_name} | {fit_focus_detail}"
+                if fit_focus_name or fit_focus_detail
+                else "焦点委托：等待推荐池输出组合适配结论"
+            ),
             f"下一步：{next_step}",
             f"档位：{risk_profile_hint}",
         ]
@@ -3346,10 +3429,15 @@ def refresh_submission_table(window) -> None:
             item.get("timestamp", ""),
             item.get("order_status", ""),
             item.get("fill_status", ""),
+            item.get("order_id", ""),
             item.get("symbol", ""),
             item.get("side", ""),
+            item.get("planned_price", ""),
+            item.get("planned_quantity", ""),
             item.get("price", ""),
             item.get("quantity", ""),
+            item.get("fill_price", ""),
+            item.get("fill_quantity", ""),
             item.get("failure_reason", ""),
             item.get("message", ""),
         )
@@ -3382,8 +3470,8 @@ def refresh_submission_table(window) -> None:
                 fill_status,
                 snapshot["focus"],
                 snapshot["action"],
-                item.get("price", ""),
-                item.get("quantity", ""),
+                snapshot["price_compare"],
+                snapshot["quantity_compare"],
                 snapshot["risk_badge"],
                 snapshot["message"],
             ]

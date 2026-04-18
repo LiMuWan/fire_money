@@ -15,6 +15,7 @@ _DEFAULT_MARKET_TIMEFRAME = "\u65e5\u7ebf"
 _DEFAULT_MARKET_HISTORY_WINDOW = "\u8fd11\u5e74"
 _DEFAULT_MARKET_REVIEW_DATE = "\u6700\u65b0"
 _SENSITIVE_BROKER_FIELDS = ("token", "password")
+_SENSITIVE_STATE_FIELDS = ("ai_review_api_key",)
 
 
 def _as_string_list(value: object) -> list[str]:
@@ -69,6 +70,15 @@ class AppState:
     daily_plan_template: str = "balanced"
     daily_plan_focus_only: bool = False
     daily_plan_candidate_limit: int = 10
+    ai_review_base_url: str = "https://api.openai.com/v1"
+    ai_review_api_key: str = ""
+    ai_review_model: str = "gpt-5.4"
+    ai_review_reasoning_effort: str = "medium"
+    ai_review_max_output_tokens: int = 900
+    ai_review_timeout_seconds: float = 45.0
+    ai_review_auto_run_enabled: bool = False
+    ai_review_auto_run_on_news_refresh: bool = True
+    ai_review_auto_run_on_pool_refresh: bool = True
     market_data_mode: str = "auto"
     market_timeframe_mode: str = _DEFAULT_MARKET_TIMEFRAME
     market_history_window: str = _DEFAULT_MARKET_HISTORY_WINDOW
@@ -77,18 +87,40 @@ class AppState:
     paper_trading_state: PaperTradingState = field(default_factory=PaperTradingState)
     order_submission_log: list[str] = field(default_factory=list)
     order_submission_records: list[dict[str, str]] = field(default_factory=list)
+    smart_message_events: list[dict[str, str]] = field(default_factory=list)
 
 
 _SUBMISSION_RECORD_FIELDS = (
     "timestamp",
     "order_status",
     "fill_status",
+    "order_id",
     "symbol",
     "side",
     "price",
     "quantity",
     "failure_reason",
     "message",
+    "planned_price",
+    "planned_quantity",
+    "planned_stop_price",
+    "planned_target_price",
+    "opportunity_tier",
+    "planned_risk_reward_ratio",
+    "portfolio_fit_score",
+    "diversification_score",
+    "concentration_penalty_score",
+    "fill_price",
+    "fill_quantity",
+)
+
+_SMART_MESSAGE_EVENT_FIELDS = (
+    "timestamp",
+    "category",
+    "title",
+    "detail",
+    "symbol",
+    "level",
 )
 
 
@@ -124,14 +156,28 @@ def _decode_submission_records(value: object) -> list[dict[str, str]]:
     return rows
 
 
+def _decode_smart_message_events(value: object) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[dict[str, str]] = []
+    for item in value[:120]:
+        if not isinstance(item, dict):
+            continue
+        rows.append({field: str(item.get(field, "") or "") for field in _SMART_MESSAGE_EVENT_FIELDS})
+    return rows
+
+
 def _serialize_state(state: AppState) -> dict[str, object]:
     payload = asdict(state)
     broker_payload = dict(payload.get("broker_profile", {}))
     for field_name in _SENSITIVE_BROKER_FIELDS:
         broker_payload[field_name] = protect_secret(str(broker_payload.get(field_name, "")))
     payload["broker_profile"] = broker_payload
+    for field_name in _SENSITIVE_STATE_FIELDS:
+        payload[field_name] = protect_secret(str(payload.get(field_name, "")))
     payload["order_submission_log"] = [str(item or "") for item in list(payload.get("order_submission_log", []) or [])[:200] if str(item or "").strip()]
     payload["order_submission_records"] = _decode_submission_records(payload.get("order_submission_records", []))
+    payload["smart_message_events"] = _decode_smart_message_events(payload.get("smart_message_events", []))
     return payload
 
 
@@ -271,6 +317,15 @@ def load_app_state(path: str | Path) -> AppState:
         daily_plan_template=data.get("daily_plan_template", "balanced"),
         daily_plan_focus_only=bool(data.get("daily_plan_focus_only", False)),
         daily_plan_candidate_limit=int(data.get("daily_plan_candidate_limit", 10) or 10),
+        ai_review_base_url=str(data.get("ai_review_base_url", "https://api.openai.com/v1") or "https://api.openai.com/v1"),
+        ai_review_api_key=reveal_secret(str(data.get("ai_review_api_key", "") or "")),
+        ai_review_model=str(data.get("ai_review_model", "gpt-5.4") or "gpt-5.4"),
+        ai_review_reasoning_effort=str(data.get("ai_review_reasoning_effort", "medium") or "medium"),
+        ai_review_max_output_tokens=_safe_int(data.get("ai_review_max_output_tokens", 900) or 900, 900),
+        ai_review_timeout_seconds=_safe_float(data.get("ai_review_timeout_seconds", 45.0) or 45.0, 45.0),
+        ai_review_auto_run_enabled=bool(data.get("ai_review_auto_run_enabled", False)),
+        ai_review_auto_run_on_news_refresh=bool(data.get("ai_review_auto_run_on_news_refresh", True)),
+        ai_review_auto_run_on_pool_refresh=bool(data.get("ai_review_auto_run_on_pool_refresh", True)),
         market_data_mode=data.get("market_data_mode", "auto"),
         market_timeframe_mode=data.get("market_timeframe_mode", _DEFAULT_MARKET_TIMEFRAME),
         market_history_window=data.get("market_history_window", _DEFAULT_MARKET_HISTORY_WINDOW),
@@ -279,6 +334,7 @@ def load_app_state(path: str | Path) -> AppState:
         paper_trading_state=_decode_paper_trading_state(data.get("paper_trading_state", {})),
         order_submission_log=_as_string_list(data.get("order_submission_log", []))[:200],
         order_submission_records=_decode_submission_records(data.get("order_submission_records", [])),
+        smart_message_events=_decode_smart_message_events(data.get("smart_message_events", [])),
     )
 
 

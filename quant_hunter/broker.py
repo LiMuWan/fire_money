@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import csv
 import importlib
@@ -31,6 +31,8 @@ TEST_SUBMIT_REQUIRE_WHITELIST_TEXT = "\u6d4b\u8bd5\u5355\u6a21\u5f0f\u8981\u6c42
 TEST_SUBMIT_WHITELIST_PREFIX = "\u6d4b\u8bd5\u767d\u540d\u5355\uff1a"
 MAINLINE_GATE_PREFIX = "\u4e3b\u7ebf\u5ba1\u67e5 / \u4e3b\u7ebf\u95f8\u95e8\uff1a"
 MAINLINE_REVIEW_PENDING_DETAIL = "\u672a\u547d\u4e2d\u5f53\u524d\u63a8\u8350\u6c60\uff0c\u9700\u4eba\u5de5\u590d\u6838\u540e\u518d\u51b3\u5b9a\u662f\u5426\u6267\u884c\u3002"
+PORTFOLIO_FIT_GATE_PREFIX = "\u7ec4\u5408\u9002\u914d / \u6267\u884c\u95f8\u95e8\uff1a"
+PORTFOLIO_FIT_PENDING_DETAIL = "\u5f53\u524d\u63a8\u8350\u6c60\u5c1a\u672a\u8f93\u51fa\u7ec4\u5408\u9002\u914d\u4fe1\u53f7\uff0c\u5148\u6309\u4e3b\u7ebf\u95f8\u95e8\u4eba\u5de5\u590d\u6838\u3002"
 
 
 def _is_trade_plan_viable(price: float, stop_price: float, target_price: float, min_ratio: float = _MIN_ORDER_RISK_REWARD_RATIO) -> bool:
@@ -59,6 +61,10 @@ def _display_mainline_role(value: str) -> str:
 
 def _mainline_gate_message(symbol_or_name: str, text: str) -> str:
     return f"{MAINLINE_GATE_PREFIX}{symbol_or_name} {text}"
+
+
+def _portfolio_fit_gate_message(symbol_or_name: str, text: str) -> str:
+    return f"{PORTFOLIO_FIT_GATE_PREFIX}{symbol_or_name} {text}"
 
 
 def _normalize_test_submit_max_amount(value: float | int | None, default: float = 10000.0) -> float:
@@ -395,6 +401,335 @@ def _build_mainline_review(order_intents: list[OrderIntent], recommendations: li
     }
 
 
+def _build_portfolio_fit_review(order_intents: list[OrderIntent], recommendations: list[Any] | None = None) -> dict[str, Any]:
+    recommendation_map = {
+        getattr(item, "symbol", ""): item
+        for item in (recommendations or [])
+        if getattr(item, "symbol", "")
+    }
+    rows: list[dict[str, Any]] = []
+    blockers: list[str] = []
+    warnings: list[str] = []
+    pass_count = 0
+    caution_count = 0
+    blocked_count = 0
+    unevaluated_count = 0
+    fit_scores: list[float] = []
+    diversification_scores: list[float] = []
+    concentration_penalties: list[float] = []
+
+    for intent in order_intents:
+        recommendation = recommendation_map.get(intent.symbol)
+        if recommendation is None:
+            rows.append(
+                {
+                    "symbol": intent.symbol,
+                    "name": intent.symbol,
+                    "fit_score": 0.0,
+                    "diversification_score": 0.0,
+                    "concentration_penalty_score": 0.0,
+                    "status": "待核对",
+                    "status_code": "PENDING",
+                    "detail": PORTFOLIO_FIT_PENDING_DETAIL,
+                }
+            )
+            unevaluated_count += 1
+            continue
+
+        stock_name = getattr(recommendation, "stock_name", intent.symbol)
+        fit_score = float(getattr(recommendation, "portfolio_fit_score", 0.0) or 0.0)
+        diversification_score = float(getattr(recommendation, "diversification_score", 0.0) or 0.0)
+        concentration_penalty_score = float(getattr(recommendation, "concentration_penalty_score", 0.0) or 0.0)
+        opportunity_tier = str(getattr(recommendation, "opportunity_tier", "") or "待确认")
+        theme_name = getattr(recommendation, "mainline_tag", "") or getattr(recommendation, "theme_name", "") or "未分类"
+
+        detail = (
+            f"{theme_name} | 组合适配 {fit_score:.0f} | 分散度 {diversification_score:.0f} | "
+            f"集中惩罚 {concentration_penalty_score:.0f} | {opportunity_tier}"
+        )
+        status = "通过"
+        status_code = "PASS"
+
+        if str(getattr(intent, "side", "") or "").upper() in {"SELL", "REDUCE"}:
+            detail = f"{detail} | 卖出/减仓可优先释放组合拥挤或风险预算。"
+        elif fit_score <= 0 and diversification_score <= 0 and concentration_penalty_score <= 0:
+            status = "待核对"
+            status_code = "PENDING"
+            detail = PORTFOLIO_FIT_PENDING_DETAIL
+            unevaluated_count += 1
+        elif fit_score < 38.0 or concentration_penalty_score >= 68.0:
+            status = "拦截"
+            status_code = "BLOCKED"
+            blocked_count += 1
+            blockers.append(
+                _portfolio_fit_gate_message(
+                    stock_name,
+                    f"组合适配 {fit_score:.0f} / 集中惩罚 {concentration_penalty_score:.0f}，当前不建议推进新委托。",
+                )
+            )
+        elif fit_score < 56.0 or concentration_penalty_score >= 42.0 or (diversification_score > 0 and diversification_score < 42.0):
+            status = "谨慎"
+            status_code = "CAUTION"
+            caution_count += 1
+            warnings.append(
+                _portfolio_fit_gate_message(
+                    stock_name,
+                    f"组合适配 {fit_score:.0f}，建议缩量或等待更分散的进场窗口。",
+                )
+            )
+        else:
+            pass_count += 1
+
+        fit_scores.append(fit_score)
+        diversification_scores.append(diversification_score)
+        concentration_penalties.append(concentration_penalty_score)
+        rows.append(
+            {
+                "symbol": intent.symbol,
+                "name": stock_name,
+                "fit_score": round(fit_score, 2),
+                "diversification_score": round(diversification_score, 2),
+                "concentration_penalty_score": round(concentration_penalty_score, 2),
+                "status": status,
+                "status_code": status_code,
+                "detail": detail,
+            }
+        )
+
+    return {
+        "status": "拦截" if blockers else ("谨慎" if warnings else ("待核对" if rows and pass_count == 0 and caution_count == 0 and blocked_count == 0 else "通过")),
+        "status_code": "BLOCKED" if blockers else ("CAUTION" if warnings else ("PENDING" if rows and pass_count == 0 and caution_count == 0 and blocked_count == 0 else "PASS")),
+        "rows": rows,
+        "blockers": list(dict.fromkeys(blockers)),
+        "warnings": list(dict.fromkeys(warnings)),
+        "pass_count": pass_count,
+        "caution_count": caution_count,
+        "blocked_count": blocked_count,
+        "unevaluated_count": unevaluated_count,
+        "avg_fit_score": round(sum(fit_scores) / len(fit_scores), 4) if fit_scores else 0.0,
+        "avg_diversification_score": round(sum(diversification_scores) / len(diversification_scores), 4) if diversification_scores else 0.0,
+        "max_concentration_penalty_score": round(max(concentration_penalties), 4) if concentration_penalties else 0.0,
+    }
+
+
+def _recommendation_map(recommendations: list[Any] | None) -> dict[str, Any]:
+    return {
+        str(getattr(item, "symbol", "") or ""): item
+        for item in (recommendations or [])
+        if str(getattr(item, "symbol", "") or "")
+    }
+
+
+def _review_row_by_symbol(review: dict[str, Any] | None, symbol: str) -> dict[str, Any]:
+    rows = list((review or {}).get("rows", []) or [])
+    target = str(symbol or "")
+    return next((row for row in rows if str(row.get("symbol", "")) == target), {})
+
+
+def normalize_execution_record(row: Any) -> dict[str, Any]:
+    normalized = normalize_submission_result(row)
+
+    def _pick_value_local(source: Any, candidates: list[str], fallback: Any = None) -> Any:
+        if source is None:
+            return fallback
+        if isinstance(source, dict):
+            for key in candidates:
+                if key in source and source[key] is not None:
+                    return source[key]
+        for key in candidates:
+            if hasattr(source, key):
+                value = getattr(source, key)
+                if value is not None:
+                    return value
+        return fallback
+
+    symbol = str(_pick_value_local(row, ["symbol", "sec_id", "security", "instrument"], fallback=normalized["symbol"]) or normalized["symbol"])
+    side = str(_pick_value_local(row, ["side", "order_side", "direction"], fallback="") or "").upper()
+    timestamp = str(
+        _pick_value_local(
+            row,
+            ["timestamp", "create_time", "created_at", "trade_time", "update_time", "updated_at", "order_time", "entrust_time"],
+            fallback="",
+        )
+        or ""
+    )
+    price_value = _pick_value_local(row, ["price", "order_price", "limit_price", "entrust_price"], fallback=0.0)
+    quantity_value = _pick_value_local(row, ["quantity", "volume", "order_qty", "entrust_amount", "entrust_qty"], fallback=0)
+    try:
+        price = float(price_value or 0.0)
+    except (TypeError, ValueError):
+        price = 0.0
+    try:
+        quantity = int(float(quantity_value or 0))
+    except (TypeError, ValueError):
+        quantity = 0
+
+    normalized.update(
+        {
+            "symbol": symbol,
+            "side": side,
+            "timestamp": timestamp,
+            "price": f"{price:.3f}" if price > 0 else "",
+            "quantity": str(quantity) if quantity > 0 else "",
+        }
+    )
+    return normalized
+
+
+def merge_submission_records_with_execution_records(
+    records: list[dict[str, Any]],
+    execution_records: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    updated_records = [dict(item) for item in records or []]
+    notes: list[str] = []
+    if not updated_records or not execution_records:
+        return updated_records, notes
+
+    for execution in execution_records:
+        symbol = str(execution.get("symbol", "") or "")
+        side = str(execution.get("side", "") or "").upper()
+        order_id = str(execution.get("order_id", "") or "")
+        target_index = -1
+        if order_id:
+            for index in range(len(updated_records) - 1, -1, -1):
+                if str(updated_records[index].get("order_id", "") or "") == order_id:
+                    target_index = index
+                    break
+        if target_index < 0 and symbol:
+            for index in range(len(updated_records) - 1, -1, -1):
+                record = updated_records[index]
+                if str(record.get("symbol", "") or "") != symbol:
+                    continue
+                if side and str(record.get("side", "") or "").upper() != side:
+                    continue
+                if str(record.get("fill_status", "") or "").upper() in {"FILLED", "REJECTED", "CANCELLED"}:
+                    continue
+                target_index = index
+                break
+        if target_index < 0:
+            continue
+
+        record = dict(updated_records[target_index])
+        changed = False
+        for field in ("order_id", "order_status", "fill_status", "fill_price", "fill_quantity", "message", "price", "quantity", "timestamp"):
+            value = execution.get(field, "")
+            if value in {None, ""}:
+                continue
+            text_value = str(value)
+            if str(record.get(field, "") or "") != text_value:
+                record[field] = text_value
+                changed = True
+        if changed:
+            updated_records[target_index] = record
+            status_text = str(record.get("fill_status", record.get("order_status", "")) or "")
+            notes.append(f"{symbol} 成交回报已更新：{status_text}")
+
+    return updated_records, notes
+
+
+def _submission_result_is_structured(result: Any) -> bool:
+    if isinstance(result, dict):
+        keys = {str(key) for key in result.keys()}
+        return any(
+            key in keys
+            for key in (
+                "order_id",
+                "fill_status",
+                "filled_status",
+                "fill_price",
+                "filled_price",
+                "avg_fill_price",
+                "fill_quantity",
+                "filled_quantity",
+                "filled_volume",
+                "trade_volume",
+                "deal_volume",
+                "deal_status",
+                "exec_status",
+            )
+        )
+    return False
+
+
+def normalize_submission_result(result: Any, *, symbol: str = "", expected_quantity: int = 0) -> dict[str, Any]:
+    def _pick_value_local(row: Any, candidates: list[str], fallback: Any = None) -> Any:
+        if row is None:
+            return fallback
+        if isinstance(row, dict):
+            for key in candidates:
+                if key in row and row[key] is not None:
+                    return row[key]
+        for key in candidates:
+            if hasattr(row, key):
+                value = getattr(row, key)
+                if value is not None:
+                    return value
+        return fallback
+
+    payload = result if isinstance(result, dict) else {}
+    result_text = str(
+        _pick_value_local(
+            payload or result,
+            ["result", "message", "msg", "status_msg", "remark"],
+            fallback=str(result or "submitted"),
+        )
+        or "submitted"
+    )
+    order_status = str(_pick_value_local(payload or result, ["order_status", "status"], fallback="SUBMITTED") or "SUBMITTED").upper()
+    fill_price_value = _pick_value_local(
+        payload or result,
+        ["fill_price", "filled_price", "avg_fill_price", "filled_avg_price", "trade_price", "deal_price"],
+        fallback=0.0,
+    )
+    fill_quantity_value = _pick_value_local(
+        payload or result,
+        ["fill_quantity", "filled_quantity", "filled_volume", "trade_volume", "deal_volume", "filled_qty"],
+        fallback=0,
+    )
+    try:
+        fill_price = float(fill_price_value or 0.0)
+    except (TypeError, ValueError):
+        fill_price = 0.0
+    try:
+        fill_quantity = int(float(fill_quantity_value or 0))
+    except (TypeError, ValueError):
+        fill_quantity = 0
+    fill_status = str(
+        _pick_value_local(
+            payload or result,
+            ["fill_status", "filled_status", "exec_status", "deal_status"],
+            fallback="",
+        )
+        or ""
+    ).upper()
+    if not fill_status:
+        if fill_quantity > 0:
+            fill_status = "FILLED" if expected_quantity <= 0 or fill_quantity >= expected_quantity else "PARTIAL"
+        else:
+            fill_status = "PENDING"
+    order_id = str(_pick_value_local(payload or result, ["order_id", "cl_ord_id", "entrust_no", "order_no"], fallback="") or "")
+
+    if _submission_result_is_structured(result):
+        display_text = result_text
+        if symbol and symbol not in display_text:
+            display_text = f"{symbol}: {display_text}"
+        if fill_quantity > 0 and fill_price > 0:
+            display_text = f"{display_text} | 成交 {fill_quantity} @ {fill_price:.3f}"
+    else:
+        display_text = result_text
+
+    return {
+        "symbol": symbol or str(payload.get("symbol", "") or ""),
+        "order_status": order_status,
+        "fill_status": fill_status,
+        "fill_price": f"{fill_price:.3f}" if fill_price > 0 else "",
+        "fill_quantity": str(fill_quantity) if fill_quantity > 0 else "",
+        "order_id": order_id,
+        "message": result_text,
+        "display_text": display_text,
+    }
+
+
 def _runtime_root() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
@@ -545,72 +880,181 @@ class EastmoneyBrokerAdapter:
 
 
 
-    def export_order_plan(self, intents: list[OrderIntent], export_dir: str | Path) -> Path:
+    def export_order_plan(
+        self,
+        intents: list[OrderIntent],
+        export_dir: str | Path,
+        *,
+        recommendations: list[Any] | None = None,
+        execution_summary: dict[str, Any] | None = None,
+    ) -> Path:
         root = Path(export_dir)
         root.mkdir(parents=True, exist_ok=True)
         output = root / f"eastmoney_order_plan_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        recommendation_map = _recommendation_map(recommendations)
+        fit_review = dict((execution_summary or {}).get("portfolio_fit_review", {}) or {})
+        mainline_review = dict((execution_summary or {}).get("mainline_review", {}) or {})
+        include_execution_context = bool(recommendation_map or execution_summary)
         with output.open("w", encoding="utf-8-sig", newline="") as handle:
             writer = csv.writer(handle)
-            writer.writerow(
-                [
-                    "symbol",
-                    "side",
-                    "price",
-                    "quantity",
-                    "stop_price",
-                    "target_price",
-                    "signal_date",
-                    "reason",
-                ]
-            )
-            for item in intents:
-                writer.writerow(
+            header = [
+                "symbol",
+                "side",
+                "price",
+                "quantity",
+                "stop_price",
+                "target_price",
+                "signal_date",
+                "reason",
+            ]
+            if include_execution_context:
+                header.extend(
                     [
-                        item.symbol,
-                        item.side,
-                        item.price,
-                        item.quantity,
-                        item.stop_price,
-                        item.target_price,
-                        item.signal_date,
-                        item.reason,
+                        "opportunity_tier",
+                        "risk_flag",
+                        "risk_reward_ratio",
+                        "portfolio_fit_score",
+                        "diversification_score",
+                        "concentration_penalty_score",
+                        "portfolio_fit_status",
+                        "portfolio_fit_detail",
+                        "mainline_status",
+                        "mainline_detail",
                     ]
                 )
+            writer.writerow(header)
+            for item in intents:
+                row = [
+                    item.symbol,
+                    item.side,
+                    item.price,
+                    item.quantity,
+                    item.stop_price,
+                    item.target_price,
+                    item.signal_date,
+                    item.reason,
+                ]
+                if include_execution_context:
+                    recommendation = recommendation_map.get(item.symbol)
+                    fit_row = _review_row_by_symbol(fit_review, item.symbol)
+                    mainline_row = _review_row_by_symbol(mainline_review, item.symbol)
+                    risk_reward_ratio = float(getattr(item, "risk_reward_ratio", 0.0) or 0.0)
+                    row.extend(
+                        [
+                            getattr(recommendation, "opportunity_tier", "") if recommendation is not None else "",
+                            getattr(recommendation, "mainline_risk_flag", "") if recommendation is not None else "",
+                            risk_reward_ratio,
+                            getattr(recommendation, "portfolio_fit_score", 0.0) if recommendation is not None else fit_row.get("fit_score", 0.0),
+                            getattr(recommendation, "diversification_score", 0.0) if recommendation is not None else fit_row.get("diversification_score", 0.0),
+                            getattr(recommendation, "concentration_penalty_score", 0.0) if recommendation is not None else fit_row.get("concentration_penalty_score", 0.0),
+                            fit_row.get("status", ""),
+                            fit_row.get("detail", ""),
+                            mainline_row.get("status", ""),
+                            mainline_row.get("detail", ""),
+                        ]
+                    )
+                writer.writerow(row)
         return output
 
-    def export_submission_records(self, records: list[dict[str, Any]], export_dir: str | Path) -> Path:
+    def export_submission_records(
+        self,
+        records: list[dict[str, Any]],
+        export_dir: str | Path,
+        *,
+        recommendations: list[Any] | None = None,
+        execution_summary: dict[str, Any] | None = None,
+    ) -> Path:
         root = Path(export_dir)
         root.mkdir(parents=True, exist_ok=True)
         output = root / f"eastmoney_submission_records_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        recommendation_map = _recommendation_map(recommendations)
+        fit_review = dict((execution_summary or {}).get("portfolio_fit_review", {}) or {})
+        mainline_review = dict((execution_summary or {}).get("mainline_review", {}) or {})
+        include_execution_context = bool(
+            recommendation_map
+            or execution_summary
+            or any(
+                str(item.get("planned_price", "") or "")
+                or str(item.get("planned_quantity", "") or "")
+                or str(item.get("order_id", "") or "")
+                or str(item.get("fill_price", "") or "")
+                or str(item.get("fill_quantity", "") or "")
+                for item in records
+            )
+        )
         with output.open("w", encoding="utf-8-sig", newline="") as handle:
             writer = csv.writer(handle)
-            writer.writerow(
-                [
-                    "timestamp",
-                    "order_status",
-                    "fill_status",
-                    "symbol",
-                    "side",
-                    "price",
-                    "quantity",
-                    "failure_reason",
-                    "message",
-                ]
-            )
-            for item in records:
-                writer.writerow(
+            header = [
+                "timestamp",
+                "order_status",
+                "fill_status",
+                "symbol",
+                "side",
+                "price",
+                "quantity",
+                "failure_reason",
+                "message",
+            ]
+            if include_execution_context:
+                header.extend(
                     [
-                        item.get("timestamp", ""),
-                        item.get("order_status", item.get("status", "")),
-                        item.get("fill_status", ""),
-                        item.get("symbol", ""),
-                        item.get("side", ""),
-                        item.get("price", ""),
-                        item.get("quantity", ""),
-                        item.get("failure_reason", ""),
-                        item.get("message", ""),
+                        "order_id",
+                        "fill_price",
+                        "fill_quantity",
+                        "planned_price",
+                        "planned_quantity",
+                        "planned_stop_price",
+                        "planned_target_price",
+                        "planned_risk_reward_ratio",
+                        "opportunity_tier",
+                        "portfolio_fit_score",
+                        "diversification_score",
+                        "concentration_penalty_score",
+                        "portfolio_fit_status",
+                        "portfolio_fit_detail",
+                        "mainline_status",
+                        "mainline_detail",
                     ]
                 )
+            writer.writerow(header)
+            for item in records:
+                symbol = str(item.get("symbol", "") or "")
+                recommendation = recommendation_map.get(symbol)
+                fit_row = _review_row_by_symbol(fit_review, symbol)
+                mainline_row = _review_row_by_symbol(mainline_review, symbol)
+                row = [
+                    item.get("timestamp", ""),
+                    item.get("order_status", item.get("status", "")),
+                    item.get("fill_status", ""),
+                    symbol,
+                    item.get("side", ""),
+                    item.get("price", ""),
+                    item.get("quantity", ""),
+                    item.get("failure_reason", ""),
+                    item.get("message", ""),
+                ]
+                if include_execution_context:
+                    row.extend(
+                        [
+                            item.get("order_id", ""),
+                            item.get("fill_price", ""),
+                            item.get("fill_quantity", ""),
+                            item.get("planned_price", ""),
+                            item.get("planned_quantity", ""),
+                            item.get("planned_stop_price", ""),
+                            item.get("planned_target_price", ""),
+                            item.get("planned_risk_reward_ratio", ""),
+                            item.get("opportunity_tier", getattr(recommendation, "opportunity_tier", "") if recommendation is not None else ""),
+                            item.get("portfolio_fit_score", getattr(recommendation, "portfolio_fit_score", 0.0) if recommendation is not None else fit_row.get("fit_score", 0.0)),
+                            item.get("diversification_score", getattr(recommendation, "diversification_score", 0.0) if recommendation is not None else fit_row.get("diversification_score", 0.0)),
+                            item.get("concentration_penalty_score", getattr(recommendation, "concentration_penalty_score", 0.0) if recommendation is not None else fit_row.get("concentration_penalty_score", 0.0)),
+                            fit_row.get("status", ""),
+                            fit_row.get("detail", ""),
+                            mainline_row.get("status", ""),
+                            mainline_row.get("detail", ""),
+                        ]
+                    )
+                writer.writerow(row)
         return output
 
     def create_templates(self, export_dir: str | Path) -> list[Path]:
@@ -697,6 +1141,88 @@ class EastmoneyBrokerAdapter:
             holdings.append(HoldingRecord(str(symbol), quantity, available, cost_price, market_value))
         return cash_snapshot, holdings
 
+    def sync_execution_records_via_sdk(self, profile: BrokerProfile, limit: int = 40) -> list[dict[str, Any]]:
+        env = self.diagnose_environment(profile)
+        if env["bridge_ready"]:
+            payload = self._run_bridge(
+                env["bridge_python"],
+                "execution",
+                {
+                    "token": profile.token,
+                    "account_id": profile.account_id,
+                    "sdk_module": profile.sdk_module,
+                    "limit": int(limit),
+                },
+            )
+            rows = list(payload.get("execution_records", []) or [])
+            return [normalize_execution_record(item) for item in rows]
+
+        gm = self._prepare_sdk_direct(profile)
+        orders = self._call_optional_available(gm, ["get_orders", "get_unfinished_orders", "get_order"], account_id=profile.account_id)
+        trades = self._call_optional_available(gm, ["get_execution_reports", "get_trades", "get_deals", "get_trade"], account_id=profile.account_id)
+        combined: list[dict[str, Any]] = []
+        for source in (orders or [], trades or []):
+            if source is None:
+                continue
+            bucket = source if isinstance(source, list) else [source]
+            combined.extend(normalize_execution_record(item) for item in bucket)
+        deduped: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        for item in combined:
+            key = (
+                str(item.get("order_id", "") or ""),
+                str(item.get("symbol", "") or ""),
+                str(item.get("side", "") or ""),
+                str(item.get("timestamp", "") or ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(item)
+        return deduped[: max(int(limit or 0), 1)]
+
+    def sync_execution_records_via_sdk(self, profile: BrokerProfile, limit: int = 40) -> list[dict[str, Any]]:
+        env = self.diagnose_environment(profile)
+        if env["bridge_ready"]:
+            payload = self._run_bridge(
+                env["bridge_python"],
+                "execution",
+                {
+                    "token": profile.token,
+                    "account_id": profile.account_id,
+                    "sdk_module": profile.sdk_module,
+                    "limit": int(limit),
+                },
+            )
+            rows = list(payload.get("execution_records", []) or [])
+            return [normalize_execution_record(item) for item in rows]
+
+        gm = self._prepare_sdk_direct(profile)
+        orders = self._call_optional_available(gm, ["get_orders", "get_unfinished_orders", "get_order"], account_id=profile.account_id)
+        trades = self._call_optional_available(gm, ["get_execution_reports", "get_trades", "get_deals", "get_trade"], account_id=profile.account_id)
+        combined: list[dict[str, Any]] = []
+        for source in (orders or [], trades or []):
+            if source is None:
+                continue
+            if isinstance(source, list):
+                combined.extend(normalize_execution_record(item) for item in source)
+            else:
+                combined.append(normalize_execution_record(source))
+        seen: set[tuple[str, str, str, str]] = set()
+        deduped: list[dict[str, Any]] = []
+        for item in combined:
+            key = (
+                str(item.get("order_id", "") or ""),
+                str(item.get("symbol", "") or ""),
+                str(item.get("side", "") or ""),
+                str(item.get("timestamp", "") or ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(item)
+        return deduped[: max(int(limit or 0), 1)]
+
     def submit_order_intents(self, profile: BrokerProfile, intents: list[OrderIntent]) -> list[str]:
         env = self.diagnose_environment(profile)
         if env["bridge_ready"]:
@@ -710,14 +1236,23 @@ class EastmoneyBrokerAdapter:
                     "intents": [asdict(item) for item in intents],
                 },
             )
-            return [f"{item['symbol']}: {item['result']}" for item in payload["results"]]
+            results: list[Any] = []
+            for item in payload["results"]:
+                symbol = str(item.get("symbol", "") or "")
+                expected_intent = next((intent for intent in intents if intent.symbol == symbol), None)
+                expected_quantity = int(getattr(expected_intent, "quantity", 0) or 0)
+                if _submission_result_is_structured(item):
+                    results.append(normalize_submission_result(item, symbol=symbol, expected_quantity=expected_quantity))
+                else:
+                    results.append(f"{symbol}: {item['result']}")
+            return results
 
         gm = self._prepare_sdk_direct(profile)
         order_func = getattr(gm, "order_volume", None)
         if not callable(order_func):
             raise RuntimeError("当前 SDK 中没有找到 order_volume 函数。")
         limit_type = self._resolve_attr(gm, ["OrderType_Limit", "ORDER_TYPE_LIMIT"])
-        results: list[str] = []
+        results: list[Any] = []
         for item in intents:
             side_value = self._resolve_order_side_value(gm, item.side)
             position_effect = self._resolve_position_effect_value(gm, item.side)
@@ -732,7 +1267,10 @@ class EastmoneyBrokerAdapter:
             if position_effect is not None:
                 kwargs["position_effect"] = position_effect
             result = self._call_with_fallbacks(order_func, kwargs)
-            results.append(f"{item.symbol} {item.side} {item.quantity} @ {item.price}: {self._compact_result(result)}")
+            if _submission_result_is_structured(result):
+                results.append(normalize_submission_result(result, symbol=item.symbol, expected_quantity=int(item.quantity)))
+            else:
+                results.append(f"{item.symbol} {item.side} {item.quantity} @ {item.price}: {self._compact_result(result)}")
         return results
 
     def generate_gm_strategy_script(
@@ -872,6 +1410,22 @@ class EastmoneyBrokerAdapter:
             raise last_error
         raise RuntimeError(f"SDK 中不存在这些函数: {', '.join(names)}")
 
+    def _call_optional_available(self, gm: Any, names: list[str], **kwargs):
+        for name in names:
+            func = getattr(gm, name, None)
+            if not callable(func):
+                continue
+            try:
+                return func(**kwargs)
+            except TypeError:
+                try:
+                    return func()
+                except Exception:
+                    continue
+            except Exception:
+                continue
+        return None
+
     def _call_with_fallbacks(self, func, kwargs: dict[str, Any]):
         attempts = [
             kwargs,
@@ -979,6 +1533,7 @@ def summarize_broker_execution(
         total_assets=total_assets,
         risk_profile=risk_profile,
     )
+    portfolio_fit_review = _build_portfolio_fit_review(order_intents, recommendations=recommendations)
 
     side_counts = {
         "BUY": sum(1 for item in order_intents if item.side == "BUY"),
@@ -1036,6 +1591,8 @@ def summarize_broker_execution(
     warnings.extend(item for item in mainline_review["warnings"] if item not in warnings)
     blockers.extend(item for item in portfolio_risk_review["blockers"] if item not in blockers)
     warnings.extend(item for item in portfolio_risk_review["warnings"] if item not in warnings)
+    blockers.extend(item for item in portfolio_fit_review["blockers"] if item not in blockers)
+    warnings.extend(item for item in portfolio_fit_review["warnings"] if item not in warnings)
 
     blockers = list(dict.fromkeys(blockers))
     warnings = list(dict.fromkeys(warnings))
@@ -1072,6 +1629,7 @@ def summarize_broker_execution(
         "warnings": warnings,
         "mainline_review": mainline_review,
         "portfolio_risk_review": portfolio_risk_review,
+        "portfolio_fit_review": portfolio_fit_review,
         "risk_profile": normalized_risk_profile,
     }
 
@@ -1177,6 +1735,194 @@ def preview_position_changes(
     }
 
 
+def submission_record_execution_delta(record: dict[str, Any] | None) -> dict[str, Any]:
+    payload = dict(record or {})
+
+    def _safe_float(value: Any) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _safe_int(value: Any) -> int:
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return 0
+
+    planned_price = _safe_float(payload.get("planned_price"))
+    submitted_price = _safe_float(payload.get("price"))
+    fill_price = _safe_float(payload.get("fill_price"))
+    actual_price = fill_price if fill_price > 0 else submitted_price
+    planned_quantity = _safe_int(payload.get("planned_quantity"))
+    submitted_quantity = _safe_int(payload.get("quantity"))
+    fill_quantity = _safe_int(payload.get("fill_quantity"))
+    actual_quantity = fill_quantity if fill_quantity > 0 else submitted_quantity
+
+    price_deviation_bps = 0.0
+    if planned_price > 0 and actual_price > 0:
+        price_deviation_bps = round((actual_price - planned_price) / planned_price * 10000.0, 1)
+    quantity_deviation = actual_quantity - planned_quantity if planned_quantity > 0 else 0
+    has_price_baseline = planned_price > 0 and actual_price > 0
+    has_quantity_baseline = planned_quantity > 0
+    has_deviation = (has_price_baseline and abs(price_deviation_bps) >= 1.0) or (has_quantity_baseline and quantity_deviation != 0)
+
+    note_parts: list[str] = []
+    if has_price_baseline:
+        if abs(price_deviation_bps) < 1.0:
+            note_parts.append("价格与计划基本一致")
+        elif price_deviation_bps > 0:
+            note_parts.append(f"价格高于计划 {price_deviation_bps:.1f}bp")
+        else:
+            note_parts.append(f"价格低于计划 {abs(price_deviation_bps):.1f}bp")
+    if has_quantity_baseline:
+        if quantity_deviation == 0:
+            note_parts.append("数量与计划一致")
+        elif quantity_deviation > 0:
+            note_parts.append(f"数量较计划增加 {quantity_deviation}")
+        else:
+            note_parts.append(f"数量较计划减少 {abs(quantity_deviation)}")
+
+    return {
+        "planned_price": planned_price,
+        "actual_price": actual_price,
+        "planned_quantity": planned_quantity,
+        "actual_quantity": actual_quantity,
+        "price_deviation_bps": price_deviation_bps,
+        "quantity_deviation": quantity_deviation,
+        "has_baseline": has_price_baseline or has_quantity_baseline,
+        "has_deviation": has_deviation,
+        "note": " | ".join(note_parts) if note_parts else "尚未建立计划基线",
+    }
+
+
+def reconcile_submission_records_with_holdings(
+    records: list[dict[str, Any]],
+    previous_holdings: list[HoldingRecord],
+    current_holdings: list[HoldingRecord],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    previous_map = {item.symbol: item for item in previous_holdings or []}
+    current_map = {item.symbol: item for item in current_holdings or []}
+    buy_fill_remaining = {
+        symbol: max(int(getattr(current_map.get(symbol), "quantity", 0) or 0) - int(getattr(previous_map.get(symbol), "quantity", 0) or 0), 0)
+        for symbol in set(previous_map) | set(current_map)
+    }
+    sell_fill_remaining = {
+        symbol: max(int(getattr(previous_map.get(symbol), "quantity", 0) or 0) - int(getattr(current_map.get(symbol), "quantity", 0) or 0), 0)
+        for symbol in set(previous_map) | set(current_map)
+    }
+
+    updated_records: list[dict[str, Any]] = []
+    reconciliation_notes: list[str] = []
+    for record in records:
+        row = dict(record)
+        symbol = str(row.get("symbol", "") or "")
+        side = str(row.get("side", "") or "").upper()
+        fill_status = str(row.get("fill_status", "") or "").upper()
+        if fill_status in {"FILLED", "REJECTED", "CANCELLED"}:
+            updated_records.append(row)
+            continue
+
+        try:
+            target_quantity = int(float(row.get("quantity", 0) or 0))
+        except (TypeError, ValueError):
+            target_quantity = 0
+        try:
+            existing_fill_quantity = int(float(row.get("fill_quantity", 0) or 0))
+        except (TypeError, ValueError):
+            existing_fill_quantity = 0
+        remaining_quantity = max(target_quantity - existing_fill_quantity, 0)
+        if remaining_quantity <= 0:
+            updated_records.append(row)
+            continue
+
+        inferred_fill = 0
+        if side == "BUY":
+            inferred_fill = min(int(buy_fill_remaining.get(symbol, 0) or 0), remaining_quantity)
+            buy_fill_remaining[symbol] = max(int(buy_fill_remaining.get(symbol, 0) or 0) - inferred_fill, 0)
+        elif side in {"SELL", "REDUCE"}:
+            inferred_fill = min(int(sell_fill_remaining.get(symbol, 0) or 0), remaining_quantity)
+            sell_fill_remaining[symbol] = max(int(sell_fill_remaining.get(symbol, 0) or 0) - inferred_fill, 0)
+
+        if inferred_fill > 0:
+            total_fill_quantity = existing_fill_quantity + inferred_fill
+            row["fill_quantity"] = str(total_fill_quantity)
+            row["fill_status"] = "FILLED" if total_fill_quantity >= target_quantity else "PARTIAL"
+            note = (
+                f"SDK持仓同步推断已成交 {inferred_fill}"
+                if row["fill_status"] == "FILLED"
+                else f"SDK持仓同步推断部分成交 {total_fill_quantity}/{target_quantity}"
+            )
+            base_message = str(row.get("message", "") or "").strip()
+            if note not in base_message:
+                row["message"] = f"{base_message} | {note}".strip(" |")
+            reconciliation_notes.append(f"{symbol} {note}")
+        updated_records.append(row)
+
+    return updated_records, reconciliation_notes
+
+
+def submission_record_execution_delta(record: dict[str, Any] | None) -> dict[str, Any]:
+    payload = dict(record or {})
+
+    def _safe_float(value: Any) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _safe_int(value: Any) -> int:
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return 0
+
+    planned_price = _safe_float(payload.get("planned_price"))
+    submitted_price = _safe_float(payload.get("price"))
+    fill_price = _safe_float(payload.get("fill_price"))
+    actual_price = fill_price if fill_price > 0 else submitted_price
+    planned_quantity = _safe_int(payload.get("planned_quantity"))
+    submitted_quantity = _safe_int(payload.get("quantity"))
+    fill_quantity = _safe_int(payload.get("fill_quantity"))
+    actual_quantity = fill_quantity if fill_quantity > 0 else submitted_quantity
+
+    price_deviation_bps = 0.0
+    if planned_price > 0 and actual_price > 0:
+        price_deviation_bps = round((actual_price - planned_price) / planned_price * 10000.0, 1)
+    quantity_deviation = actual_quantity - planned_quantity if planned_quantity > 0 else 0
+    has_price_baseline = planned_price > 0 and actual_price > 0
+    has_quantity_baseline = planned_quantity > 0
+    has_deviation = (has_price_baseline and abs(price_deviation_bps) >= 1.0) or (has_quantity_baseline and quantity_deviation != 0)
+
+    note_parts: list[str] = []
+    if has_price_baseline:
+        if abs(price_deviation_bps) < 1.0:
+            note_parts.append("价格与计划基本一致")
+        elif price_deviation_bps > 0:
+            note_parts.append(f"价格高于计划 {price_deviation_bps:.1f}bp")
+        else:
+            note_parts.append(f"价格低于计划 {abs(price_deviation_bps):.1f}bp")
+    if has_quantity_baseline:
+        if quantity_deviation == 0:
+            note_parts.append("数量与计划一致")
+        elif quantity_deviation > 0:
+            note_parts.append(f"数量较计划增加 {quantity_deviation}")
+        else:
+            note_parts.append(f"数量较计划减少 {abs(quantity_deviation)}")
+
+    return {
+        "planned_price": planned_price,
+        "actual_price": actual_price,
+        "planned_quantity": planned_quantity,
+        "actual_quantity": actual_quantity,
+        "price_deviation_bps": price_deviation_bps,
+        "quantity_deviation": quantity_deviation,
+        "has_baseline": has_price_baseline or has_quantity_baseline,
+        "has_deviation": has_deviation,
+        "note": " | ".join(note_parts) if note_parts else "尚未建立计划基线",
+    }
+
+
 def summarize_trade_recap(
     submission_records: list[dict[str, str]],
     holdings: list[HoldingRecord],
@@ -1193,11 +1939,21 @@ def summarize_trade_recap(
     review_flags: list[str] = []
 
     executed_capital = 0.0
+    deviation_rows: list[dict[str, Any]] = []
     for item in submission_records:
         try:
             executed_capital += float(item.get("price", "0") or 0.0) * float(item.get("quantity", "0") or 0.0)
         except ValueError:
             continue
+        delta = submission_record_execution_delta(item)
+        if delta["has_baseline"]:
+            deviation_rows.append(
+                {
+                    "symbol": str(item.get("symbol", "") or ""),
+                    "timestamp": str(item.get("timestamp", "") or ""),
+                    **delta,
+                }
+            )
 
     holding_market_value = sum(item.market_value for item in holdings)
     latest_messages = [item for item in order_log[-3:] if item.strip()]
@@ -1206,6 +1962,7 @@ def summarize_trade_recap(
         symbol = item.get("symbol", "").strip()
         if symbol and symbol not in focus_symbols:
             focus_symbols.append(symbol)
+    deviation_items = [item for item in deviation_rows if bool(item.get("has_deviation"))]
 
     if failed_count:
         review_flags.append(f"有 {failed_count} 笔提交失败，需要核对接口权限或参数映射。")
@@ -1213,10 +1970,21 @@ def summarize_trade_recap(
         review_flags.append(f"有 {rejected_count} 笔委托被拒绝，建议优先复盘价格/数量/账户状态。")
     if pending_count >= max(1, submitted_count):
         review_flags.append("大部分委托仍处于待成交状态，需跟踪是否存在流动性或限价偏离。")
+    if deviation_items:
+        review_flags.append(f"有 {len(deviation_items)} 笔委托与计划存在偏差，优先复核价格或数量是否被调整。")
     if order_intents and not submission_records:
         review_flags.append("已生成委托建议但尚未提交，可先复核预算分配和执行顺序。")
     if not review_flags:
         review_flags.append("当前执行链路稳定，可进入盘后复盘与策略归因。")
+
+    latest_deviation = deviation_items[-1] if deviation_items else (deviation_rows[-1] if deviation_rows else {})
+    max_price_deviation_bps = max((abs(float(item.get("price_deviation_bps", 0.0) or 0.0)) for item in deviation_rows), default=0.0)
+    max_quantity_deviation = max((abs(int(item.get("quantity_deviation", 0) or 0)) for item in deviation_rows), default=0)
+    deviation_symbols: list[str] = []
+    for item in deviation_items:
+        symbol = str(item.get("symbol", "") or "")
+        if symbol and symbol not in deviation_symbols:
+            deviation_symbols.append(symbol)
 
     return {
         "submitted_count": submitted_count,
@@ -1231,6 +1999,11 @@ def summarize_trade_recap(
         "focus_symbols": focus_symbols,
         "latest_messages": latest_messages,
         "review_flags": review_flags,
+        "deviation_count": len(deviation_items),
+        "deviation_symbols": deviation_symbols,
+        "max_price_deviation_bps": round(max_price_deviation_bps, 1),
+        "max_quantity_deviation": max_quantity_deviation,
+        "latest_deviation_note": str(latest_deviation.get("note", "") or ""),
     }
 
 

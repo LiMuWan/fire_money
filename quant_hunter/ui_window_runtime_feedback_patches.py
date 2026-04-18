@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from PySide6.QtWidgets import QGridLayout, QGroupBox, QHBoxLayout, QLabel, QTextEdit, QVBoxLayout, QWidget
 
@@ -416,11 +416,37 @@ def apply_runtime_feedback_patches(
 
         current_recommend = self._selected_daily_pool_recommendation() if hasattr(self, "_selected_daily_pool_recommendation") else None
         active_symbol = getattr(self, "active_symbol", "") or ""
+        selected_intent = self._selected_order_intent() if hasattr(self, "_selected_order_intent") else None
+        latest_record = self._selected_submission_record() if hasattr(self, "_selected_submission_record") else None
+        if latest_record is None:
+            records = list(getattr(self, "order_submission_records", []) or [])
+            latest_record = records[-1] if records else None
         fallback_scan_row = None
         if active_symbol:
             fallback_scan_row = next((row for row in getattr(self, "scan_rows", []) if getattr(row, "symbol", "") == active_symbol), None)
         if fallback_scan_row is None:
             fallback_scan_row = (getattr(self, "scan_rows", []) or [None])[0]
+        summary_signature = (
+            getattr(current_recommend, "symbol", "") if current_recommend is not None else "",
+            getattr(current_recommend, "mainline_tag", "") if current_recommend is not None else "",
+            getattr(current_recommend, "mainline_risk_flag", "") if current_recommend is not None else "",
+            getattr(current_recommend, "next_focus", "") if current_recommend is not None else "",
+            getattr(fallback_scan_row, "symbol", "") if fallback_scan_row is not None else "",
+            getattr(fallback_scan_row, "score", 0) if fallback_scan_row is not None else 0,
+            getattr(fallback_scan_row, "action", "") if fallback_scan_row is not None else "",
+            getattr(fallback_scan_row, "label", "") if fallback_scan_row is not None else "",
+            getattr(selected_intent, "symbol", "") if selected_intent is not None else "",
+            getattr(selected_intent, "price", 0.0) if selected_intent is not None else 0.0,
+            getattr(selected_intent, "quantity", 0) if selected_intent is not None else 0,
+            str(latest_record.get("symbol", "") if latest_record is not None else ""),
+            str(latest_record.get("order_status", "") if latest_record is not None else ""),
+            str(latest_record.get("fill_status", "") if latest_record is not None else ""),
+            str(latest_record.get("message", "") if latest_record is not None else ""),
+            active_symbol,
+        )
+        if getattr(self, "_live_workspace_summary_signature_v16", None) == summary_signature:
+            return
+        self._live_workspace_summary_signature_v16 = summary_signature
         if current_recommend is not None:
             stock_name = getattr(current_recommend, "stock_name", "") or self._stock_name_for_symbol(getattr(current_recommend, "symbol", "") or "")
             stock_id = getattr(current_recommend, "stock_id", "") or self._stock_id_for_symbol(getattr(current_recommend, "symbol", "") or "")
@@ -451,12 +477,6 @@ def apply_runtime_feedback_patches(
                     f"下一步：先把扫描候选转成机会池，再核对评分 {getattr(fallback_scan_row, 'score', '--')} 与主线位置。",
                 )
 
-        selected_intent = self._selected_order_intent() if hasattr(self, "_selected_order_intent") else None
-        latest_record = self._selected_submission_record() if hasattr(self, "_selected_submission_record") else None
-        if latest_record is None:
-            records = list(getattr(self, "order_submission_records", []) or [])
-            latest_record = records[-1] if records else None
-
         if selected_intent is not None:
             symbol = getattr(selected_intent, "symbol", "") or ""
             stock_name = self._stock_name_for_symbol(symbol)
@@ -475,11 +495,11 @@ def apply_runtime_feedback_patches(
                 )
         elif latest_record is not None:
             symbol = str(latest_record.get("symbol", "") or "")
-            stock_name = self._stock_name_for_symbol(symbol)
+            stock_name = self._stock_name_for_symbol(symbol) if hasattr(self, "_stock_name_for_symbol") else symbol
             if hasattr(self, "broker_live_summary_detail"):
                 self._set_label_text_if_changed(
                     self.broker_live_summary_detail,
-                    f"最近回执：{stock_name} ({self._stock_id_for_symbol(symbol)} / {symbol}) | {self._display_order_status(latest_record.get('order_status', ''))} / {self._display_fill_status(latest_record.get('fill_status', ''))}",
+                    f"最近回执：{stock_name} ({self._stock_id_for_symbol(symbol) if hasattr(self, '_stock_id_for_symbol') else symbol} / {symbol}) | {self._display_order_status(latest_record.get('order_status', ''))} / {self._display_fill_status(latest_record.get('fill_status', ''))}",
                 )
             if hasattr(self, "broker_live_summary_meta"):
                 self._set_label_text_if_changed(
@@ -488,19 +508,19 @@ def apply_runtime_feedback_patches(
                 )
         elif fallback_scan_row is not None:
             symbol = getattr(fallback_scan_row, "symbol", "") or ""
-            stock_name = self._stock_name_for_symbol(symbol)
+            stock_name = self._stock_name_for_symbol(symbol) if hasattr(self, "_stock_name_for_symbol") else symbol
             if hasattr(self, "broker_live_summary_detail"):
                 self._set_label_text_if_changed(
                     self.broker_live_summary_detail,
-                    f"待生成委托：{stock_name} ({self._stock_id_for_symbol(symbol)} / {symbol}) | 扫描评分 {getattr(fallback_scan_row, 'score', '--')} | {self._display_action(getattr(fallback_scan_row, 'action', 'WATCH'))}",
+                    f"待生成委托：{stock_name} ({self._stock_id_for_symbol(symbol) if hasattr(self, '_stock_id_for_symbol') else symbol} / {symbol}) | 扫描评分 {getattr(fallback_scan_row, 'score', '--')} | {self._display_action(getattr(fallback_scan_row, 'action', 'WATCH'))}",
                 )
             if hasattr(self, "broker_live_summary_meta"):
                 self._set_label_text_if_changed(self.broker_live_summary_meta, "下一步：先生成委托链路，再复核价格、仓位、主线闸门与风险灯。")
 
         detail_symbol = getattr(self, "active_symbol", "") or ""
         if detail_symbol and hasattr(self, "detail_live_summary_headline"):
-            stock_name = self._stock_name_for_symbol(detail_symbol)
-            stock_id = self._stock_id_for_symbol(detail_symbol)
+            stock_name = self._stock_name_for_symbol(detail_symbol) if hasattr(self, "_stock_name_for_symbol") else detail_symbol
+            stock_id = self._stock_id_for_symbol(detail_symbol) if hasattr(self, "_stock_id_for_symbol") else detail_symbol
             recommendation = next((item for item in getattr(self, "daily_pool_rows", []) if getattr(item, "symbol", "") == detail_symbol), None)
             latest_signal = next((item for item in reversed(getattr(self, "analyses", [])) if getattr(item, "label", "") != "NONE"), None)
             action_text = self._display_action(getattr(recommendation, "action", "WATCH")) if recommendation is not None else "观察"

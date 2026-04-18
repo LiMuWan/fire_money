@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .broker import submission_record_execution_delta, summarize_trade_recap
 from .models import (
     HoldingRecord,
     OptimizationRun,
@@ -950,6 +951,63 @@ def export_daily_trade_plan(
     return ReportArtifacts(str(markdown_path), str(csv_path), str(json_path))
 
 
+def _review_submission_record_note(record: dict[str, Any]) -> str:
+    payload = dict(record or {})
+    delta = submission_record_execution_delta(payload)
+    parts: list[str] = []
+
+    side = str(payload.get("side", "") or "").strip()
+    order_status = str(payload.get("order_status", "") or "").strip()
+    fill_status = str(payload.get("fill_status", "") or "").strip()
+    status_text = " / ".join(item for item in (order_status, fill_status) if item)
+    if side or status_text:
+        parts.append(" ".join(item for item in (side, status_text) if item))
+
+    order_id = str(payload.get("order_id", "") or "").strip()
+    if order_id:
+        parts.append(f"order_id={order_id}")
+
+    price_parts: list[str] = []
+    planned_price = float(delta.get("planned_price", 0.0) or 0.0)
+    if planned_price > 0:
+        price_parts.append(f"\u8ba1 {planned_price:.2f}")
+    submitted_price = str(payload.get("price", "") or "").strip()
+    if submitted_price:
+        price_parts.append(f"\u9001 {submitted_price}")
+    fill_price = str(payload.get("fill_price", "") or "").strip()
+    if fill_price:
+        price_parts.append(f"\u6210 {fill_price}")
+    if price_parts:
+        parts.append(" / ".join(price_parts))
+
+    quantity_parts: list[str] = []
+    planned_quantity = int(delta.get("planned_quantity", 0) or 0)
+    if planned_quantity > 0:
+        quantity_parts.append(f"\u8ba1\u91cf {planned_quantity}")
+    submitted_quantity = str(payload.get("quantity", "") or "").strip()
+    if submitted_quantity:
+        quantity_parts.append(f"\u9001\u91cf {submitted_quantity}")
+    fill_quantity = str(payload.get("fill_quantity", "") or "").strip()
+    if fill_quantity:
+        quantity_parts.append(f"\u6210\u91cf {fill_quantity}")
+    if quantity_parts:
+        parts.append(" / ".join(quantity_parts))
+
+    deviation_note = str(delta.get("note", "") or "").strip()
+    if deviation_note:
+        parts.append(deviation_note)
+
+    failure_reason = str(payload.get("failure_reason", "") or "").strip()
+    if failure_reason:
+        parts.append(f"\u539f\u56e0: {failure_reason}")
+
+    message = str(payload.get("message", "") or "").strip()
+    if message and message not in {deviation_note, failure_reason}:
+        parts.append(f"\u56de\u6267: {message}")
+
+    return " | ".join(parts) if parts else "\u65e0\u6267\u884c\u56de\u6267"
+
+
 def export_end_of_day_review(
     *,
     output_dir: str | Path,
@@ -961,6 +1019,9 @@ def export_end_of_day_review(
     scan_rows: list[ScanRow] | None = None,
     focus_themes: list[str] | None = None,
     license_plan: str = "TRIAL",
+    submission_records: list[dict[str, Any]] | None = None,
+    order_intents: list[Any] | None = None,
+    order_log: list[str] | None = None,
     title: str = "收盘复盘",
 ) -> ReportArtifacts:
     root = Path(output_dir)
@@ -973,10 +1034,66 @@ def export_end_of_day_review(
     board_monitors = list(getattr(board_plan, "monitor_rows", []))
     pulse = getattr(trade_plan, "market_pulse", None)
     theme_rows, leader_rows = summarize_themes(recommendations)
+    submission_records = [dict(item or {}) for item in submission_records or []]
+    order_intents = list(order_intents or [])
+    order_log = [str(item) for item in (order_log or []) if str(item).strip()]
+    trade_recap = summarize_trade_recap(
+        submission_records=submission_records,
+        holdings=holdings,
+        order_intents=order_intents,
+        order_log=order_log,
+    )
 
     with csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(["section", "stock_name", "stock_id", "symbol", "action", "score", "price", "stop", "target", "note"])
+
+        if submission_records:
+            writer.writerow(
+                [
+                    "execution_recap",
+                    "",
+                    "",
+                    ", ".join(trade_recap.get("focus_symbols", [])),
+                    "RECAP",
+                    trade_recap.get("deviation_count", 0),
+                    trade_recap.get("max_price_deviation_bps", 0.0),
+                    trade_recap.get("max_quantity_deviation", 0),
+                    "",
+                    " | ".join(
+                        item
+                        for item in [
+                            f"\u63d0\u4ea4 {trade_recap.get('submitted_count', 0)} \u7b14",
+                            f"\u5931\u8d25 {trade_recap.get('failed_count', 0)} \u7b14",
+                            f"\u5f85\u6210\u4ea4 {trade_recap.get('pending_count', 0)} \u7b14",
+                            f"\u62d2\u7edd {trade_recap.get('rejected_count', 0)} \u7b14",
+                            str(trade_recap.get("latest_deviation_note", "") or "").strip(),
+                        ]
+                        if item
+                    ),
+                ]
+            )
+            for record in submission_records:
+                symbol = str(record.get("symbol", "") or "")
+                stock_id = symbol.split(".")[-1] if symbol else ""
+                side = str(record.get("side", "") or "").strip()
+                order_status = str(record.get("order_status", "") or "").strip()
+                fill_status = str(record.get("fill_status", "") or "").strip()
+                status_text = " / ".join(item for item in (order_status, fill_status) if item)
+                writer.writerow(
+                    [
+                        "submission_record",
+                        str(record.get("stock_name", "") or ""),
+                        stock_id,
+                        symbol,
+                        " ".join(item for item in (side, status_text) if item),
+                        "",
+                        str(record.get("planned_price", "") or ""),
+                        str(record.get("price", "") or ""),
+                        str(record.get("fill_price", "") or ""),
+                        _review_submission_record_note(record),
+                    ]
+                )
 
         for item in recommendations:
             writer.writerow(
@@ -1085,6 +1202,10 @@ def export_end_of_day_review(
         "board_plan": _to_payload(board_plan),
         "holdings": [_to_payload(item) for item in holdings],
         "cash_snapshot": _to_payload(cash_snapshot),
+        "submission_records": _to_payload(submission_records),
+        "order_intents": _to_payload(order_intents),
+        "order_log": _to_payload(order_log),
+        "trade_recap": _to_payload(trade_recap),
     }
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -1098,6 +1219,38 @@ def export_end_of_day_review(
         f"- 打板温度: {getattr(board_plan, 'temperature', '未计算')}",
         f"- 打板候选均分: {getattr(board_plan, 'avg_score', 0.0):.1f}",
     ]
+    if submission_records:
+        lines.extend(["", "## 执行偏差复盘", ""])
+        lines.append(
+            f"- 提交 {trade_recap.get('submitted_count', 0)} 笔 | "
+            f"失败 {trade_recap.get('failed_count', 0)} 笔 | "
+            f"待成交 {trade_recap.get('pending_count', 0)} 笔 | "
+            f"拒绝 {trade_recap.get('rejected_count', 0)} 笔"
+        )
+        lines.append(
+            f"- 偏差委托 {trade_recap.get('deviation_count', 0)} 笔 | "
+            f"最大价格偏差 {trade_recap.get('max_price_deviation_bps', 0.0):.1f}bp | "
+            f"最大数量偏差 {trade_recap.get('max_quantity_deviation', 0)}"
+        )
+        focus_symbols = list(trade_recap.get("focus_symbols", []) or [])
+        if focus_symbols:
+            lines.append(f"- 复盘焦点: {', '.join(focus_symbols)}")
+        latest_note = str(trade_recap.get("latest_deviation_note", "") or "").strip()
+        if latest_note:
+            lines.append(f"- 最近偏差: {latest_note}")
+        for item in trade_recap.get("review_flags", []) or []:
+            lines.append(f"- 复核提示: {item}")
+        latest_messages = list(trade_recap.get("latest_messages", []) or [])
+        if latest_messages:
+            lines.extend(["", "### 最近回执", ""])
+            for item in latest_messages:
+                lines.append(f"- {item}")
+        lines.extend(["", "### 委托提交明细", ""])
+        for record in submission_records[-5:]:
+            symbol = str(record.get("symbol", "") or "")
+            timestamp = str(record.get("timestamp", "") or "").strip()
+            prefix = f"{timestamp} | " if timestamp else ""
+            lines.append(f"- {prefix}{symbol or '--'} | {_review_submission_record_note(record)}")
     if focus_themes:
         lines.append(f"- 用户关注题材: {', '.join(focus_themes)}")
     if pulse is not None:

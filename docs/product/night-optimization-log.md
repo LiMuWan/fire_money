@@ -793,3 +793,118 @@
 - `python -m py_compile app_qt.py tests\test_core.py`
 - `python -m unittest discover -s tests -v` passed (`397` tests)
 - Next: continue on the remaining same-symbol status chain, prioritizing recommend-status / decision-summary style post-processing where identical focus context may still trigger secondary UI work.
+
+## 2026-04-18 23:09 Recommend Decision Summary Button Guard
+- `app_qt.py` adds `_recommend_decision_summary_signature_v40`, so `_qh_refresh_recommend_decision_summary_v39` now skips repeated CTA button role/priority/tooltip rewrites when the same recommendation focus and execution state are revisited.
+- `app_qt.py` also fixes the tooltip layering logic in that path, preventing repeated refreshes from stacking duplicated `按钮层级` text on the same button tooltip.
+- `tests/test_core.py` adds focused regression coverage for the new decision-summary guard and keeps the existing paper-experiment / reject-reason decision-summary scenarios green.
+- Verification:
+- `python -m py_compile app_qt.py tests\test_core.py`
+- `python -m unittest discover -s tests -v` passed (`400` tests)
+- Next: continue on the remaining same-symbol status chain, with `recommend focus status` and similar label/tooltip post-processing as the next low-risk targets.
+
+## 2026-04-19 00:14 Strategy Focus Detail Signature Guard
+- `quant_hunter/ui_refresh.py` adds `_strategy_focus_detail_signature_v1`, so `refresh_strategy_focus_detail` now skips repeated战法详情大文本重建 when the selected strategy, focus row, Top 3 examples, and derived tripwire/runtime/checklist context are unchanged.
+- `tests/test_core.py` adds focused regression coverage for the new strategy-detail guard and keeps the existing commercial strategy-detail scenario green.
+- Verification:
+- `python -m py_compile app_qt.py tests\test_core.py quant_hunter\ui_refresh.py`
+- `python -m unittest discover -s tests -v` passed (`403` tests)
+- Next: continue on the remaining recommend/status post-processing chain, especially places that still append runtime annotations or tooltips on the same focus without changing underlying context.
+
+## 2026-04-19 00:35 Recommend Focus Runtime Card Guard
+- `app_qt.py` adds `_recommend_focus_cards_runtime_signature_v9`, so `_qh_refresh_recommend_focus_cards_v8` now skips repeated尾盘执行阶段/盯盘重点/次日兑现纪律 card rewrites and avoids re-triggering live workspace summary refresh when the same focus symbol and runtime panel context are unchanged.
+- `tests/test_core.py` adds focused regression coverage for the new runtime-card guard and keeps the existing尾盘执行面板 promotion scenario green.
+- Verification:
+- `python -m py_compile app_qt.py tests\test_core.py`
+- `python -m unittest discover -s tests -v` passed (`409` tests)
+- Next: continue on the remaining recommend/status post-processing chain, especially same-focus label/tooltip append paths that still do secondary work without underlying context changes.
+
+## 2026-04-19 00:49 Recommend Focus Status Signature Guard
+- `app_qt.py` adds `_recommend_focus_status_signature_v24`, so `_qh_refresh_recommend_focus_status_v23` now skips repeated base status refresh + runtime annotation/tooltip/spotlight work when the same focus symbol, portfolio-fit context, runtime phase, and first-line news/price brief are unchanged.
+- `tests/test_core.py` adds focused regression coverage for the new recommend-status guard and keeps the existing尾盘阶段/组合适配 status rendering scenario green.
+- Verification:
+- `python -m py_compile app_qt.py tests\test_core.py`
+- targeted `unittest` cases passed for the new recommend-status guard and the existing runtime-phase status path.
+- Next: run full-suite verification, then continue checking whether any remaining same-focus post-processing still rebuilds secondary UI state without underlying context changes.
+
+## 2026-04-19 01:05 Recommend Message Center Refresh Guard
+- `app_qt.py` adds `_recommend_message_center_refresh_signature_v1`, so the recommend-side unified message center now skips repeated summary/table/detail/button refresh when the filter, visible event list, selected event, and derived route/action context are unchanged.
+- This keeps the new message-center panel responsive without repeatedly rebuilding the event table and detail preview on the same event set.
+- `tests/test_core.py` adds focused regression coverage for the new message-center guard and confirms Qt startup smoke still passes with the recommend workspace builder fully wired.
+- Verification:
+- `python -m py_compile app_qt.py tests\test_core.py`
+- targeted `unittest` cases passed for the message-center guard and Qt smoke boot.
+- Next: rerun full-suite verification, then continue checking remaining same-focus post-processing and any residual repeated list/detail refresh in recommend workspace side panels.
+
+## 2026-04-19 01:24 Live Summary + Message Toast Dedup
+- `app_qt.py` adds `_live_workspace_summary_signature_v17`, so the scanner/board/detail/config live summary rail now skips repeated headline/detail/meta rewrites and avoids re-triggering risk snapshot / news source status sub-refreshes when the visible summary inputs are unchanged.
+- `app_qt.py` adds `_recommend_message_toast_signature_v1`, so identical important message events no longer re-show the same toast or restart its timer while it is already visible.
+- `tests/test_core.py` adds focused regression coverage for the live workspace summary guard; the latest full-suite verification also covered the broader recommend/message-center chain after this change set.
+- Verification:
+- `python -m unittest discover -s tests -v` passed (`420` tests)
+- Next: continue on the remaining recommend/status chain, prioritizing any same-focus list/detail post-processing still outside the current signature guards.
+
+## 2026-04-19 01:47 Message Center Table Diff + Wrapper Guard Stabilization
+- `app_qt.py` adds `_recommend_message_center_table_signature_v1`, so the recommend message-center table now avoids whole-table rebuilds when only the selected event changes and the visible event set itself is unchanged.
+- `quant_hunter/ui_window_cross_workspace_focus_patches.py` adds `_live_workspace_summary_signature_v18`, trimming another outer layer of repeated recommend/broker/detail live-summary writes when the same explicit focus recommendation is still active.
+- `quant_hunter/ui_refresh.py` adjusts trade-recap follow-up priority so a focus-symbol record message remains the primary next-step hint, with deviation text falling back behind explicit回执/失败信息.
+- `quant_hunter/broker.py` restores `submission_record_execution_delta`, which keeps the broker/detail recap chain and standalone `app_qt` imports stable during targeted verification.
+- `tests/test_core.py` updates/extends regression coverage for message-center table diff refresh, trade-recap follow-up priority, and the live-summary wrapper path.
+- `tests/test_message_center.py` now includes the message-toast dedup regression and passes after the import path was stabilized.
+- Verification:
+- `python -m unittest discover -s tests -v` passed (`426` tests)
+- Next: continue on the remaining recommend/status chain, especially same-focus post-processing that still appends derived copy or toggles secondary UI state without underlying context changes.
+
+## 2026-04-19 01:42 Message Center Table Diff Refresh + Baseline Repair
+- `app_qt.py` upgrades the recommend message center table refresh to use `_recommend_message_center_table_signature_v1`, so selection changes on the same visible event set no longer rebuild the whole table.
+- `quant_hunter/broker.py` restores the missing `submission_record_execution_delta` helper export used by the broker/detail recap chain, which also stabilizes standalone `app_qt` imports for targeted verification.
+- `tests/test_core.py` adds focused regression coverage for the message-center table diff path; `tests/test_message_center.py` now also covers the message-toast dedup path.
+- Verification:
+- `python -m unittest discover -s tests -v` passed (`424` tests)
+- Next: continue along the remaining recommend/status post-processing chain and look for any other same-focus secondary refreshes that are still recomputing or repainting needlessly.
+
+## 2026-04-19 02:03 Trade Plan Focus Label Guard + Live Summary Recheck
+- `app_qt.py` adds `_trade_plan_focus_signature_v6`, so the plan-focus label no longer rewrites the same “计划焦点”文案 when the leading decision, one-day grade, portfolio-fit, and news brief are unchanged.
+- The live-summary wrapper stack was rechecked under full-suite verification after the outer `v18` guard and message-center diff refresh landed, keeping the recommend/broker/detail summary rail stable under the current patch chain.
+- Verification:
+- `python -m unittest discover -s tests -v` passed (`427` tests)
+- Next: continue on the remaining recommend/status chain, prioritizing any same-focus derived labels or secondary cues that still do work without underlying context changes.
+
+## 2026-04-19 02:22 Recommend Summary Text Guard + Message Center Diff Refresh
+- `app_qt.py` adds a text-layer guard for `_qh_refresh_recommend_decision_summary_v38`, so the recommend decision summary now skips repeated “首选动作 / 路径建议”文本重组与按钮 tooltip 更新 when the same focus recommendation and CTA context are unchanged.
+- `app_qt.py` keeps the recommend message-center table on `_recommend_message_center_table_signature_v1`, so switching selection on an unchanged visible event set avoids whole-table rebuilds.
+- The broader recommend/message chain has been revalidated after stabilizing broker helper imports and live-summary wrapper behavior.
+- Verification:
+- `python -m unittest discover -s tests -v` passed (`430` tests)
+- Next: continue on the remaining recommend/status chain, prioritizing any same-focus derived status copy or secondary cues that still do repeated work without underlying context changes.
+
+## 2026-04-19 02:41 AI Review Status Label Guard
+- `app_qt.py` adds `_set_recommend_status_text_if_changed`, so the AI review start / save / streaming progress / completion / failure / busy-state feedback now all reuse change-aware label writes instead of repeatedly calling `recommend_status_label.setText(...)`.
+- This closes the last high-frequency label repaint path around the new AI review panel and status-panel signature guards, especially during repeated stream events that report the same visible progress copy.
+- `tests/test_ai_review.py` now covers both AI review panel/status signature guards and the repeated-stream-event label dedup path.
+- Verification:
+- `python -m py_compile app_qt.py tests\test_ai_review.py`
+- `python -m unittest tests.test_ai_review -v` passed (`7` tests)
+- `python -m unittest discover -s tests -v` passed (`435` tests)
+- Next: continue on the remaining recommend/status and message-center secondary cues, prioritizing same-focus action labels or detail selection paths that may still do light work without underlying context changes.
+
+## 2026-04-19 02:59 Message Center Secondary Refresh Tightening
+- `app_qt.py` adds `_set_widget_enabled_if_changed`, so the recommend-side message center now updates button enabled state only when it actually changes.
+- The message-center refresh path now reuses `_select_table_row_if_needed` and change-aware text/tooltip writes for the symbol/open buttons, which trims repeated `selectRow`, button text, and tooltip work when the selected event stays the same while surrounding message context changes.
+- `_on_recommend_message_center_selection_changed` now short-circuits when the selected event signature is unchanged, avoiding one more no-op detail refresh hop.
+- `tests/test_core.py` adds focused regression coverage for same-row reselection skipping, stable button state under background event growth, and no-op selection-change refresh.
+- Verification:
+- `python -m py_compile app_qt.py tests\test_core.py`
+- targeted `unittest` cases passed for the message-center refresh tightening (`5` tests)
+- `python -m unittest discover -s tests -v` passed (`438` tests)
+- Next: continue on the remaining recommend/status and message-center detail/action cues, prioritizing same-focus detail panes that still enter secondary post-processing when only surrounding event context changes.
+
+## 2026-04-19 03:25 Recommend Bucket Panel Signature Guard
+- `app_qt.py` adds `_recommend_bucket_panels_signature_v1`, so the recommend workspace `core / watch / risk` bucket texts now skip repeated rebuilds when the current focus row, top buy intent, watch shortlist, and risk queue context are unchanged.
+- This trims another high-frequency recommend-side text path that was still re-entering on every linked refresh even when the visible bucket content had not changed.
+- `tests/test_core.py` adds focused regression coverage for repeated recommend-bucket refreshes under the same focus/queue context.
+- Verification:
+- `python -m py_compile app_qt.py tests\test_core.py`
+- targeted `unittest` cases passed for recommend focus + market text + bucket guards (`5` tests)
+- `python -m unittest discover -s tests -v` passed (`440` tests)
+- Next: continue on the remaining recommend/detail action chain, prioritizing same-focus detail panes or routing hints that still do secondary work when the focus symbol and action context remain unchanged.

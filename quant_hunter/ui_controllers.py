@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 from quant_hunter.backtest import BacktestParams, PortfolioBacktester
-from quant_hunter.broker import build_submission_intents
+from quant_hunter.broker import (
+    build_submission_intents,
+    merge_submission_records_with_execution_records,
+    normalize_submission_result,
+    reconcile_submission_records_with_holdings,
+)
 from quant_hunter.broker_status import build_broker_execution_summary
 from quant_hunter.models import OrderIntent, PaperTradingState
 from quant_hunter.paper_trading import build_strategy_rotation_snapshot
@@ -59,6 +64,56 @@ def build_order_submission_experiment_context(window) -> dict[str, object]:
     return {
         "strategy_name": strategy_name,
         "experiment_bridge": paper_strategy_experiment_bridge_v45(paper_state, strategy_name),
+    }
+
+
+def _submission_record_plan_context(window, submitted_intent: OrderIntent) -> dict[str, object]:
+    symbol = str(getattr(submitted_intent, "symbol", "") or "")
+    side = str(getattr(submitted_intent, "side", "") or "").upper()
+    original_intent = next(
+        (
+            item
+            for item in list(getattr(window, "order_intents", []) or [])
+            if str(getattr(item, "symbol", "") or "") == symbol and str(getattr(item, "side", "") or "").upper() == side
+        ),
+        submitted_intent,
+    )
+    recommendation = next(
+        (
+            item
+            for item in list(getattr(window, "daily_pool_rows", []) or [])
+            if str(getattr(item, "symbol", "") or "") == symbol
+        ),
+        None,
+    )
+    return {
+        "planned_price": f"{float(getattr(original_intent, 'price', 0.0) or 0.0):.3f}" if float(getattr(original_intent, "price", 0.0) or 0.0) > 0 else "",
+        "planned_quantity": str(int(getattr(original_intent, "quantity", 0) or 0)) if int(getattr(original_intent, "quantity", 0) or 0) > 0 else "",
+        "planned_stop_price": f"{float(getattr(original_intent, 'stop_price', 0.0) or 0.0):.3f}" if float(getattr(original_intent, "stop_price", 0.0) or 0.0) > 0 else "",
+        "planned_target_price": f"{float(getattr(original_intent, 'target_price', 0.0) or 0.0):.3f}" if float(getattr(original_intent, "target_price", 0.0) or 0.0) > 0 else "",
+        "opportunity_tier": str(
+            getattr(recommendation, "opportunity_tier", "") or getattr(original_intent, "opportunity_tier", "") or ""
+        ),
+        "planned_risk_reward_ratio": (
+            f"{float(getattr(original_intent, 'risk_reward_ratio', 0.0) or 0.0):.2f}"
+            if float(getattr(original_intent, "risk_reward_ratio", 0.0) or 0.0) > 0
+            else ""
+        ),
+        "portfolio_fit_score": (
+            f"{float(getattr(recommendation, 'portfolio_fit_score', 0.0) or 0.0):.0f}"
+            if recommendation is not None and float(getattr(recommendation, "portfolio_fit_score", 0.0) or 0.0) > 0
+            else ""
+        ),
+        "diversification_score": (
+            f"{float(getattr(recommendation, 'diversification_score', 0.0) or 0.0):.0f}"
+            if recommendation is not None and float(getattr(recommendation, "diversification_score", 0.0) or 0.0) > 0
+            else ""
+        ),
+        "concentration_penalty_score": (
+            f"{float(getattr(recommendation, 'concentration_penalty_score', 0.0) or 0.0):.0f}"
+            if recommendation is not None and float(getattr(recommendation, "concentration_penalty_score", 0.0) or 0.0) > 0
+            else ""
+        ),
     }
 
 
@@ -187,7 +242,12 @@ def export_order_plan_controller(window, *, adapter_cls, datetime_cls) -> None:
         window.generate_order_suggestions()
     if not window.order_intents:
         return
-    output = adapter_cls().export_order_plan(window.order_intents, window.current_broker_profile().export_dir)
+    output = adapter_cls().export_order_plan(
+        window.order_intents,
+        window.current_broker_profile().export_dir,
+        recommendations=getattr(window, "daily_pool_rows", []),
+        execution_summary=getattr(window, "last_broker_execution_summary", {}) or {},
+    )
     line = f"[{datetime_cls.now().strftime('%Y-%m-%d %H:%M:%S')}] 已导出委托计划：{output}"
     window._append_order_result(line)
     window._refresh_broker_status(extra=f"已导出委托计划：{output}")
@@ -200,6 +260,8 @@ def export_order_result_log_controller(window, *, adapter_cls, datetime_cls, inf
     output = adapter_cls().export_submission_records(
         window.order_submission_records,
         window.current_broker_profile().export_dir,
+        recommendations=getattr(window, "daily_pool_rows", []),
+        execution_summary=getattr(window, "last_broker_execution_summary", {}) or {},
     )
     line = f"[{datetime_cls.now().strftime('%Y-%m-%d %H:%M:%S')}] 已导出提交日志：{output}"
     window._append_order_result(line)
@@ -208,15 +270,56 @@ def export_order_result_log_controller(window, *, adapter_cls, datetime_cls, inf
 
 def sync_broker_via_sdk_controller(window, quiet: bool, *, adapter_cls, error_dialog_fn) -> None:
     profile = window.current_broker_profile()
+    previous_holdings = list(getattr(window, "holdings", []) or [])
+    adapter = adapter_cls()
     try:
-        cash, holdings = adapter_cls().sync_account_via_sdk(profile)
+        cash, holdings = adapter.sync_account_via_sdk(profile)
     except Exception as exc:
         if not quiet:
             error_dialog_fn(window, "SDK 同步失败", str(exc))
         return
     window.cash_snapshot = cash
     window.holdings = holdings
+    execution_notes: list[str] = []
+    if hasattr(adapter, "sync_execution_records_via_sdk"):
+        try:
+            execution_rows = adapter.sync_execution_records_via_sdk(profile)
+        except Exception:
+            execution_rows = []
+        if execution_rows:
+            merged_records, execution_notes = merge_submission_records_with_execution_records(
+                list(getattr(window, "order_submission_records", []) or []),
+                execution_rows,
+            )
+            window.order_submission_records = merged_records
+    reconciled_records, reconciliation_notes = reconcile_submission_records_with_holdings(
+        list(getattr(window, "order_submission_records", []) or []),
+        previous_holdings,
+        holdings,
+    )
+    if execution_notes or reconciliation_notes:
+        window.order_submission_records = reconciled_records
+        window.execution_status_by_symbol = {}
+        for item in window.order_submission_records:
+            symbol = str(item.get("symbol", "") or "")
+            if not symbol:
+                continue
+            order_status = str(item.get("order_status", "") or "").upper()
+            fill_status = str(item.get("fill_status", "") or "").upper()
+            if order_status == "FAILED" or fill_status == "REJECTED":
+                window.execution_status_by_symbol[symbol] = "提交失败"
+            elif fill_status == "FILLED":
+                window.execution_status_by_symbol[symbol] = "已成交"
+            elif fill_status in {"PARTIAL", "PART_FILLED", "PARTIALLY_FILLED"}:
+                window.execution_status_by_symbol[symbol] = "部分成交"
+            elif order_status == "SUBMITTED":
+                window.execution_status_by_symbol[symbol] = "已提交"
     window._fill_holdings()
+    if (execution_notes or reconciliation_notes) and hasattr(window, "_refresh_submission_table"):
+        window._refresh_submission_table()
+    if (execution_notes or reconciliation_notes) and hasattr(window, "_append_order_result"):
+        for note in [*execution_notes[:4], *reconciliation_notes[:4]]:
+            window._append_order_result(note)
     window._refresh_broker_status(extra="已通过 SDK 同步资金和持仓。")
 
 
@@ -292,6 +395,7 @@ def handle_order_submission_failure_controller(
             timestamp=submit_time,
             order_status="FAILED",
             fill_status="REJECTED",
+            order_id="",
             symbol=item.symbol,
             side=item.side,
             price=f"{item.price:.3f}",
@@ -319,6 +423,7 @@ def handle_order_submission_success_controller(
             timestamp=submit_time,
             order_status="SUBMITTED",
             fill_status="PENDING",
+            order_id="",
             symbol=item.symbol,
             side=item.side,
             price=f"{item.price:.3f}",
@@ -411,6 +516,7 @@ def prepare_order_submission_controller(window, *, adapter_cls, confirmation_dia
         holdings=window.holdings,
         cash_snapshot=window.cash_snapshot,
         recommendations=getattr(window, "daily_pool_rows", []),
+        execution_summary=summary,
         strategy_name=experiment_context["strategy_name"],
         experiment_bridge=experiment_context["experiment_bridge"],
         guard_notes=guard_notes,
@@ -432,22 +538,30 @@ def handle_order_submission_failure_controller(
     exc: Exception,
     warning_dialog_fn,
 ) -> None:
-    fallback_path = adapter.export_order_plan(submitted_intents, profile.export_dir)
+    fallback_path = adapter.export_order_plan(
+        submitted_intents,
+        profile.export_dir,
+        recommendations=getattr(window, "daily_pool_rows", []),
+        execution_summary=getattr(window, "last_broker_execution_summary", {}) or {},
+    )
     failure_lines = [
         f"[{submit_time}] SDK 下单失败：{exc}",
         f"[{submit_time}] 已回退导出 CSV：{fallback_path}",
     ]
     for item in submitted_intents:
+        plan_context = _submission_record_plan_context(window, item)
         window._append_submission_record(
             timestamp=submit_time,
             order_status="FAILED",
             fill_status="REJECTED",
+            order_id="",
             symbol=item.symbol,
             side=item.side,
             price=f"{item.price:.3f}",
             quantity=str(item.quantity),
             failure_reason=str(exc),
             message=str(exc),
+            **plan_context,
         )
     for line in failure_lines:
         window._append_order_result(line)
@@ -459,31 +573,40 @@ def handle_order_submission_success_controller(
     window,
     *,
     submitted_intents: list[OrderIntent],
-    results: list[str],
+    results: list[object],
     submit_time: str,
     guard_notes: list[str] | None,
     info_dialog_fn,
 ) -> None:
     success_lines = [f"[{submit_time}] SDK 下单完成：共 {len(results)} 笔"]
     success_lines.extend(f"[{submit_time}] {note}" for note in list(guard_notes or []))
-    success_lines.extend(f"[{submit_time}] {item}" for item in results)
-    for item, result in zip(submitted_intents, results):
+    normalized_results = [
+        normalize_submission_result(result, symbol=item.symbol, expected_quantity=int(getattr(item, "quantity", 0) or 0))
+        for item, result in zip(submitted_intents, results)
+    ]
+    success_lines.extend(f"[{submit_time}] {item['display_text']}" for item in normalized_results)
+    for item, normalized in zip(submitted_intents, normalized_results):
+        plan_context = _submission_record_plan_context(window, item)
         window._append_submission_record(
             timestamp=submit_time,
-            order_status="SUBMITTED",
-            fill_status="PENDING",
+            order_status=str(normalized.get("order_status", "SUBMITTED") or "SUBMITTED"),
+            fill_status=str(normalized.get("fill_status", "PENDING") or "PENDING"),
+            order_id=str(normalized.get("order_id", "") or ""),
             symbol=item.symbol,
             side=item.side,
             price=f"{item.price:.3f}",
             quantity=str(item.quantity),
             failure_reason="",
-            message=result,
+            message=str(normalized.get("message", "") or ""),
+            fill_price=str(normalized.get("fill_price", "") or ""),
+            fill_quantity=str(normalized.get("fill_quantity", "") or ""),
+            **plan_context,
         )
     for line in success_lines:
         window._append_order_result(line)
     window.sync_broker_via_sdk(quiet=True)
     window._refresh_broker_status(extra="\n".join(success_lines))
-    info_dialog_fn(window, "下单完成", "\n".join(results))
+    info_dialog_fn(window, "下单完成", "\n".join(item["display_text"] for item in normalized_results))
 
 
 def persist_submission_artifacts_controller(window, *, adapter_cls, datetime_cls) -> str:
@@ -496,7 +619,12 @@ def persist_submission_artifacts_controller(window, *, adapter_cls, datetime_cls
     if not records:
         return ""
     try:
-        output = adapter_cls().export_submission_records(records, profile.export_dir)
+        output = adapter_cls().export_submission_records(
+            records,
+            profile.export_dir,
+            recommendations=getattr(window, "daily_pool_rows", []),
+            execution_summary=getattr(window, "last_broker_execution_summary", {}) or {},
+        )
     except Exception as exc:
         if hasattr(window, "_append_order_result"):
             line = f"[{datetime_cls.now().strftime('%Y-%m-%d %H:%M:%S')}] 自动导出提交回放失败：{exc}"
@@ -562,6 +690,8 @@ def run_background_job_controller(
     on_success,
     on_error,
     *,
+    on_progress=None,
+    pass_progress_callback: bool = False,
     background_task_cls,
     registry,
     perf_counter_fn,
@@ -578,7 +708,7 @@ def run_background_job_controller(
     window.last_job_duration_ms = 0.0
     started_perf = perf_counter_fn()
     window.job_started_perf[job_name] = started_perf
-    task = background_task_cls(fn)
+    task = background_task_cls(fn, pass_progress_callback=pass_progress_callback)
     window.job_handles[job_name] = task
     registry.append(task)
     window._append_runtime_log(f"任务开始：{job_name}")
@@ -607,6 +737,8 @@ def run_background_job_controller(
 
     task.signals.succeeded.connect(handle_success)
     task.signals.failed.connect(handle_error)
+    if on_progress is not None and hasattr(task.signals, "progressed"):
+        task.signals.progressed.connect(on_progress)
     task.signals.finished.connect(handle_finished)
     window.thread_pool.start(task)
     window.refresh_runtime_panel()
@@ -828,6 +960,8 @@ def save_strategy_preferences_controller(window, *, info_dialog_fn) -> None:
     window.state.daily_plan_candidate_limit = candidate_limit
     window.save_state()
     window._refresh_license_status_view()
+    if hasattr(window, "_refresh_ai_review_status_panel"):
+        window._refresh_ai_review_status_panel()
     window.refresh_daily_pool()
     window._refresh_intraday_monitor()
     info_dialog_fn(window, "保存成功", "策略配置已保存，并已刷新推荐与监控。")

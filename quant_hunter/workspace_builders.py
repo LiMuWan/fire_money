@@ -1991,6 +1991,13 @@ def build_recommend_workspace(
     window.recommend_status_label.setWordWrap(True)
     window.recommend_status_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
     layout.addWidget(window.recommend_status_label)
+    window.recommend_message_toast_label = QLabel("等待新提醒")
+    window.recommend_message_toast_label.setObjectName("workspaceFocusBanner")
+    window.recommend_message_toast_label.setProperty("pageTone", "recommend")
+    window.recommend_message_toast_label.setProperty("stateTone", "idle")
+    window.recommend_message_toast_label.setWordWrap(True)
+    window.recommend_message_toast_label.hide()
+    layout.addWidget(window.recommend_message_toast_label)
 
     recommend_empty_box = QGroupBox("快速进入")
     window._style_terminal_panel(recommend_empty_box)
@@ -2265,14 +2272,19 @@ def build_recommend_workspace(
     focus_review_action_row.setSpacing(10)
     window.recommend_news_source_button = QPushButton("查看消息原文")
     window.recommend_news_detail_button = QPushButton("查看消息详情")
+    window.recommend_ai_review_button = QPushButton("AI评测当前焦点")
     window._set_button_role(window.recommend_news_source_button, "ghost")
     window._set_button_role(window.recommend_news_detail_button, "ghost")
+    window._set_button_role(window.recommend_ai_review_button, "tonal")
     window.recommend_news_source_button.setToolTip(window._news_source_button_base_tooltip())
     window.recommend_news_detail_button.setToolTip(window._news_detail_button_base_tooltip())
+    window.recommend_ai_review_button.setToolTip("调用 GPT-5.4 对当前焦点票做单票复核。")
     window.recommend_news_source_button.clicked.connect(window.open_selected_recommend_news_source)
     window.recommend_news_detail_button.clicked.connect(window.open_selected_recommend_news_detail)
+    window.recommend_ai_review_button.clicked.connect(window.run_ai_review_for_selected_recommendation)
     focus_review_action_row.addWidget(window.recommend_news_source_button)
     focus_review_action_row.addWidget(window.recommend_news_detail_button)
+    focus_review_action_row.addWidget(window.recommend_ai_review_button)
     focus_review_action_row.addStretch(1)
     focus_review_layout.addLayout(focus_review_action_row)
 
@@ -2686,6 +2698,80 @@ def build_recommend_workspace(
         summary_cards_layout.addWidget(window.recommend_summary_cards[key])
     recap_layout.addWidget(summary_cards_box, stretch=1)
 
+    message_center_box = QGroupBox("统一消息中心")
+    window._style_terminal_panel(message_center_box)
+    message_center_box.setProperty("surfaceRole", "analysis")
+    message_center_box.setProperty("pageTone", "recommend")
+    message_center_layout = QVBoxLayout(message_center_box)
+    message_center_layout.setContentsMargins(12, 12, 12, 12)
+    message_center_layout.setSpacing(10)
+    message_center_header = QHBoxLayout()
+    message_center_header.setContentsMargins(0, 0, 0, 0)
+    message_center_header.setSpacing(10)
+    window.recommend_message_center_summary_label = QLabel("等待新事件")
+    window.recommend_message_center_summary_label.setObjectName("focusStateLabel")
+    window.recommend_message_center_summary_label.setProperty("pageTone", "recommend")
+    window.recommend_message_center_summary_label.setWordWrap(True)
+    window.recommend_message_center_filter_combo = QComboBox()
+    for label, value in [
+        ("全部", "all"),
+        ("AI", "ai"),
+        ("消息", "news"),
+        ("交易", "trade"),
+        ("系统", "system"),
+    ]:
+        window.recommend_message_center_filter_combo.addItem(label, value)
+    if hasattr(window, "_on_recommend_message_center_filter_changed"):
+        window.recommend_message_center_filter_combo.currentIndexChanged.connect(window._on_recommend_message_center_filter_changed)
+    window.recommend_message_center_clear_button = QPushButton("清空")
+    window._set_button_role(window.recommend_message_center_clear_button, "ghost")
+    if hasattr(window, "clear_recommend_message_center"):
+        window.recommend_message_center_clear_button.clicked.connect(window.clear_recommend_message_center)
+    message_center_header.addWidget(window.recommend_message_center_summary_label, stretch=1)
+    message_center_header.addWidget(window.recommend_message_center_filter_combo)
+    message_center_header.addWidget(window.recommend_message_center_clear_button)
+    message_center_layout.addLayout(message_center_header)
+    window.recommend_message_center_table = build_table(["时间", "类型", "事件", "标的"])
+    window.recommend_message_center_table.setObjectName("terminalTable")
+    window.recommend_message_center_table.setProperty("pageTone", "recommend")
+    window.recommend_message_center_table.setMinimumHeight(186)
+    if hasattr(window, "_on_recommend_message_center_selection_changed"):
+        window.recommend_message_center_table.itemSelectionChanged.connect(window._on_recommend_message_center_selection_changed)
+    if hasattr(window, "open_selected_recommend_message_event"):
+        window.recommend_message_center_table.itemDoubleClicked.connect(lambda *_args: window.open_selected_recommend_message_event())
+    message_center_layout.addWidget(window.recommend_message_center_table)
+    message_center_action_row = QHBoxLayout()
+    message_center_action_row.setContentsMargins(0, 2, 0, 0)
+    message_center_action_row.setSpacing(10)
+    window.recommend_message_center_action_label = QLabel("建议动作：等待新事件")
+    window.recommend_message_center_action_label.setObjectName("inlineHint")
+    window.recommend_message_center_action_label.setWordWrap(True)
+    window.recommend_message_center_symbol_button = QPushButton("定位股票")
+    window.recommend_message_center_open_button = QPushButton("打开关联页")
+    window._set_button_role(window.recommend_message_center_symbol_button, "tonal")
+    window._set_button_role(window.recommend_message_center_open_button, "accent")
+    if hasattr(window, "focus_selected_recommend_message_symbol"):
+        window.recommend_message_center_symbol_button.clicked.connect(window.focus_selected_recommend_message_symbol)
+    if hasattr(window, "open_selected_recommend_message_event"):
+        window.recommend_message_center_open_button.clicked.connect(window.open_selected_recommend_message_event)
+    message_center_action_row.addWidget(window.recommend_message_center_action_label, stretch=1)
+    message_center_action_row.addWidget(window.recommend_message_center_symbol_button)
+    message_center_action_row.addWidget(window.recommend_message_center_open_button)
+    message_center_layout.addLayout(message_center_action_row)
+    window.recommend_message_center_text = QTextEdit()
+    _configure_recommend_story_text(
+        window,
+        window.recommend_message_center_text,
+        tone="system",
+        min_height=132,
+        max_height=188,
+        seed_text="这里会汇总 AI 评测、消息源刷新、推荐池刷新和交易回执。",
+    )
+    message_center_layout.addWidget(window.recommend_message_center_text)
+    recap_layout.addWidget(message_center_box, stretch=1)
+    if hasattr(window, "_refresh_recommend_message_center"):
+        window._refresh_recommend_message_center()
+
     detail_box = QGroupBox("主线说明")
     plan_box = QGroupBox("今日交易计划")
     pulse_box = QGroupBox("市场温度")
@@ -2832,11 +2918,14 @@ def build_recommend_workspace(
     recommend_review_splitter.setChildrenCollapsible(False)
     recommend_review_box = QGroupBox("当日复盘")
     recommend_next_day_box = QGroupBox("次日策略")
-    window._style_terminal_panel(recommend_review_box, recommend_next_day_box)
+    recommend_ai_review_box = QGroupBox("AI评测")
+    window._style_terminal_panel(recommend_review_box, recommend_next_day_box, recommend_ai_review_box)
     recommend_review_box.setProperty("surfaceRole", "analysis")
     recommend_next_day_box.setProperty("surfaceRole", "analysis")
+    recommend_ai_review_box.setProperty("surfaceRole", "analysis")
     recommend_review_box.setProperty("pageTone", "recommend")
     recommend_next_day_box.setProperty("pageTone", "recommend")
+    recommend_ai_review_box.setProperty("pageTone", "recommend")
 
     recommend_review_layout = QVBoxLayout(recommend_review_box)
     recommend_review_layout.setContentsMargins(12, 12, 12, 12)
@@ -2866,9 +2955,24 @@ def build_recommend_workspace(
     )
     recommend_next_day_layout.addWidget(window.recommend_next_day_text)
 
+    recommend_ai_review_layout = QVBoxLayout(recommend_ai_review_box)
+    recommend_ai_review_layout.setContentsMargins(12, 12, 12, 12)
+    recommend_ai_review_layout.setSpacing(10)
+    window.recommend_ai_review_text = QTextEdit()
+    _configure_recommend_story_text(
+        window,
+        window.recommend_ai_review_text,
+        tone="focus-review",
+        min_height=198,
+        max_height=260,
+        seed_text="AI评测会结合推荐、消息和单票上下文，给出一份外部模型复核意见。",
+    )
+    recommend_ai_review_layout.addWidget(window.recommend_ai_review_text)
+
     recommend_review_splitter.addWidget(recommend_review_box)
     recommend_review_splitter.addWidget(recommend_next_day_box)
-    window._configure_splitter(recommend_review_splitter, [660, 580])
+    recommend_review_splitter.addWidget(recommend_ai_review_box)
+    window._configure_splitter(recommend_review_splitter, [430, 430, 360])
     recap_layout.addWidget(recommend_review_splitter, stretch=2)
 
 def build_board_workspace(window, build_table, header_view_cls) -> None:
@@ -3178,6 +3282,74 @@ def _build_config_workspace_core(window) -> None:
     news_layout.addLayout(news_action_row)
     layout.addWidget(news_box, stretch=1)
 
+    ai_box = QGroupBox("AI评测")
+    ai_box.setObjectName("configAiReviewBox")
+    window._style_terminal_panel(ai_box)
+    ai_layout = QVBoxLayout(ai_box)
+    ai_form = QFormLayout()
+    ai_form.setLabelAlignment(Qt.AlignRight)
+    window.ai_review_base_url_input = QLineEdit(window.state.ai_review_base_url or "https://api.openai.com/v1")
+    window.ai_review_api_key_input = QLineEdit(window.state.ai_review_api_key)
+    window.ai_review_api_key_input.setEchoMode(QLineEdit.Password)
+    window.ai_review_model_input = QLineEdit(window.state.ai_review_model or "gpt-5.4")
+    window.ai_review_reasoning_effort_combo = QComboBox()
+    for value, label in [
+        ("minimal", "最省"),
+        ("low", "低"),
+        ("medium", "中"),
+        ("high", "高"),
+    ]:
+        window.ai_review_reasoning_effort_combo.addItem(label, value)
+    for index in range(window.ai_review_reasoning_effort_combo.count()):
+        if window.ai_review_reasoning_effort_combo.itemData(index) == (window.state.ai_review_reasoning_effort or "medium"):
+            window.ai_review_reasoning_effort_combo.setCurrentIndex(index)
+            break
+    window.ai_review_timeout_input = QLineEdit(str(window.state.ai_review_timeout_seconds or 45.0))
+    window.ai_review_max_tokens_input = QLineEdit(str(window.state.ai_review_max_output_tokens or 900))
+    window.ai_review_auto_run_checkbox = QCheckBox("推荐链路变化后自动重评当前焦点")
+    window.ai_review_auto_on_news_checkbox = QCheckBox("消息源载入后自动触发")
+    window.ai_review_auto_on_pool_checkbox = QCheckBox("推荐池刷新后自动触发")
+    window.ai_review_auto_run_checkbox.setChecked(bool(getattr(window.state, "ai_review_auto_run_enabled", False)))
+    window.ai_review_auto_on_news_checkbox.setChecked(bool(getattr(window.state, "ai_review_auto_run_on_news_refresh", True)))
+    window.ai_review_auto_on_pool_checkbox.setChecked(bool(getattr(window.state, "ai_review_auto_run_on_pool_refresh", True)))
+    window.ai_review_api_key_input.setPlaceholderText("sk-...")
+    window.ai_review_base_url_input.setPlaceholderText("https://api.openai.com/v1")
+    ai_form.addRow("Base URL", window.ai_review_base_url_input)
+    ai_form.addRow("API Key", window.ai_review_api_key_input)
+    ai_form.addRow("模型", window.ai_review_model_input)
+    ai_form.addRow("推理强度", window.ai_review_reasoning_effort_combo)
+    ai_form.addRow("超时(秒)", window.ai_review_timeout_input)
+    ai_form.addRow("最大输出", window.ai_review_max_tokens_input)
+    ai_layout.addLayout(ai_form)
+    ai_toggle_row = QVBoxLayout()
+    ai_toggle_row.setContentsMargins(0, 0, 0, 0)
+    ai_toggle_row.setSpacing(6)
+    ai_toggle_row.addWidget(window.ai_review_auto_run_checkbox)
+    ai_toggle_row.addWidget(window.ai_review_auto_on_news_checkbox)
+    ai_toggle_row.addWidget(window.ai_review_auto_on_pool_checkbox)
+    ai_layout.addLayout(ai_toggle_row)
+    window.ai_review_status_text = QTextEdit()
+    window.ai_review_status_text.setReadOnly(True)
+    window._style_terminal_console(window.ai_review_status_text)
+    ai_layout.addWidget(window.ai_review_status_text)
+    ai_action_row = QHBoxLayout()
+    ai_action_row.setSpacing(10)
+    ai_save_button = QPushButton("保存AI配置")
+    ai_review_button = QPushButton("评测当前焦点")
+    ai_recommend_button = QPushButton("前往推荐页")
+    window._set_button_role(ai_save_button, "accent")
+    window._set_button_role(ai_review_button, "tonal")
+    window._set_button_role(ai_recommend_button, "ghost")
+    ai_save_button.clicked.connect(window.save_ai_review_preferences)
+    ai_review_button.clicked.connect(window.run_ai_review_for_selected_recommendation)
+    ai_recommend_button.clicked.connect(lambda: window._navigate_to_workspace("recommend", "daily_pool_table"))
+    ai_action_row.addWidget(ai_save_button)
+    ai_action_row.addWidget(ai_review_button)
+    ai_action_row.addWidget(ai_recommend_button)
+    ai_action_row.addStretch(1)
+    ai_layout.addLayout(ai_action_row)
+    layout.addWidget(ai_box, stretch=1)
+
     notes_box = QGroupBox("\u8bf4\u660e")
     notes_box.setObjectName("configNotesBox")
     window._style_terminal_panel(notes_box)
@@ -3198,6 +3370,8 @@ def _build_config_workspace_core(window) -> None:
     window._refresh_license_status_view()
     if hasattr(window, "_refresh_news_source_status_panel"):
         window._refresh_news_source_status_panel()
+    if hasattr(window, "_refresh_ai_review_status_panel"):
+        window._refresh_ai_review_status_panel()
 
 
 

@@ -4,7 +4,7 @@ import csv
 import html
 import sys
 import time as time_module
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime, time
 from pathlib import Path
 from types import SimpleNamespace
@@ -62,8 +62,24 @@ from PySide6.QtWidgets import (
 )
 
 from quant_hunter.backtest import Backtester, format_result
+from quant_hunter.ai_review import (
+    AIReviewConfig,
+    AIReviewResult,
+    AIReviewStreamEvent,
+    DEFAULT_AI_BASE_URL,
+    DEFAULT_AI_MODEL,
+    DEFAULT_AI_REASONING_EFFORT,
+    normalize_ai_review_config,
+    stream_recommendation_review_with_openai,
+)
 from quant_hunter.board import BoardModeEngine
-from quant_hunter.broker import EastmoneyBrokerAdapter
+from quant_hunter.broker import (
+    EastmoneyBrokerAdapter,
+    merge_submission_records_with_execution_records,
+    normalize_submission_result,
+    reconcile_submission_records_with_holdings,
+    submission_record_execution_delta,
+)
 from quant_hunter.decision import DecisionEngine
 from quant_hunter.data import (
     aggregate_price_bars,
@@ -89,6 +105,21 @@ from quant_hunter.models import (
     SymbolBacktestSummary,
 )
 from quant_hunter.market_feed import CacheOnlyMarketFeed, LocalMarketCache, MarketScreenResult, RemoteMarketScreener
+from quant_hunter.message_center import (
+    MESSAGE_CENTER_MAX_EVENTS,
+    MessageActionHint,
+    SmartMessageEvent,
+    append_message_event,
+    build_message_center_snapshot,
+    message_category_label,
+    message_event_action_hint,
+    message_event_signature,
+    message_event_status_label,
+    message_level_label,
+    message_level_tone,
+    normalize_message_bool,
+    update_message_event_flags,
+)
 from quant_hunter.news_sources import (
     NewsSourceConfig,
     get_news_source_descriptor,
@@ -3042,6 +3073,7 @@ class OrderConfirmationDialog(QDialog):
         holdings=None,
         cash_snapshot=None,
         recommendations=None,
+        execution_summary: dict[str, object] | None = None,
         strategy_name: str = "",
         experiment_bridge: dict[str, str] | None = None,
         guard_notes: list[str] | None = None,
@@ -3170,19 +3202,24 @@ def build_table(headers: list[str]) -> QTableWidget:
 class BackgroundTaskSignals(QObject):
     succeeded = Signal(object)
     failed = Signal(str)
+    progressed = Signal(object)
     finished = Signal()
 
 
 class BackgroundTask(QRunnable):
-    def __init__(self, fn) -> None:
+    def __init__(self, fn, *, pass_progress_callback: bool = False) -> None:
         super().__init__()
         self.fn = fn
+        self.pass_progress_callback = pass_progress_callback
         self.signals = BackgroundTaskSignals()
         self.setAutoDelete(False)
 
     def run(self) -> None:
         try:
-            result = self.fn()
+            if self.pass_progress_callback:
+                result = self.fn(self.signals.progressed.emit)
+            else:
+                result = self.fn()
         except Exception as exc:
             try:
                 self.signals.failed.emit(str(exc))
@@ -3677,6 +3714,10 @@ class QuantHunterWindow(QMainWindow):
             fill_status = str(item.get("fill_status", "") or "").upper()
             if order_status == "FAILED" or fill_status == "REJECTED":
                 self.execution_status_by_symbol[symbol] = "提交失败"
+            elif fill_status == "FILLED":
+                self.execution_status_by_symbol[symbol] = "已成交"
+            elif fill_status in {"PARTIAL", "PART_FILLED", "PARTIALLY_FILLED"}:
+                self.execution_status_by_symbol[symbol] = "部分成交"
             elif order_status == "SUBMITTED":
                 self.execution_status_by_symbol[symbol] = "已提交"
         self.monitor_alert_state: dict[str, str] = {}
@@ -3726,6 +3767,31 @@ class QuantHunterWindow(QMainWindow):
         self.last_job_status = "idle"
         self.last_job_duration_ms = 0.0
         self.last_job_finished_at = ""
+        self.smart_message_events: list[SmartMessageEvent] = [
+            SmartMessageEvent(
+                timestamp=str(item.get("timestamp", "") or ""),
+                category=str(item.get("category", "") or ""),
+                title=str(item.get("title", "") or ""),
+                detail=str(item.get("detail", "") or ""),
+                symbol=str(item.get("symbol", "") or ""),
+                level=str(item.get("level", "INFO") or "INFO"),
+            )
+            for item in list(getattr(self.state, "smart_message_events", []) or [])
+            if isinstance(item, dict)
+        ]
+        self._recommend_message_center_visible_events: list[SmartMessageEvent] = []
+        self.recommend_message_center_selected_signature: tuple[str, str, str, str, str, str] | None = None
+        self.recommend_message_center_filter = "all"
+        self.ai_review_results_by_symbol: dict[str, AIReviewResult] = {}
+        self.ai_review_partial_content_by_symbol: dict[str, str] = {}
+        self.ai_review_completed_signature_by_symbol: dict[str, str] = {}
+        self.ai_review_pending_signature_by_symbol: dict[str, str] = {}
+        self.ai_review_pending_symbol = ""
+        self.ai_review_last_symbol = ""
+        self.ai_review_last_error = ""
+        self.ai_review_last_trigger = ""
+        self.ai_review_post_pool_trigger = ""
+        self.ai_review_post_pool_symbol_hint = ""
         self._symbol_data_revision = 0
         self._last_rendered_symbol = ""
         self._last_rendered_symbol_revision = -1
@@ -3759,6 +3825,9 @@ class QuantHunterWindow(QMainWindow):
         self._news_feedback_timer = QTimer(self)
         self._news_feedback_timer.setSingleShot(True)
         self._news_feedback_timer.timeout.connect(self._clear_news_navigation_feedback)
+        self._recommend_message_toast_timer = QTimer(self)
+        self._recommend_message_toast_timer.setSingleShot(True)
+        self._recommend_message_toast_timer.timeout.connect(self._hide_recommend_message_toast)
 
         self._build_ui()
         self._set_startup_progress(8, "正在初始化主界面...")
@@ -4281,6 +4350,872 @@ class QuantHunterWindow(QMainWindow):
             candidate_limit = self.state.daily_plan_candidate_limit
         return template_name, focus_only, max(candidate_limit, 1)
 
+    def _current_ai_review_config(self) -> AIReviewConfig:
+        base_url = self.state.ai_review_base_url or DEFAULT_AI_BASE_URL
+        api_key = self.state.ai_review_api_key or ""
+        model = self.state.ai_review_model or DEFAULT_AI_MODEL
+        reasoning_effort = self.state.ai_review_reasoning_effort or DEFAULT_AI_REASONING_EFFORT
+        max_output_tokens = int(getattr(self.state, "ai_review_max_output_tokens", 900) or 900)
+        timeout_seconds = float(getattr(self.state, "ai_review_timeout_seconds", 45.0) or 45.0)
+
+        if hasattr(self, "ai_review_base_url_input"):
+            base_url = self.ai_review_base_url_input.text().strip() or base_url
+        if hasattr(self, "ai_review_api_key_input"):
+            api_key = self.ai_review_api_key_input.text().strip() or api_key
+        if hasattr(self, "ai_review_model_input"):
+            model = self.ai_review_model_input.text().strip() or model
+        if hasattr(self, "ai_review_reasoning_effort_combo"):
+            reasoning_effort = str(self.ai_review_reasoning_effort_combo.currentData() or reasoning_effort)
+        if hasattr(self, "ai_review_max_tokens_input"):
+            try:
+                max_output_tokens = int(self.ai_review_max_tokens_input.text().strip())
+            except ValueError:
+                max_output_tokens = int(getattr(self.state, "ai_review_max_output_tokens", 900) or 900)
+        if hasattr(self, "ai_review_timeout_input"):
+            try:
+                timeout_seconds = float(self.ai_review_timeout_input.text().strip())
+            except ValueError:
+                timeout_seconds = float(getattr(self.state, "ai_review_timeout_seconds", 45.0) or 45.0)
+
+        return normalize_ai_review_config(
+            AIReviewConfig(
+                base_url=base_url,
+                api_key=api_key,
+                model=model,
+                reasoning_effort=reasoning_effort,
+                max_output_tokens=max_output_tokens,
+                timeout_seconds=timeout_seconds,
+            )
+        )
+
+    def _current_ai_review_automation_settings(self) -> tuple[bool, bool, bool]:
+        auto_enabled = bool(getattr(self.state, "ai_review_auto_run_enabled", False))
+        auto_on_news = bool(getattr(self.state, "ai_review_auto_run_on_news_refresh", True))
+        auto_on_pool = bool(getattr(self.state, "ai_review_auto_run_on_pool_refresh", True))
+        if hasattr(self, "ai_review_auto_run_checkbox"):
+            auto_enabled = self.ai_review_auto_run_checkbox.isChecked()
+        if hasattr(self, "ai_review_auto_on_news_checkbox"):
+            auto_on_news = self.ai_review_auto_on_news_checkbox.isChecked()
+        if hasattr(self, "ai_review_auto_on_pool_checkbox"):
+            auto_on_pool = self.ai_review_auto_on_pool_checkbox.isChecked()
+        return auto_enabled, auto_on_news, auto_on_pool
+
+    def _append_smart_message_event(
+        self,
+        *,
+        category: str,
+        title: str,
+        detail: str = "",
+        symbol: str = "",
+        level: str = "INFO",
+        timestamp: str | None = None,
+    ) -> None:
+        event_time = str(timestamp or datetime.now().strftime("%H:%M:%S")).strip()
+        self.smart_message_events = append_message_event(
+            self.smart_message_events,
+            timestamp=event_time,
+            category=category,
+            title=title,
+            detail=detail,
+            symbol=symbol,
+            level=level,
+        )
+        self._refresh_recommend_message_center()
+        self._maybe_show_recommend_message_toast(self.smart_message_events[-1] if self.smart_message_events else None)
+
+    def _hide_recommend_message_toast(self) -> None:
+        label = getattr(self, "recommend_message_toast_label", None)
+        if isinstance(label, QLabel):
+            label.hide()
+
+    def _message_toast_duration_ms(self, event: SmartMessageEvent | None) -> int:
+        if event is None:
+            return 0
+        level = str(getattr(event, "level", "INFO") or "INFO").upper()
+        if level == "ERROR":
+            return 9000
+        if level == "WARN":
+            return 7000
+        return 4500
+
+    def _maybe_show_recommend_message_toast(self, event: SmartMessageEvent | None) -> None:
+        label = getattr(self, "recommend_message_toast_label", None)
+        if not isinstance(label, QLabel) or event is None:
+            return
+        category_key = str(getattr(event, "category", "system") or "").strip().lower()
+        level_key = str(getattr(event, "level", "INFO") or "INFO").strip().upper()
+        important_success = level_key == "SUCCESS" and category_key in {"ai", "news", "trade"}
+        if level_key not in {"WARN", "ERROR"} and not important_success:
+            return
+        category_text = message_category_label(getattr(event, "category", "system"))
+        level_text = message_level_label(level_key)
+        tone = message_level_tone(level_key)
+        action_hint = message_event_action_hint(event)
+        symbol = str(getattr(event, "symbol", "") or "")
+        detail = str(getattr(event, "detail", "") or "").strip()
+        detail_brief = detail[:72] + ("…" if len(detail) > 72 else "")
+        text = f"提醒：[{category_text}/{level_text}] {getattr(event, 'title', '') or '最新事件'}"
+        if symbol:
+            text += f" | {self._stock_name_for_symbol(symbol)} ({symbol})"
+        if detail_brief:
+            text += f"\n{detail_brief}"
+        if action_hint.summary:
+            text += f"\n建议：{action_hint.summary}"
+        toast_signature = (
+            message_event_signature(event),
+            category_text,
+            level_text,
+            tone,
+            text,
+            action_hint.button_label,
+            action_hint.summary,
+        )
+        if getattr(self, "_recommend_message_toast_signature_v1", None) == toast_signature and label.isVisible():
+            return
+        self._recommend_message_toast_signature_v1 = toast_signature
+        self._set_label_text_if_changed(label, text)
+        if label.property("stateTone") != tone:
+            label.setProperty("stateTone", tone)
+            label.style().unpolish(label)
+            label.style().polish(label)
+        label.show()
+        duration_fn = getattr(self, "_message_toast_duration_ms", None)
+        duration_ms = duration_fn(event) if callable(duration_fn) else QuantHunterWindow._message_toast_duration_ms(self, event)
+        if duration_ms > 0:
+            self._recommend_message_toast_timer.start(duration_ms)
+
+    def _filtered_smart_message_events(self) -> list[SmartMessageEvent]:
+        filter_key = str(getattr(self, "recommend_message_center_filter", "all") or "all")
+        combo = getattr(self, "recommend_message_center_filter_combo", None)
+        if combo is not None and combo.currentIndex() >= 0:
+            current_data = combo.currentData()
+            if current_data:
+                filter_key = str(current_data)
+        if filter_key == "all":
+            return list(self.smart_message_events)
+        return [item for item in self.smart_message_events if str(getattr(item, "category", "") or "").strip().lower() == filter_key]
+
+    def _selected_recommend_message_event(self) -> SmartMessageEvent | None:
+        events = list(getattr(self, "_recommend_message_center_visible_events", []) or [])
+        if not events:
+            return None
+        table = getattr(self, "recommend_message_center_table", None)
+        if not isinstance(table, QTableWidget):
+            return events[0]
+        row_index = table.currentRow()
+        if 0 <= row_index < len(events):
+            return events[row_index]
+        return events[0]
+
+    def _message_event_route(self, event: SmartMessageEvent | None) -> tuple[str, str, str]:
+        if event is None:
+            return "recommend", "daily_pool_table", "打开推荐页"
+        category = str(getattr(event, "category", "") or "").strip().lower()
+        title = str(getattr(event, "title", "") or "")
+        symbol = str(getattr(event, "symbol", "") or "")
+        if category == "trade":
+            return "broker", "execution_table", "打开交易页"
+        if category == "news":
+            if symbol:
+                return "recommend", "daily_pool_table", "打开推荐页"
+            return "config", "news_source_status_text", "打开配置页"
+        if category == "ai":
+            return "recommend", "daily_pool_table", "打开推荐页"
+        if "AI评测配置" in title:
+            return "config", "ai_review_status_text", "打开配置页"
+        return "recommend", "daily_pool_table", "打开推荐页"
+
+    def _refresh_recommend_message_center(self) -> None:
+        text_widget = getattr(self, "recommend_message_center_text", None)
+        summary_label = getattr(self, "recommend_message_center_summary_label", None)
+        table = getattr(self, "recommend_message_center_table", None)
+        if text_widget is None and summary_label is None and table is None:
+            return
+        filter_key = str(getattr(self, "recommend_message_center_filter", "all") or "all")
+        combo = getattr(self, "recommend_message_center_filter_combo", None)
+        if combo is not None and combo.currentIndex() >= 0:
+            current_data = combo.currentData()
+            if current_data:
+                filter_key = str(current_data)
+                self.recommend_message_center_filter = filter_key
+        snapshot = build_message_center_snapshot(self.smart_message_events, category_filter=filter_key)
+        filtered_events = self._filtered_smart_message_events()
+        visible_events = list(reversed(filtered_events[-18:]))
+        selected_signature = self.recommend_message_center_selected_signature
+        target_row = 0 if visible_events else -1
+        if selected_signature is not None:
+            for row_index, event in enumerate(visible_events):
+                if message_event_signature(event) == selected_signature:
+                    target_row = row_index
+                    break
+        selected_event = visible_events[target_row] if 0 <= target_row < len(visible_events) else None
+        route_workspace, route_widget, route_label = self._message_event_route(selected_event)
+        action_hint = message_event_action_hint(selected_event)
+        symbol = str(getattr(selected_event, "symbol", "") or "") if selected_event is not None else ""
+        symbol_name = self._stock_name_for_symbol(symbol) if symbol else ""
+        refresh_signature = (
+            filter_key,
+            tuple(message_event_signature(event) for event in visible_events),
+            message_event_signature(selected_event) if selected_event is not None else None,
+            snapshot["headline"],
+            snapshot["detail"],
+            snapshot["text"],
+            route_workspace,
+            route_widget,
+            route_label,
+            action_hint.button_label,
+            action_hint.summary,
+            symbol,
+            symbol_name,
+        )
+        if getattr(self, "_recommend_message_center_refresh_signature_v1", None) == refresh_signature:
+            return
+        self._recommend_message_center_refresh_signature_v1 = refresh_signature
+        self._recommend_message_center_visible_events = visible_events
+        if summary_label is not None:
+            self._set_label_text_if_changed(summary_label, f"{snapshot['headline']} | {snapshot['detail']}")
+        if isinstance(table, QTableWidget):
+            table_signature = tuple(
+                (
+                    str(getattr(event, "timestamp", "") or "--:--:--"),
+                    f"{message_category_label(getattr(event, 'category', 'system'))}/{message_level_label(getattr(event, 'level', 'INFO'))}",
+                    str(getattr(event, "title", "") or "未命名事件"),
+                    str(getattr(event, "symbol", "") or "--"),
+                    message_level_tone(getattr(event, "level", "INFO")),
+                    str(getattr(event, "detail", "") or getattr(event, "title", "") or ""),
+                    message_event_signature(event),
+                )
+                for event in visible_events
+            )
+            previous_signature = tuple(getattr(self, "_recommend_message_center_table_signature_v1", ()))
+            table.blockSignals(True)
+            if previous_signature != table_signature:
+                table.setRowCount(len(visible_events))
+                for row_index, signature_row in enumerate(table_signature):
+                    if row_index < len(previous_signature) and previous_signature[row_index] == signature_row:
+                        continue
+                    timestamp, category_level, title, event_symbol, tone, tooltip_text, event_signature = signature_row
+                    values = [timestamp, category_level, title, event_symbol]
+                    for column, value in enumerate(values):
+                        item = table.item(row_index, column)
+                        if item is None:
+                            item = QTableWidgetItem()
+                            table.setItem(row_index, column, item)
+                        if item.text() != value:
+                            item.setText(value)
+                        if column == 0 and item.data(Qt.UserRole) != event_signature:
+                            item.setData(Qt.UserRole, event_signature)
+                        background = {
+                            "buy": QColor(18, 49, 35, 230),
+                            "watch": QColor(52, 41, 15, 230),
+                            "risk": QColor(63, 24, 27, 230),
+                            "idle": QColor(19, 28, 38, 220),
+                        }.get(tone, QColor(19, 28, 38, 220))
+                        foreground = {
+                            "buy": QColor("#eafff2"),
+                            "watch": QColor("#fff6df"),
+                            "risk": QColor("#ffeceb"),
+                            "idle": QColor("#eaf2fb"),
+                        }.get(tone, QColor("#eaf2fb"))
+                        item.setBackground(background)
+                        item.setForeground(foreground)
+                        if item.toolTip() != tooltip_text:
+                            item.setToolTip(tooltip_text)
+                self._recommend_message_center_table_signature_v1 = table_signature
+            if target_row >= 0:
+                selector = getattr(self, "_select_table_row_if_needed", None)
+                if callable(selector):
+                    selector(table, target_row)
+                else:
+                    QuantHunterWindow._select_table_row_if_needed(self, table, target_row)
+            table.blockSignals(False)
+        self.recommend_message_center_selected_signature = message_event_signature(selected_event) if selected_event is not None else None
+        symbol_button = getattr(self, "recommend_message_center_symbol_button", None)
+        open_button = getattr(self, "recommend_message_center_open_button", None)
+        action_label = getattr(self, "recommend_message_center_action_label", None)
+        if isinstance(symbol_button, QPushButton):
+            QuantHunterWindow._set_widget_enabled_if_changed(self, symbol_button, bool(symbol))
+            QuantHunterWindow._set_label_text_if_changed(self, symbol_button, f"定位 {self._stock_name_for_symbol(symbol)}" if symbol else "无关联股票")
+        if isinstance(open_button, QPushButton):
+            QuantHunterWindow._set_widget_enabled_if_changed(self, open_button, selected_event is not None)
+            QuantHunterWindow._set_label_text_if_changed(
+                self,
+                open_button,
+                action_hint.button_label if selected_event is not None else route_label,
+                tooltip=action_hint.summary if selected_event is not None else f"打开 {route_workspace} 页",
+            )
+        if isinstance(action_label, QLabel):
+            action_text = action_hint.summary if selected_event is not None else "等待你选中一条事件后，再给出下一步动作。"
+            self._set_label_text_if_changed(action_label, f"建议动作：{action_text}")
+        if text_widget is not None:
+            if selected_event is None:
+                self._set_plain_text_if_changed(text_widget, snapshot["text"])
+            else:
+                detail_lines = [
+                    "事件详情",
+                    f"时间：{getattr(selected_event, 'timestamp', '') or '--:--:--'}",
+                    f"类型：{message_category_label(getattr(selected_event, 'category', 'system'))}",
+                    f"状态：{message_level_label(getattr(selected_event, 'level', 'INFO'))}",
+                    f"标题：{getattr(selected_event, 'title', '') or '未命名事件'}",
+                    f"标的：{symbol or '无'}",
+                    f"建议动作：{action_hint.button_label}",
+                    "",
+                    str(getattr(selected_event, 'detail', '') or '暂无附加说明'),
+                    "",
+                    action_hint.summary,
+                    "",
+                    f"快捷动作：{route_label} -> {route_workspace}/{route_widget}",
+                ]
+                self._set_plain_text_if_changed(text_widget, "\n".join(detail_lines))
+
+    def _on_recommend_message_center_filter_changed(self) -> None:
+        combo = getattr(self, "recommend_message_center_filter_combo", None)
+        if combo is not None and combo.currentIndex() >= 0:
+            self.recommend_message_center_filter = str(combo.currentData() or "all")
+        self._refresh_recommend_message_center()
+
+    def _on_recommend_message_center_selection_changed(self) -> None:
+        current = self._selected_recommend_message_event()
+        next_signature = message_event_signature(current) if current is not None else None
+        if next_signature == getattr(self, "recommend_message_center_selected_signature", None):
+            return
+        self.recommend_message_center_selected_signature = next_signature
+        self._refresh_recommend_message_center()
+
+    def clear_recommend_message_center(self) -> None:
+        self.smart_message_events = []
+        self._recommend_message_center_visible_events = []
+        self.recommend_message_center_selected_signature = None
+        self._refresh_recommend_message_center()
+        self._hide_recommend_message_toast()
+        self._append_runtime_log("统一消息中心已清空")
+        self.save_state()
+
+    def focus_selected_recommend_message_symbol(self) -> None:
+        event = self._selected_recommend_message_event()
+        symbol = str(getattr(event, "symbol", "") or "") if event is not None else ""
+        if not symbol:
+            return
+        if hasattr(self, "_focus_symbol_everywhere"):
+            self._focus_symbol_everywhere(symbol, origin="recommend")
+        else:
+            self._focus_symbol_in_recommend_workspace(symbol)
+        self._append_runtime_log(f"消息中心已定位股票：{self._stock_name_for_symbol(symbol)} ({symbol})")
+
+    def open_selected_recommend_message_event(self) -> None:
+        event = self._selected_recommend_message_event()
+        if event is None:
+            return
+        symbol = str(getattr(event, "symbol", "") or "")
+        workspace_key, widget_name, _route_label = self._message_event_route(event)
+        if workspace_key == "broker":
+            if symbol:
+                self._sync_execution_focus_from_symbol(symbol)
+            self._navigate_to_workspace("broker", widget_name)
+            return
+        if workspace_key == "config":
+            self._navigate_to_workspace("config", widget_name)
+            return
+        if workspace_key == "recommend" and symbol:
+            self._focus_symbol_in_recommend_workspace(symbol)
+            return
+        self._navigate_to_workspace(workspace_key, widget_name)
+
+    def _current_ai_review_symbol_hint(self) -> str:
+        current = self._selected_daily_pool_recommendation() if hasattr(self, "_selected_daily_pool_recommendation") else None
+        symbol = str(getattr(current, "symbol", "") or "").strip() if current is not None else ""
+        if symbol:
+            return symbol
+        for candidate in (
+            getattr(self, "active_symbol", ""),
+            getattr(getattr(self, "state", None), "selected_symbol", ""),
+        ):
+            text = str(candidate or "").strip()
+            if text:
+                return text
+        return ""
+
+    def _queue_auto_ai_review_after_pool_refresh(self, trigger: str, *, symbol_hint: str = "") -> None:
+        trigger_text = str(trigger or "").strip() or "pool_refresh"
+        symbol_text = str(symbol_hint or "").strip() or self._current_ai_review_symbol_hint()
+        existing = str(getattr(self, "ai_review_post_pool_trigger", "") or "").strip()
+        if existing == "news_refresh" and trigger_text != "news_refresh":
+            if not self.ai_review_post_pool_symbol_hint and symbol_text:
+                self.ai_review_post_pool_symbol_hint = symbol_text
+            return
+        self.ai_review_post_pool_trigger = trigger_text
+        self.ai_review_post_pool_symbol_hint = symbol_text
+
+    def _ai_review_signature_for_row(self, row: RecommendationRow | None) -> str:
+        if row is None:
+            return ""
+        symbol = str(getattr(row, "symbol", "") or "").strip()
+        news_items = list(getattr(self, "news_catalysts", {}).get(symbol, []) or [])[:3]
+        news_signature = tuple(
+            (
+                str(getattr(item, "title", "") or "")[:80],
+                str(getattr(item, "published_at", "") or "")[:19],
+                str(getattr(item, "source", "") or "")[:24],
+            )
+            for item in news_items
+        )
+        return repr(
+            (
+                symbol,
+                str(getattr(row, "signal_date", "") or ""),
+                round(float(getattr(row, "total_score", 0.0) or 0.0), 2),
+                round(float(getattr(row, "execution_readiness", 0.0) or 0.0), 2),
+                str(getattr(row, "mainline_tag", "") or getattr(row, "theme_name", "") or ""),
+                str(getattr(row, "mainline_risk_flag", "") or ""),
+                str(getattr(row, "catalyst", "") or "")[:120],
+                news_signature,
+            )
+        )
+
+    def _set_recommend_status_text_if_changed(self, text: str) -> None:
+        status_label = getattr(self, "recommend_status_label", None)
+        if status_label is None:
+            return
+        set_label = getattr(self, "_set_label_text_if_changed", None)
+        if callable(set_label):
+            try:
+                set_label(status_label, text)
+                return
+            except TypeError:
+                pass
+        QuantHunterWindow._set_label_text_if_changed(self, status_label, text)
+
+    def _start_ai_review_for_row(self, row: RecommendationRow, *, trigger: str = "manual", force: bool = False) -> bool:
+        config = self._current_ai_review_config()
+        if not config.api_key:
+            if trigger == "manual" and hasattr(self, "_navigate_to_workspace"):
+                self._navigate_to_workspace("config")
+            if trigger == "manual":
+                QMessageBox.information(self, "请先配置 AI 评测", "请先在策略配置页填写 OpenAI API Key。")
+            return False
+        if self._is_job_running("ai_review"):
+            return False
+
+        symbol = str(getattr(row, "symbol", "") or "")
+        stock_name = getattr(row, "stock_name", "") or self._stock_name_for_symbol(symbol)
+        signature = self._ai_review_signature_for_row(row)
+        completed_signature = self.ai_review_completed_signature_by_symbol.get(symbol, "")
+        pending_signature = self.ai_review_pending_signature_by_symbol.get(symbol, "")
+        if not force and signature and signature in {completed_signature, pending_signature}:
+            return False
+
+        profile = self._stock_profile_for_symbol(symbol) if symbol else None
+        scan_row = next((item for item in self.scan_rows if getattr(item, "symbol", "") == symbol), None)
+        analyses = list(getattr(self, "universe_analyses", {}).get(symbol, []) or [])[-5:]
+        bars = list(getattr(self, "universe_bars", {}).get(symbol, []) or [])[-5:]
+        news_items = list(getattr(self, "news_catalysts", {}).get(symbol, []) or [])[:3]
+
+        self.ai_review_partial_content_by_symbol[symbol] = ""
+        self.ai_review_pending_signature_by_symbol[symbol] = signature
+        self.ai_review_pending_symbol = symbol
+        self.ai_review_last_symbol = symbol
+        self.ai_review_last_error = ""
+        self.ai_review_last_trigger = trigger
+        self._append_runtime_log(f"AI评测开始：{stock_name} ({symbol}) | {config.model} | 触发 {trigger}")
+        self._append_smart_message_event(
+            category="ai",
+            title=f"{stock_name} 开始 AI 评测",
+            detail=f"{config.model} / 推理 {config.reasoning_effort} / 触发 {trigger}",
+            symbol=symbol,
+            level="INFO",
+        )
+        if hasattr(self, "recommend_status_label"):
+            trigger_label = {"manual": "手动", "news_refresh": "消息刷新", "pool_refresh": "推荐池刷新"}.get(trigger, trigger)
+            QuantHunterWindow._set_recommend_status_text_if_changed(self, f"正在请求 {config.model} 评测：{stock_name} | {trigger_label}")
+        self._refresh_ai_review_status_panel()
+        self._refresh_ai_review_panel(row)
+
+        def build_review(progress_callback) -> AIReviewResult:
+            return stream_recommendation_review_with_openai(
+                config,
+                row,
+                news_items=news_items,
+                profile=profile,
+                scan_row=scan_row,
+                analyses=analyses,
+                bars=bars,
+                on_event=progress_callback,
+            )
+
+        started = self._run_background_job(
+            "ai_review",
+            build_review,
+            self._apply_ai_review_result,
+            self._handle_ai_review_error,
+            on_progress=self._handle_ai_review_stream_event,
+            pass_progress_callback=True,
+        )
+        if not started:
+            self.ai_review_pending_symbol = ""
+            self.ai_review_pending_signature_by_symbol.pop(symbol, None)
+            self._refresh_ai_review_status_panel()
+            self._refresh_ai_review_panel(row)
+            return False
+        return True
+
+    def _maybe_auto_run_ai_review(self, trigger: str = "pool_refresh", *, symbol_hint: str = "") -> bool:
+        auto_enabled, auto_on_news, auto_on_pool = self._current_ai_review_automation_settings()
+        if not auto_enabled:
+            return False
+        trigger_text = str(trigger or "").strip() or "pool_refresh"
+        if trigger_text == "news_refresh" and not auto_on_news:
+            return False
+        if trigger_text != "news_refresh" and not auto_on_pool:
+            return False
+        if not getattr(self, "daily_pool_rows", []):
+            return False
+
+        target_symbol = str(symbol_hint or "").strip()
+        if target_symbol and hasattr(self, "_select_daily_pool_row_by_stock_id"):
+            self._select_daily_pool_row_by_stock_id(self._stock_id_for_symbol(target_symbol))
+        current = self._selected_daily_pool_recommendation() if hasattr(self, "_selected_daily_pool_recommendation") else None
+        if current is None:
+            current = self.daily_pool_rows[0] if self.daily_pool_rows else None
+        if current is None:
+            return False
+        return self._start_ai_review_for_row(current, trigger=trigger_text, force=False)
+
+    def save_ai_review_preferences(self) -> None:
+        config = self._current_ai_review_config()
+        auto_enabled, auto_on_news, auto_on_pool = self._current_ai_review_automation_settings()
+        self.state.ai_review_base_url = config.base_url
+        self.state.ai_review_api_key = config.api_key
+        self.state.ai_review_model = config.model
+        self.state.ai_review_reasoning_effort = config.reasoning_effort
+        self.state.ai_review_max_output_tokens = config.max_output_tokens
+        self.state.ai_review_timeout_seconds = config.timeout_seconds
+        self.state.ai_review_auto_run_enabled = auto_enabled
+        self.state.ai_review_auto_run_on_news_refresh = auto_on_news
+        self.state.ai_review_auto_run_on_pool_refresh = auto_on_pool
+        self.save_state()
+        self._append_smart_message_event(
+            category="system",
+            title="AI评测配置已保存",
+            detail=(
+                f"{config.model} / 推理 {config.reasoning_effort} / "
+                f"自动 {'开启' if auto_enabled else '关闭'}"
+            ),
+            level="SUCCESS",
+        )
+        self._refresh_ai_review_status_panel()
+        self._refresh_ai_review_panel()
+        self._append_runtime_log(f"AI评测配置已保存：{config.model} / 推理 {config.reasoning_effort}")
+        if hasattr(self, "recommend_status_label"):
+            QuantHunterWindow._set_recommend_status_text_if_changed(self, f"AI评测配置已保存：{config.model} / 推理 {config.reasoning_effort}")
+        QMessageBox.information(self, "提示", "AI评测配置已保存。")
+
+    def _refresh_ai_review_status_panel(self) -> None:
+        panel = getattr(self, "ai_review_status_text", None)
+        if panel is None:
+            return
+        config = self._current_ai_review_config()
+        last_result = self.ai_review_results_by_symbol.get(self.ai_review_last_symbol)
+        auto_enabled, auto_on_news, auto_on_pool = self._current_ai_review_automation_settings()
+        partial = self.ai_review_partial_content_by_symbol.get(self.ai_review_pending_symbol or self.ai_review_last_symbol, "")
+        status_signature = (
+            config.base_url,
+            bool(config.api_key),
+            config.model,
+            config.reasoning_effort,
+            int(config.max_output_tokens),
+            float(config.timeout_seconds),
+            len(self.ai_review_results_by_symbol),
+            bool(auto_enabled),
+            bool(auto_on_news),
+            bool(auto_on_pool),
+            str(self.ai_review_pending_symbol or ""),
+            str(self.ai_review_last_symbol or ""),
+            str(self.ai_review_last_error or ""),
+            str(self.ai_review_last_trigger or ""),
+            str(getattr(last_result, "symbol", "") if last_result is not None else ""),
+            str(getattr(last_result, "reviewed_at", "") if last_result is not None else ""),
+            str(getattr(last_result, "summary", "") if last_result is not None else ""),
+            len(partial),
+        )
+        if getattr(self, "_ai_review_status_signature_v1", None) == status_signature:
+            return
+        self._ai_review_status_signature_v1 = status_signature
+        lines = [
+            "AI评测配置",
+            f"- Base URL：{config.base_url}",
+            f"- API Key：{'已填写' if config.api_key else '未填写'}",
+            f"- 模型：{config.model}",
+            f"- 推理强度：{config.reasoning_effort}",
+            f"- 超时：{config.timeout_seconds:.0f} 秒",
+            f"- 最大输出：{config.max_output_tokens}",
+            f"- 本地缓存：{len(self.ai_review_results_by_symbol)} 条",
+        ]
+        lines.extend(
+            [
+                f"- 自动重评：{'开启' if auto_enabled else '关闭'}",
+                f"- 消息刷新触发：{'开启' if auto_on_news else '关闭'}",
+                f"- 推荐池刷新触发：{'开启' if auto_on_pool else '关闭'}",
+            ]
+        )
+        if self.ai_review_pending_symbol:
+            stock_name = self._stock_name_for_symbol(self.ai_review_pending_symbol)
+            lines.extend(
+                [
+                    "",
+                    "当前任务",
+                    f"- 正在评测：{stock_name} ({self.ai_review_pending_symbol})",
+                    f"- 触发来源：{self.ai_review_last_trigger or 'manual'}",
+                ]
+            )
+        if last_result is not None:
+            lines.extend(
+                [
+                    "",
+                    "最近结果",
+                    f"- 标的：{last_result.stock_name} ({last_result.symbol})",
+                    f"- 时间：{last_result.reviewed_at}",
+                    f"- 摘要：{last_result.summary}",
+                ]
+            )
+        if partial and self.ai_review_pending_symbol:
+            lines.extend(
+                [
+                    "",
+                    "流式进度",
+                    f"- 已生成：{len(partial)} 字",
+                ]
+            )
+        elif self.ai_review_last_symbol and self.ai_review_last_error:
+            lines.extend(
+                [
+                    "",
+                    "最近结果",
+                    f"- 标的：{self._stock_name_for_symbol(self.ai_review_last_symbol)} ({self.ai_review_last_symbol})",
+                    f"- 状态：失败",
+                    f"- 原因：{self.ai_review_last_error}",
+                ]
+            )
+        self._set_plain_text_if_changed(panel, "\n".join(lines))
+
+    def _refresh_ai_review_panel(self, row: RecommendationRow | None = None) -> None:
+        panel = getattr(self, "recommend_ai_review_text", None)
+        if panel is None:
+            return
+        current = row or self._selected_daily_pool_recommendation()
+        config = self._current_ai_review_config()
+        if current is None:
+            empty_signature = ("empty",)
+            if getattr(self, "_ai_review_panel_signature_v1", None) == empty_signature:
+                return
+            self._ai_review_panel_signature_v1 = empty_signature
+            self._set_plain_text_if_changed(
+                panel,
+                "AI评测\n\n"
+                "这里会显示外部模型对当前焦点票的单票复核。\n"
+                "先刷新推荐池并选中一只股票，再点击“AI评测当前焦点”。",
+            )
+            return
+
+        symbol = str(getattr(current, "symbol", "") or "")
+        stock_name = getattr(current, "stock_name", "") or self._stock_name_for_symbol(symbol)
+        news_items = list(getattr(self, "news_catalysts", {}).get(symbol, []) or [])[:2]
+        news_signature = tuple(
+            (
+                str(getattr(item, "title", "") or ""),
+                str(getattr(item, "published_at", "") or ""),
+                str(getattr(item, "source", "") or ""),
+                str(getattr(item, "summary", "") or ""),
+            )
+            for item in news_items
+        )
+        if symbol and symbol == self.ai_review_pending_symbol:
+            partial = self.ai_review_partial_content_by_symbol.get(symbol, "").strip()
+            pending_signature = (
+                "pending",
+                symbol,
+                stock_name,
+                str(getattr(current, "stock_id", "") or ""),
+                config.model,
+                config.reasoning_effort,
+                int(config.max_output_tokens),
+                partial,
+            )
+            if getattr(self, "_ai_review_panel_signature_v1", None) == pending_signature:
+                return
+            self._ai_review_panel_signature_v1 = pending_signature
+            self._set_plain_text_if_changed(
+                panel,
+                "\n".join(
+                    [
+                        "AI评测",
+                        f"当前焦点：{stock_name} ({current.stock_id} / {symbol})",
+                        f"状态：正在流式请求 {config.model}，请稍候...",
+                        f"推理强度：{config.reasoning_effort} | 最大输出：{config.max_output_tokens}",
+                        f"已生成：{len(partial)} 字",
+                        "",
+                        partial or "正在等待首段返回...",
+                    ]
+                ),
+            )
+            return
+
+        cached = self.ai_review_results_by_symbol.get(symbol)
+        if cached is not None:
+            cached_signature = (
+                "cached",
+                symbol,
+                str(cached.stock_name),
+                str(getattr(current, "stock_id", "") or ""),
+                str(cached.reviewed_at),
+                str(cached.model),
+                str(cached.summary),
+                str(cached.content),
+            )
+            if getattr(self, "_ai_review_panel_signature_v1", None) == cached_signature:
+                return
+            self._ai_review_panel_signature_v1 = cached_signature
+            self._set_plain_text_if_changed(
+                panel,
+                "\n".join(
+                    [
+                        "AI评测",
+                        f"当前焦点：{cached.stock_name} ({current.stock_id} / {cached.symbol})",
+                        f"模型：{cached.model} | 时间：{cached.reviewed_at}",
+                        f"摘要：{cached.summary}",
+                        "",
+                        cached.content,
+                    ]
+                ).strip(),
+            )
+            return
+
+        if symbol and symbol == self.ai_review_last_symbol and self.ai_review_last_error:
+            partial = self.ai_review_partial_content_by_symbol.get(symbol, "").strip()
+            error_signature = (
+                "error",
+                symbol,
+                stock_name,
+                str(getattr(current, "stock_id", "") or ""),
+                str(self.ai_review_last_error or ""),
+                partial,
+            )
+            if getattr(self, "_ai_review_panel_signature_v1", None) == error_signature:
+                return
+            self._ai_review_panel_signature_v1 = error_signature
+            self._set_plain_text_if_changed(
+                panel,
+                "\n".join(
+                    [
+                        "AI评测",
+                        f"当前焦点：{stock_name} ({current.stock_id} / {symbol})",
+                        "状态：最近一次请求失败",
+                        f"错误：{self.ai_review_last_error}",
+                        "",
+                        partial if partial else "请检查 API Key、网络、Base URL 或模型名，然后重试。",
+                    ]
+                ),
+            )
+            return
+
+        idle_signature = (
+            "idle",
+            symbol,
+            stock_name,
+            str(getattr(current, "stock_id", "") or ""),
+            config.model,
+            config.reasoning_effort,
+            str(getattr(current, "mainline_tag", "") or getattr(current, "theme_name", "") or "待确认"),
+            str(getattr(current, "mainline_risk_flag", "") or "待评估"),
+            news_signature,
+        )
+        if getattr(self, "_ai_review_panel_signature_v1", None) == idle_signature:
+            return
+        self._ai_review_panel_signature_v1 = idle_signature
+        news_lines = build_news_digest_lines(list(getattr(self, "news_catalysts", {}).get(symbol, []) or []), limit=2)
+        lines = [
+            "AI评测",
+            f"当前焦点：{stock_name} ({current.stock_id} / {symbol})",
+            f"模型：{config.model} | 推理强度：{config.reasoning_effort}",
+            "状态：尚未生成，可点击“AI评测当前焦点”。",
+            f"主线：{getattr(current, 'mainline_tag', '') or getattr(current, 'theme_name', '') or '待确认'} | 风险灯：{getattr(current, 'mainline_risk_flag', '') or '待评估'}",
+        ]
+        if news_lines:
+            lines.extend(["", "最近消息：", *news_lines])
+        self._set_plain_text_if_changed(panel, "\n".join(lines))
+
+    def _handle_ai_review_stream_event(self, event: AIReviewStreamEvent) -> None:
+        symbol = str(getattr(event, "symbol", "") or "")
+        if not symbol:
+            return
+        text = str(getattr(event, "text", "") or "")
+        self.ai_review_partial_content_by_symbol[symbol] = text
+        if symbol == self.ai_review_pending_symbol:
+            if hasattr(self, "recommend_status_label"):
+                delta = str(getattr(event, "delta", "") or "")
+                if ("\n" in delta) or len(text) <= 48 or (len(text) % 120) < max(len(delta), 1):
+                    QuantHunterWindow._set_recommend_status_text_if_changed(
+                        self,
+                        f"AI评测生成中：{self._stock_name_for_symbol(symbol)} | 已生成 {len(text)} 字",
+                    )
+            self._refresh_ai_review_status_panel()
+            self._refresh_ai_review_panel()
+
+    def _apply_ai_review_result(self, result: AIReviewResult) -> None:
+        self.ai_review_pending_symbol = ""
+        self.ai_review_last_symbol = result.symbol
+        self.ai_review_last_error = ""
+        self.ai_review_partial_content_by_symbol.pop(result.symbol, None)
+        pending_signature = self.ai_review_pending_signature_by_symbol.pop(result.symbol, "")
+        if pending_signature:
+            self.ai_review_completed_signature_by_symbol[result.symbol] = pending_signature
+        self.ai_review_results_by_symbol[result.symbol] = result
+        self._append_runtime_log(f"AI评测完成：{result.stock_name} ({result.symbol}) | {result.model}")
+        self._append_smart_message_event(
+            category="ai",
+            title=f"{result.stock_name} AI评测完成",
+            detail=f"{result.model} | {result.summary}",
+            symbol=result.symbol,
+            level="SUCCESS",
+        )
+        if hasattr(self, "recommend_status_label"):
+            QuantHunterWindow._set_recommend_status_text_if_changed(self, f"AI评测已完成：{result.stock_name} | {result.summary}")
+        self._refresh_ai_review_status_panel()
+        self._refresh_ai_review_panel()
+
+    def _handle_ai_review_error(self, message: str) -> None:
+        symbol = self.ai_review_pending_symbol or self.ai_review_last_symbol
+        self.ai_review_pending_symbol = ""
+        self.ai_review_last_symbol = symbol
+        self.ai_review_last_error = message
+        if symbol:
+            self.ai_review_pending_signature_by_symbol.pop(symbol, None)
+        self._append_runtime_log(f"AI评测失败：{message}", "ERROR")
+        self._append_smart_message_event(
+            category="ai",
+            title=f"{self._stock_name_for_symbol(symbol) if symbol else '当前焦点'} AI评测失败",
+            detail=message,
+            symbol=symbol,
+            level="ERROR",
+        )
+        if hasattr(self, "recommend_status_label"):
+            QuantHunterWindow._set_recommend_status_text_if_changed(self, f"AI评测失败：{message}")
+        self._refresh_ai_review_status_panel()
+        self._refresh_ai_review_panel()
+        QMessageBox.warning(self, "AI评测失败", message)
+
+    def run_ai_review_for_selected_recommendation(self) -> None:
+        current = self._selected_daily_pool_recommendation()
+        if current is None:
+            QMessageBox.information(self, "提示", "请先在推荐池中选中一只股票。")
+            return
+        started = self._start_ai_review_for_row(current, trigger="manual", force=True)
+        if not started:
+            self.ai_review_pending_symbol = ""
+            if hasattr(self, "recommend_status_label"):
+                QuantHunterWindow._set_recommend_status_text_if_changed(self, "AI评测任务仍在执行中，请稍候。")
+            self._refresh_ai_review_status_panel()
+            self._refresh_ai_review_panel(current)
+
     def _build_config_tab(self) -> None:
         build_config_workspace(self)
 
@@ -4682,12 +5617,24 @@ class QuantHunterWindow(QMainWindow):
             self.news_source_status = "预留适配器尚未启用"
             self.state.news_source_status = self.news_source_status
             self._sync_news_source_controls()
+            self._append_smart_message_event(
+                category="news",
+                title=f"{descriptor.label} 尚未启用",
+                detail=str(exc),
+                level="WARN",
+            )
             QMessageBox.information(self, f"{descriptor.label} 尚未启用", str(exc))
             return False
         except Exception as exc:
             self.news_source_status = f"载入失败：{exc}"
             self.state.news_source_status = self.news_source_status
             self._sync_news_source_controls()
+            self._append_smart_message_event(
+                category="news",
+                title=f"{descriptor.label} 载入失败",
+                detail=str(exc),
+                level="ERROR",
+            )
             QMessageBox.critical(self, f"载入{descriptor.label}失败", str(exc))
             return False
         self.news_catalysts = result.news_map
@@ -4705,8 +5652,17 @@ class QuantHunterWindow(QMainWindow):
         if hasattr(self, "recommend_status_label"):
             total = sum(len(items) for items in self.news_catalysts.values())
             self.recommend_status_label.setText(f"{result.summary} | 涉及 {len(self.news_catalysts)} 只股票 | 共 {total} 条")
+        self._append_smart_message_event(
+            category="news",
+            title=f"{descriptor.label} 已载入",
+            detail=f"{result.summary} | 股票 {len(self.news_catalysts)} 只 | 消息 {sum(len(items) for items in self.news_catalysts.values())} 条",
+            symbol=self._current_ai_review_symbol_hint(),
+            level="SUCCESS",
+        )
         self.save_state()
         if refresh_after_load:
+            if hasattr(self, "_queue_auto_ai_review_after_pool_refresh"):
+                self._queue_auto_ai_review_after_pool_refresh("news_refresh", symbol_hint=self._current_ai_review_symbol_hint())
             self.refresh_daily_pool()
         return True
 
@@ -6901,7 +7857,12 @@ class QuantHunterWindow(QMainWindow):
             self.generate_order_suggestions()
         if not self.order_intents:
             return
-        output = EastmoneyBrokerAdapter().export_order_plan(self.order_intents, self.current_broker_profile().export_dir)
+        output = EastmoneyBrokerAdapter().export_order_plan(
+            self.order_intents,
+            self.current_broker_profile().export_dir,
+            recommendations=getattr(self, "daily_pool_rows", []),
+            execution_summary=getattr(self, "last_broker_execution_summary", {}) or {},
+        )
         self._append_order_result(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 已导出委托计划：{output}")
         self._refresh_broker_status(extra=f"已导出委托计划：{output}")
 
@@ -6912,21 +7873,61 @@ class QuantHunterWindow(QMainWindow):
         output = EastmoneyBrokerAdapter().export_submission_records(
             self.order_submission_records,
             self.current_broker_profile().export_dir,
+            recommendations=getattr(self, "daily_pool_rows", []),
+            execution_summary=getattr(self, "last_broker_execution_summary", {}) or {},
         )
         self._append_order_result(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 已导出提交日志：{output}")
         self._refresh_broker_status(extra=f"已导出提交日志：{output}")
 
     def sync_broker_via_sdk(self, quiet: bool = False) -> None:
         profile = self.current_broker_profile()
+        previous_holdings = list(getattr(self, "holdings", []) or [])
         try:
             cash, holdings = EastmoneyBrokerAdapter().sync_account_via_sdk(profile)
         except Exception as exc:
             if not quiet:
                 QMessageBox.critical(self, "SDK 同步失败", str(exc))
             return
+        try:
+            execution_rows = EastmoneyBrokerAdapter().sync_execution_records_via_sdk(profile)
+        except Exception:
+            execution_rows = []
         self.cash_snapshot = cash
         self.holdings = holdings
+        execution_notes: list[str] = []
+        if execution_rows:
+            merged_records, execution_notes = merge_submission_records_with_execution_records(
+                list(getattr(self, "order_submission_records", []) or []),
+                execution_rows,
+            )
+            self.order_submission_records = merged_records
+        reconciled_records, reconciliation_notes = reconcile_submission_records_with_holdings(
+            list(getattr(self, "order_submission_records", []) or []),
+            previous_holdings,
+            holdings,
+        )
+        if execution_notes or reconciliation_notes:
+            self.order_submission_records = reconciled_records
+            self.execution_status_by_symbol = {}
+            for item in self.order_submission_records:
+                symbol = str(item.get("symbol", "") or "")
+                if not symbol:
+                    continue
+                order_status = str(item.get("order_status", "") or "").upper()
+                fill_status = str(item.get("fill_status", "") or "").upper()
+                if order_status == "FAILED" or fill_status == "REJECTED":
+                    self.execution_status_by_symbol[symbol] = "提交失败"
+                elif fill_status == "FILLED":
+                    self.execution_status_by_symbol[symbol] = "已成交"
+                elif fill_status in {"PARTIAL", "PART_FILLED", "PARTIALLY_FILLED"}:
+                    self.execution_status_by_symbol[symbol] = "部分成交"
+                elif order_status == "SUBMITTED":
+                    self.execution_status_by_symbol[symbol] = "已提交"
         self._fill_holdings()
+        if execution_notes or reconciliation_notes:
+            self._refresh_submission_table()
+            for note in [*execution_notes[:4], *reconciliation_notes[:4]]:
+                self._append_order_result(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {note}")
         self._refresh_broker_status(extra="已通过 SDK 同步资金和持仓。")
 
     def generate_sdk_strategy_script(self) -> None:
@@ -6948,7 +7949,14 @@ class QuantHunterWindow(QMainWindow):
             return
         profile = self.current_broker_profile()
         adapter = EastmoneyBrokerAdapter()
-        if not OrderConfirmationDialog.confirm(profile, self.order_intents, adapter, self):
+        if not OrderConfirmationDialog.confirm(
+            profile,
+            self.order_intents,
+            adapter,
+            self,
+            recommendations=getattr(self, "daily_pool_rows", []),
+            execution_summary=getattr(self, "last_broker_execution_summary", {}) or {},
+        ):
             return
 
         submit_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -6965,6 +7973,7 @@ class QuantHunterWindow(QMainWindow):
                     timestamp=submit_time,
                     order_status="FAILED",
                     fill_status="REJECTED",
+                    order_id="",
                     symbol=item.symbol,
                     side=item.side,
                     price=f"{item.price:.3f}",
@@ -6985,6 +7994,7 @@ class QuantHunterWindow(QMainWindow):
                 timestamp=submit_time,
                 order_status="SUBMITTED",
                 fill_status="PENDING",
+                order_id="",
                 symbol=item.symbol,
                 side=item.side,
                 price=f"{item.price:.3f}",
@@ -7008,31 +8018,80 @@ class QuantHunterWindow(QMainWindow):
         timestamp: str,
         order_status: str,
         fill_status: str,
+        order_id: str,
         symbol: str,
         side: str,
         price: str,
         quantity: str,
         failure_reason: str,
         message: str,
+        *,
+        planned_price: str = "",
+        planned_quantity: str = "",
+        planned_stop_price: str = "",
+        planned_target_price: str = "",
+        opportunity_tier: str = "",
+        planned_risk_reward_ratio: str = "",
+        portfolio_fit_score: str = "",
+        diversification_score: str = "",
+        concentration_penalty_score: str = "",
+        fill_price: str = "",
+        fill_quantity: str = "",
     ) -> None:
         self.order_submission_records.append(
             {
                 "timestamp": timestamp,
                 "order_status": order_status,
                 "fill_status": fill_status,
+                "order_id": str(order_id or ""),
                 "symbol": symbol,
                 "side": side,
                 "price": price,
                 "quantity": quantity,
                 "failure_reason": failure_reason,
                 "message": message,
+                "planned_price": str(planned_price or ""),
+                "planned_quantity": str(planned_quantity or ""),
+                "planned_stop_price": str(planned_stop_price or ""),
+                "planned_target_price": str(planned_target_price or ""),
+                "opportunity_tier": str(opportunity_tier or ""),
+                "planned_risk_reward_ratio": str(planned_risk_reward_ratio or ""),
+                "portfolio_fit_score": str(portfolio_fit_score or ""),
+                "diversification_score": str(diversification_score or ""),
+                "concentration_penalty_score": str(concentration_penalty_score or ""),
+                "fill_price": str(fill_price or ""),
+                "fill_quantity": str(fill_quantity or ""),
             }
         )
         if symbol:
-            if order_status == "FAILED" or fill_status == "REJECTED":
+            normalized_fill_status = str(fill_status or "").upper()
+            if order_status == "FAILED" or normalized_fill_status == "REJECTED":
                 self.execution_status_by_symbol[symbol] = "提交失败"
+            elif normalized_fill_status == "FILLED":
+                self.execution_status_by_symbol[symbol] = "已成交"
+            elif normalized_fill_status in {"PARTIAL", "PART_FILLED", "PARTIALLY_FILLED"}:
+                self.execution_status_by_symbol[symbol] = "部分成交"
             elif order_status == "SUBMITTED":
                 self.execution_status_by_symbol[symbol] = "已提交"
+            event_title = (
+                f"{self._stock_name_for_symbol(symbol)} 提交失败"
+                if order_status == "FAILED" or normalized_fill_status == "REJECTED"
+                else (f"{self._stock_name_for_symbol(symbol)} 已成交" if normalized_fill_status == "FILLED" else f"{self._stock_name_for_symbol(symbol)} 已提交")
+            )
+            event_level = "ERROR" if order_status == "FAILED" or normalized_fill_status == "REJECTED" else "SUCCESS"
+            event_detail = f"{side} {quantity} 股 @ {price}"
+            if portfolio_fit_score:
+                event_detail = f"{event_detail} | 组合适配 {portfolio_fit_score}"
+            if message:
+                event_detail = f"{event_detail} | {message}"
+            self._append_smart_message_event(
+                category="trade",
+                title=event_title,
+                detail=event_detail,
+                symbol=symbol,
+                level=event_level,
+                timestamp=timestamp.split(" ")[-1] if " " in timestamp else timestamp,
+            )
         self.order_submission_records = self.order_submission_records[-500:]
         self._refresh_submission_table()
 
@@ -7045,10 +8104,15 @@ class QuantHunterWindow(QMainWindow):
                 item.get("timestamp", ""),
                 item.get("order_status", ""),
                 item.get("fill_status", ""),
+                item.get("order_id", ""),
                 item.get("symbol", ""),
                 item.get("side", ""),
+                item.get("planned_price", ""),
+                item.get("planned_quantity", ""),
                 item.get("price", ""),
                 item.get("quantity", ""),
+                item.get("fill_price", ""),
+                item.get("fill_quantity", ""),
                 item.get("failure_reason", ""),
                 item.get("message", ""),
             )
@@ -7086,8 +8150,8 @@ class QuantHunterWindow(QMainWindow):
                     fill_status,
                     snapshot["focus"],
                     snapshot["action"],
-                    item.get("price", ""),
-                    item.get("quantity", ""),
+                    snapshot["price_compare"],
+                    snapshot["quantity_compare"],
                     snapshot["risk_badge"],
                     snapshot["message"],
                 ]
@@ -7964,6 +9028,9 @@ class QuantHunterWindow(QMainWindow):
             scan_rows=self.scan_rows,
             focus_themes=self.state.focus_themes,
             license_plan=self.state.license_plan,
+            submission_records=self.order_submission_records,
+            order_intents=self.order_intents,
+            order_log=self.order_submission_log,
         )
 
         export_lines = [
@@ -8663,6 +9730,70 @@ class QuantHunterWindow(QMainWindow):
         buy_rows = [item for item in decisions if str(getattr(item, "action", "") or "").upper() == "BUY"]
         watch_rows = [item for item in getattr(self, "daily_pool_rows", []) if str(getattr(item, "action", "") or "").upper() == "WATCH"]
         risk_rows = [item for item in position_advice if str(getattr(item, "action", "") or "").upper() in {"SELL", "REDUCE"}]
+        if not any(
+            hasattr(self, name)
+            for name in ("recommend_core_bucket_text", "recommend_watch_bucket_text", "recommend_risk_bucket_text")
+        ):
+            return
+        signature = (
+            (
+                str(getattr(current, "symbol", "") or ""),
+                str(getattr(current, "stock_id", "") or ""),
+                str(getattr(current, "stock_name", "") or ""),
+                str(getattr(current, "action", "") or ""),
+                str(getattr(current, "mainline_tag", "") or getattr(current, "theme_name", "") or ""),
+                str(getattr(current, "opportunity_tier", "") or ""),
+                round(float(getattr(current, "execution_readiness", 0.0) or 0.0), 1) if current is not None else 0.0,
+                str(getattr(current, "catalyst", "") or ""),
+                str(getattr(current, "next_focus", "") or ""),
+                str(getattr(current, "mainline_risk_flag", "") or ""),
+                str(getattr(current, "invalidation_reason", "") or ""),
+                str(getattr(current, "mainline_flow_signal", "") or ""),
+                str(getattr(current, "mainline_stage", "") or ""),
+            )
+            if current is not None
+            else ("empty",)
+        )
+        signature += (
+            tuple(
+                (
+                    str(getattr(item, "symbol", "") or ""),
+                    str(getattr(item, "stock_id", "") or ""),
+                    str(getattr(item, "stock_name", "") or ""),
+                    str(getattr(item, "action", "") or ""),
+                    round(float(getattr(item, "position_pct", 0.0) or 0.0), 4),
+                    round(float(getattr(item, "planned_price", getattr(item, "entry_price", 0.0)) or 0.0), 4),
+                    round(float(getattr(item, "stop_price", 0.0) or 0.0), 4),
+                    round(float(getattr(item, "target_price", 0.0) or 0.0), 4),
+                    str(getattr(item, "reason", "") or getattr(item, "rationale", "") or ""),
+                )
+                for item in buy_rows[:1]
+            ),
+            tuple(
+                (
+                    str(getattr(item, "symbol", "") or ""),
+                    str(getattr(item, "stock_name", "") or ""),
+                )
+                for item in watch_rows[:3]
+            ),
+            len(watch_rows),
+            tuple(
+                (
+                    str(getattr(item, "symbol", "") or ""),
+                    str(getattr(item, "stock_id", "") or ""),
+                    str(getattr(item, "stock_name", "") or ""),
+                    str(getattr(item, "action", "") or ""),
+                    str(getattr(item, "mainline_flow_signal", "") or ""),
+                    str(getattr(item, "mainline_stage", "") or ""),
+                    str(getattr(item, "reason", "") or getattr(item, "rationale", "") or ""),
+                )
+                for item in risk_rows[:3]
+            ),
+            len(risk_rows),
+        )
+        if getattr(self, "_recommend_bucket_panels_signature_v1", None) == signature:
+            return
+        self._recommend_bucket_panels_signature_v1 = signature
 
         if hasattr(self, "recommend_core_bucket_text"):
             if buy_rows:
@@ -11143,6 +12274,8 @@ QPushButton#accentButton:hover {
     def refresh_daily_pool(self, async_mode: bool = True) -> None:
         if async_mode and hasattr(self, "recommend_status_label"):
             self._set_label_text_if_changed(self.recommend_status_label, "正在生成每日推荐池...")
+        if hasattr(self, "_queue_auto_ai_review_after_pool_refresh"):
+            self._queue_auto_ai_review_after_pool_refresh("pool_refresh", symbol_hint=self._current_ai_review_symbol_hint())
         refresh_daily_pool_controller(self, async_mode, daily_pool_builder_cls=DailyPoolBuilder)
 
     def _scan_universe_payload(
@@ -11478,6 +12611,8 @@ QPushButton#accentButton:hover {
         fn,
         on_success,
         on_error,
+        on_progress=None,
+        pass_progress_callback: bool = False,
     ) -> bool:
         return run_background_job_controller(
             self,
@@ -11485,6 +12620,8 @@ QPushButton#accentButton:hover {
             fn,
             on_success,
             on_error,
+            on_progress=on_progress,
+            pass_progress_callback=pass_progress_callback,
             background_task_cls=BackgroundTask,
             registry=BACKGROUND_TASK_REGISTRY,
             perf_counter_fn=time_module.perf_counter,
@@ -11667,6 +12804,14 @@ QPushButton#accentButton:hover {
             and not getattr(self, "_qh_applying_overview_text_summary_v58", False)
         ):
             self._apply_overview_text_summary_v58()
+
+    def _set_widget_enabled_if_changed(self, widget, enabled: bool) -> None:
+        if widget is None or not hasattr(widget, "setEnabled"):
+            return
+        current_enabled_attr = getattr(widget, "isEnabled", None)
+        current_enabled = current_enabled_attr() if callable(current_enabled_attr) else None
+        if current_enabled is None or bool(current_enabled) != bool(enabled):
+            widget.setEnabled(bool(enabled))
 
     def _refresh_risk_snapshot_cards(self) -> None:
         cards = getattr(self, "risk_snapshot_cards", None)
@@ -18172,22 +19317,38 @@ QPushButton#accentButton:hover {
         try:
             results = adapter.submit_order_intents(profile, self.order_intents)
         except Exception as exc:
-            fallback_path = adapter.export_order_plan(self.order_intents, profile.export_dir)
+            fallback_path = adapter.export_order_plan(
+                self.order_intents,
+                profile.export_dir,
+                recommendations=getattr(self, "daily_pool_rows", []),
+                execution_summary=getattr(self, "last_broker_execution_summary", {}) or {},
+            )
             failure_lines = [
                 f"[{submit_time}] SDK 下单失败：{exc}",
                 f"[{submit_time}] 已回退导出 CSV：{fallback_path}",
             ]
             for item in self.order_intents:
+                recommendation = next((row for row in getattr(self, "daily_pool_rows", []) if getattr(row, "symbol", "") == item.symbol), None)
                 self._append_submission_record(
                     timestamp=submit_time,
                     order_status="FAILED",
                     fill_status="REJECTED",
+                    order_id="",
                     symbol=item.symbol,
                     side=item.side,
                     price=f"{item.price:.3f}",
                     quantity=str(item.quantity),
                     failure_reason=str(exc),
                     message=str(exc),
+                    planned_price=f"{float(getattr(item, 'price', 0.0) or 0.0):.3f}" if float(getattr(item, "price", 0.0) or 0.0) > 0 else "",
+                    planned_quantity=str(int(getattr(item, "quantity", 0) or 0)) if int(getattr(item, "quantity", 0) or 0) > 0 else "",
+                    planned_stop_price=f"{float(getattr(item, 'stop_price', 0.0) or 0.0):.3f}" if float(getattr(item, "stop_price", 0.0) or 0.0) > 0 else "",
+                    planned_target_price=f"{float(getattr(item, 'target_price', 0.0) or 0.0):.3f}" if float(getattr(item, "target_price", 0.0) or 0.0) > 0 else "",
+                    opportunity_tier=str(getattr(recommendation, "opportunity_tier", "") or getattr(item, "opportunity_tier", "") or ""),
+                    planned_risk_reward_ratio=f"{float(getattr(item, 'risk_reward_ratio', 0.0) or 0.0):.2f}" if float(getattr(item, "risk_reward_ratio", 0.0) or 0.0) > 0 else "",
+                    portfolio_fit_score=f"{float(getattr(recommendation, 'portfolio_fit_score', 0.0) or 0.0):.0f}" if recommendation is not None and float(getattr(recommendation, "portfolio_fit_score", 0.0) or 0.0) > 0 else "",
+                    diversification_score=f"{float(getattr(recommendation, 'diversification_score', 0.0) or 0.0):.0f}" if recommendation is not None and float(getattr(recommendation, "diversification_score", 0.0) or 0.0) > 0 else "",
+                    concentration_penalty_score=f"{float(getattr(recommendation, 'concentration_penalty_score', 0.0) or 0.0):.0f}" if recommendation is not None and float(getattr(recommendation, "concentration_penalty_score", 0.0) or 0.0) > 0 else "",
                 )
             for line in failure_lines:
                 self._append_order_result(line)
@@ -18196,26 +19357,43 @@ QPushButton#accentButton:hover {
             QMessageBox.warning(self, "下单失败", f"{exc}\n\n已回退导出 CSV：\n{fallback_path}")
             return
 
-        success_lines = [f"[{submit_time}] SDK 下单完成：共 {len(results)} 笔"]
-        success_lines.extend(f"[{submit_time}] {item}" for item in results)
-        for item, result in zip(self.order_intents, results):
+        normalized_results = [
+            normalize_submission_result(result, symbol=item.symbol, expected_quantity=int(getattr(item, "quantity", 0) or 0))
+            for item, result in zip(self.order_intents, results)
+        ]
+        success_lines = [f"[{submit_time}] SDK 下单完成：共 {len(normalized_results)} 笔"]
+        success_lines.extend(f"[{submit_time}] {item['display_text']}" for item in normalized_results)
+        for item, normalized in zip(self.order_intents, normalized_results):
+            recommendation = next((row for row in getattr(self, "daily_pool_rows", []) if getattr(row, "symbol", "") == item.symbol), None)
             self._append_submission_record(
                 timestamp=submit_time,
-                order_status="SUBMITTED",
-                fill_status="PENDING",
+                order_status=str(normalized.get("order_status", "SUBMITTED") or "SUBMITTED"),
+                fill_status=str(normalized.get("fill_status", "PENDING") or "PENDING"),
+                order_id=str(normalized.get("order_id", "") or ""),
                 symbol=item.symbol,
                 side=item.side,
                 price=f"{item.price:.3f}",
                 quantity=str(item.quantity),
                 failure_reason="",
-                message=result,
+                message=str(normalized.get("message", "") or ""),
+                planned_price=f"{float(getattr(item, 'price', 0.0) or 0.0):.3f}" if float(getattr(item, "price", 0.0) or 0.0) > 0 else "",
+                planned_quantity=str(int(getattr(item, "quantity", 0) or 0)) if int(getattr(item, "quantity", 0) or 0) > 0 else "",
+                planned_stop_price=f"{float(getattr(item, 'stop_price', 0.0) or 0.0):.3f}" if float(getattr(item, "stop_price", 0.0) or 0.0) > 0 else "",
+                planned_target_price=f"{float(getattr(item, 'target_price', 0.0) or 0.0):.3f}" if float(getattr(item, "target_price", 0.0) or 0.0) > 0 else "",
+                opportunity_tier=str(getattr(recommendation, "opportunity_tier", "") or getattr(item, "opportunity_tier", "") or ""),
+                planned_risk_reward_ratio=f"{float(getattr(item, 'risk_reward_ratio', 0.0) or 0.0):.2f}" if float(getattr(item, "risk_reward_ratio", 0.0) or 0.0) > 0 else "",
+                portfolio_fit_score=f"{float(getattr(recommendation, 'portfolio_fit_score', 0.0) or 0.0):.0f}" if recommendation is not None and float(getattr(recommendation, "portfolio_fit_score", 0.0) or 0.0) > 0 else "",
+                diversification_score=f"{float(getattr(recommendation, 'diversification_score', 0.0) or 0.0):.0f}" if recommendation is not None and float(getattr(recommendation, "diversification_score", 0.0) or 0.0) > 0 else "",
+                concentration_penalty_score=f"{float(getattr(recommendation, 'concentration_penalty_score', 0.0) or 0.0):.0f}" if recommendation is not None and float(getattr(recommendation, "concentration_penalty_score", 0.0) or 0.0) > 0 else "",
+                fill_price=str(normalized.get("fill_price", "") or ""),
+                fill_quantity=str(normalized.get("fill_quantity", "") or ""),
             )
         for line in success_lines:
             self._append_order_result(line)
         self.sync_broker_via_sdk(quiet=True)
         self._refresh_broker_status(extra="\n".join(success_lines))
         self._refresh_submission_focus()
-        QMessageBox.information(self, "下单完成", "\n".join(results))
+        QMessageBox.information(self, "下单完成", "\n".join(item["display_text"] for item in normalized_results))
 
     def trigger_trade_plan_refresh(self) -> None:
         if hasattr(self, "trade_plan_focus_label"):
@@ -18277,45 +19455,84 @@ QPushButton#accentButton:hover {
             self._set_label_text_if_changed(self.broker_status_banner, "交易状态：已从总览切到交易执行页，请优先检查当前焦点票。")
 
     def _refresh_live_workspace_summary_panels(self) -> None:
+        scan_count = self.scan_table.rowCount() if hasattr(self, "scan_table") else 0
+        watch_count = self.watchlist_widget.count() if hasattr(self, "watchlist_widget") else 0
+        monitor_count = self.monitor_table.rowCount() if hasattr(self, "monitor_table") else 0
+        auto_refresh = "开启" if hasattr(self, "auto_refresh_checkbox") and self.auto_refresh_checkbox.isChecked() else "关闭"
+        last_refresh_text = getattr(self, "last_refresh_label", QLabel("--")).text()
+        universe_text = getattr(self, "universe_label", QLabel("股票池目录：未加载")).text()
+
+        candidate_count = self.board_table.rowCount() if hasattr(self, "board_table") else 0
+        board_monitor_count = self.board_monitor_table.rowCount() if hasattr(self, "board_monitor_table") else 0
+        auto_export = "开启" if hasattr(self, "auto_review_export_checkbox") and self.auto_review_export_checkbox.isChecked() else "关闭"
+        board_focus_text = getattr(self, "board_focus_label", QLabel("等待焦点同步")).text() if hasattr(self, "board_focus_label") else "等待焦点同步"
+
+        signal_count = self.signal_table.rowCount() if hasattr(self, "signal_table") else 0
+        trade_count = self.trades_table.rowCount() if hasattr(self, "trades_table") else 0
+        active_symbol = getattr(self, "active_symbol", "") or "未选中"
+        active_symbol_text = getattr(self, "active_symbol_label", QLabel("当前标的：未选择")).text()
+
+        plan_text = self.state.license_plan or "TRIAL"
+        top_theme_limit, max_total_exposure, _ = self._current_strategy_runtime_config()
+        template_text = self.daily_plan_template_combo.currentText() if hasattr(self, "daily_plan_template_combo") else "--"
+        focus_theme_text = self.focus_themes_input.text().strip() if hasattr(self, "focus_themes_input") else ""
+        risk_key = getattr(self.state, "strategy_risk_profile", "standard")
+        risk_hint = risk_profile_brief(risk_key)
+        pool_projection = risk_profile_projection_text(risk_key, getattr(self, "last_daily_pool_meta", {}))
+        news_label = resolve_news_source_label(getattr(self, "news_source_provider_key", "csv"))
+        loaded_at = getattr(self, "news_source_last_loaded_at", "") or "未载入"
+        pool_impact = risk_pool_impact_text(getattr(self, "last_daily_pool_meta", {}))
+        risk_text = self.strategy_risk_profile_combo.currentText() if hasattr(self, "strategy_risk_profile_combo") else risk_key
+        summary_signature = (
+            scan_count,
+            watch_count,
+            monitor_count,
+            auto_refresh,
+            last_refresh_text,
+            universe_text,
+            candidate_count,
+            board_monitor_count,
+            auto_export,
+            board_focus_text,
+            signal_count,
+            trade_count,
+            active_symbol,
+            active_symbol_text,
+            plan_text,
+            top_theme_limit,
+            max_total_exposure,
+            template_text,
+            focus_theme_text,
+            risk_key,
+            risk_hint,
+            pool_projection,
+            news_label,
+            loaded_at,
+            pool_impact,
+            risk_text,
+        )
+        if getattr(self, "_live_workspace_summary_signature_v17", None) == summary_signature:
+            return
+        self._live_workspace_summary_signature_v17 = summary_signature
+
         if hasattr(self, "scanner_live_summary_headline"):
-            scan_count = self.scan_table.rowCount() if hasattr(self, "scan_table") else 0
-            watch_count = self.watchlist_widget.count() if hasattr(self, "watchlist_widget") else 0
-            monitor_count = self.monitor_table.rowCount() if hasattr(self, "monitor_table") else 0
-            auto_refresh = "开启" if hasattr(self, "auto_refresh_checkbox") and self.auto_refresh_checkbox.isChecked() else "关闭"
             self._set_label_text_if_changed(self.scanner_live_summary_headline, f"扫描 {scan_count} / 观察 {watch_count} / 监控 {monitor_count}")
-            self._set_label_text_if_changed(self.scanner_live_summary_detail, f"盘中自动刷新：{auto_refresh} | {getattr(self, 'last_refresh_label', QLabel('--')).text()}")
-            self._set_label_text_if_changed(self.scanner_live_summary_meta, f"{getattr(self, 'universe_label', QLabel('股票池目录：未加载')).text()}")
+            self._set_label_text_if_changed(self.scanner_live_summary_detail, f"盘中自动刷新：{auto_refresh} | {last_refresh_text}")
+            self._set_label_text_if_changed(self.scanner_live_summary_meta, f"{universe_text}")
 
         if hasattr(self, "board_live_summary_headline"):
-            candidate_count = self.board_table.rowCount() if hasattr(self, "board_table") else 0
-            monitor_count = self.board_monitor_table.rowCount() if hasattr(self, "board_monitor_table") else 0
-            auto_export = "开启" if hasattr(self, "auto_review_export_checkbox") and self.auto_review_export_checkbox.isChecked() else "关闭"
-            self._set_label_text_if_changed(self.board_live_summary_headline, f"候选 {candidate_count} / 监控 {monitor_count}")
+            self._set_label_text_if_changed(self.board_live_summary_headline, f"候选 {candidate_count} / 监控 {board_monitor_count}")
             self._set_label_text_if_changed(self.board_live_summary_detail, f"收盘导出：{auto_export} | 焦点联动：扫描 / 推荐 / 复盘")
-            self._set_label_text_if_changed(self.board_live_summary_meta, getattr(self, "board_focus_label", QLabel("等待焦点同步")).text() if hasattr(self, "board_focus_label") else "等待焦点同步")
+            self._set_label_text_if_changed(self.board_live_summary_meta, board_focus_text)
 
         if hasattr(self, "detail_live_summary_headline"):
-            signal_count = self.signal_table.rowCount() if hasattr(self, "signal_table") else 0
-            trade_count = self.trades_table.rowCount() if hasattr(self, "trades_table") else 0
-            active_symbol = getattr(self, "active_symbol", "") or "未选中"
             self._set_label_text_if_changed(self.detail_live_summary_headline, f"当前标的：{active_symbol}")
             self._set_label_text_if_changed(self.detail_live_summary_detail, f"近期信号 {signal_count} 条 | 交易记录 {trade_count} 条")
-            self._set_label_text_if_changed(self.detail_live_summary_meta, getattr(self, "active_symbol_label", QLabel("当前标的：未选择")).text())
+            self._set_label_text_if_changed(self.detail_live_summary_meta, active_symbol_text)
 
         if hasattr(self, "config_live_summary_headline"):
-            plan_text = self.state.license_plan or "TRIAL"
-            top_theme_limit, max_total_exposure, _ = self._current_strategy_runtime_config()
-            template_text = self.daily_plan_template_combo.currentText() if hasattr(self, "daily_plan_template_combo") else "--"
-            focus_theme_text = self.focus_themes_input.text().strip() if hasattr(self, "focus_themes_input") else ""
-            risk_key = getattr(self.state, "strategy_risk_profile", "standard")
-            risk_hint = risk_profile_brief(risk_key)
-            pool_projection = risk_profile_projection_text(risk_key, getattr(self, "last_daily_pool_meta", {}))
-            news_label = resolve_news_source_label(getattr(self, "news_source_provider_key", "csv"))
-            loaded_at = getattr(self, "news_source_last_loaded_at", "") or "未载入"
             self._set_label_text_if_changed(self.config_live_summary_headline, f"方案：{plan_text} | 消息源 {news_label}")
-            pool_impact = risk_pool_impact_text(getattr(self, "last_daily_pool_meta", {}))
             self._set_label_text_if_changed(self.config_live_summary_detail, f"主线前排 {top_theme_limit} | 总仓位上限：{max_total_exposure:.2f} | 模板：{template_text}")
-            risk_text = self.strategy_risk_profile_combo.currentText() if hasattr(self, "strategy_risk_profile_combo") else risk_key
             self._set_label_text_if_changed(
                 self.config_live_summary_meta,
                 f"风险档位：{risk_text} | {risk_hint} | {pool_projection} | 关注题材：{focus_theme_text or '未设置'} | 最近消息载入：{loaded_at} | {pool_impact}",
@@ -22458,6 +23675,9 @@ def _qh_refresh_recommend_story_panels_v7(self: QuantHunterWindow, row=None) -> 
     risk_flag = getattr(current, "mainline_risk_flag", "") or "待评估"
     next_focus = getattr(current, "next_focus", "") or "继续盯量能、承接和主线延续"
     invalidation = getattr(current, "invalidation_reason", "") or "跌破防守位或主线切换时重新评估"
+    portfolio_fit = float(getattr(current, "portfolio_fit_score", 0.0) or 0.0)
+    diversification = float(getattr(current, "diversification_score", 0.0) or 0.0)
+    portfolio_health = str((getattr(self, "last_daily_pool_meta", {}) or {}).get("portfolio_health_text", "") or "组合回测待生成")
 
     if hasattr(self, "daily_pool_text"):
         self._set_note_panel_tone_v5(self.daily_pool_text, tone)
@@ -22467,8 +23687,8 @@ def _qh_refresh_recommend_story_panels_v7(self: QuantHunterWindow, row=None) -> 
                 [
                     "综合机会池",
                     f"结论：{current.stock_name} | {verdict}",
-                    f"风险：{theme_name} | {risk_flag} | {invalidation[:16]}",
-                    f"下一步：{signal} | {execution_summary[:16]} | {next_focus[:16]}",
+                    f"风险：{theme_name} | {risk_flag} | 组合适配 {portfolio_fit:.0f}",
+                    f"下一步：{signal} | 分散度 {diversification:.0f} | {next_focus[:16]}",
                 ]
             ),
         )
@@ -22482,7 +23702,7 @@ def _qh_refresh_recommend_story_panels_v7(self: QuantHunterWindow, row=None) -> 
                     "主线推演",
                     f"结论：{theme_name} | {role_name} | 位 {getattr(current, 'mainline_rank', '--')}",
                     f"风险：窗口 {float(getattr(current, 'mainline_window_score', 0.0) or 0.0):.1f} | {risk_flag}",
-                    f"下一步：{next_focus[:22]}",
+                    f"下一步：{portfolio_health[:18]} | {next_focus[:12]}",
                 ]
             ),
         )
@@ -22543,6 +23763,9 @@ def _qh_refresh_trade_plan_v5(self: QuantHunterWindow) -> None:
         decisions = list(getattr(plan, "decisions", []) or [])
         decision = decisions[0] if decisions else None
     if decision is None:
+        if getattr(self, "_trade_plan_focus_signature_v6", None) == ("empty",):
+            return
+        self._trade_plan_focus_signature_v6 = ("empty",)
         if hasattr(self, "trade_plan_focus_label"):
             _qh_set_label_text_v7(self, self.trade_plan_focus_label, TRADE_PLAN_DEFAULT_FOCUS_TEXT)
         return
@@ -22556,13 +23779,28 @@ def _qh_refresh_trade_plan_v5(self: QuantHunterWindow) -> None:
         None,
     )
     one_day_grade = one_day_hold_grade(recommendation) if recommendation is not None else ""
+    portfolio_fit = float(getattr(recommendation, "portfolio_fit_score", 0.0) or 0.0) if recommendation is not None else 0.0
     news_brief = self._news_action_brief(getattr(decision, "symbol", "")) if hasattr(self, "_news_action_brief") else ""
+    label_signature = (
+        str(getattr(decision, "symbol", "") or ""),
+        str(getattr(decision, "stock_name", "") or ""),
+        action,
+        signal,
+        one_day_grade,
+        round(portfolio_fit, 2),
+        news_brief,
+    )
+    if getattr(self, "_trade_plan_focus_signature_v6", None) == label_signature:
+        return
+    self._trade_plan_focus_signature_v6 = label_signature
     if hasattr(self, "trade_plan_focus_label"):
         label_text = (
             f"计划焦点：{decision.stock_name} | 隔日 {one_day_grade} | {focus_state} | {flow_state} | {signal}"
             if one_day_grade
             else f"计划焦点：{decision.stock_name} | {focus_state} | {flow_state} | {signal}"
         )
+        if portfolio_fit > 0:
+            label_text += f" | 组合适配 {portfolio_fit:.0f}"
         if news_brief:
             label_text += f" | {news_brief}"
         _qh_set_label_text_v7(self, self.trade_plan_focus_label, label_text)
@@ -24533,6 +25771,10 @@ def _qh_maybe_auto_run_paper_trading_v17(self: QuantHunterWindow) -> None:
 
 def _qh_save_state_v17(self: QuantHunterWindow) -> None:
     state = getattr(self, "paper_trading_state", getattr(self.state, "paper_trading_state", PaperTradingState()))
+    ai_config = self._current_ai_review_config() if hasattr(self, "_current_ai_review_config") else AIReviewConfig()
+    auto_enabled, auto_on_news, auto_on_pool = (
+        self._current_ai_review_automation_settings() if hasattr(self, "_current_ai_review_automation_settings") else (False, True, True)
+    )
     if hasattr(self, "_paper_trading_config"):
         initial_cash, max_position_pct, auto_run, auto_interval_minutes = self._paper_trading_config()
         if state.enabled:
@@ -24555,6 +25797,16 @@ def _qh_save_state_v17(self: QuantHunterWindow) -> None:
     self.paper_trading_state = state
     self.state.paper_trading_state = state
     self.state.focus_themes = self._parse_focus_themes()
+    self.state.ai_review_base_url = ai_config.base_url
+    self.state.ai_review_api_key = ai_config.api_key
+    self.state.ai_review_model = ai_config.model
+    self.state.ai_review_reasoning_effort = ai_config.reasoning_effort
+    self.state.ai_review_max_output_tokens = ai_config.max_output_tokens
+    self.state.ai_review_timeout_seconds = ai_config.timeout_seconds
+    self.state.ai_review_auto_run_enabled = auto_enabled
+    self.state.ai_review_auto_run_on_news_refresh = auto_on_news
+    self.state.ai_review_auto_run_on_pool_refresh = auto_on_pool
+    self.state.smart_message_events = [asdict(item) for item in list(getattr(self, "smart_message_events", []) or [])[-MESSAGE_CENTER_MAX_EVENTS:]]
     save_app_state(
         STATE_FILE,
         AppState(
@@ -24583,6 +25835,15 @@ def _qh_save_state_v17(self: QuantHunterWindow) -> None:
             daily_plan_template=self.state.daily_plan_template,
             daily_plan_focus_only=self.state.daily_plan_focus_only,
             daily_plan_candidate_limit=self.state.daily_plan_candidate_limit,
+            ai_review_base_url=ai_config.base_url,
+            ai_review_api_key=ai_config.api_key,
+            ai_review_model=ai_config.model,
+            ai_review_reasoning_effort=ai_config.reasoning_effort,
+            ai_review_max_output_tokens=ai_config.max_output_tokens,
+            ai_review_timeout_seconds=ai_config.timeout_seconds,
+            ai_review_auto_run_enabled=auto_enabled,
+            ai_review_auto_run_on_news_refresh=auto_on_news,
+            ai_review_auto_run_on_pool_refresh=auto_on_pool,
             market_data_mode=getattr(self, "market_data_mode", self.state.market_data_mode),
             market_timeframe_mode=getattr(self, "market_timeframe_mode", self.state.market_timeframe_mode),
             market_history_window=getattr(self, "market_history_window", self.state.market_history_window),
@@ -24591,6 +25852,7 @@ def _qh_save_state_v17(self: QuantHunterWindow) -> None:
             paper_trading_state=state,
             order_submission_log=list(getattr(self, "order_submission_log", []) or [])[-200:],
             order_submission_records=list(getattr(self, "order_submission_records", []) or [])[-500:],
+            smart_message_events=[asdict(item) for item in list(getattr(self, "smart_message_events", []) or [])[-MESSAGE_CENTER_MAX_EVENTS:]],
         ),
     )
 
@@ -24611,6 +25873,24 @@ def _qh_post_build_ui_tweaks_v17(self: QuantHunterWindow) -> None:
 
 def _qh_apply_daily_pool_rows_v17(self: QuantHunterWindow, rows: list[RecommendationRow]) -> None:
     _ORIGINAL_QH_APPLY_DAILY_POOL_ROWS_V17(self, rows)
+    if hasattr(self, "_refresh_ai_review_panel"):
+        self._refresh_ai_review_panel()
+    if rows and hasattr(self, "_append_smart_message_event"):
+        top_theme = str(getattr(rows[0], "mainline_tag", "") or getattr(rows[0], "theme_name", "") or "待确认")
+        top_symbol = str(getattr(rows[0], "symbol", "") or "")
+        self._append_smart_message_event(
+            category="system",
+            title="推荐池已刷新",
+            detail=f"候选 {len(rows)} 只 | 主线 {top_theme} | 焦点 {getattr(rows[0], 'stock_name', top_symbol) or top_symbol}",
+            symbol=top_symbol,
+            level="SUCCESS",
+        )
+    auto_trigger = str(getattr(self, "ai_review_post_pool_trigger", "") or "pool_refresh")
+    auto_symbol_hint = str(getattr(self, "ai_review_post_pool_symbol_hint", "") or "")
+    self.ai_review_post_pool_trigger = ""
+    self.ai_review_post_pool_symbol_hint = ""
+    if rows and hasattr(self, "_maybe_auto_run_ai_review"):
+        QTimer.singleShot(0, lambda trigger=auto_trigger, symbol_hint=auto_symbol_hint: self._maybe_auto_run_ai_review(trigger, symbol_hint=symbol_hint))
     if rows:
         self._maybe_auto_run_paper_trading()
 
@@ -27105,9 +28385,21 @@ _ORIGINAL_QH_REFRESH_RECOMMEND_FOCUS_CARDS_V8 = QuantHunterWindow._refresh_recom
 def _qh_refresh_recommend_focus_cards_v8(self: QuantHunterWindow, row: RecommendationRow | None = None) -> None:
     _ORIGINAL_QH_REFRESH_RECOMMEND_FOCUS_CARDS_V8(self, row)
     current = row or (self._current_recommend_focus() if hasattr(self, "_current_recommend_focus") else None)
+    if current is None:
+        self._recommend_focus_cards_runtime_signature_v9 = ("empty",)
+        return
     if current is not None and hasattr(self, "recommend_summary_cards"):
         runtime_phase, runtime_hint = tail_buy_runtime_status(current)
         runtime_panel = tail_buy_runtime_panel_lines(current)
+        runtime_signature = (
+            str(getattr(current, "symbol", "") or ""),
+            runtime_phase,
+            runtime_hint,
+            tuple(runtime_panel),
+        )
+        if getattr(self, "_recommend_focus_cards_runtime_signature_v9", None) == runtime_signature:
+            return
+        self._recommend_focus_cards_runtime_signature_v9 = runtime_signature
         if runtime_phase:
             self.recommend_summary_cards["plan"].set_data("尾盘执行阶段", f"{runtime_phase} | {runtime_hint[:18]}")
             self.recommend_summary_cards["pulse"].set_data(
@@ -27129,8 +28421,8 @@ def _qh_refresh_workspace_focus_banners_v23(self: QuantHunterWindow) -> None:
 
 
 def _qh_refresh_recommend_focus_status_v23(self: QuantHunterWindow, row: RecommendationRow | None = None) -> None:
-    _ORIGINAL_QH_REFRESH_RECOMMEND_FOCUS_STATUS_V23(self, row)
     label = getattr(self, "recommend_status_label", None)
+    focus_label = getattr(self, "daily_pool_focus_label", None)
     current = row
     if current is None and hasattr(self, "_current_recommend_focus"):
         current = self._current_recommend_focus()
@@ -27138,10 +28430,59 @@ def _qh_refresh_recommend_focus_status_v23(self: QuantHunterWindow, row: Recomme
     runtime_hint = ""
     if current is not None:
         runtime_phase, runtime_hint = tail_buy_runtime_status(current)
+    portfolio_fit = float(getattr(current, "portfolio_fit_score", 0.0) or 0.0) if current is not None else 0.0
+    portfolio_health = str((getattr(self, "last_daily_pool_meta", {}) or {}).get("portfolio_health_text", "") or "")
+    total_rows = len(getattr(self, "daily_pool_rows", []) or [])
+    symbol = str(getattr(current, "symbol", "") or "") if current is not None else ""
+    stock_name = (
+        str(getattr(current, "stock_name", "") or (self._stock_name_for_symbol(symbol) if symbol else ""))
+        if current is not None
+        else ""
+    )
+    stock_id = (
+        str(getattr(current, "stock_id", "") or (self._stock_id_for_symbol(symbol) if symbol else ""))
+        if current is not None
+        else ""
+    )
+    theme_name = str(getattr(current, "mainline_tag", "") or getattr(current, "theme_name", "") or "待确认") if current is not None else ""
+    action_text = self._display_action(getattr(current, "action", "WATCH")) if current is not None else ""
+    readiness = float(getattr(current, "execution_readiness", 0.0) or 0.0) if current is not None else 0.0
+    confidence = float(getattr(current, "confidence_score", 0.0) or 0.0) if current is not None else 0.0
+    price_brief = self._recommend_price_brief(current) if current is not None and hasattr(self, "_recommend_price_brief") else "等待价格计划同步"
+    news_lines = self._news_digest_lines_for_symbol(symbol, limit=1) if current is not None and hasattr(self, "_news_digest_lines_for_symbol") else []
+    spotlight_tone = self._focus_tone_from_runtime_v23() if hasattr(self, "_focus_tone_from_runtime_v23") else "idle"
+    signature = (
+        id(label),
+        id(focus_label),
+        "current" if current is not None else "empty",
+        total_rows,
+        symbol,
+        stock_name,
+        stock_id,
+        theme_name,
+        action_text,
+        readiness,
+        confidence,
+        runtime_phase,
+        runtime_hint,
+        portfolio_fit,
+        portfolio_health,
+        price_brief,
+        news_lines[0] if news_lines else "",
+        spotlight_tone,
+    )
+    if getattr(self, "_recommend_focus_status_signature_v24", None) == signature:
+        return
+    self._recommend_focus_status_signature_v24 = signature
+    _ORIGINAL_QH_REFRESH_RECOMMEND_FOCUS_STATUS_V23(self, row)
     if label is not None and runtime_phase:
         base_text = (getattr(label, "text", lambda: "")() or "").strip()
         if base_text:
             self._set_label_text_if_changed(label, f"{base_text} | 尾盘阶段 {runtime_phase}")
+    if label is not None and current is not None and portfolio_fit > 0:
+        base_text = (getattr(label, "text", lambda: "")() or "").strip()
+        if base_text and "组合适配" not in base_text:
+            self._set_label_text_if_changed(label, f"{base_text} | 组合适配 {portfolio_fit:.0f}")
     if label is not None:
         if current is None:
             _qh_set_tooltip_v7(label, "推荐状态：等待高优先候选同步后，再查看送审理由、价格计划和催化消息。")
@@ -27151,14 +28492,13 @@ def _qh_refresh_recommend_focus_status_v23(self: QuantHunterWindow, row: Recomme
             stock_id = getattr(current, "stock_id", "") or self._stock_id_for_symbol(symbol)
             theme_name = getattr(current, "mainline_tag", "") or getattr(current, "theme_name", "") or "待确认"
             action_text = self._display_action(getattr(current, "action", "WATCH"))
-            price_brief = self._recommend_price_brief(current) if hasattr(self, "_recommend_price_brief") else "等待价格计划同步"
-            news_lines = self._news_digest_lines_for_symbol(symbol, limit=1) if hasattr(self, "_news_digest_lines_for_symbol") else []
             _qh_set_tooltip_v7(
                 label,
                 "\n".join(
                     [
                         f"焦点：{stock_name} ({stock_id} / {symbol})",
                         f"主线：{theme_name} | 动作：{action_text}",
+                        f"组合：适配 {portfolio_fit:.0f} | {portfolio_health or '组合回测待生成'}",
                         f"价格计划：{price_brief}",
                         f"尾盘阶段：{runtime_phase or '常规观察'}",
                         f"执行节奏：{runtime_hint or '先核对送审理由、价格计划和消息催化。'}",
@@ -27172,6 +28512,41 @@ def _qh_refresh_recommend_focus_status_v23(self: QuantHunterWindow, row: Recomme
 
 def _qh_refresh_broker_order_focus_v23(self: QuantHunterWindow) -> None:
     _ORIGINAL_QH_REFRESH_BROKER_ORDER_FOCUS_V23(self)
+    intent = self._selected_order_intent() if hasattr(self, "_selected_order_intent") else None
+    if intent is not None:
+        recommendation = next((item for item in getattr(self, "daily_pool_rows", []) if getattr(item, "symbol", "") == intent.symbol), None)
+        if recommendation is not None:
+            portfolio_fit = float(getattr(recommendation, "portfolio_fit_score", 0.0) or 0.0)
+            diversification = float(getattr(recommendation, "diversification_score", 0.0) or 0.0)
+            concentration_penalty = float(getattr(recommendation, "concentration_penalty_score", 0.0) or 0.0)
+            if portfolio_fit > 0:
+                if hasattr(self, "orders_focus_label"):
+                    base_text = (self.orders_focus_label.text() or "").strip()
+                    if base_text and "组合适配" not in base_text:
+                        self._set_label_text_if_changed(self.orders_focus_label, f"{base_text} | 组合适配 {portfolio_fit:.0f}")
+                if hasattr(self, "broker_order_focus_text"):
+                    base_text = self.broker_order_focus_text.toPlainText()
+                    extra_lines = [
+                        f"组合适配：{portfolio_fit:.0f} | 分散度 {diversification:.0f} | 集中惩罚 {concentration_penalty:.0f}",
+                    ]
+                    fit_review = dict((getattr(self, "last_broker_execution_summary", {}) or {}).get("portfolio_fit_review", {}) or {})
+                    fit_rows = list(fit_review.get("rows", []) or [])
+                    fit_row = next((item for item in fit_rows if str(item.get("symbol", "")) == str(getattr(intent, "symbol", ""))), {})
+                    fit_detail = str(fit_row.get("detail", "") or "")
+                    if fit_detail:
+                        extra_lines.append(f"组合复核：{fit_detail}")
+                    merged_text = base_text
+                    for line in extra_lines:
+                        if line not in merged_text:
+                            merged_text = f"{merged_text}\n{line}".strip()
+                    self._set_plain_text_if_changed(self.broker_order_focus_text, merged_text)
+                if hasattr(self, "broker_order_metric_accents"):
+                    position_accent = getattr(self.broker_order_metric_accents.get("position"), "text", lambda: "")() or ""
+                    if position_accent and "组合适配" not in position_accent:
+                        self._set_label_text_if_changed(
+                            self.broker_order_metric_accents["position"],
+                            f"{position_accent} | 组合适配 {portfolio_fit:.0f}",
+                        )
     if hasattr(self, "_apply_focus_spotlight_v23"):
         self._apply_focus_spotlight_v23()
 
@@ -27432,6 +28807,7 @@ class OrderConfirmationDialog(_ORDER_CONFIRMATION_DIALOG_V25):
         holdings=None,
         cash_snapshot=None,
         recommendations=None,
+        execution_summary: dict[str, object] | None = None,
         strategy_name: str = "",
         experiment_bridge: dict[str, str] | None = None,
         guard_notes: list[str] | None = None,
@@ -27570,6 +28946,37 @@ QHeaderView::section {
             summary_lines.extend(f"- {item}" for item in guard_notes)
         self.summary_text.setPlainText("\n".join(summary_lines))
         summary_layout.addWidget(self.summary_text)
+        execution_summary = dict(execution_summary or {})
+        mainline_review = dict(execution_summary.get("mainline_review", {}) or {})
+        portfolio_risk_review = dict(execution_summary.get("portfolio_risk_review", {}) or {})
+        portfolio_fit_review = dict(execution_summary.get("portfolio_fit_review", {}) or {})
+        execution_box = QGroupBox("执行闸门 / 组合复核")
+        execution_layout = QVBoxLayout(execution_box)
+        execution_intro = QLabel("最后再核对主线闸门、组合止损和组合适配，确保这笔委托不会在确认前放大组合脆弱点。")
+        execution_intro.setWordWrap(True)
+        execution_layout.addWidget(execution_intro)
+        self.execution_gate_text = QTextEdit()
+        self.execution_gate_text.setReadOnly(True)
+        self.execution_gate_text.setMinimumHeight(118)
+        self.execution_gate_text.setMaximumHeight(156)
+        fit_rows = list(portfolio_fit_review.get("rows", []) or [])
+        fit_focus = fit_rows[0] if fit_rows else {}
+        mainline_rows = list(mainline_review.get("rows", []) or [])
+        mainline_focus = mainline_rows[0] if mainline_rows else {}
+        first_blocker = next(iter(list(execution_summary.get("blockers", []) or [])), "")
+        first_warning = next(iter(list(execution_summary.get("warnings", []) or [])), "")
+        gate_lines = [
+            f"主线闸门：{mainline_review.get('status', '待核对')} | 通过 {int(mainline_review.get('pass_count', 0) or 0)} | 待核对 {int(mainline_review.get('missing_count', 0) or 0)}",
+            f"组合止损：{portfolio_risk_review.get('status', '待评估')} | 总止损 {float(portfolio_risk_review.get('total_loss_ratio', 0.0) or 0.0):.1%}",
+            f"组合适配：{portfolio_fit_review.get('status', '待评估')} | 均值适配 {float(portfolio_fit_review.get('avg_fit_score', 0.0) or 0.0):.0f}",
+        ]
+        if fit_focus:
+            gate_lines.append(f"适配焦点：{fit_focus.get('name', fit_focus.get('symbol', '--'))} | {fit_focus.get('detail', '')}")
+        if mainline_focus:
+            gate_lines.append(f"主线焦点：{mainline_focus.get('name', mainline_focus.get('symbol', '--'))} | {mainline_focus.get('detail', '')}")
+        gate_lines.append(f"提交提醒：{first_blocker or first_warning or '当前没有硬阻塞，可按纪律继续提交。'}")
+        self.execution_gate_text.setPlainText("\n".join(gate_lines))
+        execution_layout.addWidget(self.execution_gate_text)
         bridge = dict(experiment_bridge or {})
         experiment_badge = str(bridge.get("badge", "") or "待校验")
         experiment_title = str(bridge.get("title", "") or f"待补模拟盘样本 | {strategy_name or '擒龙决策'}")
@@ -27609,7 +29016,8 @@ QHeaderView::section {
         layout = self.layout()
         if isinstance(layout, QVBoxLayout):
             layout.insertWidget(1, summary_box)
-            layout.insertWidget(2, experiment_box)
+            layout.insertWidget(2, execution_box)
+            layout.insertWidget(3, experiment_box)
 
         self.confirm_checkbox.setText("我已核对账户、委托、模拟盘结论与风险后，继续提交。")
         self.submit_button.setText("确认并提交")
@@ -27625,6 +29033,7 @@ QHeaderView::section {
         holdings=None,
         cash_snapshot=None,
         recommendations=None,
+        execution_summary: dict[str, object] | None = None,
         strategy_name: str = "",
         experiment_bridge: dict[str, str] | None = None,
         guard_notes: list[str] | None = None,
@@ -27637,6 +29046,7 @@ QHeaderView::section {
             holdings=holdings,
             cash_snapshot=cash_snapshot,
             recommendations=recommendations,
+            execution_summary=execution_summary,
             strategy_name=strategy_name,
             experiment_bridge=experiment_bridge,
             guard_notes=guard_notes,
@@ -28188,6 +29598,7 @@ def _qh_refresh_submission_focus_v26(self: QuantHunterWindow) -> None:
     stock_id = self._stock_id_for_symbol(symbol) if symbol else "--"
     failure_reason = str(record.get("failure_reason", "") or "")
     message = str(record.get("message", "") or "")
+    deviation_snapshot = submission_record_execution_delta(record)
     intent = self._selected_order_intent() if hasattr(self, "_selected_order_intent") else None
     recommendation = next((item for item in getattr(self, "daily_pool_rows", []) if getattr(item, "symbol", "") == symbol), None)
     price_snapshot = self._recommend_price_snapshot(recommendation) if recommendation is not None and hasattr(self, "_recommend_price_snapshot") else {}
@@ -28296,6 +29707,8 @@ def _qh_refresh_submission_focus_v26(self: QuantHunterWindow) -> None:
             f"修正：{repair_hint['headline']} | {resolution_action['target']}",
             f"参数：{parameter_alignment['headline']} | {parameter_alignment['detail']}",
         ]
+        if deviation_snapshot.get("has_baseline"):
+            lines.append(f"偏差：{deviation_snapshot['note']}")
         self._set_plain_text_if_changed(self.order_result_text, "\n".join(lines))
     if hasattr(self, "broker_result_metric_labels"):
         result_stage_value = summary["stage"]
@@ -28396,12 +29809,14 @@ def _qh_refresh_submission_focus_v26(self: QuantHunterWindow) -> None:
         lines.append(f"链路建议：{followup['headline']} | {followup['detail']}")
         lines.append(f"处理建议：{repair_hint['headline']} | {repair_hint['checkpoint']}")
         lines.append(f"参数比对：{parameter_alignment['headline']} | {parameter_alignment['checkpoint']}")
+        if deviation_snapshot.get("has_baseline"):
+            lines.append(f"执行偏差：{deviation_snapshot['note']}")
         lines.append(f"优先入口：{resolution_action['target']} | {resolution_action['detail']}")
         if message:
             lines.append(f"系统反馈：{message}")
         if failure_reason:
             lines.append(f"需要处理：{failure_reason}")
-        else:
+        elif not deviation_snapshot.get("has_baseline"):
             lines.append("执行偏差：继续观察成交结果，并核对是否偏离原计划的价格和仓位。")
         self._set_plain_text_if_changed(self.broker_recap_text, "\n".join(lines))
     if hasattr(self, "broker_recap_metric_labels"):
@@ -28418,7 +29833,7 @@ def _qh_refresh_submission_focus_v26(self: QuantHunterWindow) -> None:
             else "等待主线与回执联动"
         )
         recap_quality_value = parameter_alignment["headline"]
-        recap_quality_accent = parameter_alignment["detail"]
+        recap_quality_accent = deviation_snapshot["note"] if deviation_snapshot.get("has_baseline") else parameter_alignment["detail"]
         recap_action_value = repair_hint["headline"]
         recap_action_accent = f"{resolution_action['target']} | {resolution_action['detail']}"
         self._set_label_text_if_changed(self.broker_recap_metric_labels["verdict"], recap_verdict_value)
@@ -29847,6 +31262,7 @@ def _qh_refresh_recommend_decision_summary_v38(self: QuantHunterWindow, row=None
         return
     current = row or (self._current_recommend_focus() if hasattr(self, "_current_recommend_focus") else None)
     if current is None:
+        self._recommend_decision_summary_text_signature_v38 = ("empty",)
         return
 
     verdict, execution_summary, can_submit, can_open_broker = _qh_recommend_execution_summary_v24(self, current)
@@ -29876,6 +31292,25 @@ def _qh_refresh_recommend_decision_summary_v38(self: QuantHunterWindow, row=None
         for line in text_widget.toPlainText().splitlines()
         if not line.startswith("首选动作：") and not line.startswith("路径建议：")
     ]
+    push_button = getattr(self, "recommend_push_focus_button", None)
+    detail_button = getattr(self, "recommend_detail_focus_button", None)
+    broker_button = getattr(self, "recommend_broker_focus_button", None)
+    text_signature = (
+        str(getattr(current, "symbol", "") or ""),
+        execution_state,
+        bool(can_submit),
+        bool(can_open_broker),
+        primary_headline,
+        primary_detail,
+        route_detail,
+        tuple(lines),
+        str(getattr(push_button, "toolTip", lambda: "")() or "").split("首选动作：", 1)[0].strip() if isinstance(push_button, QPushButton) else "",
+        str(getattr(detail_button, "toolTip", lambda: "")() or "").split("首选动作：", 1)[0].strip() if isinstance(detail_button, QPushButton) else "",
+        str(getattr(broker_button, "toolTip", lambda: "")() or "").split("首选动作：", 1)[0].strip() if isinstance(broker_button, QPushButton) else "",
+    )
+    if getattr(self, "_recommend_decision_summary_text_signature_v38", None) == text_signature:
+        return
+    self._recommend_decision_summary_text_signature_v38 = text_signature
     insert_at = next((index for index, value in enumerate(lines) if value.startswith("下一步：")), len(lines))
     lines[insert_at:insert_at] = [
         f"首选动作：{primary_headline}",
@@ -29883,18 +31318,21 @@ def _qh_refresh_recommend_decision_summary_v38(self: QuantHunterWindow, row=None
     ]
     self._set_plain_text_if_changed(text_widget, "\n".join(lines))
 
-    push_button = getattr(self, "recommend_push_focus_button", None)
     if isinstance(push_button, QPushButton):
-        push_tip = str(push_button.toolTip() or "").split("\n首选动作：", 1)[0].strip()
-        push_button.setToolTip((push_tip + "\n" if push_tip else "") + f"首选动作：{primary_headline}")
-    detail_button = getattr(self, "recommend_detail_focus_button", None)
+        push_tip = str(push_button.toolTip() or "").split("首选动作：", 1)[0].strip()
+        next_tip = (push_tip + "\n" if push_tip else "") + f"首选动作：{primary_headline}"
+        if push_button.toolTip() != next_tip:
+            push_button.setToolTip(next_tip)
     if isinstance(detail_button, QPushButton):
-        detail_tip = str(detail_button.toolTip() or "").split("\n首选动作：", 1)[0].strip()
-        detail_button.setToolTip((detail_tip + "\n" if detail_tip else "") + f"首选动作：{primary_headline} | {primary_detail}")
-    broker_button = getattr(self, "recommend_broker_focus_button", None)
+        detail_tip = str(detail_button.toolTip() or "").split("首选动作：", 1)[0].strip()
+        next_tip = (detail_tip + "\n" if detail_tip else "") + f"首选动作：{primary_headline} | {primary_detail}"
+        if detail_button.toolTip() != next_tip:
+            detail_button.setToolTip(next_tip)
     if isinstance(broker_button, QPushButton):
-        broker_tip = str(broker_button.toolTip() or "").split("\n首选动作：", 1)[0].strip()
-        broker_button.setToolTip((broker_tip + "\n" if broker_tip else "") + f"首选动作：{primary_headline}")
+        broker_tip = str(broker_button.toolTip() or "").split("首选动作：", 1)[0].strip()
+        next_tip = (broker_tip + "\n" if broker_tip else "") + f"首选动作：{primary_headline}"
+        if broker_button.toolTip() != next_tip:
+            broker_button.setToolTip(next_tip)
 
 
 def _qh_refresh_recommendation_focus_panels_v38(self: QuantHunterWindow, row=None) -> None:
@@ -29908,6 +31346,8 @@ def _qh_refresh_recommendation_focus_panels_v38(self: QuantHunterWindow, row=Non
             self._update_news_action_button(action_button, None)
         if hasattr(self, "_update_news_detail_button"):
             self._update_news_detail_button(detail_button, None)
+        if hasattr(self, "_refresh_ai_review_panel"):
+            self._refresh_ai_review_panel(None)
         return
     current = row or (self._current_recommend_focus() if hasattr(self, "_current_recommend_focus") else None)
     if current is None:
@@ -29919,6 +31359,8 @@ def _qh_refresh_recommendation_focus_panels_v38(self: QuantHunterWindow, row=Non
             self._update_news_action_button(action_button, None)
         if hasattr(self, "_update_news_detail_button"):
             self._update_news_detail_button(detail_button, None)
+        if hasattr(self, "_refresh_ai_review_panel"):
+            self._refresh_ai_review_panel(None)
         return
     verdict, execution_summary, can_submit, can_open_broker = _qh_recommend_execution_summary_v24(self, current)
     execution_state = str(getattr(current, "execution_status", "") or "待观察")
@@ -30001,6 +31443,8 @@ def _qh_refresh_recommendation_focus_panels_v38(self: QuantHunterWindow, row=Non
             ),
             tooltip=(f"推荐焦点：{stock_name} ({stock_id} / {symbol}) | 已同步单票审查与消息复核\n{tooltip}" if tooltip else None),
         )
+    if hasattr(self, "_refresh_ai_review_panel"):
+        self._refresh_ai_review_panel(current)
 
 
 def _qh_recommend_primary_button_key_v39(
@@ -30027,6 +31471,7 @@ def _qh_refresh_recommend_decision_summary_v39(self: QuantHunterWindow, row=None
     _ORIGINAL_QH_REFRESH_RECOMMEND_DECISION_SUMMARY_V39(self, row)
     current = row or (self._current_recommend_focus() if hasattr(self, "_current_recommend_focus") else None)
     if current is None:
+        self._recommend_decision_summary_signature_v40 = ("empty",)
         return
 
     push_button = getattr(self, "recommend_push_focus_button", None)
@@ -30063,6 +31508,30 @@ def _qh_refresh_recommend_decision_summary_v39(self: QuantHunterWindow, row=None
     }
     priority_map = {"accent": "primary", "tonal": "secondary", "ghost": "tertiary"}
     role_label_map = {"accent": "当前主操作", "tonal": "当前次操作", "ghost": "辅助操作"}
+    button_state_signature = (
+        str(getattr(current, "symbol", "") or ""),
+        execution_state,
+        bool(can_submit),
+        bool(can_open_broker),
+        primary_key,
+        primary_headline,
+        primary_detail,
+        tuple(
+            (
+                key,
+                role,
+                (
+                    str(getattr(button, "toolTip", lambda: "")() or "").split("按钮层级：", 1)[0].strip()
+                    if isinstance(button, QPushButton)
+                    else ""
+                ),
+            )
+            for key, (button, role) in button_specs.items()
+        ),
+    )
+    if getattr(self, "_recommend_decision_summary_signature_v40", None) == button_state_signature:
+        return
+    self._recommend_decision_summary_signature_v40 = button_state_signature
     for _key, (button, role) in button_specs.items():
         if not isinstance(button, QPushButton):
             continue
@@ -30074,11 +31543,13 @@ def _qh_refresh_recommend_decision_summary_v39(self: QuantHunterWindow, row=None
             button.style().unpolish(button)
             button.style().polish(button)
             button.update()
-        tip = str(button.toolTip() or "").split("\n按钮层级：", 1)[0].strip()
-        button.setToolTip(
+        tip = str(button.toolTip() or "").split("按钮层级：", 1)[0].strip()
+        next_tip = (
             (tip + "\n" if tip else "")
             + f"按钮层级：{role_label_map.get(role, '辅助操作')} | 首选动作：{primary_headline} | {primary_detail}"
         )
+        if button.toolTip() != next_tip:
+            button.setToolTip(next_tip)
 
 
 QuantHunterWindow._refresh_recommend_decision_summary = _qh_refresh_recommend_decision_summary_v39

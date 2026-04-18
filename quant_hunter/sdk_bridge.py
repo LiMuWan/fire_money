@@ -33,11 +33,50 @@ def _call_first_available(gm: Any, names: list[str], **kwargs):
     raise RuntimeError(f"SDK 中不存在这些函数: {', '.join(names)}")
 
 
+def _call_optional_available(gm: Any, names: list[str], **kwargs):
+    for name in names:
+        func = getattr(gm, name, None)
+        if not callable(func):
+            continue
+        try:
+            return func(**kwargs)
+        except TypeError:
+            try:
+                return func()
+            except Exception:
+                continue
+        except Exception:
+            continue
+    return None
+
+
 def _resolve_attr(obj: Any, names: list[str]):
     for name in names:
         if hasattr(obj, name):
             return getattr(obj, name)
     return None
+
+
+def _normalize_submit_result(symbol: str, result: Any) -> dict[str, Any]:
+    result_text = str(
+        _pick_value(
+            result,
+            ["result", "message", "msg", "status_msg", "remark"],
+            fallback=str(result or "submitted"),
+        )
+        or "submitted"
+    )
+    fill_price = _pick_value(result, ["fill_price", "filled_price", "avg_fill_price", "filled_avg_price", "trade_price", "deal_price"], fallback=0.0)
+    fill_quantity = _pick_value(result, ["fill_quantity", "filled_quantity", "filled_volume", "trade_volume", "deal_volume", "filled_qty"], fallback=0)
+    return {
+        "symbol": symbol,
+        "result": result_text,
+        "order_status": str(_pick_value(result, ["order_status", "status"], fallback="SUBMITTED") or "SUBMITTED"),
+        "fill_status": str(_pick_value(result, ["fill_status", "filled_status", "exec_status", "deal_status"], fallback="") or ""),
+        "fill_price": float(fill_price or 0.0) if fill_price not in {None, ""} else 0.0,
+        "fill_quantity": int(float(fill_quantity or 0)) if fill_quantity not in {None, ""} else 0,
+        "order_id": str(_pick_value(result, ["order_id", "cl_ord_id", "entrust_no", "order_no"], fallback="") or ""),
+    }
 
 
 def _sync(gm: Any, payload: dict[str, Any]) -> dict[str, Any]:
@@ -102,8 +141,31 @@ def _submit(gm: Any, payload: dict[str, Any]) -> dict[str, Any]:
         except TypeError:
             kwargs.pop("position_effect", None)
             result = order_func(**kwargs)
-        results.append({"symbol": item["symbol"], "result": str(result)})
+        results.append(_normalize_submit_result(item["symbol"], result))
     return {"results": results}
+
+
+def _execution(gm: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    orders = _call_optional_available(gm, ["get_orders", "get_unfinished_orders", "get_order"], account_id=payload["account_id"])
+    trades = _call_optional_available(gm, ["get_execution_reports", "get_trades", "get_deals", "get_trade"], account_id=payload["account_id"])
+    rows: list[dict[str, Any]] = []
+    for source in (orders or [], trades or []):
+        if source is None:
+            continue
+        bucket = source if isinstance(source, list) else [source]
+        for item in bucket:
+            symbol = str(_pick_value(item, ["symbol", "sec_id", "security", "instrument"], fallback="") or "")
+            rows.append(
+                _normalize_submit_result(symbol, item)
+                | {
+                    "side": str(_pick_value(item, ["side", "order_side", "direction"], fallback="") or ""),
+                    "timestamp": str(_pick_value(item, ["timestamp", "create_time", "created_at", "trade_time", "update_time", "updated_at", "order_time", "entrust_time"], fallback="") or ""),
+                    "price": float(_pick_value(item, ["price", "order_price", "limit_price", "entrust_price"], fallback=0.0) or 0.0),
+                    "quantity": int(float(_pick_value(item, ["quantity", "volume", "order_qty", "entrust_amount", "entrust_qty"], fallback=0) or 0)),
+                }
+            )
+    limit = max(int(payload.get("limit", 40) or 40), 1)
+    return {"execution_records": rows[:limit]}
 
 
 def main() -> int:
@@ -127,6 +189,9 @@ def main() -> int:
         return 0
     if action == "submit":
         print(json.dumps(_submit(gm, payload), ensure_ascii=False))
+        return 0
+    if action == "execution":
+        print(json.dumps(_execution(gm, payload), ensure_ascii=False))
         return 0
     raise SystemExit(f"unknown action: {action}")
 

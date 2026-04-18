@@ -111,11 +111,65 @@ def submission_table_snapshot_v2(
     order_status_text: str,
     fill_status_text: str,
 ) -> dict[str, str]:
+    def _safe_float(value: str) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _safe_int(value: str) -> int:
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return 0
+
     symbol = str(item.get("symbol", "") or "")
     timestamp_text = str(item.get("timestamp", "") or "--")
     time_part = timestamp_text.split(" ", 1)[-1] if " " in timestamp_text else timestamp_text
     failure_reason = str(item.get("failure_reason", "") or "").strip()
     message_text = str(item.get("message", "") or "").strip() or "\u7b49\u5f85\u66f4\u591a\u53cd\u9988"
+    order_id = str(item.get("order_id", "") or "").strip()
+    planned_price = _safe_float(str(item.get("planned_price", "") or "0"))
+    submitted_price = _safe_float(str(item.get("price", "") or "0"))
+    fill_price = _safe_float(str(item.get("fill_price", "") or "0"))
+    planned_quantity = _safe_int(str(item.get("planned_quantity", "") or "0"))
+    submitted_quantity = _safe_int(str(item.get("quantity", "") or "0"))
+    fill_quantity = _safe_int(str(item.get("fill_quantity", "") or "0"))
+
+    price_lines: list[str] = []
+    if planned_price > 0:
+        price_lines.append(f"\u8ba1 {planned_price:.2f}")
+    if submitted_price > 0:
+        price_lines.append(f"\u9001 {submitted_price:.2f}")
+    if fill_price > 0:
+        price_lines.append(f"\u6210 {fill_price:.2f}")
+    price_compare = "\n".join(price_lines) if price_lines else "--"
+
+    quantity_lines: list[str] = []
+    if planned_quantity > 0:
+        quantity_lines.append(f"\u8ba1 {planned_quantity}")
+    if submitted_quantity > 0:
+        quantity_lines.append(f"\u9001 {submitted_quantity}")
+    if fill_quantity > 0:
+        quantity_lines.append(f"\u6210 {fill_quantity}")
+    quantity_compare = "\n".join(quantity_lines) if quantity_lines else "--"
+
+    deviation_note = ""
+    if planned_price > 0 and fill_price > 0:
+        price_deviation_bps = (fill_price - planned_price) / planned_price * 10000.0
+        if abs(price_deviation_bps) >= 1.0:
+            deviation_note = (
+                f"\u4ef7\u683c\u9ad8\u4e8e\u8ba1\u5212 {price_deviation_bps:.1f}bp"
+                if price_deviation_bps > 0
+                else f"\u4ef7\u683c\u4f4e\u4e8e\u8ba1\u5212 {abs(price_deviation_bps):.1f}bp"
+            )
+    if planned_quantity > 0 and fill_quantity > 0 and fill_quantity != planned_quantity:
+        quantity_note = (
+            f"\u6570\u91cf\u8f83\u8ba1\u5212\u589e\u52a0 {fill_quantity - planned_quantity}"
+            if fill_quantity > planned_quantity
+            else f"\u6570\u91cf\u8f83\u8ba1\u5212\u51cf\u5c11 {planned_quantity - fill_quantity}"
+        )
+        deviation_note = f"{deviation_note} | {quantity_note}".strip(" |")
     timeline_value = f"{time_part}\n{submission_node_label(item)}"
     focus_value = f"{stock_name}  {stock_id}\n\u6807\u8bc6 {symbol or '--'} | {order_status_text or '--'}"
     action_value = f"{action_text}\n{order_status_text or '--'} / {fill_status_text or '--'}"
@@ -124,8 +178,12 @@ def submission_table_snapshot_v2(
             f"\u65f6\u95f4\uff1a{timestamp_text}",
             f"\u80a1\u7968\uff1a{stock_name} ({stock_id} / {symbol or '--'})",
             f"\u52a8\u4f5c\uff1a{action_text}",
+            f"\u8ba2\u5355 ID\uff1a{order_id or '--'}",
             f"\u8ba2\u5355\u72b6\u6001\uff1a{order_status_text or '--'}",
             f"\u6210\u4ea4\u72b6\u6001\uff1a{fill_status_text or '--'}",
+            f"\u8ba1\u5212\u4ef7/\u9001\u5ba1\u4ef7/\u6210\u4ea4\u4ef7\uff1a{item.get('planned_price', '--') or '--'} / {item.get('price', '--') or '--'} / {item.get('fill_price', '--') or '--'}",
+            f"\u8ba1\u5212\u91cf/\u9001\u5ba1\u91cf/\u6210\u4ea4\u91cf\uff1a{item.get('planned_quantity', '--') or '--'} / {item.get('quantity', '--') or '--'} / {item.get('fill_quantity', '--') or '--'}",
+            f"\u6267\u884c\u504f\u5dee\uff1a{deviation_note or '\u6682\u65e0\u660e\u663e\u504f\u5dee'}",
             f"\u5f02\u5e38\uff1a{failure_reason or '\u65e0'}",
             f"\u53cd\u9988\uff1a{message_text}",
         ]
@@ -134,9 +192,12 @@ def submission_table_snapshot_v2(
         "timeline": timeline_value,
         "focus": focus_value,
         "action": action_value,
+        "price_compare": price_compare,
+        "quantity_compare": quantity_compare,
+        "deviation_note": deviation_note,
         "risk_badge": submission_risk_badge_text_v2(item),
         "exception_detail": failure_reason or "\u65e0",
-        "message": message_text,
+        "message": f"{message_text}\n{deviation_note}" if deviation_note else message_text,
         "tooltip": tooltip,
     }
 

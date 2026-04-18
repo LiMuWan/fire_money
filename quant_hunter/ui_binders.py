@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .risk import RISK_PROFILE_LABELS, risk_pool_impact_text, risk_profile_brief, risk_profile_comparison_text
+from .risk import RISK_PROFILE_LABELS, risk_profile_brief, risk_profile_comparison_text
 
 
 def apply_daily_pool_rows(window, rows, summarize_themes_fn) -> None:
@@ -33,6 +33,7 @@ def apply_daily_pool_rows(window, rows, summarize_themes_fn) -> None:
             theme_summary = " / ".join(f"{item.theme_rank}.{item.theme_name}" for item in window.theme_heat_rows[:3]) or "暂无"
             buy_ready_count = int(build_meta.get("buy_ready_count", 0) or 0)
             rejected_count = int(build_meta.get("rejected_count", 0) or 0)
+            portfolio_health_text = str(build_meta.get("portfolio_health_text", "") or "组合回测待生成")
             lines = [
                 "今日算法优先候选：",
                 f"- 风险档位：{risk_label} | {risk_hint}",
@@ -40,6 +41,8 @@ def apply_daily_pool_rows(window, rows, summarize_themes_fn) -> None:
                 f"- 题材：{top.theme_name or '未分类'}，题材排名第 {top.theme_rank}，龙头级别：{window._display_leader_level(top.leader_level)}",
                 f"- 主线题材：{theme_summary}",
                 f"- 本轮过滤：{buy_ready_count} 只可执行 / {rejected_count} 只被拦截",
+                f"- 组合视角：{portfolio_health_text}",
+                f"- 组合适配：{float(getattr(top, 'portfolio_fit_score', 0.0) or 0.0):.1f} | 分散度：{float(getattr(top, 'diversification_score', 0.0) or 0.0):.1f}",
                 f"- 总分：{top.total_score:.1f}",
                 f"- 逻辑：{top.rationale}",
                 f"- 催化：{top.catalyst or '暂无外部催化，偏技术面驱动'}",
@@ -60,15 +63,18 @@ def apply_daily_pool_rows(window, rows, summarize_themes_fn) -> None:
     if hasattr(window, "recommend_status_label"):
         top_theme = build_meta.get("top_theme", "") or (window.theme_heat_rows[0].theme_name if window.theme_heat_rows else "未分类")
         rejected_count = int(build_meta.get("rejected_count", 0) or 0)
+        portfolio_return = float(build_meta.get("portfolio_return", 0.0) or 0.0)
         window.recommend_status_label.setText(
-            f"每日推荐池已生成：{len(window.daily_pool_rows)} 只候选，风险档位 {risk_label}，当前主线题材 {top_theme}，拦截 {rejected_count} 只。"
+            f"每日推荐池已生成：{len(window.daily_pool_rows)} 只候选，风险档位 {risk_label}，当前主线题材 {top_theme}，组合回测 {portfolio_return:.2%}，拦截 {rejected_count} 只。"
         )
 
     if hasattr(window, "_update_recommend_empty_state"):
         window._update_recommend_empty_state()
 
     rejected_count = int(build_meta.get("rejected_count", 0) or 0)
-    window._append_runtime_log(f"推荐池已生成：{len(window.daily_pool_rows)} 只候选，风险档位 {risk_label}，拦截 {rejected_count} 只")
+    window._append_runtime_log(
+        f"推荐池已生成：{len(window.daily_pool_rows)} 只候选，风险档位 {risk_label}，拦截 {rejected_count} 只"
+    )
     window._refresh_trade_plan()
     if hasattr(window, "daily_pool_table") and window.daily_pool_rows and window.daily_pool_table.rowCount() > 0:
         window.daily_pool_table.selectRow(0)
@@ -330,24 +336,48 @@ def append_submission_record_entry(
     timestamp: str,
     order_status: str,
     fill_status: str,
+    order_id: str = "",
     symbol: str,
     side: str,
     price: str,
     quantity: str,
     failure_reason: str,
     message: str,
+    planned_price: str = "",
+    planned_quantity: str = "",
+    planned_stop_price: str = "",
+    planned_target_price: str = "",
+    opportunity_tier: str = "",
+    planned_risk_reward_ratio: str = "",
+    portfolio_fit_score: str = "",
+    diversification_score: str = "",
+    concentration_penalty_score: str = "",
+    fill_price: str = "",
+    fill_quantity: str = "",
 ) -> None:
     window.order_submission_records.append(
         {
             "timestamp": timestamp,
             "order_status": order_status,
             "fill_status": fill_status,
+            "order_id": str(order_id or ""),
             "symbol": symbol,
             "side": side,
             "price": price,
             "quantity": quantity,
             "failure_reason": failure_reason,
             "message": message,
+            "planned_price": str(planned_price or ""),
+            "planned_quantity": str(planned_quantity or ""),
+            "planned_stop_price": str(planned_stop_price or ""),
+            "planned_target_price": str(planned_target_price or ""),
+            "opportunity_tier": str(opportunity_tier or ""),
+            "planned_risk_reward_ratio": str(planned_risk_reward_ratio or ""),
+            "portfolio_fit_score": str(portfolio_fit_score or ""),
+            "diversification_score": str(diversification_score or ""),
+            "concentration_penalty_score": str(concentration_penalty_score or ""),
+            "fill_price": str(fill_price or ""),
+            "fill_quantity": str(fill_quantity or ""),
         }
     )
     if symbol:
