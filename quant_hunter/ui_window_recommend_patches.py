@@ -5,6 +5,7 @@ from typing import Any
 from PySide6.QtWidgets import QLabel, QPushButton, QTextEdit
 
 from quant_hunter.models import PaperTradingState
+from quant_hunter.strategy_registry import resolved_primary_strategy
 from quant_hunter.ui_window_paper_experiment_patches import paper_strategy_experiment_bridge_v45
 
 
@@ -107,7 +108,7 @@ def apply_recommend_workspace_patches(
         paper_state = getattr(self, "paper_trading_state", getattr(getattr(self, "state", None), "paper_trading_state", PaperTradingState()))
         experiment_bridge = paper_strategy_experiment_bridge_v45(
             paper_state,
-            getattr(current, "primary_strategy", "") or "掘龙决策",
+            resolved_primary_strategy(current, default="掘龙决策") or "掘龙决策",
         )
         strategy_execution_label = str(getattr(current, "strategy_execution_quality_label", "") or "").strip()
         strategy_execution_score = float(getattr(current, "strategy_execution_quality_score", 1.0) or 1.0)
@@ -194,7 +195,7 @@ def apply_recommend_workspace_patches(
         paper_state = getattr(self, "paper_trading_state", getattr(getattr(self, "state", None), "paper_trading_state", PaperTradingState()))
         experiment_bridge = paper_strategy_experiment_bridge_v45(
             paper_state,
-            getattr(current, "primary_strategy", "") or "掘龙决策",
+            resolved_primary_strategy(current, default="掘龙决策") or "掘龙决策",
         )
         strategy_execution_label = str(getattr(current, "strategy_execution_quality_label", "") or "").strip()
         strategy_execution_score = float(getattr(current, "strategy_execution_quality_score", 1.0) or 1.0)

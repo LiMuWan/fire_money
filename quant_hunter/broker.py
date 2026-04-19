@@ -16,6 +16,7 @@ from .decision import TradeDecision
 from .execution_quality import build_execution_quality_bucket, build_execution_quality_snapshot
 from .models import BrokerProfile, BrokerStatus, CashSnapshot, HoldingRecord, OrderIntent, ScanRow
 from .risk import DEFAULT_RISK_CONTROLS, normalize_risk_profile, resolve_risk_controls
+from .strategy_registry import resolved_primary_strategy
 from .theme import display_mainline_role
 
 _MIN_ORDER_RISK_REWARD_RATIO = DEFAULT_RISK_CONTROLS.plan_min_risk_reward_ratio
@@ -1046,7 +1047,7 @@ class EastmoneyBrokerAdapter:
                             item.get("planned_stop_price", ""),
                             item.get("planned_target_price", ""),
                             item.get("planned_risk_reward_ratio", ""),
-                            item.get("strategy_name", getattr(recommendation, "primary_strategy", "") if recommendation is not None else ""),
+                            item.get("strategy_name", resolved_primary_strategy(recommendation, default="") if recommendation is not None else ""),
                             item.get("opportunity_tier", getattr(recommendation, "opportunity_tier", "") if recommendation is not None else ""),
                             item.get("portfolio_fit_score", getattr(recommendation, "portfolio_fit_score", 0.0) if recommendation is not None else fit_row.get("fit_score", 0.0)),
                             item.get("diversification_score", getattr(recommendation, "diversification_score", 0.0) if recommendation is not None else fit_row.get("diversification_score", 0.0)),

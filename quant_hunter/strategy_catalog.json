@@ -1,0 +1,288 @@
+{
+  "strategies": [
+    {
+      "name": "龙头模型",
+      "score_field": "leader_model_score",
+      "description": "抓主线核心龙头与趋势延续",
+      "aliases": ["龙头主线"],
+      "formula_stage": "base",
+      "ui_metadata": {
+        "short_label": "龙头",
+        "scene_copy": "适合主线最强、龙头属性明确、趋势仍在延续的票。",
+        "product_positioning": "主线最强确认，适合做前排龙头识别和强者恒强。",
+        "capital_style": "主线进攻 / 趋势跟随",
+        "badge_palette": ["#5b1216", "#ff6a6f"],
+        "empty_hint": "等待龙头池生成后更新前排标的和位置判断。",
+        "default_risk_level": "中高风险",
+        "low_flag_risk_level": "中风险",
+        "position_hint": "先试仓确认，再沿主线延续分批加。",
+        "no_go": "主线掉队、位次后排、龙头属性不清时不做。",
+        "applicable_market": "适合主线最强仍在加速、龙头位次明确、板块仍有持续性的行情。",
+        "capacity_limit": "更适合核心仓位逐步放大，但前提是龙头和主线都没有掉队。",
+        "standard_action_buy_fallback": "先确认龙头位次和主线延续，再试仓。",
+        "standard_action_sell_fallback": "主线掉队或龙头失速时分批处理。",
+        "failure_sample": "最容易失败在主线切换后还把后排当龙头，或位次下降后仍试图硬抗。"
+      },
+      "formula_weights": {
+        "technical": 0.32,
+        "persistence": 0.22,
+        "leader": 0.26,
+        "position": 0.12,
+        "news": 0.08
+      },
+      "plan_defaults": {
+        "stop_pct": 0.05,
+        "target_pct": 0.08,
+        "budget_multiplier_strong": 1.0,
+        "budget_multiplier_normal": 1.0,
+        "budget_sentiment_threshold": 72.0
+      }
+    },
+    {
+      "name": "主力雷达",
+      "score_field": "main_force_score",
+      "description": "抓资金净流入和机构强承接",
+      "aliases": ["资金承接"],
+      "formula_stage": "base",
+      "ui_metadata": {
+        "short_label": "主力",
+        "scene_copy": "适合资金承接清晰、量价匹配、机构或主力动作明显的票。",
+        "product_positioning": "资金承接跟随，适合做主力痕迹和资金流确认。",
+        "capital_style": "资金跟随 / 中速切入",
+        "badge_palette": ["#0f3951", "#7ed7ff"],
+        "empty_hint": "等待资金画像生成后更新主力流入和承接质量。",
+        "default_risk_level": "中风险",
+        "low_flag_risk_level": "中风险",
+        "position_hint": "先小仓验证承接，放量确认后再加。",
+        "no_go": "资金承接转弱、放量滞涨、催化失真时不做。",
+        "applicable_market": "适合资金承接持续增强、量价匹配清晰、机构痕迹明显的行情。",
+        "capacity_limit": "更适合中等容量跟随，不适合在承接未确认前瞬间打满。",
+        "standard_action_buy_fallback": "先确认承接和量能，再做跟随。",
+        "standard_action_sell_fallback": "承接转弱或量价失配时及时收缩。",
+        "failure_sample": "最容易失败在资金假承接、放量滞涨、催化兑现后还继续追随。"
+      },
+      "formula_weights": {
+        "technical": 0.18,
+        "position": 0.18,
+        "persistence": 0.14,
+        "news": 0.20,
+        "leader": 0.12,
+        "main_force_bias": 1.0
+      },
+      "plan_defaults": {
+        "stop_pct": 0.05,
+        "target_pct": 0.08,
+        "budget_multiplier_strong": 1.0,
+        "budget_multiplier_normal": 1.0,
+        "budget_sentiment_threshold": 72.0
+      }
+    },
+    {
+      "name": "擒龙打板",
+      "score_field": "board_attack_score",
+      "description": "抓强势确认、回封确认和打板节奏",
+      "aliases": ["打板策略", "强势接力"],
+      "formula_stage": "base",
+      "ui_metadata": {
+        "short_label": "打板",
+        "scene_copy": "适合强势确认、回封确认、需要盯节奏和情绪的高弹性机会。",
+        "product_positioning": "高弹性打板，适合做强势确认后的进攻型博弈。",
+        "capital_style": "快进快出 / 高弹性博弈",
+        "badge_palette": ["#57430f", "#ffd75b"],
+        "empty_hint": "等待强势候选生成后更新打板窗口和回封观察。",
+        "default_risk_level": "高风险",
+        "low_flag_risk_level": "高风险",
+        "position_hint": "只做小样本试错，封板质量确认后再考虑加码。",
+        "no_go": "情绪退潮、炸板承接差、非主线硬板时不做。",
+        "applicable_market": "适合情绪回暖、回封质量高、前排封板溢价仍在的进攻型行情。",
+        "capacity_limit": "只适合小样本快节奏试错，不适合重仓持续摊大单票风险。",
+        "standard_action_buy_fallback": "先等强势确认和回封质量，再小仓试错。",
+        "standard_action_sell_fallback": "炸板或次日弱转强失败时快速处理。",
+        "failure_sample": "最容易失败在情绪退潮、炸板承接差、非主线硬板时继续进攻。"
+      },
+      "formula_weights": {
+        "technical": 0.27,
+        "persistence": 0.24,
+        "leader": 0.14,
+        "board_window": 0.15,
+        "news": 0.12,
+        "board_bias": 1.0
+      },
+      "plan_defaults": {
+        "stop_pct": 0.035,
+        "target_pct": 0.13,
+        "budget_multiplier_strong": 1.0,
+        "budget_multiplier_normal": 1.0,
+        "budget_sentiment_threshold": 72.0
+      }
+    },
+    {
+      "name": "价值低吸",
+      "score_field": "value_recovery_score",
+      "description": "抓分歧回踩、低位承接和修复",
+      "aliases": ["趋势低吸", "龙头低吸"],
+      "formula_stage": "base",
+      "ui_metadata": {
+        "short_label": "低吸",
+        "scene_copy": "适合回踩修复、低位承接、强调安全边际和修复预期的票。",
+        "product_positioning": "修复型低吸，适合做回踩承接和安全边际。",
+        "capital_style": "分批低吸 / 修复博弈",
+        "badge_palette": ["#204728", "#7ef5a2"],
+        "empty_hint": "等待回踩修复候选生成后更新低吸窗口。",
+        "default_risk_level": "中风险",
+        "low_flag_risk_level": "中低风险",
+        "position_hint": "优先分批吸，不要一次性打满。",
+        "no_go": "修复逻辑不成立、承接不足、跌破防守位时不做。",
+        "applicable_market": "适合主线分歧后的回踩修复、承接重新回流、追高性价比偏低的行情。",
+        "capacity_limit": "更适合中等容量分批布局，不适合在无承接时一次性打满。",
+        "standard_action_buy_fallback": "先等回踩企稳，再分批低吸。",
+        "standard_action_sell_fallback": "修复到计划目标位后分批兑现。",
+        "failure_sample": "最容易失败在修复预期落空、承接不足"
+      },
+      "formula_weights": {
+        "position": 0.34,
+        "technical": 0.20,
+        "persistence": 0.16,
+        "news": 0.12,
+        "value_window": 0.08,
+        "leader": 0.10,
+        "value_bias": 1.0
+      },
+      "plan_defaults": {
+        "stop_pct": 0.055,
+        "target_pct": 0.09,
+        "budget_multiplier_strong": 0.92,
+        "budget_multiplier_normal": 0.92,
+        "budget_sentiment_threshold": 72.0
+      }
+    },
+    {
+      "name": "尾盘买入法",
+      "score_field": "tail_buy_score",
+      "description": "抓尾盘回流确认、次日开盘兑现和短隔夜纪律",
+      "aliases": ["尾盘买入", "尾盘抢筹"],
+      "formula_stage": "base",
+      "ui_metadata": {
+        "short_label": "尾盘",
+        "scene_copy": "适合尾盘回流确认后隔夜，重点看 14:30 后承接和次日开盘兑现。",
+        "product_positioning": "尾盘隔夜，适合做尾盘回流后的短周期博弈。",
+        "capital_style": "尾盘试仓 / 隔夜兑现",
+        "badge_palette": ["#4b3418", "#ffcf82"],
+        "empty_hint": "等待尾盘回流候选生成后更新隔夜确认和次日开盘兑现节奏。",
+        "default_risk_level": "高风险",
+        "low_flag_risk_level": "高风险",
+        "position_hint": "只做尾盘试仓，隔夜后以兑现优先。",
+        "no_go": "14:30 前无回流、尾盘抢拉无承接、隔夜消息走弱时不做。",
+        "applicable_market": "适合尾盘回流确认、隔夜博弈仍有溢价、次日兑现窗口较明确的行情。",
+        "capacity_limit": "更适合小到中等容量尾盘试仓，不适合全天追高后被动隔夜。",
+        "standard_action_buy_fallback": "先看 14:30 后回流和承接，再尾盘试仓。",
+        "standard_action_sell_fallback": "次日冲高优先兑现，不恋战。",
+        "failure_sample": "最容易失败在尾盘抢拉无承接、隔夜消息走弱、次日竞价不及预期却没有先撤。"
+      },
+      "formula_weights": {
+        "technical": 0.18,
+        "position": 0.12,
+        "persistence": 0.16,
+        "news": 0.12,
+        "leader": 0.05,
+        "main_force": 0.14,
+        "board_attack": 0.05,
+        "one_day_hold": 0.18,
+        "tail_buy_window": 0.10,
+        "tail_buy_bias": 1.0
+      },
+      "plan_defaults": {
+        "stop_pct": 0.024,
+        "target_pct": 0.032,
+        "budget_multiplier_strong": 0.82,
+        "budget_multiplier_normal": 0.72,
+        "budget_sentiment_threshold": 72.0
+      }
+    },
+    {
+      "name": "一日持股法",
+      "score_field": "one_day_hold_score",
+      "description": "抓次日溢价、隔日兑现和短线节奏",
+      "aliases": ["一日持股", "隔日强势"],
+      "formula_stage": "base",
+      "ui_metadata": {
+        "short_label": "一日",
+        "scene_copy": "适合隔日博弈，重点看竞价转强、开盘承接和次日兑现。",
+        "product_positioning": "隔日节奏，适合做竞价转强到次日兑现。",
+        "capital_style": "隔日试错 / 次日兑现",
+        "badge_palette": ["#3b2f12", "#ffd27a"],
+        "empty_hint": "等待短线爆发候选生成后更新隔日博弈与兑现节奏。",
+        "default_risk_level": "高风险",
+        "low_flag_risk_level": "高风险",
+        "position_hint": "先轻仓博弈，次日不及预期就快速退出。",
+        "no_go": "竞价不转强、开盘承接弱、次日兑现逻辑缺失时不做。",
+        "applicable_market": "适合隔日强弱切换快、竞价与开盘承接决定盈亏的短节奏行情。",
+        "capacity_limit": "更适合轻仓滚动试错，不适合在次日兑现逻辑不清时大仓位隔夜。",
+        "standard_action_buy_fallback": "先看竞价转强和开盘承接，再做隔日试错。",
+        "standard_action_sell_fallback": "次日不及预期就快速退出。",
+        "failure_sample": "最容易失败在竞价不转强、开盘承接弱、次日兑现失败却没有及时认错。"
+      },
+      "formula_weights": {
+        "technical": 0.22,
+        "position": 0.18,
+        "persistence": 0.14,
+        "news": 0.16,
+        "leader": 0.08,
+        "board_attack": 0.12,
+        "main_force": 0.08,
+        "next_day_window": 0.10,
+        "one_day_bias": 1.0
+      },
+      "plan_defaults": {
+        "stop_pct": 0.028,
+        "target_pct": 0.055,
+        "budget_multiplier_strong": 0.96,
+        "budget_multiplier_normal": 0.86,
+        "budget_sentiment_threshold": 72.0
+      }
+    },
+    {
+      "name": "掘龙决策",
+      "score_field": "dragon_decision_score",
+      "description": "汇总前五大战法，给最终动作",
+      "aliases": ["综合决策", "掘龙"],
+      "formula_stage": "aggregate",
+      "ui_metadata": {
+        "short_label": "决策",
+        "scene_copy": "适合把主线、资金、位置和节奏综合起来做最终动作判断。",
+        "product_positioning": "综合决策，适合做主线、位置、资金与节奏的总判断。",
+        "capital_style": "均衡配置 / 最终决策",
+        "badge_palette": ["#4b235f", "#db9bff"],
+        "empty_hint": "等待综合评分生成后更新最终执行候选。",
+        "default_risk_level": "中风险",
+        "low_flag_risk_level": "中风险",
+        "position_hint": "先按综合结论试仓，确认后再进入交易计划。",
+        "no_go": "主线不清、信号冲突、价位没有形成时不做。",
+        "applicable_market": "适合主线、资金、位置与节奏需要统一判断的综合型行情。",
+        "capacity_limit": "容量跟随总分与执行闸门动态调整，不适合脱离主线单独重仓。",
+        "standard_action_buy_fallback": "先按综合结论试仓。",
+        "standard_action_sell_fallback": "失去优势后按计划退出。",
+        "failure_sample": "最容易失败在主线、位置和资金信号互相冲突时仍强行下结论。"
+      },
+      "formula_weights": {
+        "leader_model": 0.22,
+        "main_force": 0.16,
+        "board_attack": 0.14,
+        "value_recovery": 0.15,
+        "tail_buy": 0.08,
+        "one_day_hold": 0.09,
+        "technical": 0.07,
+        "position": 0.04,
+        "persistence": 0.03,
+        "news": 0.02
+      },
+      "plan_defaults": {
+        "stop_pct": 0.05,
+        "target_pct": 0.08,
+        "budget_multiplier_strong": 1.0,
+        "budget_multiplier_normal": 1.0,
+        "budget_sentiment_threshold": 72.0
+      }
+    }
+  ]
+}

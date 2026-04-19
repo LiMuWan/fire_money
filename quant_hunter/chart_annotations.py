@@ -26,6 +26,7 @@ class StrategyTradeMarker:
     tone: str = "neutral"
     pnl_pct: float | None = None
     exit_reason: str = ""
+    entry_date: str = ""
 
 
 def _normalize_price(value: float | None) -> float | None:
@@ -150,6 +151,29 @@ def build_trade_marker_chart_label(marker: StrategyTradeMarker) -> str:
     return f"{reason_text} {marker.pnl_pct:+.1%}"
 
 
+def build_trade_marker_label_tone(marker: StrategyTradeMarker) -> str:
+    if marker.kind != "exit":
+        return str(marker.tone or "neutral")
+    pnl_pct = float(marker.pnl_pct or 0.0)
+    if marker.tone == "profit":
+        if pnl_pct >= 0.12:
+            return "profit_strong"
+        if pnl_pct >= 0.04:
+            return "profit"
+        return "profit_soft"
+    if marker.tone == "risk":
+        if pnl_pct <= -0.08:
+            return "risk_hard"
+        if pnl_pct <= -0.03:
+            return "risk"
+        return "risk_soft"
+    if pnl_pct >= 0.02:
+        return "neutral_up"
+    if pnl_pct <= -0.02:
+        return "neutral_down"
+    return "neutral"
+
+
 def build_trade_markers(trades: list[Trade] | None = None) -> list[StrategyTradeMarker]:
     markers: list[StrategyTradeMarker] = []
     for trade in list(trades or []):
@@ -175,6 +199,7 @@ def build_trade_markers(trades: list[Trade] | None = None) -> list[StrategyTrade
                     tone="buy",
                     pnl_pct=None,
                     exit_reason="",
+                    entry_date=entry_date,
                 )
             )
 
@@ -189,6 +214,7 @@ def build_trade_markers(trades: list[Trade] | None = None) -> list[StrategyTrade
                     tone=classify_trade_exit_reason(exit_reason),
                     pnl_pct=pnl_pct,
                     exit_reason=exit_reason,
+                    entry_date=entry_date,
                 )
             )
     return markers

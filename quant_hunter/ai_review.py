@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from .models import DailyAnalysis, NewsCatalyst, PriceBar, RecommendationRow, ScanRow, StockProfile
+from .strategy_registry import resolved_primary_strategy
 
 DEFAULT_AI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_AI_MODEL = "gpt-5.4"
@@ -322,7 +323,7 @@ def build_recommendation_review_prompt(
         "",
         "[当前标的]",
         f"股票：{row.stock_name} ({row.stock_id} / {row.symbol})",
-        f"动作：{row.action} | 机会分层：{row.opportunity_tier or '待观察'} | 主策略：{row.primary_strategy or '掘龙决策'}",
+        f"动作：{row.action} | 机会分层：{row.opportunity_tier or '待观察'} | 主策略：{resolved_primary_strategy(row, default='掘龙决策') or '掘龙决策'}",
         f"主线：{row.mainline_tag or row.theme_name or '待确认'} | 主线角色：{row.mainline_role or '待确认'} | 风险灯：{row.mainline_risk_flag or '待评估'}",
         (
             f"评分：总分 {float(row.total_score or 0.0):.1f} | 技术 {float(row.technical_score or 0.0):.1f} | "

@@ -2,6 +2,8 @@
 
 from datetime import date, datetime, time as datetime_time
 
+from quant_hunter.strategy_registry import get_strategy_registry, strategy_score
+
 
 def _workspace_hero_tone(eyebrow: str, title: str) -> str:
     combined = f"{eyebrow} {title}"
@@ -644,7 +646,7 @@ def recommendation_focus_lines(row) -> list[str]:
 def trade_decision_focus_lines(decision, recommendation=None) -> list[str]:
     if decision is None:
         return ["当前没有交易计划。"]
-    strategy_name = str(getattr(recommendation, "primary_strategy", "") or "")
+    strategy_name = _canonical_strategy_name(str(getattr(recommendation, "primary_strategy", "") or ""))
     lines = [
         f"机会分层：{getattr(decision, 'opportunity_tier', '') or getattr(recommendation, 'opportunity_tier', '') or '待确认'}",
         f"计划买点 {float(getattr(decision, 'planned_entry', 0.0) or 0.0):.2f} | 止损 {float(getattr(decision, 'planned_stop', 0.0) or 0.0):.2f} | 目标 {float(getattr(decision, 'planned_target', 0.0) or 0.0):.2f}",
@@ -661,7 +663,7 @@ def trade_decision_focus_lines(decision, recommendation=None) -> list[str]:
 
 
 def trade_plan_execution_hint(decision, recommendation=None) -> str:
-    strategy_name = str(getattr(recommendation, "primary_strategy", "") or "")
+    strategy_name = _canonical_strategy_name(str(getattr(recommendation, "primary_strategy", "") or ""))
     action = str(getattr(decision, "action", "") or "").upper()
     next_focus = str(getattr(decision, "next_focus", "") or getattr(recommendation, "next_focus", "") or "").strip()
     if strategy_name == "尾盘买入法":
@@ -681,15 +683,20 @@ def trade_plan_execution_hint(decision, recommendation=None) -> str:
     return "优先处理风险，再看是否需要调仓。"
 
 
+def _canonical_strategy_name(value: str) -> str:
+    raw = str(value or "").strip()
+    return get_strategy_registry().canonical_strategy_name(raw) or raw
+
+
+def _strategy_score_value(recommendation, strategy_name: str) -> float:
+    return float(strategy_score(recommendation, strategy_name, 0.0) or 0.0)
+
+
 def one_day_hold_grade(recommendation) -> str:
-    strategy_name = str(getattr(recommendation, "primary_strategy", "") or "")
+    strategy_name = _canonical_strategy_name(str(getattr(recommendation, "primary_strategy", "") or ""))
     if strategy_name not in {"一日持股法", "尾盘买入法"}:
         return ""
-    score = float(
-        getattr(recommendation, "tail_buy_score", 0.0) or 0.0
-        if strategy_name == "尾盘买入法"
-        else getattr(recommendation, "one_day_hold_score", 0.0) or 0.0
-    )
+    score = _strategy_score_value(recommendation, strategy_name)
     readiness = float(getattr(recommendation, "execution_readiness", 0.0) or 0.0)
     risk_flag = str(getattr(recommendation, "mainline_risk_flag", "") or "")
     if score >= 86.0 and readiness >= 78.0 and risk_flag != "高":
@@ -700,14 +707,10 @@ def one_day_hold_grade(recommendation) -> str:
 
 
 def one_day_hold_tripwire_metrics(recommendation) -> list[tuple[str, float, str]]:
-    strategy_name = str(getattr(recommendation, "primary_strategy", "") or "")
+    strategy_name = _canonical_strategy_name(str(getattr(recommendation, "primary_strategy", "") or ""))
     if strategy_name not in {"一日持股法", "尾盘买入法"}:
         return []
-    score = float(
-        getattr(recommendation, "tail_buy_score", 0.0) or 0.0
-        if strategy_name == "尾盘买入法"
-        else getattr(recommendation, "one_day_hold_score", 0.0) or 0.0
-    )
+    score = _strategy_score_value(recommendation, strategy_name)
     readiness = float(getattr(recommendation, "execution_readiness", 0.0) or 0.0)
     window_score = float(getattr(recommendation, "mainline_window_score", 0.0) or 0.0)
     continuation = float(getattr(recommendation, "mainline_continuation_score", 0.0) or window_score or 0.0)
@@ -739,10 +742,10 @@ def one_day_hold_tripwire_metrics(recommendation) -> list[tuple[str, float, str]
 
 
 def tail_buy_execution_checklist(recommendation) -> list[str]:
-    strategy_name = str(getattr(recommendation, "primary_strategy", "") or "")
+    strategy_name = _canonical_strategy_name(str(getattr(recommendation, "primary_strategy", "") or ""))
     if strategy_name != "尾盘买入法":
         return []
-    score = float(getattr(recommendation, "tail_buy_score", 0.0) or 0.0)
+    score = _strategy_score_value(recommendation, strategy_name)
     readiness = float(getattr(recommendation, "execution_readiness", 0.0) or 0.0)
     window_score = float(getattr(recommendation, "mainline_window_score", 0.0) or 0.0)
     risk_flag = str(getattr(recommendation, "mainline_risk_flag", "") or "")
@@ -760,7 +763,7 @@ def tail_buy_execution_checklist(recommendation) -> list[str]:
 
 
 def tail_buy_runtime_status(recommendation, current_dt: datetime | None = None) -> tuple[str, str]:
-    strategy_name = str(getattr(recommendation, "primary_strategy", "") or "")
+    strategy_name = _canonical_strategy_name(str(getattr(recommendation, "primary_strategy", "") or ""))
     if strategy_name != "尾盘买入法":
         return "", ""
 
@@ -791,7 +794,7 @@ def tail_buy_runtime_status(recommendation, current_dt: datetime | None = None) 
 
 
 def tail_buy_runtime_panel_lines(recommendation, current_dt: datetime | None = None) -> list[str]:
-    strategy_name = str(getattr(recommendation, "primary_strategy", "") or "")
+    strategy_name = _canonical_strategy_name(str(getattr(recommendation, "primary_strategy", "") or ""))
     if strategy_name != "尾盘买入法":
         return []
 
@@ -820,7 +823,7 @@ def tail_buy_runtime_panel_lines(recommendation, current_dt: datetime | None = N
 
 
 def position_advice_check_item(advice, recommendation=None) -> str:
-    strategy_name = str(getattr(recommendation, "primary_strategy", "") or "")
+    strategy_name = _canonical_strategy_name(str(getattr(recommendation, "primary_strategy", "") or ""))
     action = str(getattr(advice, "action", "") or "").upper()
     if strategy_name == "尾盘买入法":
         if action == "SELL":
@@ -848,7 +851,7 @@ def position_advice_check_item(advice, recommendation=None) -> str:
 
 
 def one_day_hold_phase_labels(decision_or_advice=None, recommendation=None) -> list[str]:
-    strategy_name = str(getattr(recommendation, "primary_strategy", "") or "")
+    strategy_name = _canonical_strategy_name(str(getattr(recommendation, "primary_strategy", "") or ""))
     if strategy_name not in {"一日持股法", "尾盘买入法"}:
         return []
     action = str(getattr(decision_or_advice, "action", "") or "").upper()

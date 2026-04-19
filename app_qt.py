@@ -2,6 +2,7 @@
 
 import csv
 import html
+import json
 import sys
 import time as time_module
 from dataclasses import asdict, replace
@@ -9,8 +10,8 @@ from datetime import datetime, time
 from pathlib import Path
 from types import SimpleNamespace
 
-from PySide6.QtCore import QDateTime, QModelIndex, QObject, QPointF, QRunnable, Qt, QThreadPool, QTimer, QUrl, Signal, QMargins, QEvent
-from PySide6.QtGui import QCloseEvent, QColor, QDesktopServices, QFont, QFontDatabase, QLinearGradient, QMouseEvent, QPainter, QPainterPath, QPalette, QPen, QPixmap, QTextOption, QWheelEvent
+from PySide6.QtCore import QDateTime, QEasingCurve, QModelIndex, QObject, QPointF, QPropertyAnimation, QRunnable, Qt, QThreadPool, QTimer, QUrl, Signal, QMargins, QEvent
+from PySide6.QtGui import QCloseEvent, QColor, QCursor, QDesktopServices, QFont, QFontDatabase, QLinearGradient, QMouseEvent, QPainter, QPainterPath, QPalette, QPen, QPixmap, QTextOption, QWheelEvent
 from PySide6.QtCharts import (
     QBarCategoryAxis,
     QBarSeries,
@@ -33,6 +34,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
+    QGraphicsOpacityEffect,
     QGraphicsDropShadowEffect,
     QGraphicsLineItem,
     QGraphicsSimpleTextItem,
@@ -40,6 +42,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QInputDialog,
     QLineEdit,
     QListWidget,
     QMainWindow,
@@ -62,7 +65,12 @@ from PySide6.QtWidgets import (
 )
 
 from quant_hunter.backtest import Backtester, format_result
-from quant_hunter.chart_annotations import build_strategy_plan_levels, build_trade_marker_chart_label, build_trade_markers
+from quant_hunter.chart_annotations import (
+    build_strategy_plan_levels,
+    build_trade_marker_chart_label,
+    build_trade_marker_label_tone,
+    build_trade_markers,
+)
 from quant_hunter.ai_review import (
     AIReviewConfig,
     AIReviewResult,
@@ -106,6 +114,7 @@ from quant_hunter.models import (
     ScanRow,
     StockProfile,
     SymbolBacktestSummary,
+    Trade,
 )
 from quant_hunter.market_feed import CacheOnlyMarketFeed, LocalMarketCache, MarketScreenResult, RemoteMarketScreener
 from quant_hunter.message_center import (
@@ -160,8 +169,29 @@ from quant_hunter.reports import (
     export_strategy_history_report,
     export_workspace_report,
 )
+import quant_hunter.ui_config as ui_config_module
+import quant_hunter.ui_refresh as ui_refresh_module
 from quant_hunter.scanner import UniverseScanner
 from quant_hunter.strategy_history import StrategyHistoryReplayParams, StrategyHistoryReplayer
+from quant_hunter.strategy_registry import (
+    build_strategy_template_payload,
+    delete_strategy_from_catalog,
+    get_strategy_filter_labels,
+    get_strategy_registry,
+    get_strategy_score_fields,
+    get_strategy_workbench_specs,
+    import_strategy_payloads,
+    load_strategy_catalog_payload,
+    normalize_strategy_definition_payload,
+    reload_strategy_registry,
+    replace_strategy_in_catalog,
+    resolved_primary_strategy,
+    strategy_catalog_path,
+    strategy_formula_example_weights,
+    strategy_formula_reference_text,
+    strategy_score,
+    validate_strategy_definition_payload,
+)
 from quant_hunter.storage import AppState, load_app_state, save_app_state
 from quant_hunter.strategy import AntiHarvestStrategy, StrategyParams
 from quant_hunter.theme import summarize_themes
@@ -242,7 +272,7 @@ from quant_hunter.ui_refresh import (
     refresh_strategy_path_panel,
     render_leaderboard_cards,
 )
-from quant_hunter.ui_status import submission_colors as shared_submission_colors, submission_risk_badge_palette_v2, submission_table_snapshot_v2
+from quant_hunter.ui_status import strategy_badge_palette as shared_strategy_badge_palette, strategy_empty_hint, submission_colors as shared_submission_colors, submission_risk_badge_palette_v2, submission_table_snapshot_v2
 from quant_hunter.workspace_builders import (
     build_auth_workspace,
     build_board_workspace,
@@ -302,6 +332,7 @@ TERMINAL_THEME_OPTIONS = [
 ]
 
 DEFAULT_TERMINAL_THEME = "dark"
+_APP_STRATEGY_REGISTRY = get_strategy_registry()
 TERMINAL_THEME_ALIASES = {
     "light": "light",
     "ming": "light",
@@ -321,6 +352,15 @@ TERMINAL_THEME_ALIASES = {
     "流金": "gold",
     "ember": "gold",
 }
+
+
+def _recommendation_strategy_name(recommendation, default: str = "掘龙决策") -> str:
+    return resolved_primary_strategy(recommendation, default=default) or default
+
+
+def _recommendation_decision_score(recommendation, default: float = 0.0) -> float:
+    fallback = float(getattr(recommendation, "total_score", default) or default) if recommendation is not None else default
+    return float(strategy_score(recommendation, "掘龙决策", fallback) or fallback)
 
 
 def _normalize_terminal_theme_key(theme_key: str) -> str:
@@ -586,6 +626,9 @@ def _overview_priority_tab_attrs_v60() -> tuple[str, ...]:
 
 class MarketChartView(QChartView):
     hoverKeyChanged = Signal(str)
+    hoverTextChanged = Signal(str)
+    staticAnnotationActivated = Signal(object)
+    contextMenuRequested = Signal(object)
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -604,14 +647,56 @@ class MarketChartView(QChartView):
         self._crosshair_label.setBrush(QColor("#eff6ff"))
         self._crosshair_label.setZValue(51)
         self._crosshair_label.hide()
+        self._hover_summary_frame = QFrame(self.viewport())
+        self._hover_summary_frame.setObjectName("marketChartHoverCard")
+        self._hover_summary_frame.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._hover_summary_frame.setStyleSheet(
+            """
+            QFrame#marketChartHoverCard {
+                background: rgba(10, 16, 24, 0.90);
+                border: 1px solid rgba(126, 215, 255, 0.26);
+                border-radius: 14px;
+            }
+            QLabel#marketChartHoverCardTitle {
+                color: #eff6ff;
+                font-weight: 700;
+                font-size: 13px;
+            }
+            QLabel#marketChartHoverCardBody {
+                color: #b8c7d9;
+                font-size: 12px;
+            }
+            QLabel#marketChartHoverCardFooter {
+                color: #7ed7ff;
+                font-size: 11px;
+            }
+            """
+        )
+        hover_layout = QVBoxLayout(self._hover_summary_frame)
+        hover_layout.setContentsMargins(12, 10, 12, 10)
+        hover_layout.setSpacing(4)
+        self._hover_summary_title = QLabel("图表焦点")
+        self._hover_summary_title.setObjectName("marketChartHoverCardTitle")
+        self._hover_summary_title.setWordWrap(True)
+        self._hover_summary_body = QLabel("移动鼠标到 K 线或副图，可固定查看当前时点信息。")
+        self._hover_summary_body.setObjectName("marketChartHoverCardBody")
+        self._hover_summary_body.setWordWrap(True)
+        self._hover_summary_footer = QLabel("滚轮缩放，双击复位")
+        self._hover_summary_footer.setObjectName("marketChartHoverCardFooter")
+        self._hover_summary_footer.setWordWrap(True)
+        hover_layout.addWidget(self._hover_summary_title)
+        hover_layout.addWidget(self._hover_summary_body)
+        hover_layout.addWidget(self._hover_summary_footer)
+        self._hover_summary_frame.hide()
         self._current_hover_key = ""
         self.setMouseTracking(True)
-        self.setRubberBand(QChartView.NoRubberBand)
+        self.setRubberBand(QChartView.RectangleRubberBand)
 
     def setChart(self, chart: QChart) -> None:
         self._clear_static_annotations()
         super().setChart(chart)
         self._ensure_crosshair_items()
+        self._reset_hover_summary_card()
         QTimer.singleShot(0, self._layout_static_annotations)
 
     def set_chart_context(self, **context: object) -> None:
@@ -621,9 +706,11 @@ class MarketChartView(QChartView):
         ]
         self._current_hover_key = ""
         self._refresh_static_annotations()
+        self._reset_hover_summary_card()
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
+        QTimer.singleShot(0, self._layout_hover_summary_card)
         QTimer.singleShot(0, self._layout_static_annotations)
 
     def leaveEvent(self, event) -> None:
@@ -632,20 +719,58 @@ class MarketChartView(QChartView):
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
         self._hide_crosshair(notify=False)
+        if self.chart() is not None and self._plot_contains(event.position()):
+            try:
+                self.chart().zoomReset()
+            except Exception:
+                pass
+            QTimer.singleShot(0, self._layout_static_annotations)
+            event.accept()
+            return
         super().mouseDoubleClickEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
+        if hasattr(event, "button") and event.button() == Qt.LeftButton:
+            payload = self._static_annotation_payload_at_position(event.position())
+            if isinstance(payload, dict) and payload.get("clickable"):
+                self.staticAnnotationActivated.emit(dict(payload))
+                event.accept()
+                return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         super().mouseMoveEvent(event)
+        payload = self._static_annotation_payload_at_position(event.position())
+        clickable = isinstance(payload, dict) and payload.get("clickable")
+        self.viewport().setCursor(Qt.PointingHandCursor if clickable else Qt.ArrowCursor)
         self._update_crosshair(event.position())
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         super().mouseReleaseEvent(event)
 
+    def contextMenuEvent(self, event) -> None:  # type: ignore[override]
+        position = QPointF(event.pos()) if hasattr(event, "pos") else QPointF()
+        if self.chart() is not None and self._plot_contains(position):
+            self.contextMenuRequested.emit(
+                {
+                    "global_pos": self.mapToGlobal(event.pos()) if hasattr(event, "pos") else None,
+                    "local_pos": position,
+                }
+            )
+            event.accept()
+            return
+        super().contextMenuEvent(event)
+
     def wheelEvent(self, event: QWheelEvent) -> None:
         if self.chart() is not None and self._plot_contains(event.position()):
+            try:
+                if event.angleDelta().y() > 0:
+                    self.chart().zoomIn()
+                elif event.angleDelta().y() < 0:
+                    self.chart().zoomOut()
+            except Exception:
+                pass
+            QTimer.singleShot(0, self._layout_static_annotations)
             event.accept()
             return
         super().wheelEvent(event)
@@ -676,9 +801,16 @@ class MarketChartView(QChartView):
         label_font.setPointSize(9)
         label_font.setBold(True)
         color_map = {
+            "badge": QColor("#d9e8ff"),
+            "profit_soft": QColor("#bff3cf"),
             "profit": QColor("#7fffb1"),
+            "profit_strong": QColor("#37f59a"),
+            "risk_soft": QColor("#ffbf96"),
             "risk": QColor("#ff8b8b"),
+            "risk_hard": QColor("#ff5d5d"),
+            "neutral_up": QColor("#b9f0ee"),
             "neutral": QColor("#ffd166"),
+            "neutral_down": QColor("#f3d2a0"),
             "plan_entry": QColor("#4cf2a8"),
             "plan_stop": QColor("#ff7a7a"),
             "plan_target": QColor("#7ed7ff"),
@@ -698,6 +830,21 @@ class MarketChartView(QChartView):
             self._static_annotation_items.append(item)
         QTimer.singleShot(0, self._layout_static_annotations)
 
+    def _static_annotation_payload_at_position(self, position: QPointF) -> dict[str, object] | None:
+        if not self._static_annotation_items:
+            return None
+        scene_point = self.mapToScene(position.toPoint())
+        for item, payload in reversed(list(zip(self._static_annotation_items, self._static_annotation_payloads))):
+            if not isinstance(payload, dict):
+                continue
+            try:
+                bounds = item.sceneBoundingRect()
+            except Exception:
+                continue
+            if bounds.contains(scene_point):
+                return payload
+        return None
+
     def _layout_static_annotations(self) -> None:
         chart = self.chart()
         if chart is None or not self._static_annotation_items:
@@ -705,6 +852,28 @@ class MarketChartView(QChartView):
         plot_area = chart.plotArea()
         if plot_area.width() <= 0 or plot_area.height() <= 0:
             return
+        plot_left = plot_area.left() + 4.0
+        plot_top = plot_area.top() + 4.0
+        plot_right = plot_area.right() - 4.0
+        plot_bottom = plot_area.bottom() - 4.0
+
+        def _clamp_rect(x_pos: float, y_pos: float, width: float, height: float) -> tuple[float, float]:
+            clamped_x = max(plot_left, min(x_pos, plot_right - width))
+            clamped_y = max(plot_top, min(y_pos, plot_bottom - height))
+            return clamped_x, clamped_y
+
+        def _intersects(rect: tuple[float, float, float, float], others: list[tuple[float, float, float, float]], gap: float = 4.0) -> bool:
+            x_pos, y_pos, width, height = rect
+            for other_x, other_y, other_width, other_height in others:
+                if (
+                    x_pos < other_x + other_width + gap
+                    and x_pos + width + gap > other_x
+                    and y_pos < other_y + other_height + gap
+                    and y_pos + height + gap > other_y
+                ):
+                    return True
+            return False
+
         positioned: list[tuple[QGraphicsSimpleTextItem, dict[str, object], float, float, float, float]] = []
         for item, payload in zip(self._static_annotation_items, self._static_annotation_payloads):
             try:
@@ -732,12 +901,19 @@ class MarketChartView(QChartView):
             elif anchor == "center":
                 offset_x = -(rect.width() / 2.0)
                 offset_y = -(rect.height() / 2.0) - 6.0
-            x_pos = point.x() + offset_x + extra_dx
-            y_pos = point.y() + offset_y + extra_dy
-            x_pos = max(plot_area.left() + 4.0, min(x_pos, plot_area.right() - rect.width() - 4.0))
-            y_pos = max(plot_area.top() + 4.0, min(y_pos, plot_area.bottom() - rect.height() - 4.0))
+            elif anchor == "top_right":
+                x_pos, y_pos = _clamp_rect(plot_right - rect.width(), plot_top, rect.width(), rect.height())
+                positioned.append((item, payload, x_pos, y_pos, rect.width(), rect.height()))
+                continue
+            x_pos, y_pos = _clamp_rect(point.x() + offset_x + extra_dx, point.y() + offset_y + extra_dy, rect.width(), rect.height())
             positioned.append((item, payload, x_pos, y_pos, rect.width(), rect.height()))
 
+        placed_rects: list[tuple[float, float, float, float]] = []
+        badge_labels = [row for row in positioned if str(row[1].get("anchor", "") or "") == "top_right"]
+        for item, _payload, x_pos, y_pos, width, height in badge_labels:
+            item.setPos(x_pos, y_pos)
+            item.show()
+            placed_rects.append((x_pos, y_pos, width, height))
         right_labels = sorted(
             [row for row in positioned if str(row[1].get("anchor", "") or "") == "right"],
             key=lambda row: row[3],
@@ -745,17 +921,36 @@ class MarketChartView(QChartView):
         last_bottom = plot_area.top() + 4.0
         for item, _payload, x_pos, y_pos, _width, height in right_labels:
             if y_pos < last_bottom:
-                y_pos = min(last_bottom + 2.0, plot_area.bottom() - height - 4.0)
+                y_pos = min(last_bottom + 2.0, plot_bottom - height)
             item.setPos(x_pos, y_pos)
             item.show()
             last_bottom = y_pos + height
+            placed_rects.append((x_pos, y_pos, _width, height))
 
-        for item, payload, x_pos, y_pos, _width, _height in positioned:
+        floating_labels = sorted(
+            [row for row in positioned if str(row[1].get("anchor", "") or "") not in {"right", "top_right"}],
+            key=lambda row: (row[2], row[3]),
+        )
+        for item, payload, x_pos, y_pos, width, height in floating_labels:
             anchor = str(payload.get("anchor", "") or "")
-            if anchor == "right":
-                continue
-            item.setPos(x_pos, y_pos)
+            direction = 1.0 if anchor == "below" else -1.0
+            step = max(height + 4.0, 14.0)
+            candidate_x, candidate_y = x_pos, y_pos
+            attempts = 0
+            horizontal_toggle = 1.0
+            while _intersects((candidate_x, candidate_y, width, height), placed_rects) and attempts < 18:
+                attempts += 1
+                candidate_y += direction * step
+                if candidate_y < plot_top or candidate_y > plot_bottom - height:
+                    direction *= -1.0
+                    candidate_y = y_pos + direction * step * attempts
+                if attempts in {6, 12}:
+                    candidate_x += horizontal_toggle * min(18.0, width * 0.35)
+                    horizontal_toggle *= -1.0
+                candidate_x, candidate_y = _clamp_rect(candidate_x, candidate_y, width, height)
+            item.setPos(candidate_x, candidate_y)
             item.show()
+            placed_rects.append((candidate_x, candidate_y, width, height))
 
     def _plot_contains(self, position: QPointF) -> bool:
         chart = self.chart()
@@ -767,6 +962,9 @@ class MarketChartView(QChartView):
         for item in (self._crosshair_v, self._crosshair_h, self._crosshair_label):
             item.hide()
         QToolTip.hideText()
+        self._reset_hover_summary_card()
+        if notify:
+            self.hoverTextChanged.emit("")
         if notify and self._current_hover_key:
             self._current_hover_key = ""
             self.hoverKeyChanged.emit("")
@@ -818,7 +1016,8 @@ class MarketChartView(QChartView):
 
         tooltip = self._build_tooltip_text_for_index(index)
         if tooltip:
-            self._crosshair_label.setText(tooltip.replace("\n", " | "))
+            inline_text = " | ".join(line.strip() for line in tooltip.splitlines()[:3] if line.strip())
+            self._crosshair_label.setText(inline_text)
             label_pos = QPointF(min(x + 12, plot_area.right() - 280), max(plot_area.top() + 6, y - 22))
             self._crosshair_label.setPos(label_pos)
             self._crosshair_label.show()
@@ -826,9 +1025,12 @@ class MarketChartView(QChartView):
                 QToolTip.showText(self.mapToGlobal(global_pos), tooltip, self)
         else:
             self._crosshair_label.hide()
+        self._set_hover_summary_card_for_index(index)
 
         hover_key = self._hover_key_for_index(index)
         self._current_hover_key = hover_key
+        if notify:
+            self.hoverTextChanged.emit(tooltip)
         if notify and hover_key:
             self.hoverKeyChanged.emit(hover_key)
 
@@ -935,6 +1137,57 @@ class MarketChartView(QChartView):
                 return str(labels[index])
         return f"{x_value:.2f}"
 
+    def _hover_summary_lines_for_index(self, index: int) -> list[str]:
+        tooltip = self._build_tooltip_text_for_index(index)
+        return [line.strip() for line in tooltip.splitlines() if line.strip()]
+
+    def _layout_hover_summary_card(self) -> None:
+        frame = getattr(self, "_hover_summary_frame", None)
+        if not isinstance(frame, QFrame):
+            return
+        width = max(220, min(330, self.viewport().width() // 3))
+        height = max(112, min(188, self.viewport().height() - 32))
+        x_pos = max(8, self.viewport().width() - width - 12)
+        y_pos = 12
+        frame.setGeometry(x_pos, y_pos, width, height)
+        frame.raise_()
+
+    def _set_hover_summary_card_content(self, lines: list[str]) -> None:
+        frame = getattr(self, "_hover_summary_frame", None)
+        title_label = getattr(self, "_hover_summary_title", None)
+        body_label = getattr(self, "_hover_summary_body", None)
+        footer_label = getattr(self, "_hover_summary_footer", None)
+        if not isinstance(frame, QFrame) or not isinstance(title_label, QLabel) or not isinstance(body_label, QLabel) or not isinstance(footer_label, QLabel):
+            return
+        cleaned = [line for line in lines if str(line).strip()]
+        if not cleaned:
+            title_label.setText("图表焦点")
+            body_label.setText("移动鼠标到 K 线或副图，可固定查看当前时点信息。")
+            footer_label.setText("滚轮缩放，双击复位")
+        else:
+            title_label.setText(cleaned[0])
+            middle_lines = cleaned[1:5]
+            footer_lines = cleaned[5:7]
+            body_label.setText("\n".join(middle_lines) if middle_lines else "当前时点暂无更多明细。")
+            footer_label.setText(" | ".join(footer_lines) if footer_lines else "滚轮缩放，双击复位")
+        self._layout_hover_summary_card()
+        frame.show()
+
+    def _set_hover_summary_card_for_index(self, index: int) -> None:
+        lines = self._hover_summary_lines_for_index(index)
+        self._set_hover_summary_card_content(lines)
+
+    def _reset_hover_summary_card(self) -> None:
+        hover_keys = list(self._context.get("hover_keys", []) or [])
+        if hover_keys:
+            self._set_hover_summary_card_for_index(len(hover_keys) - 1)
+            return
+        payloads = list(self._context.get("hover_payloads", []) or [])
+        if payloads:
+            self._set_hover_summary_card_for_index(len(payloads) - 1)
+            return
+        self._set_hover_summary_card_content([])
+
 
 class _FocusBannerClickFilter(QObject):
     def __init__(self, owner) -> None:
@@ -1001,6 +1254,28 @@ class _MessageCenterMetricCardClickFilter(QObject):
             if role and hasattr(self._owner, "_on_recommend_message_center_metric_card_clicked"):
                 self._owner._on_recommend_message_center_metric_card_clicked(str(role))
                 return True
+        return super().eventFilter(watched, event)
+
+
+class _ChartActionNoteCardHoverFilter(QObject):
+    def __init__(self, owner, frame) -> None:
+        super().__init__(owner if isinstance(owner, QObject) else None)
+        self._owner = owner
+        self._frame = frame
+
+    def eventFilter(self, watched, event) -> bool:
+        if (
+            event.type() == QEvent.MouseButtonRelease
+            and isinstance(watched, QLabel)
+            and bool(watched.property("chartActionSourceBadge"))
+            and hasattr(self._owner, "_toggle_chart_action_note_source_filter_v1")
+        ):
+            self._owner._toggle_chart_action_note_source_filter_v1()
+            return True
+        if event.type() == QEvent.Enter and hasattr(self._owner, "_pause_chart_action_note_cards_v1"):
+            self._owner._pause_chart_action_note_cards_v1()
+        elif event.type() == QEvent.Leave and hasattr(self._owner, "_resume_chart_action_note_cards_v1"):
+            QTimer.singleShot(0, self._owner._resume_chart_action_note_cards_v1)
         return super().eventFilter(watched, event)
 
     def _ensure_crosshair_items(self) -> None:
@@ -3937,12 +4212,37 @@ class QuantHunterWindow(QMainWindow):
         self.last_runtime_export_path = ""
         self.last_cache_purge_summary = ""
         self.overview_focus_mode = "市场总览"
-        self.market_timeframe_mode = "日线"
-        self.market_history_window = "近1年"
-        self.market_history_date = "最新"
+        self.market_timeframe_mode = str(getattr(self.state, "market_timeframe_mode", "日线") or "日线")
+        self.market_history_window = str(getattr(self.state, "market_history_window", "近1年") or "近1年")
+        self.market_history_date = str(getattr(self.state, "market_review_date", "最新") or "最新")
         self.market_chart_offset = 0
-        self.market_overlay_modes: set[str] = {"MA", "BOLL", "HIGHLOW"}
-        self.market_secondary_indicator_mode = "MACD"
+        self.market_primary_chart_expanded = bool(getattr(self.state, "market_primary_chart_expanded", False))
+        self.market_chart_focus_dialog_open = False
+        self.market_overlay_modes: set[str] = {
+            str(item or "").strip().upper()
+            for item in list(getattr(self.state, "market_overlay_modes", ["MA", "BOLL", "HIGHLOW"]) or [])
+            if str(item or "").strip()
+        } or {"MA", "BOLL", "HIGHLOW"}
+        self.market_chart_custom_presets: dict[str, dict[str, object]] = {
+            str(key or "").strip().upper(): dict(value)
+            for key, value in dict(getattr(self.state, "market_chart_custom_presets", {}) or {}).items()
+            if str(key or "").strip()
+        }
+        self.market_strategy_annotation_mode = self._normalize_market_strategy_annotation_mode(
+            getattr(self.state, "market_strategy_annotation_mode", "FULL")
+        )
+        self.market_secondary_indicator_mode = str(getattr(self.state, "market_secondary_indicator_mode", "MACD") or "MACD").upper()
+        self.market_chart_preset = str(getattr(self.state, "market_chart_preset", "BALANCED") or "BALANCED").upper()
+        self.market_chart_recent_presets: list[str] = [
+            str(item or "").strip().upper()
+            for item in list(getattr(self.state, "market_chart_recent_presets", []) or [])
+            if str(item or "").strip()
+        ]
+        self.market_chart_preset_usage_counts: dict[str, int] = {
+            str(key or "").strip().upper(): int(value)
+            for key, value in dict(getattr(self.state, "market_chart_preset_usage_counts", {}) or {}).items()
+            if str(key or "").strip()
+        }
         self.startup_boot_progress = 0
         self._startup_market_loaded = False
         self._startup_scan_loaded = False
@@ -5632,6 +5932,590 @@ class QuantHunterWindow(QMainWindow):
 
     def _build_config_tab(self) -> None:
         build_config_workspace(self)
+        self._refresh_strategy_config_workspace()
+
+    def _strategy_catalog_current_name(self) -> str:
+        if hasattr(self, "strategy_config_list") and self.strategy_config_list.currentItem() is not None:
+            return str(self.strategy_config_list.currentItem().text() or "").strip()
+        return str(getattr(self, "_strategy_config_loaded_name", "") or "")
+
+    def _set_strategy_config_status(self, headline: str, detail: str = "") -> None:
+        if not hasattr(self, "strategy_config_status_text"):
+            return
+        lines = [headline.strip() or "战法配置中心"]
+        if detail.strip():
+            lines.extend(["", detail.strip()])
+        self._set_plain_text_if_changed(self.strategy_config_status_text, "\n".join(lines))
+
+    def _set_strategy_form_text(self, widget, value: str) -> None:
+        text = str(value or "")
+        if hasattr(widget, "toPlainText") and hasattr(widget, "setPlainText"):
+            self._set_plain_text_if_changed(widget, text)
+        elif hasattr(widget, "text") and hasattr(widget, "setText"):
+            current = widget.text()
+            if current != text:
+                widget.setText(text)
+
+    def _populate_strategy_config_form(self, payload: dict[str, object] | None) -> None:
+        self._strategy_config_syncing = True
+        try:
+            if payload is None:
+                payload = build_strategy_template_payload()
+            strategy_name = str(payload.get("name", "") or "")
+            ui_meta = dict(payload.get("ui_metadata", {}) or {})
+            plan_defaults = dict(payload.get("plan_defaults", {}) or {})
+            formula_weights = dict(payload.get("formula_weights", {}) or {})
+            if hasattr(self, "strategy_config_name_input"):
+                self.strategy_config_name_input.setText(strategy_name)
+            if hasattr(self, "strategy_config_score_field_input"):
+                self.strategy_config_score_field_input.setText(str(payload.get("score_field", "") or ""))
+            if hasattr(self, "strategy_config_description_input"):
+                self.strategy_config_description_input.setText(str(payload.get("description", "") or ""))
+            if hasattr(self, "strategy_config_aliases_input"):
+                self.strategy_config_aliases_input.setText(", ".join(list(payload.get("aliases", []) or [])))
+            if hasattr(self, "strategy_config_formula_stage_combo"):
+                target_stage = str(payload.get("formula_stage", "") or "base")
+                for index in range(self.strategy_config_formula_stage_combo.count()):
+                    if self.strategy_config_formula_stage_combo.itemData(index) == target_stage:
+                        self.strategy_config_formula_stage_combo.setCurrentIndex(index)
+                        break
+            if hasattr(self, "strategy_config_enabled_checkbox"):
+                self.strategy_config_enabled_checkbox.setChecked(bool(payload.get("enabled", True)))
+            QuantHunterWindow._set_strategy_form_text(self, getattr(self, "strategy_config_short_label_input", None), str(ui_meta.get("short_label", "") or ""))
+            QuantHunterWindow._set_strategy_form_text(self, getattr(self, "strategy_config_capital_style_input", None), str(ui_meta.get("capital_style", "") or ""))
+            badge_palette = ui_meta.get("badge_palette", [])
+            badge_text = ", ".join(str(item or "") for item in badge_palette[:2]) if isinstance(badge_palette, list) else ""
+            QuantHunterWindow._set_strategy_form_text(self, getattr(self, "strategy_config_badge_palette_input", None), badge_text)
+            QuantHunterWindow._set_strategy_form_text(self, getattr(self, "strategy_config_default_risk_input", None), str(ui_meta.get("default_risk_level", "") or ""))
+            QuantHunterWindow._set_strategy_form_text(self, getattr(self, "strategy_config_low_flag_risk_input", None), str(ui_meta.get("low_flag_risk_level", "") or ""))
+            QuantHunterWindow._set_strategy_form_text(self, getattr(self, "strategy_config_stop_pct_input", None), str(plan_defaults.get("stop_pct", "")))
+            QuantHunterWindow._set_strategy_form_text(self, getattr(self, "strategy_config_target_pct_input", None), str(plan_defaults.get("target_pct", "")))
+            QuantHunterWindow._set_strategy_form_text(self, getattr(self, "strategy_config_budget_strong_input", None), str(plan_defaults.get("budget_multiplier_strong", "")))
+            QuantHunterWindow._set_strategy_form_text(self, getattr(self, "strategy_config_budget_normal_input", None), str(plan_defaults.get("budget_multiplier_normal", "")))
+            QuantHunterWindow._set_strategy_form_text(self, getattr(self, "strategy_config_budget_threshold_input", None), str(plan_defaults.get("budget_sentiment_threshold", "")))
+            QuantHunterWindow._set_strategy_form_text(self, getattr(self, "strategy_config_formula_weights_text", None), json.dumps(formula_weights, ensure_ascii=False, indent=2))
+            QuantHunterWindow._set_strategy_form_text(self, getattr(self, "strategy_config_scene_input", None), str(ui_meta.get("scene_copy", "") or ""))
+            QuantHunterWindow._set_strategy_form_text(self, getattr(self, "strategy_config_positioning_input", None), str(ui_meta.get("product_positioning", "") or ""))
+            QuantHunterWindow._set_strategy_form_text(self, getattr(self, "strategy_config_empty_hint_input", None), str(ui_meta.get("empty_hint", "") or ""))
+            QuantHunterWindow._set_strategy_form_text(self, getattr(self, "strategy_config_position_hint_input", None), str(ui_meta.get("position_hint", "") or ""))
+            QuantHunterWindow._set_strategy_form_text(self, getattr(self, "strategy_config_no_go_input", None), str(ui_meta.get("no_go", "") or ""))
+            QuantHunterWindow._set_strategy_form_text(self, getattr(self, "strategy_config_applicable_market_input", None), str(ui_meta.get("applicable_market", "") or ""))
+            QuantHunterWindow._set_strategy_form_text(self, getattr(self, "strategy_config_capacity_limit_input", None), str(ui_meta.get("capacity_limit", "") or ""))
+            QuantHunterWindow._set_strategy_form_text(self, getattr(self, "strategy_config_standard_action_buy_input", None), str(ui_meta.get("standard_action_buy_fallback", "") or ""))
+            QuantHunterWindow._set_strategy_form_text(self, getattr(self, "strategy_config_standard_action_sell_input", None), str(ui_meta.get("standard_action_sell_fallback", "") or ""))
+            QuantHunterWindow._set_strategy_form_text(self, getattr(self, "strategy_config_failure_sample_input", None), str(ui_meta.get("failure_sample", "") or ""))
+        finally:
+            self._strategy_config_syncing = False
+
+    def _build_strategy_config_form_payload(self) -> dict[str, object]:
+        name = self.strategy_config_name_input.text().strip() if hasattr(self, "strategy_config_name_input") else ""
+        aliases = []
+        if hasattr(self, "strategy_config_aliases_input"):
+            aliases = [item.strip() for item in self.strategy_config_aliases_input.text().replace("，", ",").split(",") if item.strip()]
+        badge_text = self.strategy_config_badge_palette_input.text().strip() if hasattr(self, "strategy_config_badge_palette_input") else ""
+        badge_palette = [item.strip() for item in badge_text.replace("，", ",").split(",") if item.strip()]
+        formula_weights = {}
+        if hasattr(self, "strategy_config_formula_weights_text"):
+            raw = self.strategy_config_formula_weights_text.toPlainText().strip()
+            if raw:
+                formula_weights = json.loads(raw)
+        payload = {
+            "name": name or "新战法",
+            "score_field": self.strategy_config_score_field_input.text().strip() if hasattr(self, "strategy_config_score_field_input") else "",
+            "description": self.strategy_config_description_input.text().strip() if hasattr(self, "strategy_config_description_input") else "",
+            "aliases": aliases,
+            "enabled": self.strategy_config_enabled_checkbox.isChecked() if hasattr(self, "strategy_config_enabled_checkbox") else True,
+            "formula_stage": str(self.strategy_config_formula_stage_combo.currentData() or "base") if hasattr(self, "strategy_config_formula_stage_combo") else "base",
+            "formula_weights": formula_weights,
+            "plan_defaults": {
+                "stop_pct": self.strategy_config_stop_pct_input.text().strip() if hasattr(self, "strategy_config_stop_pct_input") else "",
+                "target_pct": self.strategy_config_target_pct_input.text().strip() if hasattr(self, "strategy_config_target_pct_input") else "",
+                "budget_multiplier_strong": self.strategy_config_budget_strong_input.text().strip() if hasattr(self, "strategy_config_budget_strong_input") else "",
+                "budget_multiplier_normal": self.strategy_config_budget_normal_input.text().strip() if hasattr(self, "strategy_config_budget_normal_input") else "",
+                "budget_sentiment_threshold": self.strategy_config_budget_threshold_input.text().strip() if hasattr(self, "strategy_config_budget_threshold_input") else "",
+            },
+            "ui_metadata": {
+                "short_label": self.strategy_config_short_label_input.text().strip() if hasattr(self, "strategy_config_short_label_input") else "",
+                "capital_style": self.strategy_config_capital_style_input.text().strip() if hasattr(self, "strategy_config_capital_style_input") else "",
+                "badge_palette": badge_palette[:2],
+                "default_risk_level": self.strategy_config_default_risk_input.text().strip() if hasattr(self, "strategy_config_default_risk_input") else "",
+                "low_flag_risk_level": self.strategy_config_low_flag_risk_input.text().strip() if hasattr(self, "strategy_config_low_flag_risk_input") else "",
+                "scene_copy": self.strategy_config_scene_input.toPlainText().strip() if hasattr(self, "strategy_config_scene_input") else "",
+                "product_positioning": self.strategy_config_positioning_input.toPlainText().strip() if hasattr(self, "strategy_config_positioning_input") else "",
+                "empty_hint": self.strategy_config_empty_hint_input.toPlainText().strip() if hasattr(self, "strategy_config_empty_hint_input") else "",
+                "position_hint": self.strategy_config_position_hint_input.toPlainText().strip() if hasattr(self, "strategy_config_position_hint_input") else "",
+                "no_go": self.strategy_config_no_go_input.toPlainText().strip() if hasattr(self, "strategy_config_no_go_input") else "",
+                "applicable_market": self.strategy_config_applicable_market_input.toPlainText().strip() if hasattr(self, "strategy_config_applicable_market_input") else "",
+                "capacity_limit": self.strategy_config_capacity_limit_input.toPlainText().strip() if hasattr(self, "strategy_config_capacity_limit_input") else "",
+                "standard_action_buy_fallback": self.strategy_config_standard_action_buy_input.toPlainText().strip() if hasattr(self, "strategy_config_standard_action_buy_input") else "",
+                "standard_action_sell_fallback": self.strategy_config_standard_action_sell_input.toPlainText().strip() if hasattr(self, "strategy_config_standard_action_sell_input") else "",
+                "failure_sample": self.strategy_config_failure_sample_input.toPlainText().strip() if hasattr(self, "strategy_config_failure_sample_input") else "",
+            },
+        }
+        return payload
+
+    @staticmethod
+    def _strategy_config_validation_lines(report: dict[str, object]) -> list[str]:
+        normalized = dict(report.get("normalized", {}) or {})
+        lines = [
+            f"名称：{normalized.get('name', '')}",
+            f"评分字段：{normalized.get('score_field', '')}",
+            f"阶段：{normalized.get('formula_stage', '')}",
+            f"公式项：{len(list(report.get('formula_keys', []) or []))} 项",
+        ]
+        dependencies = list(report.get("dependency_formula_keys", []) or [])
+        context_keys = list(report.get("context_formula_keys", []) or [])
+        if dependencies:
+            lines.append(f"引用策略：{', '.join(dependencies)}")
+        if context_keys:
+            lines.append(f"基础因子：{', '.join(context_keys)}")
+        warnings = list(report.get("warnings", []) or [])
+        if warnings:
+            lines.append("提醒：")
+            lines.extend(f"- {item}" for item in warnings)
+        errors = list(report.get("errors", []) or [])
+        if errors:
+            lines.append("待修正：")
+            lines.extend(f"- {item}" for item in errors)
+        return lines
+
+    def _refresh_strategy_formula_help(self, payload: dict[str, object] | None = None) -> None:
+        if not hasattr(self, "strategy_config_formula_help_text"):
+            return
+        draft = dict(payload or {})
+        if not draft:
+            try:
+                draft = QuantHunterWindow._build_strategy_config_form_payload(self)
+            except Exception:
+                draft = build_strategy_template_payload(self._strategy_catalog_current_name() or "新战法")
+        stage = str(draft.get("formula_stage", "base") or "base")
+        previous_name = getattr(self, "_strategy_config_loaded_name", "") or ""
+        lines = [strategy_formula_reference_text(stage)]
+        try:
+            report = validate_strategy_definition_payload(draft, previous_name=previous_name)
+        except Exception as exc:
+            lines.extend(["", "当前草稿", f"- {exc}"])
+        else:
+            lines.extend(["", "当前草稿", *QuantHunterWindow._strategy_config_validation_lines(report)])
+        self._set_plain_text_if_changed(self.strategy_config_formula_help_text, "\n".join(lines))
+
+    def _on_strategy_config_form_changed(self) -> None:
+        if bool(getattr(self, "_strategy_config_syncing", False)):
+            return
+        try:
+            payload = QuantHunterWindow._build_strategy_config_form_payload(self)
+            report = validate_strategy_definition_payload(payload, previous_name=getattr(self, "_strategy_config_loaded_name", "") or "")
+            normalized = dict(report.get("normalized", {}) or {})
+        except Exception as exc:
+            self._set_strategy_config_status("表单暂未完成", str(exc))
+            QuantHunterWindow._refresh_strategy_formula_help(self, payload if "payload" in locals() else None)
+            return
+        if hasattr(self, "strategy_config_editor"):
+            self._set_plain_text_if_changed(self.strategy_config_editor, json.dumps(normalized, ensure_ascii=False, indent=2))
+        detail = "\n".join(QuantHunterWindow._strategy_config_validation_lines(report))
+        headline = "表单已同步到 JSON 草稿" if not list(report.get("errors", []) or []) else "表单草稿待修正"
+        self._set_strategy_config_status(headline, detail)
+        QuantHunterWindow._refresh_strategy_formula_help(self, normalized)
+
+    def _parse_strategy_config_editor_payload(self) -> dict[str, object]:
+        if not hasattr(self, "strategy_config_editor"):
+            raise ValueError("当前没有战法配置编辑器。")
+        raw_text = self.strategy_config_editor.toPlainText().strip()
+        if not raw_text:
+            raise ValueError("请先填写战法 JSON 配置。")
+        try:
+            payload = json.loads(raw_text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"JSON 解析失败：{exc}") from exc
+        if isinstance(payload, dict) and "strategies" in payload:
+            strategies = list(payload.get("strategies", []) or [])
+            if len(strategies) != 1 or not isinstance(strategies[0], dict):
+                raise ValueError("当前编辑器只支持单个战法对象，请使用“导入配置”批量导入。")
+            payload = strategies[0]
+        if not isinstance(payload, dict):
+            raise ValueError("当前编辑器内容必须是单个战法 JSON 对象。")
+        return payload
+
+    def _refresh_strategy_runtime_registry(self) -> None:
+        global _APP_STRATEGY_REGISTRY, STRATEGY_FILTER_LABELS, STRATEGY_SCORE_FIELDS, STRATEGY_WORKBENCH_SPECS
+        registry = reload_strategy_registry()
+        _APP_STRATEGY_REGISTRY = registry
+        STRATEGY_FILTER_LABELS = get_strategy_filter_labels()
+        STRATEGY_SCORE_FIELDS = get_strategy_score_fields()
+        STRATEGY_WORKBENCH_SPECS = get_strategy_workbench_specs()
+        ui_config_module.STRATEGY_FILTER_LABELS = STRATEGY_FILTER_LABELS
+        ui_config_module.STRATEGY_SCORE_FIELDS = STRATEGY_SCORE_FIELDS
+        ui_config_module.STRATEGY_WORKBENCH_SPECS = STRATEGY_WORKBENCH_SPECS
+        ui_refresh_module._STRATEGY_REGISTRY = registry
+
+    def _rebuild_market_filter_buttons(self) -> None:
+        layout = getattr(self, "market_filter_button_layout", None)
+        if layout is None:
+            return
+        selected = self.market_filter_tag if self.market_filter_tag in STRATEGY_FILTER_LABELS else "全部"
+        for button in list(getattr(self, "market_filter_buttons", {}).values()):
+            try:
+                layout.removeWidget(button)
+            except Exception:
+                pass
+            if hasattr(button, "setParent"):
+                button.setParent(None)
+            if hasattr(button, "deleteLater"):
+                button.deleteLater()
+        self.market_filter_buttons = {}
+        filter_button_style = self._overview_outline_style("#6f8196")
+        for index, tag in enumerate(STRATEGY_FILTER_LABELS):
+            button = QPushButton(tag)
+            button.setCheckable(True)
+            button.setMinimumHeight(40)
+            button.setMinimumWidth(96)
+            button.setStyleSheet(filter_button_style)
+            button.clicked.connect(lambda checked=False, current_tag=tag: self.set_market_filter(current_tag))
+            button.setChecked(tag == selected)
+            self.market_filter_buttons[tag] = button
+            layout.addWidget(button, index // 4, index % 4)
+
+    def _rebuild_strategy_pack_cards(self) -> None:
+        layout = getattr(self, "strategy_pack_layout", None)
+        card_cls = getattr(self, "strategy_workbench_card_cls", None)
+        box = getattr(self, "strategy_pack_box", None)
+        if layout is None or card_cls is None or box is None:
+            return
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        self.strategy_pack_cards = {}
+        for index, (title, subtitle) in enumerate(STRATEGY_WORKBENCH_SPECS):
+            card = card_cls(title, subtitle)
+            self.strategy_pack_cards[title] = card
+            layout.addWidget(card, index // 3, index % 3)
+
+    def _refresh_strategy_runtime_widgets(self, selected_strategy: str = "") -> None:
+        selected = selected_strategy or self._strategy_catalog_current_name()
+        canonical_selected = _APP_STRATEGY_REGISTRY.canonical_strategy_name(selected) or selected
+        if hasattr(self, "strategy_detail_combo"):
+            current = self.strategy_detail_combo.currentText().strip()
+            target = canonical_selected or current
+            labels = list(STRATEGY_SCORE_FIELDS)
+            self.strategy_detail_combo.blockSignals(True)
+            self.strategy_detail_combo.clear()
+            self.strategy_detail_combo.addItems(labels)
+            self.strategy_detail_combo.setCurrentText(target if target in labels else (labels[0] if labels else ""))
+            self.strategy_detail_combo.blockSignals(False)
+        self._rebuild_market_filter_buttons()
+        self._rebuild_strategy_pack_cards()
+        if self.recommend_strategy_filter not in {"全部", "全部策略", "尾盘优选"} and self.recommend_strategy_filter not in STRATEGY_FILTER_LABELS:
+            self.recommend_strategy_filter = "全部"
+        if self.market_filter_tag not in STRATEGY_FILTER_LABELS:
+            self.market_filter_tag = "全部"
+
+    def _refresh_strategy_config_workspace(self, selected_name: str = "", *, editor_payload: dict[str, object] | None = None) -> None:
+        if not hasattr(self, "strategy_config_list"):
+            return
+        catalog = load_strategy_catalog_payload()
+        strategies = [dict(item) for item in list(catalog.get("strategies", []) or []) if isinstance(item, dict)]
+        names = [str(item.get("name", "") or "").strip() for item in strategies if str(item.get("name", "") or "").strip()]
+        current = selected_name or getattr(self, "_strategy_config_loaded_name", "") or (self.strategy_config_list.currentItem().text().strip() if self.strategy_config_list.currentItem() is not None else "")
+        self.strategy_config_list.blockSignals(True)
+        self.strategy_config_list.clear()
+        for name in names:
+            self.strategy_config_list.addItem(name)
+        self.strategy_config_list.blockSignals(False)
+        target = current if current in names else (names[0] if names else "")
+        payload = editor_payload
+        if payload is None and target:
+            payload = next((item for item in strategies if str(item.get("name", "") or "").strip() == target), None)
+        if target and payload is not None:
+            matching = self.strategy_config_list.findItems(target, Qt.MatchExactly)
+            if matching:
+                self.strategy_config_list.setCurrentItem(matching[0])
+        self._strategy_config_loaded_name = target
+        QuantHunterWindow._populate_strategy_config_form(self, payload if payload is not None else (next((item for item in strategies if str(item.get("name", "") or "").strip() == target), None) if target else build_strategy_template_payload()))
+        if hasattr(self, "strategy_config_editor"):
+            if payload is not None:
+                self._set_plain_text_if_changed(
+                    self.strategy_config_editor,
+                    json.dumps(payload, ensure_ascii=False, indent=2),
+                )
+            elif not names:
+                self._set_plain_text_if_changed(
+                    self.strategy_config_editor,
+                    json.dumps(build_strategy_template_payload(), ensure_ascii=False, indent=2),
+                )
+        detail = (
+            f"当前目录：{strategy_catalog_path()}\n已加载 {len(names)} 套战法，其中启用 {len(STRATEGY_SCORE_FIELDS)} 套。"
+            if names
+            else f"当前目录：{strategy_catalog_path()}\n暂未发现战法配置，已载入空白模板。"
+        )
+        self._set_strategy_config_status("战法配置中心", detail)
+        QuantHunterWindow._refresh_strategy_formula_help(self, payload)
+
+    def _on_strategy_config_selected(self, value: str) -> None:
+        selected = str(value or "").strip()
+        if not selected:
+            return
+        strategies = list(load_strategy_catalog_payload().get("strategies", []) or [])
+        payload = next((item for item in strategies if isinstance(item, dict) and str(item.get("name", "") or "").strip() == selected), None)
+        if payload is None:
+            return
+        self._strategy_config_loaded_name = selected
+        QuantHunterWindow._populate_strategy_config_form(self, payload)
+        if hasattr(self, "strategy_config_editor"):
+            self._set_plain_text_if_changed(self.strategy_config_editor, json.dumps(payload, ensure_ascii=False, indent=2))
+        state_text = "启用" if bool(payload.get("enabled", True)) else "停用"
+        self._set_strategy_config_status("已载入战法配置", f"{selected} | 当前状态：{state_text}\n可直接修改右侧 JSON，保存后立即刷新。")
+        QuantHunterWindow._refresh_strategy_formula_help(self, payload)
+
+    def new_strategy_config_template(self) -> None:
+        name = self.strategy_config_name_input.text().strip() if hasattr(self, "strategy_config_name_input") else ""
+        payload = build_strategy_template_payload(name or "新战法")
+        QuantHunterWindow._populate_strategy_config_form(self, payload)
+        if hasattr(self, "strategy_config_editor"):
+            self._set_plain_text_if_changed(self.strategy_config_editor, json.dumps(payload, ensure_ascii=False, indent=2))
+        self._strategy_config_loaded_name = ""
+        self._set_strategy_config_status("已生成战法模板", "请先补齐公式、说明和 UI 元数据，再点击“保存战法”。")
+        QuantHunterWindow._refresh_strategy_formula_help(self, payload)
+
+    def fill_strategy_config_formula_example(self) -> None:
+        stage = str(self.strategy_config_formula_stage_combo.currentData() or "base") if hasattr(self, "strategy_config_formula_stage_combo") else "base"
+        example = strategy_formula_example_weights(stage)
+        if hasattr(self, "strategy_config_formula_weights_text"):
+            self._set_plain_text_if_changed(
+                self.strategy_config_formula_weights_text,
+                json.dumps(example, ensure_ascii=False, indent=2),
+            )
+        self._on_strategy_config_form_changed()
+        self._set_strategy_config_status("已填充公式示例", f"已按 {stage} 阶段填入示例权重，可继续微调后保存。")
+
+    def sync_strategy_config_form_to_editor(self) -> None:
+        try:
+            payload = QuantHunterWindow._build_strategy_config_form_payload(self)
+            report = validate_strategy_definition_payload(payload, previous_name=getattr(self, "_strategy_config_loaded_name", "") or "")
+            normalized = dict(report.get("normalized", {}) or {})
+        except Exception as exc:
+            QMessageBox.critical(self, "表单转换失败", str(exc))
+            return
+        if hasattr(self, "strategy_config_editor"):
+            self._set_plain_text_if_changed(self.strategy_config_editor, json.dumps(normalized, ensure_ascii=False, indent=2))
+        if hasattr(self, "strategy_config_name_input"):
+            self.strategy_config_name_input.setText(str(normalized.get("name", "") or ""))
+        detail = "\n".join(QuantHunterWindow._strategy_config_validation_lines(report))
+        headline = "表单已生成 JSON" if not list(report.get("errors", []) or []) else "JSON 草稿待修正"
+        self._set_strategy_config_status(headline, detail)
+        QuantHunterWindow._refresh_strategy_formula_help(self, normalized)
+
+    def sync_strategy_config_editor_to_form(self) -> None:
+        try:
+            payload = QuantHunterWindow._parse_strategy_config_editor_payload(self)
+            report = validate_strategy_definition_payload(payload, previous_name=getattr(self, "_strategy_config_loaded_name", "") or "")
+            normalized = dict(report.get("normalized", {}) or {})
+        except Exception as exc:
+            QMessageBox.critical(self, "回填失败", str(exc))
+            return
+        QuantHunterWindow._populate_strategy_config_form(self, normalized)
+        detail = "\n".join(QuantHunterWindow._strategy_config_validation_lines(report))
+        headline = "JSON 已回填表单" if not list(report.get("errors", []) or []) else "JSON 已回填，仍需修正"
+        self._set_strategy_config_status(headline, detail)
+        QuantHunterWindow._refresh_strategy_formula_help(self, normalized)
+
+    def duplicate_current_strategy_config(self) -> None:
+        try:
+            payload = QuantHunterWindow._parse_strategy_config_editor_payload(self)
+        except Exception as exc:
+            QMessageBox.critical(self, "复制失败", str(exc))
+            return
+        base_name = str(payload.get("name", "") or self._strategy_catalog_current_name() or "新战法").strip()
+        payload = dict(payload)
+        payload["name"] = f"{base_name} 副本"
+        QuantHunterWindow._populate_strategy_config_form(self, payload)
+        if hasattr(self, "strategy_config_editor"):
+            self._set_plain_text_if_changed(self.strategy_config_editor, json.dumps(payload, ensure_ascii=False, indent=2))
+        self._strategy_config_loaded_name = ""
+        self._set_strategy_config_status("已复制当前战法", f"{base_name} 已复制为 {payload['name']}，保存后会写入配置目录。")
+        QuantHunterWindow._refresh_strategy_formula_help(self, payload)
+
+    def validate_strategy_config_editor(self) -> None:
+        try:
+            payload = QuantHunterWindow._parse_strategy_config_editor_payload(self)
+            report = validate_strategy_definition_payload(payload, previous_name=getattr(self, "_strategy_config_loaded_name", "") or "")
+        except Exception as exc:
+            self._set_strategy_config_status("战法配置校验失败", str(exc))
+            QMessageBox.critical(self, "校验失败", str(exc))
+            return
+        normalized = dict(report.get("normalized", {}) or {})
+        detail = "\n".join(QuantHunterWindow._strategy_config_validation_lines(report))
+        if list(report.get("errors", []) or []):
+            self._set_strategy_config_status("战法配置校验失败", detail)
+            QuantHunterWindow._refresh_strategy_formula_help(self, normalized)
+            QMessageBox.critical(self, "校验失败", "\n".join(list(report.get("errors", []) or [])))
+            return
+        self._set_strategy_config_status("战法配置校验通过", detail)
+        QuantHunterWindow._refresh_strategy_formula_help(self, normalized)
+        warning_text = "\n".join(f"- {item}" for item in list(report.get("warnings", []) or []))
+        if warning_text:
+            QMessageBox.information(self, "校验通过", f"{normalized.get('name', '当前战法')} 配置可保存。\n\n提示：\n{warning_text}")
+            return
+        QMessageBox.information(self, "校验通过", f"{normalized.get('name', '当前战法')} 配置可保存。")
+
+    def export_current_strategy_config(self) -> None:
+        try:
+            payload = QuantHunterWindow._parse_strategy_config_editor_payload(self)
+            normalized = normalize_strategy_definition_payload(payload)
+        except Exception as exc:
+            QMessageBox.critical(self, "导出失败", str(exc))
+            return
+        file_name = f"{str(normalized.get('name', 'strategy') or 'strategy').strip()}.json"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出当前战法配置",
+            str(strategy_catalog_path().parent / file_name),
+            "JSON 文件 (*.json);;所有文件 (*)",
+        )
+        if not file_path:
+            return
+        Path(file_path).write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._set_strategy_config_status("已导出当前战法", f"{normalized.get('name', '')}\n导出路径：{file_path}")
+        QMessageBox.information(self, "导出成功", f"当前战法已导出到：\n{file_path}")
+
+    def export_all_strategy_configs(self) -> None:
+        payload = load_strategy_catalog_payload()
+        strategies = [item for item in list(payload.get("strategies", []) or []) if isinstance(item, dict)]
+        if not strategies:
+            QMessageBox.information(self, "提示", "当前没有可导出的战法配置。")
+            return
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出全部战法配置",
+            str(strategy_catalog_path().parent / "strategy_catalog_export.json"),
+            "JSON 文件 (*.json);;所有文件 (*)",
+        )
+        if not file_path:
+            return
+        Path(file_path).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._set_strategy_config_status("已导出全部战法", f"共 {len(strategies)} 套战法\n导出路径：{file_path}")
+        QMessageBox.information(self, "导出成功", f"已导出 {len(strategies)} 套战法配置到：\n{file_path}")
+
+    def open_strategy_config_directory(self) -> None:
+        target_dir = strategy_catalog_path().parent
+        target_dir.mkdir(parents=True, exist_ok=True)
+        opened = QDesktopServices.openUrl(QUrl.fromLocalFile(str(target_dir)))
+        if not opened:
+            QMessageBox.information(self, "提示", f"请手动打开目录：\n{target_dir}")
+            return
+        self._set_strategy_config_status("已打开战法配置目录", str(target_dir))
+
+    def _reload_strategy_catalog_runtime(self, *, selected_name: str = "", detail: str = "") -> None:
+        self._refresh_strategy_runtime_registry()
+        self._refresh_strategy_runtime_widgets(selected_name=selected_name)
+        self._refresh_strategy_config_workspace(selected_name=selected_name)
+        if hasattr(self, "_refresh_strategy_pack_panels"):
+            self._refresh_strategy_pack_panels()
+        if hasattr(self, "_refresh_strategy_focus_detail"):
+            self._refresh_strategy_focus_detail()
+        if hasattr(self, "_populate_filtered_daily_pool_table"):
+            self._populate_filtered_daily_pool_table()
+        if self.scan_rows or self.daily_pool_rows:
+            self.refresh_daily_pool(async_mode=False)
+        self._set_strategy_config_status("战法配置已更新", detail or "已重新载入战法注册表并刷新界面。")
+
+    def save_strategy_config_from_editor(self) -> None:
+        try:
+            payload = QuantHunterWindow._parse_strategy_config_editor_payload(self)
+        except Exception as exc:
+            QMessageBox.critical(self, "配置格式错误", str(exc))
+            return
+        previous_name = getattr(self, "_strategy_config_loaded_name", "") or ""
+        try:
+            report = validate_strategy_definition_payload(payload, previous_name=previous_name)
+        except Exception as exc:
+            QMessageBox.critical(self, "保存失败", str(exc))
+            return
+        if list(report.get("errors", []) or []):
+            detail = "\n".join(QuantHunterWindow._strategy_config_validation_lines(report))
+            self._set_strategy_config_status("保存失败", detail)
+            QuantHunterWindow._refresh_strategy_formula_help(self, dict(report.get("normalized", {}) or {}))
+            QMessageBox.critical(self, "保存失败", "\n".join(list(report.get("errors", []) or [])))
+            return
+        try:
+            replace_strategy_in_catalog(dict(report.get("normalized", {}) or payload), previous_name=previous_name)
+        except Exception as exc:
+            QMessageBox.critical(self, "保存失败", str(exc))
+            return
+        saved_name = str(dict(report.get("normalized", {}) or payload).get("name", "") or "").strip()
+        self._strategy_config_loaded_name = saved_name
+        warning_suffix = ""
+        warnings = list(report.get("warnings", []) or [])
+        if warnings:
+            warning_suffix = "\n提醒：\n" + "\n".join(f"- {item}" for item in warnings)
+        self._reload_strategy_catalog_runtime(
+            selected_name=saved_name,
+            detail=f"{saved_name or '战法'} 已保存，并已刷新筛选、战法卡片和推荐链路。{warning_suffix}",
+        )
+        message = f"{saved_name or '战法'} 配置已保存。"
+        if warnings:
+            message = f"{message}\n\n提示：\n" + "\n".join(f"- {item}" for item in warnings)
+        QMessageBox.information(self, "保存成功", message)
+
+    def delete_selected_strategy_config(self) -> None:
+        selected_name = self._strategy_catalog_current_name() or (self.strategy_config_name_input.text().strip() if hasattr(self, "strategy_config_name_input") else "")
+        if not selected_name:
+            QMessageBox.information(self, "提示", "请先在左侧选中要删除的战法。")
+            return
+        confirm = QMessageBox.question(
+            self,
+            "删除战法",
+            f"确认删除战法“{selected_name}”？删除后会立即刷新推荐池和战法卡片。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        try:
+            payload = delete_strategy_from_catalog(selected_name)
+        except Exception as exc:
+            QMessageBox.critical(self, "删除失败", str(exc))
+            return
+        remaining = list(payload.get("strategies", []) or [])
+        next_name = str(remaining[0].get("name", "") or "").strip() if remaining and isinstance(remaining[0], dict) else ""
+        self._strategy_config_loaded_name = next_name
+        self._reload_strategy_catalog_runtime(
+            selected_name=next_name,
+            detail=f"{selected_name} 已删除，并已刷新筛选、战法卡片和推荐链路。",
+        )
+        QMessageBox.information(self, "删除成功", f"{selected_name} 已删除。")
+
+    def import_strategy_config_file(self) -> None:
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "导入战法配置",
+            str(strategy_catalog_path().parent),
+            "JSON 文件 (*.json);;所有文件 (*)",
+        )
+        if not file_path:
+            return
+        try:
+            payload = json.loads(Path(file_path).read_text(encoding="utf-8"))
+            updated = import_strategy_payloads(payload)
+        except Exception as exc:
+            QMessageBox.critical(self, "导入失败", str(exc))
+            return
+        strategies = [item for item in list(updated.get("strategies", []) or []) if isinstance(item, dict)]
+        selected_name = str(strategies[-1].get("name", "") or "").strip() if strategies else ""
+        self._strategy_config_loaded_name = selected_name
+        self._reload_strategy_catalog_runtime(
+            selected_name=selected_name,
+            detail=f"已从 {file_path} 导入 {len(strategies)} 套战法配置，并已刷新界面。",
+        )
+        QMessageBox.information(self, "导入成功", f"已导入 {len(strategies)} 套战法配置。")
+
+    def reload_strategy_config_workspace(self) -> None:
+        self._refresh_strategy_runtime_registry()
+        self._refresh_strategy_runtime_widgets(selected_strategy=self._strategy_catalog_current_name())
+        self._refresh_strategy_config_workspace(selected_name=self._strategy_catalog_current_name())
+        self._set_strategy_config_status("已重新载入战法配置", f"当前目录：{strategy_catalog_path()}")
 
     def _parse_focus_themes(self) -> list[str]:
         if not hasattr(self, "focus_themes_input"):
@@ -6352,7 +7236,7 @@ class QuantHunterWindow(QMainWindow):
         top_theme = self.theme_heat_rows[0].theme_name if getattr(self, "theme_heat_rows", None) else ""
         top_pick = self.daily_pool_rows[0].stock_name if self.daily_pool_rows else ""
         top_action = plan.decisions[0].action if plan.decisions else ""
-        top_strategy = getattr(self.daily_pool_rows[0], "primary_strategy", "") if self.daily_pool_rows else ""
+        top_strategy = _recommendation_strategy_name(self.daily_pool_rows[0], default="") if self.daily_pool_rows else ""
         current_state = {
             "top_theme": top_theme,
             "top_pick": top_pick,
@@ -7234,7 +8118,7 @@ class QuantHunterWindow(QMainWindow):
                 lines.extend(
                     [
                         f"主线：{recommendation.mainline_tag or recommendation.theme_name or '待确认'} | 动作：{self._display_action(recommendation.action)}",
-                        f"主策略：{getattr(recommendation, 'primary_strategy', '') or '掘龙决策'} | 分层：{getattr(recommendation, 'opportunity_tier', '') or '待确认'}",
+                        f"主策略：{_recommendation_strategy_name(recommendation)} | 分层：{getattr(recommendation, 'opportunity_tier', '') or '待确认'}",
                         f"买点：{(recommendation.entry_price or recommendation.close):.2f} | 止损：{(recommendation.stop_price or recommendation.close * 0.95):.2f} | 目标：{(recommendation.target_price or recommendation.close * 1.08):.2f}",
                         f"逻辑：{recommendation.rationale or '等待推荐逻辑生成。'}",
                     ]
@@ -7507,7 +8391,7 @@ class QuantHunterWindow(QMainWindow):
             return StrategyHistoryReplayer.select_summary(report, selected_strategy)
         symbol = getattr(self, "active_symbol", "") or ""
         recommendation = next((row for row in getattr(self, "daily_pool_rows", []) if getattr(row, "symbol", "") == symbol), None)
-        strategy_name = str(getattr(recommendation, "primary_strategy", "") or "").strip() if recommendation is not None else ""
+        strategy_name = _recommendation_strategy_name(recommendation, default="") if recommendation is not None else ""
         if strategy_name:
             return StrategyHistoryReplayer.select_summary(report, strategy_name)
         return StrategyHistoryReplayer.select_summary(report)
@@ -10034,19 +10918,20 @@ class QuantHunterWindow(QMainWindow):
             rows = [
                 row
                 for row in rows
-                if (getattr(row, "primary_strategy", "") or "") == "尾盘买入法"
-                and float(getattr(row, "tail_buy_score", 0.0) or 0.0) >= 82.0
+                if _recommendation_strategy_name(row) == "尾盘买入法"
+                and float(strategy_score(row, "尾盘买入法", 0.0) or 0.0) >= 82.0
                 and float(getattr(row, "execution_readiness", 0.0) or 0.0) >= 72.0
                 and str(getattr(row, "mainline_risk_flag", "") or "") != "高"
             ]
         elif strategy_filter not in {"全部", "全部策略"}:
-            rows = [row for row in rows if (getattr(row, "primary_strategy", "") or "") == strategy_filter]
+            canonical_filter = _APP_STRATEGY_REGISTRY.canonical_strategy_name(strategy_filter) or strategy_filter
+            rows = [row for row in rows if _recommendation_strategy_name(row) == canonical_filter]
         return rows
 
     def _set_strategy_detail_from_row(self, row: RecommendationRow | None) -> None:
         if row is None or not hasattr(self, "strategy_detail_combo"):
             return
-        self.strategy_detail_combo.setCurrentText(getattr(row, "primary_strategy", "") or "掘龙决策")
+        self.strategy_detail_combo.setCurrentText(_recommendation_strategy_name(row))
 
     def _refresh_recommendation_focus_panels(self, row: RecommendationRow | None = None) -> None:
         current = row or self._selected_daily_pool_recommendation()
@@ -10091,7 +10976,7 @@ class QuantHunterWindow(QMainWindow):
         if hasattr(self, "recommend_focus_review_text"):
             review_lines = [
                 f"单票审查：{current.stock_name}",
-                f"总分 {float(getattr(current, 'total_score', 0.0) or 0.0):.1f} | 风险 {risk_flag} | 主策略 {getattr(current, 'primary_strategy', '') or '掘龙决策'}",
+                f"总分 {float(getattr(current, 'total_score', 0.0) or 0.0):.1f} | 风险 {risk_flag} | 主策略 {_recommendation_strategy_name(current)}",
             ]
             review_lines.extend(recommendation_focus_lines(current))
             review_lines.append(f"核心理由：{rationale}")
@@ -10302,7 +11187,7 @@ class QuantHunterWindow(QMainWindow):
             return
 
         theme_name = getattr(current, "mainline_tag", "") or getattr(current, "theme_name", "") or "待确认"
-        strategy_name = getattr(current, "primary_strategy", "") or "掘龙决策"
+        strategy_name = _recommendation_strategy_name(current)
         action_label = self._display_action(getattr(current, "action", "WATCH"))
         readiness = float(getattr(current, "execution_readiness", 0.0) or 0.0)
         confidence = float(getattr(current, "confidence_score", 0.0) or 0.0)
@@ -10342,7 +11227,7 @@ class QuantHunterWindow(QMainWindow):
                 f"主打法与当前焦点一致，优先核对催化和位置。",
             )
             self.priority_cards["focus"].set_data(
-                f"{getattr(current, 'dragon_decision_score', getattr(current, 'total_score', 0.0)):.1f}",
+                f"{_recommendation_decision_score(current):.1f}",
                 f"焦点: {current.stock_name}",
                 f"{action_label} | {theme_name} | 准备 {readiness:.1f}",
             )
@@ -10381,10 +11266,10 @@ class QuantHunterWindow(QMainWindow):
         if recommendation is not None:
             theme_name = getattr(recommendation, "mainline_tag", "") or getattr(recommendation, "theme_name", "") or "待确认"
             role_name = self._display_mainline_role(getattr(recommendation, "mainline_role", "") or "")
-            strategy_name = getattr(recommendation, "primary_strategy", "") or "掘龙决策"
+            strategy_name = _recommendation_strategy_name(recommendation)
             action_label = self._display_action(getattr(recommendation, "action", "WATCH"))
             catalyst = getattr(recommendation, "catalyst", "") or "等待消息与量价共振"
-            decision_score = float(getattr(recommendation, "dragon_decision_score", getattr(recommendation, "total_score", 0.0)) or 0.0)
+            decision_score = _recommendation_decision_score(recommendation)
             self.overview_summary_cards["theme"].set_data(
                 theme_name,
                 f"{recommendation.stock_name} | {role_name} | 位次 {getattr(recommendation, 'mainline_rank', getattr(recommendation, 'theme_rank', '--'))}",
@@ -10591,7 +11476,10 @@ class QuantHunterWindow(QMainWindow):
             else:
                 self._set_label_text_if_changed(
                     self.market_quote_label,
-                    f"历史窗口 {self.market_history_window} | 周期 {self.market_timeframe_mode} | 叠加 {'/'.join(self._ordered_market_overlays(self.market_overlay_modes)) or '关闭'}"
+                    f"历史窗口 {self.market_history_window} | 周期 {self.market_timeframe_mode} | "
+                    f"叠加 {'/'.join(self._ordered_market_overlays(self.market_overlay_modes)) or '关闭'} | "
+                    f"战法 {self._market_strategy_annotation_mode_hint(getattr(self, 'market_strategy_annotation_mode', 'FULL'))[0]}"
+                    f"({self._market_strategy_annotation_mode_hint(getattr(self, 'market_strategy_annotation_mode', 'FULL'))[1]})"
                 )
         self._update_intraday_chart(symbol, snapshot, chart_series)
         self._update_daily_chart(symbol)
@@ -10622,6 +11510,38 @@ class QuantHunterWindow(QMainWindow):
     def _normalize_market_timeframe(self, timeframe: str | None = None) -> str:
         value = (timeframe or getattr(self, "market_timeframe_mode", "日线") or "日线").strip()
         return value or "日线"
+
+    @staticmethod
+    def _normalize_market_strategy_annotation_mode(mode: str | None = None) -> str:
+        value = str(mode or "FULL").strip().upper()
+        return value if value in {"FULL", "PLAN", "OFF"} else "FULL"
+
+    @staticmethod
+    def _display_market_strategy_annotation_mode(mode: str | None = None) -> str:
+        key = QuantHunterWindow._normalize_market_strategy_annotation_mode(mode)
+        return {
+            "FULL": "完整",
+            "PLAN": "计划",
+            "OFF": "关闭",
+        }.get(key, "完整")
+
+    @staticmethod
+    def _market_strategy_annotation_mode_hint(mode: str | None = None) -> tuple[str, str]:
+        key = QuantHunterWindow._normalize_market_strategy_annotation_mode(mode)
+        return {
+            "FULL": ("完整", "计划+复盘"),
+            "PLAN": ("计划", "只看计划"),
+            "OFF": ("关闭", "纯K线"),
+        }.get(key, ("完整", "计划+复盘"))
+
+    @staticmethod
+    def _market_strategy_annotation_mode_detail(mode: str | None = None) -> str:
+        key = QuantHunterWindow._normalize_market_strategy_annotation_mode(mode)
+        return {
+            "FULL": "计划线、战法信号和回测买卖点一起显示。",
+            "PLAN": "只看执行计划线与焦点相关信号。",
+            "OFF": "关闭战法标注，仅保留 K 线和指标。",
+        }.get(key, "计划线、战法信号和回测买卖点一起显示。")
 
     @staticmethod
     def _ordered_market_overlays(overlays: set[str] | list[str] | tuple[str, ...]) -> list[str]:
@@ -11208,29 +12128,2071 @@ class QuantHunterWindow(QMainWindow):
             return f"{value / 1e4:.2f}万"
         return f"{value:,.0f}"
 
+    def _market_hover_sync_key(self, raw_key: str, timeframe: str | None = None) -> str:
+        text = str(raw_key or "").strip()
+        if not text:
+            return ""
+        normalized_timeframe = self._normalize_market_timeframe(timeframe)
+        if self._is_intraday_market_timeframe(normalized_timeframe):
+            if len(text) >= 5 and ":" in text[-5:]:
+                return text[-5:]
+        return text
+
+    def _market_chart_hover_source_name(self, source_view) -> str:
+        mapping = [
+            (getattr(self, "daily_chart_view", None), "主图"),
+            (getattr(self, "intraday_chart_view", None), "分时"),
+            (getattr(self, "fund_chart_view", None), "资金"),
+            (getattr(self, "momentum_chart_view", None), "动量"),
+            (getattr(self, "indicator_chart_view", None), "指标"),
+        ]
+        for view, label in mapping:
+            if source_view is view:
+                return label
+        return "图表"
+
+    @staticmethod
+    def _normalize_market_chart_preset_key(value: str) -> str:
+        normalized = str(value or "BALANCED").strip().upper()
+        if normalized in {"BALANCED", "CLEAN", "SIGNAL", "FLOW", "CUSTOM"}:
+            return normalized
+        if normalized.startswith("USER_"):
+            return normalized
+        return "BALANCED"
+
+    @staticmethod
+    def _normalize_market_chart_custom_preset_spec(raw: object) -> dict[str, object]:
+        payload = dict(raw) if isinstance(raw, dict) else {}
+        overlays = {
+            str(item or "").strip().upper()
+            for item in list(payload.get("overlays", []) or [])
+            if str(item or "").strip()
+        }
+        tags = []
+        raw_tags = payload.get("tags", [])
+        if isinstance(raw_tags, str):
+            tags = [
+                str(item or "").strip()
+                for item in raw_tags.replace("，", ",").split(",")
+                if str(item or "").strip()
+            ]
+        elif isinstance(raw_tags, (list, tuple, set)):
+            tags = [str(item or "").strip() for item in raw_tags if str(item or "").strip()]
+        deduped_tags: list[str] = []
+        seen_tags: set[str] = set()
+        for tag in tags:
+            normalized_tag = tag.lower()
+            if normalized_tag in seen_tags:
+                continue
+            seen_tags.add(normalized_tag)
+            deduped_tags.append(tag)
+        if not overlays:
+            overlays = {"MA", "BOLL", "HIGHLOW"}
+        return {
+            "label": str(payload.get("label", "") or "").strip() or "自定义预设",
+            "detail": str(payload.get("detail", "") or "").strip(),
+            "tags": deduped_tags,
+            "overlays": overlays,
+            "annotation_mode": QuantHunterWindow._normalize_market_strategy_annotation_mode(
+                payload.get("annotation_mode", "FULL")
+            ),
+            "indicator": str(payload.get("indicator", "MACD") or "MACD").strip().upper() or "MACD",
+            "expanded": bool(payload.get("expanded", False)),
+            "pinned": bool(payload.get("pinned", False)),
+        }
+
+    def _normalized_market_chart_custom_presets(self) -> dict[str, dict[str, object]]:
+        normalize_key_fn = getattr(self, "_normalize_market_chart_preset_key", None)
+        if not callable(normalize_key_fn):
+            normalize_key_fn = lambda value: QuantHunterWindow._normalize_market_chart_preset_key(value)
+        normalize_spec_fn = getattr(self, "_normalize_market_chart_custom_preset_spec", None)
+        if not callable(normalize_spec_fn):
+            normalize_spec_fn = lambda raw: QuantHunterWindow._normalize_market_chart_custom_preset_spec(raw)
+        normalized: dict[str, dict[str, object]] = {}
+        for key, value in dict(getattr(self, "market_chart_custom_presets", {}) or {}).items():
+            normalized_key = normalize_key_fn(str(key or ""))
+            if not normalized_key.startswith("USER_"):
+                continue
+            normalized[normalized_key] = normalize_spec_fn(value)
+        self.market_chart_custom_presets = normalized
+        return normalized
+
+    def _market_chart_builtin_preset_specs(self) -> dict[str, dict[str, object]]:
+        return {
+            "BALANCED": {
+                "label": "均衡盯盘",
+                "detail": "主图 + BOLL + 量价副图，适合日常观察。",
+                "tags": ["团队模板", "日常盯盘"],
+                "template_owner": "投研终端组",
+                "template_version": "T-2026.04",
+                "lock_note": "团队默认模板，只读维护；如需调整，请复制为自定义预设。",
+                "update_log": [
+                    "2026-04-19 | 升级为终端默认团队视图，统一主图/副图节奏。",
+                    "2026-04-19 | 补齐 BOLL 与量价副图，适合作为日常盘中基线。",
+                ],
+                "overlays": {"MA", "BOLL", "HIGHLOW"},
+                "annotation_mode": "FULL",
+                "indicator": "MACD",
+                "expanded": False,
+            },
+            "CLEAN": {
+                "label": "净空主图",
+                "detail": "只保留均线和最少标注，适合看纯走势结构。",
+                "tags": ["团队模板", "纯走势"],
+                "template_owner": "投研终端组",
+                "template_version": "T-2026.04",
+                "lock_note": "团队只读模板，面向纯结构分析；建议复制后再做个人微调。",
+                "update_log": [
+                    "2026-04-19 | 新增净空主图模板，强调结构与节奏，不保留战法标注。",
+                ],
+                "overlays": {"MA"},
+                "annotation_mode": "OFF",
+                "indicator": "MACD",
+                "expanded": True,
+            },
+            "SIGNAL": {
+                "label": "信号复盘",
+                "detail": "强化计划线和战法标注，适合复盘买卖点。",
+                "tags": ["团队模板", "复盘"],
+                "template_owner": "投研终端组",
+                "template_version": "T-2026.04",
+                "lock_note": "团队复盘模板，只读；主要用于统一买卖点回看口径。",
+                "update_log": [
+                    "2026-04-19 | 纳入计划线、风险线和突破辅助层，用于复盘信号与买卖点。",
+                ],
+                "overlays": {"MA", "HIGHLOW", "BREAK"},
+                "annotation_mode": "FULL",
+                "indicator": "KDJ",
+                "expanded": True,
+            },
+            "FLOW": {
+                "label": "量价联动",
+                "detail": "突出量能和动量，适合盯资金与节奏。",
+                "tags": ["团队模板", "量价联动"],
+                "template_owner": "投研终端组",
+                "template_version": "T-2026.04",
+                "lock_note": "团队量价模板，只读；面向盘中资金与动量观察。",
+                "update_log": [
+                    "2026-04-19 | 强化量能与动量副图，用于盘中量价联动观察。",
+                ],
+                "overlays": {"MA", "BOLL"},
+                "annotation_mode": "PLAN",
+                "indicator": "VOL",
+                "expanded": False,
+            },
+        }
+
+    def _ordered_market_chart_custom_preset_keys(
+        self,
+        *,
+        search_text: str = "",
+        pinned_only: bool = False,
+    ) -> list[str]:
+        normalized_search = str(search_text or "").strip().lower()
+        presets = self._normalized_market_chart_custom_presets()
+        matched: list[str] = []
+        for key, spec in presets.items():
+            if pinned_only and not bool(spec.get("pinned", False)):
+                continue
+            haystack = " ".join(
+                [
+                    str(spec.get("label", "") or ""),
+                    str(spec.get("detail", "") or ""),
+                    " ".join(list(spec.get("tags", []) or [])),
+                    str(spec.get("annotation_mode", "") or ""),
+                    str(spec.get("indicator", "") or ""),
+                    " ".join(sorted(str(item) for item in set(spec.get("overlays", set()) or set()))),
+                ]
+            ).lower()
+            if normalized_search and normalized_search not in haystack:
+                continue
+            matched.append(key)
+        return sorted(
+            matched,
+            key=lambda key: (
+                0 if bool(presets[key].get("pinned", False)) else 1,
+                str(presets[key].get("label", key) or key).lower(),
+            ),
+        )
+
+    def _market_chart_usage_rank_rows(self, *, limit: int | None = None) -> list[tuple[str, int]]:
+        counts = self._normalized_market_chart_preset_usage_counts()
+        rows = sorted(
+            counts.items(),
+            key=lambda item: (-int(item[1]), self._market_chart_preset_label(item[0]).lower()),
+        )
+        if limit is not None and limit > 0:
+            rows = rows[:limit]
+        return [(key, int(count)) for key, count in rows]
+
+    def _market_chart_hottest_preset_key(self) -> str:
+        rows = self._market_chart_usage_rank_rows(limit=1)
+        return rows[0][0] if rows else ""
+
+    def _market_chart_template_timeline_entries(
+        self,
+        *,
+        limit: int | None = None,
+        preset_key: str = "",
+    ) -> list[dict[str, str]]:
+        target_key = self._normalize_market_chart_preset_key(preset_key) if preset_key else ""
+        entries: list[dict[str, str]] = []
+        for key, spec in self._market_chart_builtin_preset_specs().items():
+            if target_key and key != target_key:
+                continue
+            for raw_line in list(spec.get("update_log", []) or []):
+                line = str(raw_line or "").strip()
+                if not line:
+                    continue
+                date_part, _, detail_part = line.partition("|")
+                entries.append(
+                    {
+                        "preset_key": key,
+                        "preset_label": str(spec.get("label", key) or key),
+                        "template_owner": str(spec.get("template_owner", "团队模板维护者") or "团队模板维护者"),
+                        "template_version": str(spec.get("template_version", "未标注") or "未标注"),
+                        "date": date_part.strip() or "未标注日期",
+                        "detail": detail_part.strip() or line,
+                    }
+                )
+        entries.sort(
+            key=lambda item: (
+                str(item.get("date", "") or ""),
+                str(item.get("preset_label", "") or ""),
+            ),
+            reverse=True,
+        )
+        if limit is not None and limit > 0:
+            entries = entries[:limit]
+        return entries
+
+    def _normalized_market_chart_recent_presets(self) -> list[str]:
+        builtin_fn = getattr(self, "_market_chart_builtin_preset_specs", None)
+        builtin_specs = builtin_fn() if callable(builtin_fn) else QuantHunterWindow._market_chart_builtin_preset_specs(self)
+        custom_fn = getattr(self, "_normalized_market_chart_custom_presets", None)
+        custom_specs = custom_fn() if callable(custom_fn) else QuantHunterWindow._normalized_market_chart_custom_presets(self)
+        allowed = set(builtin_specs) | set(custom_specs) | {"CUSTOM"}
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw in list(getattr(self, "market_chart_recent_presets", []) or []):
+            key = self._normalize_market_chart_preset_key(str(raw or ""))
+            if key not in allowed or key in seen:
+                continue
+            seen.add(key)
+            normalized.append(key)
+        self.market_chart_recent_presets = normalized[:12]
+        return list(self.market_chart_recent_presets)
+
+    def _normalized_market_chart_preset_usage_counts(self) -> dict[str, int]:
+        builtin_fn = getattr(self, "_market_chart_builtin_preset_specs", None)
+        builtin_specs = builtin_fn() if callable(builtin_fn) else QuantHunterWindow._market_chart_builtin_preset_specs(self)
+        custom_fn = getattr(self, "_normalized_market_chart_custom_presets", None)
+        custom_specs = custom_fn() if callable(custom_fn) else QuantHunterWindow._normalized_market_chart_custom_presets(self)
+        allowed = set(builtin_specs) | set(custom_specs) | {"CUSTOM"}
+        normalize_key_fn = getattr(self, "_normalize_market_chart_preset_key", None)
+        if not callable(normalize_key_fn):
+            normalize_key_fn = lambda value: QuantHunterWindow._normalize_market_chart_preset_key(value)
+        normalized: dict[str, int] = {}
+        for raw_key, raw_value in dict(getattr(self, "market_chart_preset_usage_counts", {}) or {}).items():
+            key = normalize_key_fn(str(raw_key or ""))
+            if key not in allowed:
+                continue
+            try:
+                count = int(raw_value)
+            except (TypeError, ValueError):
+                try:
+                    count = int(float(raw_value))
+                except (TypeError, ValueError):
+                    count = 0
+            if count > 0:
+                normalized[key] = count
+        self.market_chart_preset_usage_counts = normalized
+        return dict(self.market_chart_preset_usage_counts)
+
+    def _record_market_chart_recent_preset(self, preset_key: str, *, persist: bool = False) -> None:
+        key = self._normalize_market_chart_preset_key(preset_key)
+        if not key:
+            return
+        recent = [item for item in QuantHunterWindow._normalized_market_chart_recent_presets(self) if item != key]
+        recent.insert(0, key)
+        self.market_chart_recent_presets = recent[:12]
+        if hasattr(self, "state"):
+            self.state.market_chart_recent_presets = list(self.market_chart_recent_presets)
+        if persist:
+            self.save_state()
+
+    def _record_market_chart_preset_usage(self, preset_key: str, *, persist: bool = False) -> None:
+        key = self._normalize_market_chart_preset_key(preset_key)
+        if not key:
+            return
+        counts = dict(QuantHunterWindow._normalized_market_chart_preset_usage_counts(self))
+        counts[key] = max(int(counts.get(key, 0) or 0) + 1, 1)
+        self.market_chart_preset_usage_counts = counts
+        if hasattr(self, "state"):
+            self.state.market_chart_preset_usage_counts = dict(self.market_chart_preset_usage_counts)
+        if persist:
+            self.save_state()
+
+    def _market_chart_custom_preset_key_for_label(self, label: str) -> str:
+        target_label = str(label or "").strip() or "自定义预设"
+        normalized_presets = self._normalized_market_chart_custom_presets()
+        for key, spec in normalized_presets.items():
+            if str(spec.get("label", "") or "").strip().lower() == target_label.lower():
+                return key
+        index = 1
+        while True:
+            candidate = f"USER_{index}"
+            if candidate not in normalized_presets:
+                return candidate
+            index += 1
+
+    def _capture_market_chart_preset_spec(
+        self,
+        *,
+        label: str,
+        detail: str = "",
+        tags: list[str] | None = None,
+    ) -> dict[str, object]:
+        return self._normalize_market_chart_custom_preset_spec(
+            {
+                "label": label,
+                "detail": detail,
+                "tags": list(tags or []),
+                "overlays": sorted(self.market_overlay_modes),
+                "annotation_mode": getattr(self, "market_strategy_annotation_mode", "FULL"),
+                "indicator": getattr(self, "market_secondary_indicator_mode", "MACD"),
+                "expanded": bool(getattr(self, "market_primary_chart_expanded", False)),
+                "pinned": False,
+            }
+        )
+
+    def duplicate_market_chart_preset_as_custom(self, source_key: str = "") -> str:
+        resolved = self._normalize_market_chart_preset_key(
+            source_key or getattr(self, "market_chart_preset", "BALANCED")
+        )
+        if resolved == "CUSTOM":
+            source_label = self._market_chart_preset_label("CUSTOM")
+            spec = self._capture_market_chart_preset_spec(
+                label=f"{source_label} 副本",
+                detail="复制自当前自定义视图。",
+                tags=["自定义"],
+            )
+        else:
+            source_spec = dict(self._market_chart_preset_specs().get(resolved, {}) or {})
+            if not source_spec:
+                QMessageBox.information(self, "提示", "当前预设不可复制。")
+                return ""
+            source_label = str(source_spec.get("label", resolved) or resolved).strip()
+            source_tags = [str(item).strip() for item in list(source_spec.get("tags", []) or []) if str(item).strip()]
+            if "自定义" not in source_tags:
+                source_tags.append("自定义")
+            detail = str(source_spec.get("detail", "") or "").strip()
+            copy_note = "复制自团队模板。" if resolved in self._market_chart_builtin_preset_specs() else "复制自已有预设。"
+            spec = self._normalize_market_chart_custom_preset_spec(
+                {
+                    **source_spec,
+                    "label": f"{source_label} 副本",
+                    "detail": f"{detail} | {copy_note}" if detail else copy_note,
+                    "tags": source_tags,
+                    "pinned": False,
+                }
+            )
+        target_key = self._market_chart_custom_preset_key_for_label(str(spec.get("label", "") or "自定义副本"))
+        self._normalized_market_chart_custom_presets()[target_key] = spec
+        self.market_chart_preset = target_key
+        self._sync_market_chart_preset_state(persist=True)
+        self._show_market_chart_feedback(f"已复制为自定义预设：{spec.get('label', target_key)}")
+        return target_key
+
+    def toggle_market_chart_preset_pinned(self, preset_key: str = "") -> bool:
+        target_key = self._normalize_market_chart_preset_key(
+            preset_key or getattr(self, "market_chart_preset", "CUSTOM")
+        )
+        presets = self._normalized_market_chart_custom_presets()
+        spec = presets.get(target_key)
+        if spec is None:
+            QMessageBox.information(self, "提示", "请先选择一个自定义图表预设。")
+            return False
+        updated = dict(spec)
+        updated["pinned"] = not bool(spec.get("pinned", False))
+        presets[target_key] = self._normalize_market_chart_custom_preset_spec(updated)
+        self._sync_market_chart_preset_state(persist=True)
+        label = str(updated.get("label", target_key) or target_key)
+        self._show_market_chart_feedback(
+            f"{'已置顶' if updated['pinned'] else '已取消置顶'}图表预设：{label}"
+        )
+        return True
+
+    def _save_current_market_chart_preset(self, *, prompt_overwrite: bool = True) -> str:
+        current_label = self._market_chart_preset_label(getattr(self, "market_chart_preset", "BALANCED"))
+        default_text = current_label if not str(getattr(self, "market_chart_preset", "") or "").startswith("USER_") else current_label
+        preset_name, accepted = QInputDialog.getText(
+            self,
+            "保存图表预设",
+            "请输入自定义预设名称：",
+            QLineEdit.Normal,
+            default_text,
+        )
+        if not accepted:
+            return ""
+        preset_label = str(preset_name or "").strip()
+        if not preset_label:
+            QMessageBox.information(self, "提示", "请先输入预设名称。")
+            return ""
+        preset_key = self._market_chart_custom_preset_key_for_label(preset_label)
+        existing = self._normalized_market_chart_custom_presets().get(preset_key)
+        if prompt_overwrite and existing is not None:
+            confirm = QMessageBox.question(
+                self,
+                "覆盖图表预设",
+                f"自定义预设“{preset_label}”已存在，是否覆盖？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if confirm != QMessageBox.Yes:
+                return ""
+        spec = self._capture_market_chart_preset_spec(
+            label=preset_label,
+            detail=f"保存于 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        )
+        self._normalized_market_chart_custom_presets()[preset_key] = spec
+        self.market_chart_preset = preset_key
+        self._sync_market_chart_preset_state(persist=True)
+        self._show_market_chart_feedback(f"已保存自定义预设：{preset_label}")
+        return preset_key
+
+    def delete_market_chart_preset(self, preset_key: str = "") -> bool:
+        target_key = self._normalize_market_chart_preset_key(
+            preset_key or getattr(self, "market_chart_preset", "CUSTOM")
+        )
+        if not target_key.startswith("USER_"):
+            QMessageBox.information(self, "提示", "只有自定义图表预设支持删除。")
+            return False
+        presets = self._normalized_market_chart_custom_presets()
+        spec = presets.get(target_key)
+        if spec is None:
+            QMessageBox.information(self, "提示", "当前自定义图表预设不存在。")
+            return False
+        label = str(spec.get("label", target_key) or target_key)
+        confirm = QMessageBox.question(
+            self,
+            "删除图表预设",
+            f"确认删除自定义图表预设“{label}”？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return False
+        presets.pop(target_key, None)
+        fallback = "BALANCED"
+        if getattr(self, "market_chart_preset", "") == target_key:
+            self.market_chart_preset = fallback
+            self.apply_market_chart_preset(fallback, save=True, feedback=False)
+        else:
+            self._sync_market_chart_preset_state(persist=True)
+        self._show_market_chart_feedback(f"已删除自定义预设：{label}")
+        return True
+
+    def rename_market_chart_preset(self, preset_key: str = "") -> str:
+        target_key = self._normalize_market_chart_preset_key(
+            preset_key or getattr(self, "market_chart_preset", "CUSTOM")
+        )
+        presets = self._normalized_market_chart_custom_presets()
+        spec = presets.get(target_key)
+        if spec is None:
+            QMessageBox.information(self, "提示", "请先选择一个自定义图表预设。")
+            return ""
+        current_label = str(spec.get("label", target_key) or target_key)
+        next_label, accepted = QInputDialog.getText(
+            self,
+            "重命名图表预设",
+            "请输入新的预设名称：",
+            QLineEdit.Normal,
+            current_label,
+        )
+        if not accepted:
+            return ""
+        normalized_label = str(next_label or "").strip()
+        if not normalized_label:
+            QMessageBox.information(self, "提示", "预设名称不能为空。")
+            return ""
+        conflict_key = next(
+            (
+                key
+                for key, item in presets.items()
+                if key != target_key and str(item.get("label", "") or "").strip().lower() == normalized_label.lower()
+            ),
+            "",
+        )
+        if conflict_key:
+            QMessageBox.information(self, "提示", f"已存在同名自定义预设：{normalized_label}")
+            return ""
+        updated = dict(spec)
+        updated["label"] = normalized_label
+        presets[target_key] = self._normalize_market_chart_custom_preset_spec(updated)
+        self._sync_market_chart_preset_state(persist=True)
+        self._show_market_chart_feedback(f"已重命名图表预设：{normalized_label}")
+        return target_key
+
+    def edit_market_chart_preset_metadata(self, preset_key: str = "") -> str:
+        target_key = self._normalize_market_chart_preset_key(
+            preset_key or getattr(self, "market_chart_preset", "CUSTOM")
+        )
+        presets = self._normalized_market_chart_custom_presets()
+        spec = presets.get(target_key)
+        if spec is None:
+            QMessageBox.information(self, "提示", "请先选择一个自定义图表预设。")
+            return ""
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("编辑图表预设说明")
+        dialog.resize(520, 320)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        form = QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setSpacing(8)
+        name_input = QLineEdit(str(spec.get("label", target_key) or target_key))
+        tags_input = QLineEdit(", ".join(list(spec.get("tags", []) or [])))
+        detail_input = QTextEdit()
+        detail_input.setPlainText(str(spec.get("detail", "") or ""))
+        detail_input.setMinimumHeight(120)
+        form.addRow("名称", name_input)
+        form.addRow("标签", tags_input)
+        form.addRow("说明", detail_input)
+        layout.addLayout(form)
+
+        hint = QLabel("标签可用逗号分隔，例如：复盘, 量价, 机构版。")
+        hint.setObjectName("inlineHint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        button_row = QHBoxLayout()
+        button_row.setContentsMargins(0, 0, 0, 0)
+        button_row.setSpacing(8)
+        save_button = QPushButton("保存")
+        cancel_button = QPushButton("取消")
+        self._set_button_role(save_button, "accent")
+        self._set_button_role(cancel_button, "ghost")
+        button_row.addStretch(1)
+        button_row.addWidget(save_button)
+        button_row.addWidget(cancel_button)
+        layout.addLayout(button_row)
+
+        save_button.clicked.connect(dialog.accept)
+        cancel_button.clicked.connect(dialog.reject)
+        if dialog.exec() != QDialog.Accepted:
+            return ""
+
+        updated = dict(spec)
+        updated["label"] = name_input.text().strip() or str(spec.get("label", target_key) or target_key)
+        updated["tags"] = [item.strip() for item in tags_input.text().replace("，", ",").split(",") if item.strip()]
+        updated["detail"] = detail_input.toPlainText().strip()
+        presets[target_key] = self._normalize_market_chart_custom_preset_spec(updated)
+        self._sync_market_chart_preset_state(persist=True)
+        self._show_market_chart_feedback(f"已更新图表预设说明：{updated['label']}")
+        return target_key
+
+    def _market_chart_custom_preset_export_payload(
+        self,
+        preset_keys: list[str] | None = None,
+        *,
+        package_title: str = "",
+        package_detail: str = "",
+    ) -> dict[str, object]:
+        presets = self._normalized_market_chart_custom_presets()
+        selected_keys = list(preset_keys or presets.keys())
+        rows: list[dict[str, object]] = []
+        exported_labels: list[str] = []
+        for key in selected_keys:
+            normalized_key = self._normalize_market_chart_preset_key(key)
+            spec = presets.get(normalized_key)
+            if spec is None:
+                continue
+            exported_labels.append(str(spec.get("label", normalized_key) or normalized_key))
+            rows.append(
+                {
+                    "key": normalized_key,
+                    "label": str(spec.get("label", normalized_key) or normalized_key),
+                    "detail": str(spec.get("detail", "") or ""),
+                    "tags": list(spec.get("tags", []) or []),
+                    "overlays": sorted(
+                        str(item).upper() for item in set(spec.get("overlays", set()) or set()) if str(item).strip()
+                    ),
+                    "annotation_mode": self._normalize_market_strategy_annotation_mode(
+                        spec.get("annotation_mode", "FULL")
+                    ),
+                    "indicator": str(spec.get("indicator", "MACD") or "MACD").upper(),
+                    "expanded": bool(spec.get("expanded", False)),
+                    "pinned": bool(spec.get("pinned", False)),
+                }
+            )
+        resolved_title = package_title.strip() or (exported_labels[0] if len(exported_labels) == 1 else "图表预设包")
+        resolved_detail = package_detail.strip() or (
+            f"包含 {len(exported_labels)} 个自定义图表预设，可直接导入量化猎手终端。"
+            if exported_labels
+            else "空预设包。"
+        )
+        return {
+            "kind": "market_chart_presets",
+            "version": 1,
+            "package": {
+                "title": resolved_title,
+                "detail": resolved_detail,
+                "preset_count": len(exported_labels),
+                "preset_labels": exported_labels,
+                "exported_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            },
+            "presets": rows,
+        }
+
+    def _market_chart_preset_package_summary(self, payload: object) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        package = dict(payload.get("package", {}) or {}) if isinstance(payload.get("package", {}), dict) else {}
+        title = str(package.get("title", "") or "").strip()
+        detail = str(package.get("detail", "") or "").strip()
+        exported_at = str(package.get("exported_at", "") or "").strip()
+        count = int(package.get("preset_count", len(list(payload.get("presets", []) or []))) or 0)
+        parts = [part for part in [title, detail] if part]
+        summary = " | ".join(parts)
+        if count > 0:
+            summary = f"{summary} | 预设 {count} 个" if summary else f"预设 {count} 个"
+        if exported_at:
+            summary = f"{summary} | 导出于 {exported_at}" if summary else f"导出于 {exported_at}"
+        return summary
+
+    def _prompt_market_chart_preset_package_metadata(
+        self,
+        *,
+        default_title: str,
+        default_detail: str,
+    ) -> tuple[str, str] | None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("填写预设包说明")
+        dialog.resize(520, 280)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        hint = QLabel("导出图表预设包时可填写标题和备注，方便团队成员理解这套视图的用途。")
+        hint.setObjectName("inlineHint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        form = QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setSpacing(8)
+        title_input = QLineEdit(default_title)
+        detail_input = QTextEdit()
+        detail_input.setPlainText(default_detail)
+        detail_input.setMinimumHeight(120)
+        form.addRow("包标题", title_input)
+        form.addRow("包备注", detail_input)
+        layout.addLayout(form)
+
+        button_row = QHBoxLayout()
+        button_row.setContentsMargins(0, 0, 0, 0)
+        button_row.setSpacing(8)
+        ok_button = QPushButton("确认导出")
+        cancel_button = QPushButton("取消")
+        self._set_button_role(ok_button, "accent")
+        self._set_button_role(cancel_button, "ghost")
+        button_row.addStretch(1)
+        button_row.addWidget(ok_button)
+        button_row.addWidget(cancel_button)
+        layout.addLayout(button_row)
+
+        ok_button.clicked.connect(dialog.accept)
+        cancel_button.clicked.connect(dialog.reject)
+        if dialog.exec() != QDialog.Accepted:
+            return None
+        return (title_input.text().strip(), detail_input.toPlainText().strip())
+
+    def export_market_chart_preset(self, preset_key: str = "", *, export_all: bool = False) -> str:
+        presets = self._normalized_market_chart_custom_presets()
+        if export_all:
+            selected_keys = list(presets)
+            if not selected_keys:
+                QMessageBox.information(self, "提示", "当前没有可导出的自定义图表预设。")
+                return ""
+            default_name = "market_chart_presets.json"
+            default_title = "图表预设包"
+            default_detail = f"包含 {len(selected_keys)} 个自定义图表预设，可直接导入量化猎手终端。"
+        else:
+            target_key = self._normalize_market_chart_preset_key(
+                preset_key or getattr(self, "market_chart_preset", "CUSTOM")
+            )
+            if not target_key.startswith("USER_") or target_key not in presets:
+                QMessageBox.information(self, "提示", "请先选中一个自定义图表预设再导出。")
+                return ""
+            selected_keys = [target_key]
+            default_name = f"{str(presets[target_key].get('label', target_key) or target_key).strip()}.json"
+            default_title = str(presets[target_key].get("label", target_key) or target_key).strip()
+            default_detail = str(presets[target_key].get("detail", "") or "").strip()
+        package_meta = self._prompt_market_chart_preset_package_metadata(
+            default_title=default_title,
+            default_detail=default_detail,
+        )
+        if package_meta is None:
+            return ""
+        package_title, package_detail = package_meta
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出图表预设",
+            str(PROJECT_ROOT / default_name),
+            "JSON 文件 (*.json);;所有文件 (*)",
+        )
+        if not file_path:
+            return ""
+        payload = self._market_chart_custom_preset_export_payload(
+            selected_keys,
+            package_title=package_title,
+            package_detail=package_detail,
+        )
+        Path(file_path).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._show_market_chart_feedback(f"已导出图表预设：{Path(file_path).name}")
+        return str(file_path)
+
+    def _import_market_chart_custom_preset_payload(self, payload: object, *, persist: bool = True) -> list[str]:
+        if isinstance(payload, dict) and isinstance(payload.get("presets"), list):
+            items = [item for item in list(payload.get("presets", []) or []) if isinstance(item, dict)]
+        elif isinstance(payload, dict) and {"label", "overlays"} & set(payload.keys()):
+            items = [payload]
+        elif isinstance(payload, dict):
+            items = [
+                {"key": key, **value}
+                for key, value in payload.items()
+                if isinstance(value, dict)
+            ]
+        else:
+            raise ValueError("图表预设导入格式不正确。")
+        if not items:
+            raise ValueError("未发现可导入的图表预设。")
+
+        presets = self._normalized_market_chart_custom_presets()
+        imported_keys: list[str] = []
+        for item in items:
+            spec = self._normalize_market_chart_custom_preset_spec(item)
+            raw_key = self._normalize_market_chart_preset_key(str(item.get("key", "") or ""))
+            label = str(spec.get("label", "") or "").strip()
+            existing_key = next(
+                (
+                    key
+                    for key, current_spec in presets.items()
+                    if str(current_spec.get("label", "") or "").strip().lower() == label.lower()
+                ),
+                "",
+            )
+            target_key = raw_key if raw_key.startswith("USER_") else ""
+            if not target_key:
+                target_key = existing_key or self._market_chart_custom_preset_key_for_label(label)
+            if existing_key and existing_key in presets and "pinned" not in item:
+                spec["pinned"] = bool(presets[existing_key].get("pinned", False))
+            presets[target_key] = spec
+            imported_keys.append(target_key)
+        self.market_chart_custom_presets = presets
+        self._sync_market_chart_preset_state(persist=persist)
+        return imported_keys
+
+    def import_market_chart_presets_from_file(self) -> list[str]:
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "导入图表预设",
+            str(PROJECT_ROOT),
+            "JSON 文件 (*.json);;所有文件 (*)",
+        )
+        if not file_path:
+            return []
+        try:
+            payload = json.loads(Path(file_path).read_text(encoding="utf-8"))
+            imported = self._import_market_chart_custom_preset_payload(payload, persist=True)
+            package_summary = self._market_chart_preset_package_summary(payload)
+        except Exception as exc:
+            QMessageBox.critical(self, "导入失败", str(exc))
+            return []
+        feedback = f"已导入 {len(imported)} 个图表预设"
+        if package_summary:
+            feedback = f"{feedback} | {package_summary}"
+        self._show_market_chart_feedback(feedback)
+        return imported
+
+    def _market_chart_preset_specs(self) -> dict[str, dict[str, object]]:
+        payload = dict(self._market_chart_builtin_preset_specs())
+        payload.update(self._normalized_market_chart_custom_presets())
+        payload["CUSTOM"] = {
+            "label": "自定义视图",
+            "detail": "当前图层组合与预设不完全一致。",
+            "overlays": set(getattr(self, "market_overlay_modes", set()) or {"MA"}),
+            "annotation_mode": str(getattr(self, "market_strategy_annotation_mode", "FULL") or "FULL"),
+            "indicator": str(getattr(self, "market_secondary_indicator_mode", "MACD") or "MACD"),
+            "expanded": bool(getattr(self, "market_primary_chart_expanded", False)),
+        }
+        return payload
+
+    def open_market_chart_preset_manager(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("图表预设管理器")
+        dialog.resize(920, 700)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        intro = QLabel("上半区是团队模板库，只读但可直接应用或复制为自定义；下半区管理你自己的图表预设。")
+        intro.setObjectName("inlineHint")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        def _build_summary_card(title: str, hint: str) -> tuple[QFrame, QLabel, QLabel]:
+            frame = QFrame()
+            frame.setProperty("pageTone", "overview")
+            self._style_terminal_panel(frame)
+            frame_layout = QVBoxLayout(frame)
+            frame_layout.setContentsMargins(10, 10, 10, 10)
+            frame_layout.setSpacing(4)
+            title_label = QLabel(title)
+            title_label.setObjectName("inlineHint")
+            title_label.setWordWrap(True)
+            value_label = QLabel("--")
+            value_label.setObjectName("workspaceTitle")
+            value_label.setWordWrap(True)
+            hint_label = QLabel(hint)
+            hint_label.setObjectName("inlineHint")
+            hint_label.setWordWrap(True)
+            frame_layout.addWidget(title_label)
+            frame_layout.addWidget(value_label)
+            frame_layout.addWidget(hint_label)
+            return frame, value_label, hint_label
+
+        analytics_row = QHBoxLayout()
+        analytics_row.setContentsMargins(0, 0, 0, 0)
+        analytics_row.setSpacing(12)
+
+        usage_box = QGroupBox("预设热榜")
+        usage_box.setProperty("pageTone", "overview")
+        self._style_terminal_panel(usage_box)
+        usage_layout = QVBoxLayout(usage_box)
+        usage_layout.setContentsMargins(12, 12, 12, 12)
+        usage_layout.setSpacing(8)
+        usage_hint = QLabel("按使用次数统计当前最常用的图表预设，便于沉淀团队和个人常用视图。")
+        usage_hint.setObjectName("inlineHint")
+        usage_hint.setWordWrap(True)
+        usage_layout.addWidget(usage_hint)
+        usage_card_row = QHBoxLayout()
+        usage_card_row.setContentsMargins(0, 0, 0, 0)
+        usage_card_row.setSpacing(8)
+        hottest_card, hottest_value, hottest_hint = _build_summary_card("最热预设", "等待统计")
+        total_uses_card, total_uses_value, total_uses_hint = _build_summary_card("累计使用", "等待统计")
+        unique_card, unique_value, unique_hint = _build_summary_card("覆盖预设", "等待统计")
+        for card in [hottest_card, total_uses_card, unique_card]:
+            usage_card_row.addWidget(card, stretch=1)
+        usage_layout.addLayout(usage_card_row)
+        usage_action_row = QHBoxLayout()
+        usage_action_row.setContentsMargins(0, 0, 0, 0)
+        usage_action_row.setSpacing(8)
+        apply_hot_button = QPushButton("应用最热预设")
+        pin_hot_button = QPushButton("固定最热预设")
+        self._set_button_role(apply_hot_button, "accent")
+        self._set_button_role(pin_hot_button, "ghost")
+        usage_action_row.addWidget(apply_hot_button)
+        usage_action_row.addWidget(pin_hot_button)
+        usage_action_row.addStretch(1)
+        usage_layout.addLayout(usage_action_row)
+        usage_text = QTextEdit()
+        usage_text.setReadOnly(True)
+        usage_text.setMaximumHeight(120)
+        self._style_terminal_console(usage_text)
+        usage_layout.addWidget(usage_text)
+        analytics_row.addWidget(usage_box, stretch=1)
+
+        timeline_box = QGroupBox("模板发布时间线")
+        timeline_box.setProperty("pageTone", "overview")
+        self._style_terminal_panel(timeline_box)
+        timeline_layout = QVBoxLayout(timeline_box)
+        timeline_layout.setContentsMargins(12, 12, 12, 12)
+        timeline_layout.setSpacing(8)
+        timeline_hint = QLabel("聚合团队模板的发布时间线和更新记录，便于确认模板演进与维护节奏。")
+        timeline_hint.setObjectName("inlineHint")
+        timeline_hint.setWordWrap(True)
+        timeline_layout.addWidget(timeline_hint)
+        timeline_filter_row = QHBoxLayout()
+        timeline_filter_row.setContentsMargins(0, 0, 0, 0)
+        timeline_filter_row.setSpacing(8)
+        timeline_filter_combo = QComboBox()
+        timeline_filter_combo.addItem("全部模板", "")
+        for key in [item for item in ["BALANCED", "CLEAN", "SIGNAL", "FLOW"] if item in self._market_chart_builtin_preset_specs()]:
+            label = str(self._market_chart_builtin_preset_specs().get(key, {}).get("label", key) or key)
+            timeline_filter_combo.addItem(label, key)
+        timeline_filter_row.addWidget(QLabel("筛选模板"))
+        timeline_filter_row.addWidget(timeline_filter_combo, stretch=1)
+        timeline_layout.addLayout(timeline_filter_row)
+        timeline_card_row = QHBoxLayout()
+        timeline_card_row.setContentsMargins(0, 0, 0, 0)
+        timeline_card_row.setSpacing(8)
+        latest_version_card, latest_version_value, latest_version_hint = _build_summary_card("最新版本", "等待模板信息")
+        latest_release_card, latest_release_value, latest_release_hint = _build_summary_card("最近更新", "等待模板信息")
+        owner_card, owner_value, owner_hint = _build_summary_card("模板维护", "等待模板信息")
+        for card in [latest_version_card, latest_release_card, owner_card]:
+            timeline_card_row.addWidget(card, stretch=1)
+        timeline_layout.addLayout(timeline_card_row)
+        timeline_text = QTextEdit()
+        timeline_text.setReadOnly(True)
+        timeline_text.setMaximumHeight(120)
+        self._style_terminal_console(timeline_text)
+        timeline_layout.addWidget(timeline_text)
+        analytics_row.addWidget(timeline_box, stretch=1)
+
+        layout.addLayout(analytics_row)
+
+        recent_box = QGroupBox("最近使用")
+        recent_box.setProperty("pageTone", "overview")
+        self._style_terminal_panel(recent_box)
+        recent_layout = QVBoxLayout(recent_box)
+        recent_layout.setContentsMargins(12, 12, 12, 12)
+        recent_layout.setSpacing(8)
+        recent_hint = QLabel("这里会记录最近切换过的图表预设，便于快速回切常用视图。")
+        recent_hint.setObjectName("inlineHint")
+        recent_hint.setWordWrap(True)
+        recent_layout.addWidget(recent_hint)
+        recent_content_row = QHBoxLayout()
+        recent_content_row.setContentsMargins(0, 0, 0, 0)
+        recent_content_row.setSpacing(12)
+        recent_list = QListWidget()
+        recent_list.setMaximumHeight(150)
+        recent_summary = QTextEdit()
+        recent_summary.setReadOnly(True)
+        recent_summary.setMaximumHeight(150)
+        self._style_terminal_console(recent_summary)
+        recent_content_row.addWidget(recent_list, stretch=2)
+        recent_content_row.addWidget(recent_summary, stretch=3)
+        recent_layout.addLayout(recent_content_row)
+        recent_button_row = QHBoxLayout()
+        recent_button_row.setContentsMargins(0, 0, 0, 0)
+        recent_button_row.setSpacing(8)
+        apply_recent_button = QPushButton("应用最近预设")
+        recent_pin_button = QPushButton("固定到常用")
+        self._set_button_role(apply_recent_button, "accent")
+        self._set_button_role(recent_pin_button, "ghost")
+        recent_button_row.addWidget(apply_recent_button)
+        recent_button_row.addWidget(recent_pin_button)
+        recent_button_row.addStretch(1)
+        recent_layout.addLayout(recent_button_row)
+        layout.addWidget(recent_box)
+
+        splitter = QSplitter(Qt.Vertical)
+        splitter.setChildrenCollapsible(False)
+        layout.addWidget(splitter, stretch=1)
+
+        template_box = QGroupBox("团队模板库")
+        template_box.setProperty("pageTone", "overview")
+        self._style_terminal_panel(template_box)
+        template_layout = QVBoxLayout(template_box)
+        template_layout.setContentsMargins(12, 12, 12, 12)
+        template_layout.setSpacing(8)
+        template_hint = QLabel("团队模板是只读模板，可直接应用，也可以复制成你的自定义预设再调整。")
+        template_hint.setObjectName("inlineHint")
+        template_hint.setWordWrap(True)
+        template_layout.addWidget(template_hint)
+        template_content_row = QHBoxLayout()
+        template_content_row.setContentsMargins(0, 0, 0, 0)
+        template_content_row.setSpacing(12)
+        template_list = QListWidget()
+        template_summary = QTextEdit()
+        template_summary.setReadOnly(True)
+        self._style_terminal_console(template_summary)
+        template_content_row.addWidget(template_list, stretch=2)
+        template_content_row.addWidget(template_summary, stretch=3)
+        template_layout.addLayout(template_content_row, stretch=1)
+        template_button_row = QHBoxLayout()
+        template_button_row.setContentsMargins(0, 0, 0, 0)
+        template_button_row.setSpacing(8)
+        apply_template_button = QPushButton("应用模板")
+        duplicate_template_button = QPushButton("复制为自定义")
+        self._set_button_role(apply_template_button, "accent")
+        self._set_button_role(duplicate_template_button, "tonal")
+        template_button_row.addWidget(apply_template_button)
+        template_button_row.addWidget(duplicate_template_button)
+        template_button_row.addStretch(1)
+        template_layout.addLayout(template_button_row)
+        splitter.addWidget(template_box)
+
+        custom_box = QGroupBox("自定义预设")
+        custom_box.setProperty("pageTone", "overview")
+        self._style_terminal_panel(custom_box)
+        custom_layout = QVBoxLayout(custom_box)
+        custom_layout.setContentsMargins(12, 12, 12, 12)
+        custom_layout.setSpacing(8)
+        filter_row = QHBoxLayout()
+        filter_row.setContentsMargins(0, 0, 0, 0)
+        filter_row.setSpacing(8)
+        search_input = QLineEdit()
+        search_input.setPlaceholderText("搜索名称、说明、标签、指标、标注或叠加层")
+        pinned_only_checkbox = QCheckBox("仅看置顶")
+        filter_row.addWidget(search_input, stretch=1)
+        filter_row.addWidget(pinned_only_checkbox)
+        custom_layout.addLayout(filter_row)
+
+        content_row = QHBoxLayout()
+        content_row.setContentsMargins(0, 0, 0, 0)
+        content_row.setSpacing(12)
+        preset_list = QListWidget()
+        preset_summary = QTextEdit()
+        preset_summary.setReadOnly(True)
+        self._style_terminal_console(preset_summary)
+        content_row.addWidget(preset_list, stretch=2)
+        content_row.addWidget(preset_summary, stretch=3)
+        custom_layout.addLayout(content_row, stretch=1)
+
+        button_row = QHBoxLayout()
+        button_row.setContentsMargins(0, 0, 0, 0)
+        button_row.setSpacing(8)
+        apply_button = QPushButton("应用预设")
+        pin_button = QPushButton("置顶常用")
+        metadata_button = QPushButton("编辑标签/说明")
+        rename_button = QPushButton("重命名")
+        export_button = QPushButton("导出")
+        export_all_button = QPushButton("导出全部")
+        delete_button = QPushButton("删除")
+        import_button = QPushButton("导入")
+        close_button = QPushButton("关闭")
+        self._set_button_role(apply_button, "accent")
+        self._set_button_role(pin_button, "ghost")
+        self._set_button_role(metadata_button, "tonal")
+        self._set_button_role(rename_button, "tonal")
+        self._set_button_role(export_button, "ghost")
+        self._set_button_role(export_all_button, "ghost")
+        self._set_button_role(delete_button, "ghost")
+        self._set_button_role(import_button, "tonal")
+        self._set_button_role(close_button, "ghost")
+        for button in [apply_button, pin_button, metadata_button, rename_button, export_button, export_all_button, delete_button, import_button, close_button]:
+            button_row.addWidget(button)
+        button_row.addStretch(1)
+        custom_layout.addLayout(button_row)
+        splitter.addWidget(custom_box)
+        self._configure_splitter(splitter, [280, 420])
+
+        ordered_keys: list[str] = []
+        recent_keys: list[str] = []
+        template_keys = [key for key in ["BALANCED", "CLEAN", "SIGNAL", "FLOW"] if key in self._market_chart_builtin_preset_specs()]
+
+        def _current_key() -> str:
+            row = preset_list.currentRow()
+            if row < 0 or row >= len(ordered_keys):
+                return ""
+            return ordered_keys[row]
+
+        def _current_template_key() -> str:
+            row = template_list.currentRow()
+            if row < 0 or row >= len(template_keys):
+                return ""
+            return template_keys[row]
+
+        def _current_recent_key() -> str:
+            row = recent_list.currentRow()
+            if row < 0 or row >= len(recent_keys):
+                return ""
+            return recent_keys[row]
+
+        def _update_template_summary() -> None:
+            key = _current_template_key()
+            spec = self._market_chart_builtin_preset_specs().get(key)
+            if spec is None:
+                template_summary.setPlainText("当前没有团队模板。")
+                return
+            lines = [
+                f"模板名称：{spec.get('label', key)}",
+                f"说明：{spec.get('detail', '') or '未填写'}",
+                f"标签：{', '.join(list(spec.get('tags', []) or [])) or '未设置'}",
+                f"发布人：{spec.get('template_owner', '团队模板维护者')}",
+                f"版本号：{spec.get('template_version', '未标注')}",
+                f"锁定说明：{spec.get('lock_note', '团队模板只读维护，如需调整请复制为自定义预设。')}",
+                f"主图叠加：{', '.join(sorted(str(item) for item in set(spec.get('overlays', set()) or set())))}",
+                f"战法标注：{spec.get('annotation_mode', 'FULL')}",
+                f"副图指标：{spec.get('indicator', 'MACD')}",
+                f"主图放大：{'是' if bool(spec.get('expanded', False)) else '否'}",
+                "",
+                "说明",
+                "- 团队模板是只读模板，适合作为统一基础视图。",
+                "- 如需调整，请先复制为自定义预设后再改。",
+            ]
+            update_log = list(spec.get("update_log", []) or [])
+            if update_log:
+                lines.extend(["", "更新日志"])
+                lines.extend(f"- {item}" for item in update_log[:4])
+            template_summary.setPlainText("\n".join(lines))
+
+        def _refresh_recent(selected_key: str = "") -> None:
+            nonlocal recent_keys
+            recent_keys = self._normalized_market_chart_recent_presets()
+            preset_map = self._market_chart_preset_specs()
+            recent_list.blockSignals(True)
+            recent_list.clear()
+            for key in recent_keys:
+                spec = preset_map.get(key, {})
+                label = str(spec.get("label", key) or key)
+                prefix = "★ " if bool(spec.get("pinned", False)) else ""
+                recent_list.addItem(f"{prefix}{label}")
+            recent_list.blockSignals(False)
+            target_key = selected_key or (_current_recent_key() if recent_keys else "")
+            if not target_key and recent_keys:
+                target_key = recent_keys[0]
+            if target_key in recent_keys:
+                recent_list.setCurrentRow(recent_keys.index(target_key))
+            elif recent_keys:
+                recent_list.setCurrentRow(0)
+            else:
+                recent_summary.setPlainText("最近还没有切换过图表预设。应用团队模板或自定义预设后，这里会自动记录。")
+
+        def _update_recent_summary() -> None:
+            key = _current_recent_key()
+            spec = self._market_chart_preset_specs().get(key)
+            if spec is None:
+                recent_summary.setPlainText("最近还没有切换过图表预设。应用团队模板或自定义预设后，这里会自动记录。")
+                return
+            origin = "团队模板" if key in self._market_chart_builtin_preset_specs() else ("自定义预设" if key.startswith("USER_") else "当前视图")
+            lines = [
+                f"最近预设：{spec.get('label', key)}",
+                f"来源：{origin}",
+                f"说明：{spec.get('detail', '') or '未填写'}",
+                f"标签：{', '.join(list(spec.get('tags', []) or [])) or '未设置'}",
+                f"主图叠加：{', '.join(sorted(str(item) for item in set(spec.get('overlays', set()) or set())))}",
+                f"战法标注：{spec.get('annotation_mode', 'FULL')}",
+                f"副图指标：{spec.get('indicator', 'MACD')}",
+            ]
+            if key in self._market_chart_builtin_preset_specs():
+                lines.append(f"模板版本：{spec.get('template_version', '未标注')}")
+                lines.append(f"发布人：{spec.get('template_owner', '团队模板维护者')}")
+            recent_summary.setPlainText("\n".join(lines))
+            if key.startswith("USER_"):
+                recent_pin_button.setText("取消固定" if bool(spec.get("pinned", False)) else "固定到常用")
+                self._set_button_role(recent_pin_button, "tonal" if bool(spec.get("pinned", False)) else "ghost")
+                recent_pin_button.setEnabled(True)
+            elif key in self._market_chart_builtin_preset_specs():
+                recent_pin_button.setText("复制为自定义")
+                self._set_button_role(recent_pin_button, "tonal")
+                recent_pin_button.setEnabled(True)
+            else:
+                recent_pin_button.setText("固定到常用")
+                self._set_button_role(recent_pin_button, "ghost")
+                recent_pin_button.setEnabled(False)
+
+        def _refresh_usage_rank() -> None:
+            usage_rows = self._market_chart_usage_rank_rows(limit=8)
+            recent_rows = self._normalized_market_chart_recent_presets()[:6]
+            if not usage_rows:
+                self._set_label_text_if_changed(hottest_value, "--")
+                self._set_label_text_if_changed(hottest_hint, "等待第一套常用视图形成")
+                self._set_label_text_if_changed(total_uses_value, "0")
+                self._set_label_text_if_changed(total_uses_hint, "尚未累计使用记录")
+                self._set_label_text_if_changed(unique_value, "0")
+                self._set_label_text_if_changed(unique_hint, "尚未形成覆盖面")
+                apply_hot_button.setEnabled(False)
+                pin_hot_button.setEnabled(False)
+                usage_text.setPlainText("当前还没有累计预设使用次数。\n应用团队模板或自定义预设后，这里会自动形成使用热榜。")
+                return
+            hottest_key, hottest_count = usage_rows[0]
+            self._set_label_text_if_changed(hottest_value, self._market_chart_preset_label(hottest_key))
+            hottest_origin = "团队模板" if hottest_key in self._market_chart_builtin_preset_specs() else ("自定义预设" if hottest_key.startswith("USER_") else "当前视图")
+            self._set_label_text_if_changed(hottest_hint, f"{hottest_origin} | 使用 {hottest_count} 次")
+            total_uses = sum(count for _key, count in usage_rows)
+            self._set_label_text_if_changed(total_uses_value, str(total_uses))
+            self._set_label_text_if_changed(total_uses_hint, "累计预设切换次数")
+            self._set_label_text_if_changed(unique_value, str(len(usage_rows)))
+            self._set_label_text_if_changed(unique_hint, "已形成使用记录的预设数")
+            apply_hot_button.setEnabled(True)
+            pin_hot_button.setEnabled(True)
+            if hottest_key.startswith("USER_"):
+                pin_hot_button.setText(
+                    "取消固定最热预设" if bool(self._market_chart_preset_specs().get(hottest_key, {}).get("pinned", False)) else "固定最热预设"
+                )
+                self._set_button_role(
+                    pin_hot_button,
+                    "tonal" if bool(self._market_chart_preset_specs().get(hottest_key, {}).get("pinned", False)) else "ghost",
+                )
+            elif hottest_key in self._market_chart_builtin_preset_specs():
+                pin_hot_button.setText("复制最热模板")
+                self._set_button_role(pin_hot_button, "tonal")
+            else:
+                pin_hot_button.setText("固定最热预设")
+                self._set_button_role(pin_hot_button, "ghost")
+            lines = ["使用热榜", ""]
+            for index, (key, count) in enumerate(usage_rows, start=1):
+                lines.append(f"{index}. {self._market_chart_preset_label(key)} | 使用 {count} 次")
+            if recent_rows:
+                lines.extend(["", "最近切换"])
+                lines.extend(
+                    f"- {self._market_chart_preset_label(key)}"
+                    for key in recent_rows
+                )
+            usage_text.setPlainText("\n".join(lines))
+
+        def _refresh_template_timeline() -> None:
+            selected_template_key = str(timeline_filter_combo.currentData() or "")
+            entries = self._market_chart_template_timeline_entries(limit=12, preset_key=selected_template_key)
+            if not entries:
+                self._set_label_text_if_changed(latest_version_value, "--")
+                self._set_label_text_if_changed(latest_version_hint, "等待模板发布信息")
+                self._set_label_text_if_changed(latest_release_value, "--")
+                self._set_label_text_if_changed(latest_release_hint, "等待模板发布时间线")
+                self._set_label_text_if_changed(owner_value, "--")
+                self._set_label_text_if_changed(owner_hint, "等待模板维护信息")
+                timeline_text.setPlainText("当前还没有团队模板发布时间线。")
+                return
+            latest_entry = entries[0]
+            self._set_label_text_if_changed(latest_version_value, str(latest_entry.get("template_version", "未标注") or "未标注"))
+            self._set_label_text_if_changed(latest_version_hint, str(latest_entry.get("preset_label", "") or ""))
+            self._set_label_text_if_changed(latest_release_value, str(latest_entry.get("date", "") or "未标注日期"))
+            self._set_label_text_if_changed(latest_release_hint, str(latest_entry.get("detail", "") or ""))
+            owner_counts: dict[str, int] = {}
+            for item in entries:
+                owner_name = str(item.get("template_owner", "团队模板维护者") or "团队模板维护者")
+                owner_counts[owner_name] = owner_counts.get(owner_name, 0) + 1
+            lead_owner = max(owner_counts.items(), key=lambda item: item[1])[0]
+            self._set_label_text_if_changed(owner_value, lead_owner)
+            self._set_label_text_if_changed(owner_hint, f"时间线记录 {len(entries)} 条")
+            lines = []
+            for item in entries:
+                lines.append(f"{item['date']}  ●  {item['preset_label']}  [{item['template_version']}]")
+                lines.append(f"    {item['template_owner']} | {item['detail']}")
+            timeline_text.setPlainText("\n".join(lines))
+
+        def _apply_and_refresh(target_key: str) -> None:
+            if not target_key:
+                return
+            self.apply_market_chart_preset(target_key)
+            _refresh_recent(target_key)
+            _update_recent_summary()
+            _refresh_usage_rank()
+            _refresh(target_key)
+            _update_summary()
+
+        def _duplicate_and_refresh(target_key: str) -> None:
+            if not target_key:
+                return
+            created = self.duplicate_market_chart_preset_as_custom(target_key)
+            if not created:
+                return
+            _refresh_recent(created)
+            _update_recent_summary()
+            _refresh_usage_rank()
+            _refresh(created)
+            _update_summary()
+
+        def _import_and_refresh() -> None:
+            imported = self.import_market_chart_presets_from_file()
+            target_key = imported[-1] if imported else ""
+            _refresh_recent(target_key)
+            _update_recent_summary()
+            _refresh_usage_rank()
+            _refresh(target_key)
+            _update_summary()
+
+        def _pin_or_duplicate_hottest() -> None:
+            hottest_key = self._market_chart_hottest_preset_key()
+            if not hottest_key:
+                return
+            if hottest_key.startswith("USER_"):
+                if self.toggle_market_chart_preset_pinned(hottest_key):
+                    _refresh_recent(hottest_key)
+                    _update_recent_summary()
+                    _refresh_usage_rank()
+                    _refresh(hottest_key)
+                    _update_summary()
+                return
+            if hottest_key in self._market_chart_builtin_preset_specs():
+                created = self.duplicate_market_chart_preset_as_custom(hottest_key)
+                if created:
+                    _refresh_recent(created)
+                    _update_recent_summary()
+                    _refresh_usage_rank()
+                    _refresh(created)
+                    _update_summary()
+
+        def _pin_or_duplicate_recent() -> None:
+            key = _current_recent_key()
+            if not key:
+                return
+            if key.startswith("USER_"):
+                if self.toggle_market_chart_preset_pinned(key):
+                    _refresh_recent(key)
+                    _update_recent_summary()
+                    _refresh_usage_rank()
+                    _refresh(key)
+                    _update_summary()
+                return
+            if key in self._market_chart_builtin_preset_specs():
+                created = self.duplicate_market_chart_preset_as_custom(key)
+                if created:
+                    _refresh_recent(created)
+                    _update_recent_summary()
+                    _refresh_usage_rank()
+                    _refresh(created)
+                    _update_summary()
+
+        def _refresh(selected_key: str = "") -> None:
+            nonlocal ordered_keys
+            presets = self._normalized_market_chart_custom_presets()
+            ordered_keys = self._ordered_market_chart_custom_preset_keys(
+                search_text=search_input.text().strip(),
+                pinned_only=pinned_only_checkbox.isChecked(),
+            )
+            preset_list.blockSignals(True)
+            preset_list.clear()
+            for key in ordered_keys:
+                label = str(presets[key].get("label", key) or key)
+                prefix = "★ " if bool(presets[key].get("pinned", False)) else ""
+                suffix = "  [当前]" if key == getattr(self, "market_chart_preset", "") else ""
+                preset_list.addItem(f"{prefix}{label}{suffix}")
+            preset_list.blockSignals(False)
+            target_key = selected_key or (_current_key() if ordered_keys else "")
+            if not target_key and ordered_keys:
+                target_key = ordered_keys[0]
+            if target_key in ordered_keys:
+                preset_list.setCurrentRow(ordered_keys.index(target_key))
+            elif ordered_keys:
+                preset_list.setCurrentRow(0)
+            else:
+                if search_input.text().strip() or pinned_only_checkbox.isChecked():
+                    preset_summary.setPlainText("当前筛选条件下没有匹配的自定义图表预设。\n可清空搜索词，或取消“仅看置顶”。")
+                else:
+                    preset_summary.setPlainText("当前还没有自定义图表预设。\n可先在右键菜单里把当前视图另存为预设，或直接从外部 JSON 导入。")
+
+        def _update_summary() -> None:
+            key = _current_key()
+            spec = self._normalized_market_chart_custom_presets().get(key)
+            if spec is None:
+                preset_summary.setPlainText("当前还没有自定义图表预设。\n可先在右键菜单里把当前视图另存为预设，或直接从外部 JSON 导入。")
+                return
+            lines = [
+                f"名称：{spec.get('label', key)}",
+                f"说明：{spec.get('detail', '') or '未填写'}",
+                f"标签：{', '.join(list(spec.get('tags', []) or [])) or '未设置'}",
+                f"置顶常用：{'是' if bool(spec.get('pinned', False)) else '否'}",
+                f"主图叠加：{', '.join(sorted(str(item) for item in set(spec.get('overlays', set()) or set())))}",
+                f"战法标注：{spec.get('annotation_mode', 'FULL')}",
+                f"副图指标：{spec.get('indicator', 'MACD')}",
+                f"主图放大：{'是' if bool(spec.get('expanded', False)) else '否'}",
+                "",
+                "操作提示",
+                "- 应用预设：立即切到这套图层组合。",
+                "- 置顶：常用预设会在右键菜单和管理器里优先显示。",
+                "- 标签 / 说明：可用来区分复盘、盯盘、团队共享等场景。",
+                "- 重命名 / 导出 / 删除：只影响当前选中的自定义预设。",
+                "- 导入：支持单个预设 JSON 或带包说明的预设包 JSON。",
+            ]
+            preset_summary.setPlainText("\n".join(lines))
+            pin_button.setText("取消置顶" if bool(spec.get("pinned", False)) else "置顶常用")
+            self._set_button_role(pin_button, "tonal" if bool(spec.get("pinned", False)) else "ghost")
+
+        template_list.currentRowChanged.connect(lambda _row: _update_template_summary())
+        recent_list.currentRowChanged.connect(lambda _row: _update_recent_summary())
+        preset_list.currentRowChanged.connect(lambda _row: _update_summary())
+        search_input.textChanged.connect(lambda _text: _refresh())
+        pinned_only_checkbox.stateChanged.connect(lambda _state: _refresh())
+        timeline_filter_combo.currentIndexChanged.connect(lambda _index: _refresh_template_timeline())
+        apply_hot_button.clicked.connect(lambda: _apply_and_refresh(self._market_chart_hottest_preset_key()))
+        pin_hot_button.clicked.connect(_pin_or_duplicate_hottest)
+        apply_recent_button.clicked.connect(lambda: _apply_and_refresh(_current_recent_key()))
+        recent_pin_button.clicked.connect(_pin_or_duplicate_recent)
+        apply_template_button.clicked.connect(lambda: _apply_and_refresh(_current_template_key()))
+        duplicate_template_button.clicked.connect(lambda: _duplicate_and_refresh(_current_template_key()))
+        apply_button.clicked.connect(lambda: _apply_and_refresh(_current_key()))
+        pin_button.clicked.connect(lambda: (_refresh_recent(self.market_chart_preset), _refresh(_current_key()), _update_summary()) if self.toggle_market_chart_preset_pinned(_current_key()) else None)
+        metadata_button.clicked.connect(lambda: (_refresh_recent(self.market_chart_preset), _refresh(self.edit_market_chart_preset_metadata(_current_key())), _update_summary()) if _current_key() else None)
+        rename_button.clicked.connect(lambda: (_refresh_recent(self.market_chart_preset), _refresh(self.rename_market_chart_preset(_current_key())), _update_summary()) if _current_key() else None)
+        export_button.clicked.connect(lambda: self.export_market_chart_preset(_current_key()) if _current_key() else None)
+        export_all_button.clicked.connect(lambda: self.export_market_chart_preset(export_all=True))
+        delete_button.clicked.connect(lambda: (_refresh_recent(), _refresh(), _update_summary()) if self.delete_market_chart_preset(_current_key()) else None)
+        import_button.clicked.connect(_import_and_refresh)
+        close_button.clicked.connect(dialog.accept)
+
+        template_list.clear()
+        for key in template_keys:
+            spec = self._market_chart_builtin_preset_specs().get(key, {})
+            template_list.addItem(str(spec.get("label", key) or key))
+        if template_keys:
+            template_list.setCurrentRow(0)
+        _update_template_summary()
+        _refresh_usage_rank()
+        _refresh_template_timeline()
+        _refresh_recent(getattr(self, "market_chart_preset", ""))
+        _update_recent_summary()
+        _refresh(getattr(self, "market_chart_preset", ""))
+        _update_summary()
+        dialog.exec()
+
+    def _market_chart_current_signature(self) -> tuple[tuple[str, ...], str, str, bool]:
+        overlays = tuple(sorted(str(item or "").strip().upper() for item in set(getattr(self, "market_overlay_modes", set()) or set()) if str(item or "").strip()))
+        annotation_mode = self._normalize_market_strategy_annotation_mode(getattr(self, "market_strategy_annotation_mode", "FULL"))
+        indicator = str(getattr(self, "market_secondary_indicator_mode", "MACD") or "MACD").upper()
+        expanded = bool(getattr(self, "market_primary_chart_expanded", False))
+        return (overlays, annotation_mode, indicator, expanded)
+
+    def _resolve_market_chart_preset_key(self) -> str:
+        current_signature = self._market_chart_current_signature()
+        for preset_key, spec in self._market_chart_preset_specs().items():
+            if preset_key == "CUSTOM":
+                continue
+            spec_signature = (
+                tuple(sorted(str(item).upper() for item in set(spec.get("overlays", set()) or set()))),
+                self._normalize_market_strategy_annotation_mode(spec.get("annotation_mode", "FULL")),
+                str(spec.get("indicator", "MACD") or "MACD").upper(),
+                bool(spec.get("expanded", False)),
+            )
+            if current_signature == spec_signature:
+                return preset_key
+        return "CUSTOM"
+
+    def _market_chart_preset_label(self, preset_key: str | None = None) -> str:
+        resolved = self._normalize_market_chart_preset_key(preset_key or getattr(self, "market_chart_preset", "BALANCED"))
+        return str(self._market_chart_preset_specs().get(resolved, {}).get("label", resolved) or resolved)
+
+    def _sync_market_chart_preset_state(self, *, persist: bool = False) -> None:
+        resolved = self._resolve_market_chart_preset_key()
+        self.market_chart_preset = resolved
+        if hasattr(self, "state"):
+            self.state.market_chart_preset = resolved
+            self.state.market_overlay_modes = sorted(self.market_overlay_modes)
+            self.state.market_secondary_indicator_mode = str(self.market_secondary_indicator_mode or "MACD").upper()
+            self.state.market_primary_chart_expanded = bool(self.market_primary_chart_expanded)
+            self.state.market_strategy_annotation_mode = self._normalize_market_strategy_annotation_mode(
+                getattr(self, "market_strategy_annotation_mode", "FULL")
+            )
+            self.state.market_chart_recent_presets = list(QuantHunterWindow._normalized_market_chart_recent_presets(self))
+            self.state.market_chart_preset_usage_counts = dict(QuantHunterWindow._normalized_market_chart_preset_usage_counts(self))
+            self.state.market_chart_custom_presets = {
+                key: {
+                    "label": str(spec.get("label", "") or "").strip(),
+                    "detail": str(spec.get("detail", "") or "").strip(),
+                    "tags": [str(item).strip() for item in list(spec.get("tags", []) or []) if str(item).strip()],
+                    "overlays": sorted(
+                        str(item).upper() for item in set(spec.get("overlays", set()) or set()) if str(item).strip()
+                    ),
+                    "annotation_mode": self._normalize_market_strategy_annotation_mode(
+                        spec.get("annotation_mode", "FULL")
+                    ),
+                    "indicator": str(spec.get("indicator", "MACD") or "MACD").upper(),
+                    "expanded": bool(spec.get("expanded", False)),
+                    "pinned": bool(spec.get("pinned", False)),
+                }
+                for key, spec in self._normalized_market_chart_custom_presets().items()
+            }
+        if persist:
+            self.save_state()
+
+    def apply_market_chart_preset(
+        self,
+        preset_key: str,
+        *,
+        save: bool = True,
+        feedback: bool = True,
+        record_recent: bool = True,
+    ) -> None:
+        resolved = self._normalize_market_chart_preset_key(preset_key)
+        spec = self._market_chart_preset_specs().get(resolved)
+        if not isinstance(spec, dict):
+            return
+        self.market_overlay_modes = {
+            str(item).upper()
+            for item in set(spec.get("overlays", set()) or set())
+            if str(item).strip()
+        } or {"MA"}
+        for name, button in getattr(self, "market_overlay_buttons", {}).items():
+            checked = name in self.market_overlay_modes
+            button.blockSignals(True)
+            button.setChecked(checked)
+            button.blockSignals(False)
+            self._set_button_role(button, "tonal" if checked else "ghost")
+        self.set_market_strategy_annotation_mode(
+            str(spec.get("annotation_mode", "FULL") or "FULL"),
+            save=False,
+            feedback=False,
+            update_preset=False,
+        )
+        self.set_market_secondary_indicator(
+            str(spec.get("indicator", "MACD") or "MACD"),
+            save=False,
+            feedback=False,
+            update_preset=False,
+        )
+        self.set_market_primary_chart_expanded(
+            bool(spec.get("expanded", False)),
+            feedback=False,
+            save=False,
+            update_preset=False,
+        )
+        self.market_chart_preset = resolved
+        self._sync_market_chart_preset_state(persist=save)
+        if record_recent:
+            self._record_market_chart_recent_preset(resolved, persist=False)
+            self._record_market_chart_preset_usage(resolved, persist=False)
+            if save:
+                self.save_state()
+        if feedback:
+            self._show_market_chart_feedback(f"图表预设已切换为 {self._market_chart_preset_label(resolved)}")
+        if self.active_symbol and self.active_symbol in self.universe_bars:
+            self._render_market_dashboard(self.active_symbol)
+
+    def _safe_reset_market_chart_zoom(self, source_view) -> None:
+        chart = source_view.chart() if source_view is not None and hasattr(source_view, "chart") else None
+        if chart is None:
+            return
+        try:
+            chart.zoomReset()
+        except Exception:
+            return
+        if hasattr(source_view, "_layout_static_annotations"):
+            QTimer.singleShot(0, source_view._layout_static_annotations)
+        if hasattr(source_view, "_layout_hover_summary_card"):
+            QTimer.singleShot(0, source_view._layout_hover_summary_card)
+
+    def _open_market_chart_context_menu(self, source_view, payload: object | None = None) -> None:
+        owner = source_view if isinstance(source_view, QWidget) else self
+        menu = QMenu(owner)
+        source_name = self._market_chart_hover_source_name(source_view)
+        section = menu.addSection(f"{source_name} 快捷操作")
+        section.setEnabled(False)
+
+        reset_zoom_action = menu.addAction("重置缩放")
+        reset_zoom_action.triggered.connect(lambda _checked=False, current=source_view: self._safe_reset_market_chart_zoom(current))
+
+        reset_window_action = menu.addAction("回到最新窗口")
+        reset_window_action.triggered.connect(self.reset_market_chart_window)
+
+        expand_action = menu.addAction("还原主图" if bool(getattr(self, "market_primary_chart_expanded", False)) else "放大主图")
+        expand_action.triggered.connect(self.toggle_market_primary_chart_expanded)
+
+        fullscreen_action = menu.addAction("全屏看图")
+        fullscreen_action.triggered.connect(self.open_market_chart_focus_dialog)
+
+        menu.addSeparator()
+
+        preset_menu = menu.addMenu("图表预设")
+        current_preset = self._normalize_market_chart_preset_key(getattr(self, "market_chart_preset", "BALANCED"))
+        for preset_key in ["BALANCED", "CLEAN", "SIGNAL", "FLOW"]:
+            spec = self._market_chart_preset_specs().get(preset_key, {})
+            action = preset_menu.addAction(str(spec.get("label", preset_key) or preset_key))
+            action.setCheckable(True)
+            action.setChecked(current_preset == preset_key)
+            detail = str(spec.get("detail", "") or "")
+            if detail:
+                action.setToolTip(detail)
+            action.triggered.connect(lambda _checked=False, current=preset_key: self.apply_market_chart_preset(current))
+        ordered_custom_keys = self._ordered_market_chart_custom_preset_keys()
+        custom_presets = [(key, self._market_chart_preset_specs()[key]) for key in ordered_custom_keys]
+        if custom_presets:
+            preset_menu.addSeparator()
+            for preset_key, spec in custom_presets:
+                prefix = "★ " if bool(spec.get("pinned", False)) else ""
+                action = preset_menu.addAction(f"{prefix}{str(spec.get('label', preset_key) or preset_key)}")
+                action.setCheckable(True)
+                action.setChecked(current_preset == preset_key)
+                detail = str(spec.get("detail", "") or "")
+                if detail:
+                    action.setToolTip(detail)
+                action.triggered.connect(lambda _checked=False, current=preset_key: self.apply_market_chart_preset(current))
+        preset_menu.addSeparator()
+        save_preset_action = preset_menu.addAction("将当前视图另存为预设")
+        save_preset_action.triggered.connect(self._save_current_market_chart_preset)
+        export_all_preset_action = preset_menu.addAction("导出全部自定义预设")
+        export_all_preset_action.triggered.connect(lambda: self.export_market_chart_preset(export_all=True))
+        manage_preset_action = preset_menu.addAction("管理自定义预设")
+        manage_preset_action.triggered.connect(self.open_market_chart_preset_manager)
+        if current_preset.startswith("USER_"):
+            pin_current_preset_action = preset_menu.addAction("置顶当前自定义预设" if not bool(self._normalized_market_chart_custom_presets().get(current_preset, {}).get("pinned", False)) else "取消置顶当前自定义预设")
+            pin_current_preset_action.triggered.connect(
+                lambda _checked=False, current=current_preset: self.toggle_market_chart_preset_pinned(current)
+            )
+            export_current_preset_action = preset_menu.addAction("导出当前自定义预设")
+            export_current_preset_action.triggered.connect(
+                lambda _checked=False, current=current_preset: self.export_market_chart_preset(current)
+            )
+            delete_preset_action = preset_menu.addAction("删除当前自定义预设")
+            delete_preset_action.triggered.connect(lambda _checked=False, current=current_preset: self.delete_market_chart_preset(current))
+
+        menu.addSeparator()
+
+        overlay_menu = menu.addMenu("主图叠加")
+        for overlay_name in ["MA", "BOLL", "HIGHLOW", "BREAK"]:
+            action = overlay_menu.addAction(overlay_name)
+            action.setCheckable(True)
+            action.setChecked(overlay_name in getattr(self, "market_overlay_modes", set()))
+            action.triggered.connect(lambda _checked=False, current=overlay_name: self.toggle_market_overlay(current))
+
+        annotation_menu = menu.addMenu("战法标注")
+        for mode_key, label in [("FULL", "完整"), ("PLAN", "计划"), ("OFF", "关闭")]:
+            action = annotation_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(str(getattr(self, "market_strategy_annotation_mode", "FULL") or "FULL") == mode_key)
+            action.triggered.connect(lambda _checked=False, current=mode_key: self.set_market_strategy_annotation_mode(current))
+
+        indicator_menu = menu.addMenu("副图指标")
+        for indicator_name in ["MACD", "RSI", "KDJ", "VOL"]:
+            action = indicator_menu.addAction(indicator_name)
+            action.setCheckable(True)
+            action.setChecked(str(getattr(self, "market_secondary_indicator_mode", "MACD") or "MACD") == indicator_name)
+            action.triggered.connect(lambda _checked=False, current=indicator_name: self.set_market_secondary_indicator(current))
+
+        anchor = payload.get("global_pos") if isinstance(payload, dict) else None
+        if anchor is None and isinstance(owner, QWidget):
+            anchor = owner.mapToGlobal(owner.rect().center())
+        menu.exec(anchor)
+
+    def _market_chart_hover_default_text(self) -> str:
+        return "图表悬浮：移动鼠标到主图或副图，可联动查看同一时点。"
+
+    def _set_market_chart_hover_summary(self, text: str = "", *, source_name: str = "") -> None:
+        label = getattr(self, "market_chart_hover_label", None)
+        if label is None or not hasattr(label, "setText"):
+            return
+        content = str(text or "").strip()
+        if not content:
+            self._set_label_text_if_changed(label, self._market_chart_hover_default_text())
+            return
+        lines = [line.strip() for line in content.splitlines() if line.strip()]
+        compact = " | ".join(lines[:5])
+        prefix = f"图表悬浮 · {source_name}：" if source_name else "图表悬浮："
+        self._set_label_text_if_changed(label, f"{prefix} {compact}")
+
+    def _update_market_chart_hover_summary(self, source_view, text: str) -> None:
+        if not str(text or "").strip():
+            self._set_market_chart_hover_summary("")
+            return
+        self._set_market_chart_hover_summary(
+            text,
+            source_name=self._market_chart_hover_source_name(source_view),
+        )
+
     def _connect_market_chart_hover_links(self) -> None:
         if getattr(self, "_market_chart_hover_links_ready", False):
             return
         self._market_chart_hover_links_ready = True
         views = [
+            getattr(self, "intraday_chart_view", None),
             getattr(self, "daily_chart_view", None),
             getattr(self, "fund_chart_view", None),
+            getattr(self, "momentum_chart_view", None),
             getattr(self, "indicator_chart_view", None),
         ]
         for source in views:
             if source is None or not hasattr(source, "hoverKeyChanged"):
                 continue
             source.hoverKeyChanged.connect(lambda key, current=source: self._sync_market_hover_views(current, key))
+            if hasattr(source, "hoverTextChanged"):
+                source.hoverTextChanged.connect(lambda text, current=source: self._update_market_chart_hover_summary(current, text))
+            if hasattr(source, "contextMenuRequested"):
+                source.contextMenuRequested.connect(lambda payload, current=source: self._open_market_chart_context_menu(current, payload))
+            if source is getattr(self, "daily_chart_view", None) and hasattr(source, "staticAnnotationActivated"):
+                source.staticAnnotationActivated.connect(self._on_market_chart_static_annotation_activated)
 
     def _sync_market_hover_views(self, source_view, key: str) -> None:
         for target in [
+            getattr(self, "intraday_chart_view", None),
             getattr(self, "daily_chart_view", None),
             getattr(self, "fund_chart_view", None),
+            getattr(self, "momentum_chart_view", None),
             getattr(self, "indicator_chart_view", None),
         ]:
             if target is None or target is source_view or not hasattr(target, "sync_hover_key"):
                 continue
             target.sync_hover_key(key)
+
+    def _highlight_market_chart_key(self, key: str) -> None:
+        if not key:
+            return
+        normalized_key = self._market_hover_sync_key(key, self._normalize_market_timeframe())
+        for target in [
+            getattr(self, "intraday_chart_view", None),
+            getattr(self, "daily_chart_view", None),
+            getattr(self, "fund_chart_view", None),
+            getattr(self, "momentum_chart_view", None),
+            getattr(self, "indicator_chart_view", None),
+        ]:
+            if target is None or not hasattr(target, "sync_hover_key"):
+                continue
+            target.sync_hover_key(normalized_key)
+
+    def _set_market_chart_action_note(
+        self,
+        *,
+        symbol: str,
+        decision_text: str = "",
+        execution_text: str = "",
+        conclusion_text: str = "",
+        title: str = "图表联动",
+        history_source: str = "",
+        history_summary: str = "",
+        interacted_at: str = "",
+        tone: str = "watch",
+        panel_role: str = "execution",
+        pinned: bool | None = None,
+        push_history: bool = True,
+    ) -> None:
+        current = dict(getattr(self, "_market_chart_action_note", {}) or {})
+        payload = {
+            "symbol": str(symbol or "").strip(),
+            "decision_text": str(decision_text or "").strip(),
+            "execution_text": str(execution_text or "").strip(),
+            "conclusion_text": str(conclusion_text or "").strip(),
+            "title": str(title or "图表联动").strip(),
+            "history_source": str(history_source or "").strip(),
+            "history_summary": str(history_summary or "").strip(),
+            "interacted_at": str(interacted_at or "").strip(),
+            "tone": str(tone or "watch").strip(),
+            "panel_role": str(panel_role or "execution").strip(),
+            "pinned": bool(current.get("pinned", False)) if pinned is None else bool(pinned),
+        }
+        if not payload["symbol"]:
+            payload = {}
+        if payload and not str(payload.get("interacted_at", "") or "").strip():
+            payload["interacted_at"] = datetime.now().strftime("%H:%M")
+        if payload and not str(payload.get("history_source", "") or "").strip():
+            payload["history_source"] = self._market_chart_action_note_source_v1(payload)
+        if payload and not str(payload.get("history_summary", "") or "").strip():
+            payload["history_summary"] = self._market_chart_action_note_summary_v1(payload)
+        if payload and push_history:
+            history = list(getattr(self, "_market_chart_action_note_history_v1", []) or [])
+            signature = self._market_chart_action_note_signature_v1(payload)
+            if not history or self._market_chart_action_note_signature_v1(history[-1]) != signature:
+                history.append(dict(payload))
+                history = history[-3:]
+            else:
+                history[-1] = dict(payload)
+            self._market_chart_action_note_history_v1 = history
+            current_signature = self._market_chart_action_note_signature_v1(current)
+            if current and bool(current.get("pinned", False)) and current_signature and current_signature != signature:
+                current_index = next(
+                    (idx for idx, item in enumerate(history) if self._market_chart_action_note_signature_v1(item) == current_signature),
+                    max(0, len(history) - 2),
+                )
+                self._market_chart_action_note_history_index_v1 = current_index
+                return
+            self._market_chart_action_note_history_index_v1 = len(history) - 1
+        self._market_chart_action_note = payload
+
+    @staticmethod
+    def _market_chart_action_note_signature_v1(payload: object) -> tuple[str, ...]:
+        if not isinstance(payload, dict):
+            return tuple()
+        return (
+            str(payload.get("symbol", "") or ""),
+            str(payload.get("title", "") or ""),
+            str(payload.get("tone", "") or ""),
+            str(payload.get("panel_role", "") or ""),
+            str(payload.get("decision_text", "") or ""),
+            str(payload.get("execution_text", "") or ""),
+            str(payload.get("conclusion_text", "") or ""),
+        )
+
+    @staticmethod
+    def _market_chart_action_note_summary_v1(payload: object) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        summary = str(payload.get("history_summary", "") or "").strip()
+        if summary:
+            return summary
+        title = str(payload.get("title", "") or "").strip()
+        return title.replace("图表联动 · ", "") or "图表提示"
+
+    @staticmethod
+    def _market_chart_action_note_source_v1(payload: object) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        source = str(payload.get("history_source", "") or "").strip()
+        if source:
+            return source
+        panel_role = str(payload.get("panel_role", "") or "").strip().lower()
+        return {
+            "execution": "计划",
+            "decision": "信号",
+            "conclusion": "复盘",
+        }.get(panel_role, "图表")
+
+    def _market_chart_action_note_preview_text_v1(self, payload: object) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        source = self._market_chart_action_note_source_v1(payload)
+        time_label = str(payload.get("interacted_at", "") or "").strip()
+        summary = self._market_chart_action_note_summary_v1(payload)
+        parts = [part for part in [time_label, summary] if part]
+        body = " ".join(parts)
+        return f"{source} · {body}" if source and body else (source or body)
+
+    def _chart_action_note_filter_source_v1(self) -> str:
+        return str(getattr(self, "_market_chart_action_note_filter_source_v1", "") or "").strip()
+
+    def _chart_action_note_filter_banner_v1(self) -> str:
+        source = self._chart_action_note_filter_source_v1()
+        return f"历史筛选：{source}" if source else "历史筛选：全部"
+
+    def _chart_action_note_history_items_v1(self) -> list[dict[str, object]]:
+        return [dict(item) for item in list(getattr(self, "_market_chart_action_note_history_v1", []) or []) if isinstance(item, dict)]
+
+    def _chart_action_note_visible_history_items_v1(self) -> list[dict[str, object]]:
+        history = self._chart_action_note_history_items_v1()
+        filter_source = self._chart_action_note_filter_source_v1()
+        if not filter_source:
+            return history
+        return [item for item in history if self._market_chart_action_note_source_v1(item) == filter_source]
+
+    def _chart_action_note_history_position_v1(self) -> tuple[int, int]:
+        history = self._chart_action_note_visible_history_items_v1()
+        if not history:
+            return (0, 0)
+        current = dict(getattr(self, "_market_chart_action_note", {}) or {})
+        current_signature = self._market_chart_action_note_signature_v1(current)
+        index = next(
+            (idx for idx, item in enumerate(history) if self._market_chart_action_note_signature_v1(item) == current_signature),
+            int(getattr(self, "_market_chart_action_note_history_index_v1", len(history) - 1) or 0),
+        )
+        index = max(0, min(index, len(history) - 1))
+        return (index + 1, len(history))
+
+    def _step_market_chart_action_note_history_v1(self, step: int) -> None:
+        history = self._chart_action_note_visible_history_items_v1()
+        if not history:
+            return
+        current_position, _total = self._chart_action_note_history_position_v1()
+        index = max(current_position - 1, 0)
+        next_index = max(0, min(index + int(step or 0), len(history) - 1))
+        if next_index == index:
+            return
+        pinned = self._market_chart_action_note_pinned_v1()
+        payload = dict(history[next_index])
+        payload["pinned"] = pinned
+        self._market_chart_action_note_history_index_v1 = next_index
+        self._set_market_chart_action_note(push_history=False, **payload)
+        symbol = str(payload.get("symbol", "") or "")
+        if symbol == str(getattr(self, "active_symbol", "") or "") and symbol in getattr(self, "universe_bars", {}):
+            self._render_market_dashboard(symbol)
+        self._refresh_detail_workspace_panels()
+        self._sync_chart_action_note_card_visibility_v1(restart_timer=not pinned)
+        if hasattr(self, "_show_market_chart_feedback"):
+            current, total = self._chart_action_note_history_position_v1()
+            self._show_market_chart_feedback(f"已切换到图表提示 {current}/{total}")
+
+    def _set_chart_action_note_filter_source_v1(self, source: str = "") -> None:
+        normalized = str(source or "").strip()
+        self._market_chart_action_note_filter_source_v1 = normalized
+        visible = self._chart_action_note_visible_history_items_v1()
+        current = dict(getattr(self, "_market_chart_action_note", {}) or {})
+        current_signature = self._market_chart_action_note_signature_v1(current)
+        if normalized and visible and current_signature not in {self._market_chart_action_note_signature_v1(item) for item in visible}:
+            pinned = bool(current.get("pinned", False))
+            payload = dict(visible[-1])
+            payload["pinned"] = pinned
+            self._market_chart_action_note_history_index_v1 = max(len(visible) - 1, 0)
+            self._set_market_chart_action_note(push_history=False, **payload)
+        self._sync_chart_action_note_card_visibility_v1(restart_timer=False)
+        current_symbol = self._current_market_chart_symbol() if hasattr(self, "_current_market_chart_symbol") else ""
+        if current_symbol:
+            chart_series = getattr(self.market_screen_result, "chart_series_by_symbol", {}).get(current_symbol)
+            snapshot = getattr(self.market_screen_result, "snapshots", {}).get(current_symbol)
+            self._refresh_market_chart_navigation_state(current_symbol, chart_series, snapshot)
+
+    def _toggle_chart_action_note_source_filter_v1(self) -> None:
+        note = dict(getattr(self, "_market_chart_action_note", {}) or {})
+        source = self._market_chart_action_note_source_v1(note)
+        if not source:
+            return
+        current_filter = self._chart_action_note_filter_source_v1()
+        next_filter = "" if current_filter == source else source
+        self._set_chart_action_note_filter_source_v1(next_filter)
+        if hasattr(self, "_show_market_chart_feedback"):
+            self._show_market_chart_feedback(
+                f"已按来源筛选：{source}" if next_filter else "已清除来源筛选，恢复显示全部图表提示"
+            )
+
+    def _clear_chart_action_note_source_filter_v1(self) -> None:
+        if not self._chart_action_note_filter_source_v1():
+            return
+        self._set_chart_action_note_filter_source_v1("")
+        if hasattr(self, "_show_market_chart_feedback"):
+            self._show_market_chart_feedback("已清除来源筛选，恢复显示全部图表提示")
+
+    def _can_step_market_chart_action_note_history_v1(self, step: int) -> bool:
+        history = self._chart_action_note_visible_history_items_v1()
+        if len(history) <= 1:
+            return False
+        current_position, _total = self._chart_action_note_history_position_v1()
+        index = max(current_position - 1, 0)
+        next_index = max(0, min(index + int(step or 0), len(history) - 1))
+        return next_index != index
+
+    def _clear_market_chart_action_note(self, symbol: str | None = None) -> None:
+        current = dict(getattr(self, "_market_chart_action_note", {}) or {})
+        if not current:
+            return
+        if symbol and str(current.get("symbol", "") or "") != str(symbol or ""):
+            return
+        self._market_chart_action_note = {}
+        self._market_chart_action_note_filter_source_v1 = ""
+
+    def _market_chart_action_note_for_symbol(self, symbol: str) -> dict[str, str]:
+        current = dict(getattr(self, "_market_chart_action_note", {}) or {})
+        return current if str(current.get("symbol", "") or "") == str(symbol or "") else {}
+
+    @staticmethod
+    def _signal_action_note_from_chart_annotation(payload: object) -> dict[str, str]:
+        if not isinstance(payload, dict):
+            return {}
+        signal_date = str(payload.get("signal_date", "") or "--")
+        plan_kind = str(payload.get("plan_kind", "") or "")
+        if plan_kind == "entry":
+            return {
+                "title": "图表联动 · 计划买点",
+                "history_source": "计划",
+                "history_summary": "买点",
+                "tone": "buy",
+                "panel_role": "execution",
+                "decision_text": f"图表联动：已高亮 {signal_date} 的计划买点，对照承接、量能和主线强度再决定是否执行。",
+                "execution_text": f"图表联动：当前点击的是计划买点，不是追价指令；更适合把它当成确认后再执行的参考位。",
+                "conclusion_text": f"图表联动：若买点附近承接不足，优先回到观察，不把计划线直接当成交线。",
+            }
+        if plan_kind == "stop":
+            return {
+                "title": "图表联动 · 计划止损",
+                "history_source": "计划",
+                "history_summary": "止损",
+                "tone": "risk",
+                "panel_role": "execution",
+                "decision_text": f"图表联动：已高亮 {signal_date} 的防守位，这里代表计划失效边界，不宜主观放宽。",
+                "execution_text": f"图表联动：当前点击的是计划止损，跌破后应优先执行纪律，避免把计划单拖成扛单。",
+                "conclusion_text": f"图表联动：止损线的价值在于保护节奏，失守后先看风险收缩，再决定是否重建计划。",
+            }
+        if plan_kind == "target":
+            return {
+                "title": "图表联动 · 计划止盈",
+                "history_source": "计划",
+                "history_summary": "止盈",
+                "tone": "watch",
+                "panel_role": "execution",
+                "decision_text": f"图表联动：已高亮 {signal_date} 的目标位，这里更适合作为兑现或上移保护的参考区。",
+                "execution_text": f"图表联动：当前点击的是计划止盈，接近目标时优先考虑分批兑现，而不是被动等待回吐。",
+                "conclusion_text": f"图表联动：若目标位附近量价背离，可先落袋一部分，再决定是否保留趋势仓。",
+            }
+        return {
+            "title": "图表联动 · 焦点信号",
+            "history_source": "信号",
+            "history_summary": "信号",
+            "tone": "watch",
+            "panel_role": "decision",
+            "decision_text": f"图表联动：已定位 {signal_date} 的焦点信号，可对照当日量价和主线状态重新评估。",
+            "execution_text": "图表联动：当前已同步到信号焦点，优先检查计划价位是否仍具备执行条件。",
+            "conclusion_text": "图表联动：先看信号是否仍有效，再决定是继续跟踪还是重新回到观察。",
+        }
+
+    @staticmethod
+    def _match_trade_index_from_chart_annotation(payload: object, trades: list[Trade] | None = None) -> int:
+        if not isinstance(payload, dict):
+            return -1
+        action = str(payload.get("action", "") or "")
+        if action not in {"trade_exit", "trade_entry"}:
+            return -1
+        date_key = "exit_date" if action == "trade_exit" else "entry_date"
+        price_key = "exit_price" if action == "trade_exit" else "entry_price"
+        target_date = str(payload.get(date_key, "") or "").strip()
+        if not target_date:
+            return -1
+        try:
+            target_price = float(payload.get(price_key, 0.0) or 0.0)
+        except (TypeError, ValueError):
+            target_price = 0.0
+        target_entry_date = str(payload.get("entry_date", "") or "").strip()
+        for index, trade in enumerate(list(trades or [])):
+            trade_date = str(getattr(trade, date_key, "") or "").strip()
+            if trade_date != target_date:
+                continue
+            trade_price = float(getattr(trade, price_key, 0.0) or 0.0)
+            if target_price > 0 and abs(trade_price - target_price) > 0.01:
+                continue
+            if target_entry_date and str(getattr(trade, "entry_date", "") or "").strip() != target_entry_date:
+                continue
+            return index
+        return -1
+
+    def _focus_trade_from_chart_annotation(self, payload: object) -> bool:
+        result = getattr(self, "last_backtest_result", None)
+        trades = list(getattr(result, "trades", []) or [])
+        trade_index = self._match_trade_index_from_chart_annotation(payload, trades)
+        table = getattr(self, "trades_table", None)
+        if trade_index < 0 or table is None or trade_index >= table.rowCount():
+            return False
+        table.selectRow(trade_index)
+        self._navigate_to_workspace("detail", "trades_table")
+        self._refresh_detail_workspace_panels()
+        return True
+
+    def _on_market_chart_static_annotation_activated(self, payload: object) -> None:
+        action = str(payload.get("action", "") or "") if isinstance(payload, dict) else ""
+        if action in {"trade_exit", "trade_entry"}:
+            if self._focus_trade_from_chart_annotation(payload):
+                if hasattr(self, "_show_market_chart_feedback"):
+                    self._show_market_chart_feedback("已从图表定位到对应交易记录")
+            return
+        if action == "focus_signal":
+            if self._focus_signal_from_chart_annotation(payload):
+                if hasattr(self, "_show_market_chart_feedback"):
+                    self._show_market_chart_feedback("已从图表定位到对应信号/推荐焦点")
+            return
+        if action == "cycle_annotation_mode":
+            self.cycle_market_strategy_annotation_mode(1)
+
+    @staticmethod
+    def _match_signal_index_from_chart_annotation(payload: object, analyses: list[DailyAnalysis] | None = None) -> int:
+        if not isinstance(payload, dict):
+            return -1
+        if str(payload.get("action", "") or "") != "focus_signal":
+            return -1
+        target_date = str(payload.get("signal_date", "") or "").strip()
+        target_label = str(payload.get("signal_label", "") or "").strip()
+        if not target_date:
+            return -1
+        rows = [row for row in list(analyses or []) if getattr(row, "label", "") != "NONE"][-20:]
+        for index, row in enumerate(rows):
+            if str(getattr(row, "date", "") or "").strip() != target_date:
+                continue
+            if target_label and str(getattr(row, "label", "") or "").strip() != target_label:
+                continue
+            return index
+        for index, row in enumerate(rows):
+            if str(getattr(row, "date", "") or "").strip() == target_date:
+                return index
+        return -1
+
+    def _focus_signal_from_chart_annotation(self, payload: object) -> bool:
+        target_symbol = str(payload.get("symbol", "") or getattr(self, "active_symbol", "") or "") if isinstance(payload, dict) else ""
+        selected_recommendation = None
+        if isinstance(payload, dict):
+            stock_id = str(payload.get("stock_id", "") or "").strip()
+            if stock_id and hasattr(self, "_select_daily_pool_row_by_stock_id"):
+                selected_recommendation = self._select_daily_pool_row_by_stock_id(stock_id)
+        note_payload = self._signal_action_note_from_chart_annotation(payload)
+        if target_symbol:
+            self._set_market_chart_action_note(symbol=target_symbol, **note_payload)
+        analyses = list(getattr(self, "analyses", []) or [])
+        signal_index = self._match_signal_index_from_chart_annotation(payload, analyses)
+        table = getattr(self, "signal_table", None)
+        if signal_index >= 0 and table is not None and signal_index < table.rowCount():
+            table.selectRow(signal_index)
+            if target_symbol and target_symbol in getattr(self, "universe_bars", {}):
+                self._render_market_dashboard(target_symbol)
+            if isinstance(payload, dict):
+                self._highlight_market_chart_key(str(payload.get("signal_date", "") or ""))
+            self._refresh_detail_workspace_panels()
+            if selected_recommendation is not None:
+                self._refresh_recommendation_focus_panels(selected_recommendation)
+            return True
+        if selected_recommendation is not None:
+            if target_symbol and target_symbol in getattr(self, "universe_bars", {}):
+                self._render_market_dashboard(target_symbol)
+            if isinstance(payload, dict):
+                self._highlight_market_chart_key(str(payload.get("signal_date", "") or ""))
+            self._refresh_recommendation_focus_panels(selected_recommendation)
+            return True
+        return False
 
     def _update_intraday_chart(self, symbol: str, snapshot, chart_series) -> None:
         if not hasattr(self, "intraday_chart_view"):
@@ -11315,7 +14277,7 @@ class QuantHunterWindow(QMainWindow):
                 x_labels=labels,
                 x_values=list(range(len(labels))),
                 y_values=[float(getattr(point, "v", 0.0) or 0.0) for point in points],
-                hover_keys=labels,
+                hover_keys=[self._market_hover_sync_key(label, timeframe) for label in labels],
                 hover_payloads=payloads,
             )
 
@@ -11328,7 +14290,14 @@ class QuantHunterWindow(QMainWindow):
         recommendation = next((item for item in getattr(self, "daily_pool_rows", []) if item.symbol == symbol), None)
         chart = QChart()
         timeframe = self._normalize_market_timeframe()
-        strategy_annotation_enabled = timeframe == "日线"
+        strategy_annotation_mode = self._normalize_market_strategy_annotation_mode(
+            getattr(self, "market_strategy_annotation_mode", "FULL")
+        )
+        strategy_badge_enabled = timeframe == "日线"
+        strategy_annotation_enabled = timeframe == "日线" and strategy_annotation_mode != "OFF"
+        strategy_plan_enabled = strategy_annotation_enabled and strategy_annotation_mode in {"FULL", "PLAN"}
+        strategy_review_enabled = strategy_annotation_enabled and strategy_annotation_mode == "FULL"
+        strategy_signal_history_enabled = strategy_annotation_enabled and strategy_annotation_mode == "FULL"
         self._style_dark_chart(chart, "日线主图" if timeframe == "日线" else f"{timeframe} 主图")
 
         candle_series = QCandlestickSeries()
@@ -11437,6 +14406,21 @@ class QuantHunterWindow(QMainWindow):
         selected_signal_series.setColor(QColor("#ffe07a"))
         selected_signal_series.setBorderColor(QColor("#fff7dd"))
         selected_signal_series.setMarkerSize(15.0)
+        strategy_plan_buy_marker_series = QScatterSeries()
+        strategy_plan_buy_marker_series.setName("计划买点标记")
+        strategy_plan_buy_marker_series.setColor(QColor("#4cf2a8"))
+        strategy_plan_buy_marker_series.setBorderColor(QColor("#edfff7"))
+        strategy_plan_buy_marker_series.setMarkerSize(14.5)
+        strategy_plan_sell_marker_series = QScatterSeries()
+        strategy_plan_sell_marker_series.setName("计划卖点标记")
+        strategy_plan_sell_marker_series.setColor(QColor("#7ed7ff"))
+        strategy_plan_sell_marker_series.setBorderColor(QColor("#eff9ff"))
+        strategy_plan_sell_marker_series.setMarkerSize(13.5)
+        strategy_plan_stop_marker_series = QScatterSeries()
+        strategy_plan_stop_marker_series.setName("计划止损标记")
+        strategy_plan_stop_marker_series.setColor(QColor("#ff7a7a"))
+        strategy_plan_stop_marker_series.setBorderColor(QColor("#fff0f0"))
+        strategy_plan_stop_marker_series.setMarkerSize(13.0)
         plan_entry_series = QLineSeries()
         plan_entry_series.setName("计划买点")
         plan_entry_series.setPen(QPen(QColor("#4cf2a8"), 1.4, Qt.DashLine))
@@ -11449,19 +14433,24 @@ class QuantHunterWindow(QMainWindow):
 
         analysis_source = list(getattr(self, "universe_analyses", {}).get(symbol, [])) if strategy_annotation_enabled else []
         visible_bars, visible_analyses = self._windowed_market_bars(symbol, bars, analysis_source)
-        selected_signal = self._selected_detail_signal_snapshot() if symbol == getattr(self, "active_symbol", "") else None
+        selected_signal = (
+            self._selected_detail_signal_snapshot() if strategy_plan_enabled and symbol == getattr(self, "active_symbol", "") else None
+        )
         active_trades = getattr(getattr(self, "last_backtest_result", None), "trades", [])
         plan_levels = build_strategy_plan_levels(
             recommendation=recommendation,
             analyses=visible_analyses,
             selected_signal_date=selected_signal.get("date", "") if selected_signal is not None else "",
-        ) if strategy_annotation_enabled else None
-        trade_markers = build_trade_markers(active_trades) if strategy_annotation_enabled and symbol == getattr(self, "active_symbol", "") else []
+        ) if strategy_plan_enabled else None
+        trade_markers = build_trade_markers(active_trades) if strategy_review_enabled and symbol == getattr(self, "active_symbol", "") else []
         plan_source_name = {
             "recommendation": "当前计划",
             "selected_signal": "选中信号计划",
             "latest_signal": "最近信号计划",
         }.get(getattr(plan_levels, "source", ""), "策略计划")
+        active_stock_id = str(
+            getattr(recommendation, "stock_id", "") or (self._stock_id_for_symbol(symbol) if hasattr(self, "_stock_id_for_symbol") else "")
+        )
         annotation_lines_by_date: dict[str, list[str]] = {bar.date: [] for bar in visible_bars}
         static_annotations: list[dict[str, object]] = []
         swing_points = self._market_swing_points(visible_bars)
@@ -11573,7 +14562,12 @@ class QuantHunterWindow(QMainWindow):
                     candle_tag_down_series.append(ts, bar.close)
             if strategy_annotation_enabled and index < len(visible_analyses):
                 analysis = visible_analyses[index]
-                if analysis.label == "RECLAIM_LONG":
+                focus_signal_date = selected_signal.get("date", "") if selected_signal is not None else ""
+                is_focus_signal = (
+                    bar.date == focus_signal_date
+                    or (plan_levels is not None and bar.date == plan_levels.signal_date)
+                )
+                if analysis.label == "RECLAIM_LONG" and (strategy_signal_history_enabled or is_focus_signal):
                     buy_price = float(analysis.entry_price or bar.close)
                     strategy_buy_series.append(ts, buy_price)
                     plan_parts = [f"战法买点: {self._display_label(analysis.label)}", f"买 {buy_price:.2f}"]
@@ -11584,7 +14578,7 @@ class QuantHunterWindow(QMainWindow):
                     if analysis.reason:
                         plan_parts.append(analysis.reason)
                     annotation_lines_by_date[bar.date].append(" | ".join(plan_parts))
-                elif analysis.label == "TRAP_DETECTED":
+                elif analysis.label == "TRAP_DETECTED" and (strategy_signal_history_enabled or is_focus_signal):
                     strategy_risk_series.append(ts, bar.high)
                     annotation_lines_by_date[bar.date].append(
                         f"风险信号: {self._display_label(analysis.label)} | {analysis.reason}"
@@ -11629,9 +14623,14 @@ class QuantHunterWindow(QMainWindow):
                             "x": point_ts,
                             "y": marker.price,
                             "text": chart_label,
-                            "tone": marker.tone,
+                            "tone": build_trade_marker_label_tone(marker),
                             "anchor": "below" if marker.tone == "risk" else "above",
                             "dy": 8.0 if marker.tone == "risk" else -6.0,
+                            "clickable": True,
+                            "action": "trade_exit",
+                            "entry_date": marker.entry_date,
+                            "exit_date": marker.date,
+                            "exit_price": marker.price,
                         }
                     )
             if plan_levels is not None and dates:
@@ -11653,10 +14652,68 @@ class QuantHunterWindow(QMainWindow):
                     if plan_levels.stop_price is not None:
                         price_parts.append(f"损 {plan_levels.stop_price:.2f}")
                     if plan_levels.target_price is not None:
-                        price_parts.append(f"目 {plan_levels.target_price:.2f}")
+                        price_parts.append(f"卖 {plan_levels.target_price:.2f}")
                     if plan_levels.reason:
                         price_parts.append(plan_levels.reason)
                     annotation_lines_by_date[plan_levels.signal_date].append(" | ".join(price_parts))
+                plan_signal_ts = date_to_ts.get(plan_levels.signal_date)
+                if plan_signal_ts is not None and plan_levels.entry_price is not None:
+                    strategy_plan_buy_marker_series.append(plan_signal_ts, plan_levels.entry_price)
+                    static_annotations.append(
+                        {
+                            "x": plan_signal_ts,
+                            "y": plan_levels.entry_price,
+                            "text": "买点",
+                            "tone": "plan_entry",
+                            "anchor": "above",
+                            "dy": -14.0,
+                            "clickable": True,
+                            "action": "focus_signal",
+                            "signal_date": plan_levels.signal_date,
+                            "signal_label": plan_levels.label,
+                            "plan_kind": "entry",
+                            "stock_id": active_stock_id,
+                            "symbol": symbol,
+                        }
+                    )
+                if plan_signal_ts is not None and plan_levels.stop_price is not None:
+                    strategy_plan_stop_marker_series.append(plan_signal_ts, plan_levels.stop_price)
+                    static_annotations.append(
+                        {
+                            "x": plan_signal_ts,
+                            "y": plan_levels.stop_price,
+                            "text": "止损",
+                            "tone": "plan_stop",
+                            "anchor": "below",
+                            "dy": 14.0,
+                            "clickable": True,
+                            "action": "focus_signal",
+                            "signal_date": plan_levels.signal_date,
+                            "signal_label": plan_levels.label,
+                            "plan_kind": "stop",
+                            "stock_id": active_stock_id,
+                            "symbol": symbol,
+                        }
+                    )
+                if plan_signal_ts is not None and plan_levels.target_price is not None:
+                    strategy_plan_sell_marker_series.append(plan_signal_ts, plan_levels.target_price)
+                    static_annotations.append(
+                        {
+                            "x": plan_signal_ts,
+                            "y": plan_levels.target_price,
+                            "text": "卖点",
+                            "tone": "plan_target",
+                            "anchor": "above",
+                            "dy": -14.0,
+                            "clickable": True,
+                            "action": "focus_signal",
+                            "signal_date": plan_levels.signal_date,
+                            "signal_label": plan_levels.label,
+                            "plan_kind": "target",
+                            "stock_id": active_stock_id,
+                            "symbol": symbol,
+                        }
+                    )
                 if plan_levels.entry_price is not None:
                     static_annotations.append(
                         {
@@ -11666,6 +14723,13 @@ class QuantHunterWindow(QMainWindow):
                             "tone": "plan_entry",
                             "anchor": "right",
                             "dy": 0.0,
+                            "clickable": True,
+                            "action": "focus_signal",
+                            "signal_date": plan_levels.signal_date,
+                            "signal_label": plan_levels.label,
+                            "plan_kind": "entry",
+                            "stock_id": active_stock_id,
+                            "symbol": symbol,
                         }
                     )
                 if plan_levels.stop_price is not None:
@@ -11677,6 +14741,13 @@ class QuantHunterWindow(QMainWindow):
                             "tone": "plan_stop",
                             "anchor": "right",
                             "dy": 12.0,
+                            "clickable": True,
+                            "action": "focus_signal",
+                            "signal_date": plan_levels.signal_date,
+                            "signal_label": plan_levels.label,
+                            "plan_kind": "stop",
+                            "stock_id": active_stock_id,
+                            "symbol": symbol,
                         }
                     )
                 if plan_levels.target_price is not None:
@@ -11684,12 +14755,32 @@ class QuantHunterWindow(QMainWindow):
                         {
                             "x": plan_end_ts,
                             "y": plan_levels.target_price,
-                            "text": f"止盈 {plan_levels.target_price:.2f}",
+                            "text": f"卖点 {plan_levels.target_price:.2f}",
                             "tone": "plan_target",
                             "anchor": "right",
                             "dy": -12.0,
+                            "clickable": True,
+                            "action": "focus_signal",
+                            "signal_date": plan_levels.signal_date,
+                            "signal_label": plan_levels.label,
+                            "plan_kind": "target",
+                            "stock_id": active_stock_id,
+                            "symbol": symbol,
                         }
                     )
+        if strategy_badge_enabled:
+            mode_label, mode_hint = self._market_strategy_annotation_mode_hint(strategy_annotation_mode)
+            static_annotations.append(
+                {
+                    "x": dates[-1] if dates else 0.0,
+                    "y": highs[-1] if highs else 0.0,
+                    "text": f"战法 {mode_label}/{mode_hint}",
+                    "tone": "badge",
+                    "anchor": "top_right",
+                    "clickable": True,
+                    "action": "cycle_annotation_mode",
+                }
+            )
 
         chart.addSeries(candle_series)
         if "MA" in self.market_overlay_modes and ma_fast_series.count():
@@ -11731,6 +14822,12 @@ class QuantHunterWindow(QMainWindow):
             chart.addSeries(strategy_buy_series)
         if strategy_annotation_enabled and strategy_risk_series.count():
             chart.addSeries(strategy_risk_series)
+        if strategy_annotation_enabled and strategy_plan_buy_marker_series.count():
+            chart.addSeries(strategy_plan_buy_marker_series)
+        if strategy_annotation_enabled and strategy_plan_sell_marker_series.count():
+            chart.addSeries(strategy_plan_sell_marker_series)
+        if strategy_annotation_enabled and strategy_plan_stop_marker_series.count():
+            chart.addSeries(strategy_plan_stop_marker_series)
         if strategy_annotation_enabled and trade_entry_series.count():
             chart.addSeries(trade_entry_series)
         if strategy_annotation_enabled and trade_exit_profit_series.count():
@@ -11810,6 +14907,12 @@ class QuantHunterWindow(QMainWindow):
             attach_series.append(strategy_buy_series)
         if strategy_annotation_enabled and strategy_risk_series.count():
             attach_series.append(strategy_risk_series)
+        if strategy_annotation_enabled and strategy_plan_buy_marker_series.count():
+            attach_series.append(strategy_plan_buy_marker_series)
+        if strategy_annotation_enabled and strategy_plan_sell_marker_series.count():
+            attach_series.append(strategy_plan_sell_marker_series)
+        if strategy_annotation_enabled and strategy_plan_stop_marker_series.count():
+            attach_series.append(strategy_plan_stop_marker_series)
         if strategy_annotation_enabled and trade_entry_series.count():
             attach_series.append(trade_entry_series)
         if strategy_annotation_enabled and trade_exit_profit_series.count():
@@ -11829,7 +14932,7 @@ class QuantHunterWindow(QMainWindow):
         self.daily_chart_view.setChart(chart)
         if hasattr(self.daily_chart_view, "set_chart_context"):
             tooltip_format = "hh:mm" if self._is_intraday_market_timeframe(timeframe) else ("yyyy-MM" if timeframe == "月线" else "yyyy-MM-dd")
-            hover_keys = [bar.date for bar in visible_bars]
+            hover_keys = [self._market_hover_sync_key(bar.date, timeframe) for bar in visible_bars]
             hover_payloads = []
             for index, bar in enumerate(visible_bars):
                 prev_close = visible_bars[index - 1].close if index > 0 else (snapshot.prev_close if snapshot is not None else bar.open)
@@ -11984,7 +15087,7 @@ class QuantHunterWindow(QMainWindow):
                 "x_labels": categories or ["--"],
                 "x_values": list(range(len(categories))),
                 "y_values": volumes or [0.0],
-                "hover_keys": [bar.date for bar in recent_bars] if recent_bars else (categories or ["--"]),
+                "hover_keys": [self._market_hover_sync_key(bar.date, self._normalize_market_timeframe()) for bar in recent_bars] if recent_bars else [self._market_hover_sync_key(label, self._normalize_market_timeframe()) for label in (categories or ["--"])],
                 "hover_payloads": hover_payloads,
             }
         elif indicator_name == "RSI":
@@ -12029,7 +15132,7 @@ class QuantHunterWindow(QMainWindow):
                 "x_labels": categories[1:] or ["--"],
                 "x_values": list(range(len(categories[1:]))),
                 "y_values": [series.at(index).y() if index < series.count() else 0.0 for index in range(len(categories[1:]))],
-                "hover_keys": [bar.date for bar in recent_bars[1:]] if len(recent_bars) > 1 else (categories[1:] or ["--"]),
+                "hover_keys": [self._market_hover_sync_key(bar.date, self._normalize_market_timeframe()) for bar in recent_bars[1:]] if len(recent_bars) > 1 else [self._market_hover_sync_key(label, self._normalize_market_timeframe()) for label in (categories[1:] or ["--"])],
                 "hover_payloads": hover_payloads,
             }
         elif indicator_name == "KDJ":
@@ -12082,7 +15185,7 @@ class QuantHunterWindow(QMainWindow):
                 "x_labels": categories or ["--"],
                 "x_values": list(range(len(categories))),
                 "y_values": [k_series.at(index).y() if index < k_series.count() else 0.0 for index in range(len(categories))],
-                "hover_keys": [bar.date for bar in recent_bars] if recent_bars else (categories or ["--"]),
+                "hover_keys": [self._market_hover_sync_key(bar.date, self._normalize_market_timeframe()) for bar in recent_bars] if recent_bars else [self._market_hover_sync_key(label, self._normalize_market_timeframe()) for label in (categories or ["--"])],
                 "hover_payloads": hover_payloads,
             }
         else:
@@ -12143,7 +15246,7 @@ class QuantHunterWindow(QMainWindow):
                 "x_labels": categories or ["--"],
                 "x_values": list(range(len(categories))),
                 "y_values": macd_values or [0.0],
-                "hover_keys": [bar.date for bar in recent_bars] if recent_bars else (categories or ["--"]),
+                "hover_keys": [self._market_hover_sync_key(bar.date, self._normalize_market_timeframe()) for bar in recent_bars] if recent_bars else [self._market_hover_sync_key(label, self._normalize_market_timeframe()) for label in (categories or ["--"])],
                 "hover_payloads": hover_payloads,
             }
 
@@ -12267,7 +15370,7 @@ class QuantHunterWindow(QMainWindow):
                     x_labels=categories or ["00"],
                     x_values=list(range(len(categories or ["00"]))),
                     y_values=[(positive.at(index) if index < positive.count() else 0.0) - (negative.at(index) if index < negative.count() else 0.0) for index in range(len(categories or ["00"]))],
-                    hover_keys=categories or ["00"],
+                    hover_keys=[self._market_hover_sync_key(label, timeframe) for label in (categories or ["00"])],
                     hover_payloads=hover_payloads,
                 )
             else:
@@ -12287,7 +15390,7 @@ class QuantHunterWindow(QMainWindow):
                     x_labels=categories or ["--"],
                     x_values=list(range(len(categories or ["--"]))),
                     y_values=volumes if volumes else [0.0],
-                    hover_keys=[bar.date for bar in visible_bars] if visible_bars else (categories or ["--"]),
+                    hover_keys=[self._market_hover_sync_key(bar.date, timeframe) for bar in visible_bars] if visible_bars else [self._market_hover_sync_key(label, timeframe) for label in (categories or ["--"])],
                     hover_payloads=hover_payloads,
                 )
         self._connect_market_chart_hover_links()
@@ -12300,6 +15403,7 @@ class QuantHunterWindow(QMainWindow):
         if not hasattr(self, "momentum_chart_view"):
             return
         chart = QChart()
+        timeframe = self._normalize_market_timeframe()
         self._style_dark_chart(chart, "龙头动能")
         points = list(getattr(chart_series, "heat_momentum", [])) if chart_series else []
 
@@ -12332,11 +15436,37 @@ class QuantHunterWindow(QMainWindow):
         series.attachAxis(axis_x)
         series.attachAxis(axis_y)
         self.momentum_chart_view.setChart(chart)
+        if hasattr(self.momentum_chart_view, "set_chart_context"):
+            hover_payloads = []
+            signed_values = []
+            for index, label in enumerate(categories or ["00"]):
+                value = (positive.at(index) if index < positive.count() else 0.0) - (negative.at(index) if index < negative.count() else 0.0)
+                signed_values.append(value)
+                hover_payloads.append(
+                    [
+                        f"时间: {label}",
+                        f"动能偏移: {value:+.2f}",
+                        f"原始热度: {value + 50.0:.2f}",
+                    ]
+                )
+            self.momentum_chart_view.set_chart_context(
+                x_label="时间",
+                y_label="动能",
+                y_suffix="",
+                x_kind="category",
+                x_labels=categories or ["00"],
+                x_values=list(range(len(categories or ["00"]))),
+                y_values=signed_values or [0.0],
+                hover_keys=[self._market_hover_sync_key(label, timeframe) for label in (categories or ["00"])],
+                hover_payloads=hover_payloads,
+            )
+        self._connect_market_chart_hover_links()
 
     def _update_market_text_panels(self, symbol: str, snapshot, recommendation) -> None:
         symbol_news = list(getattr(self, "news_catalysts", {}).get(symbol, []) or [])
         confidence = news_confidence_label(symbol_news)
         latest_news = symbol_news[0] if symbol_news else None
+        chart_action_note = self._market_chart_action_note_for_symbol(symbol) if hasattr(self, "_market_chart_action_note_for_symbol") else {}
         profile_loader = getattr(self, "_stock_profile_for_symbol", None)
         profile = profile_loader(symbol) if callable(profile_loader) and symbol else None
         theme_name = (
@@ -12368,7 +15498,7 @@ class QuantHunterWindow(QMainWindow):
                     [
                         f"焦点标的：{recommendation.stock_name} ({recommendation.stock_id} / {recommendation.symbol})",
                         f"主线：{recommendation.mainline_tag or recommendation.theme_name or '待确认'} | 分层：{getattr(recommendation, 'opportunity_tier', '') or '待确认'}",
-                        f"动作：{self._display_action(recommendation.action)} | 主策略：{getattr(recommendation, 'primary_strategy', '') or '掘龙决策'}",
+                        f"动作：{self._display_action(recommendation.action)} | 主策略：{_recommendation_strategy_name(recommendation)}",
                         f"执行准备：{float(getattr(recommendation, 'execution_readiness', 0.0) or 0.0):.1f} | 置信：{float(getattr(recommendation, 'confidence_score', 0.0) or 0.0):.1f}",
                         f"催化：{recommendation.catalyst or getattr(latest_news, 'title', '') or '等待消息催化'} | {confidence}",
                         f"逻辑：{hype_logic}",
@@ -12423,6 +15553,8 @@ class QuantHunterWindow(QMainWindow):
                         "推荐池和交易计划生成后，这里会同步给出买点、止损、目标和失效条件。",
                     ]
                 )
+            if chart_action_note.get("execution_text"):
+                execution_lines.extend(["", str(chart_action_note.get("execution_text", ""))])
             self._set_plain_text_if_changed(self.overview_execution_text, "\n".join(execution_lines))
 
         if hasattr(self, "market_capital_text"):
@@ -12436,7 +15568,7 @@ class QuantHunterWindow(QMainWindow):
                 )
                 if recommendation is not None:
                     lines.append(
-                        f"下一步：主策略 {getattr(recommendation, 'primary_strategy', '') or '掘龙决策'} | 决策 {getattr(recommendation, 'dragon_decision_score', recommendation.total_score):.1f}"
+                        f"下一步：主策略 {_recommendation_strategy_name(recommendation)} | 决策 {_recommendation_decision_score(recommendation):.1f}"
                     )
             else:
                 lines.extend(
@@ -12460,10 +15592,10 @@ class QuantHunterWindow(QMainWindow):
             lines = ["龙头状态 / 决策建议"]
             latest_signal = next((item for item in reversed(self.analyses) if item.label != "NONE"), None)
             if recommendation is not None:
-                strategy_name = getattr(recommendation, "primary_strategy", "") or "掘龙决策"
+                strategy_name = _recommendation_strategy_name(recommendation)
                 lines.extend(
                     [
-                        f"结论：{self._display_action(recommendation.action)} | {strategy_name} | 决策 {getattr(recommendation, 'dragon_decision_score', recommendation.total_score):.1f}",
+                        f"结论：{self._display_action(recommendation.action)} | {strategy_name} | 决策 {_recommendation_decision_score(recommendation):.1f}",
                         f"风险：买 {(recommendation.entry_price or recommendation.close):.2f} / 止 {(recommendation.stop_price or recommendation.close * 0.95):.2f} / 目 {(recommendation.target_price or recommendation.close * 1.1):.2f}",
                         f"下一步：{getattr(recommendation, 'next_focus', '') or recommendation.catalyst or '先看量价承接'}",
                     ]
@@ -12478,11 +15610,13 @@ class QuantHunterWindow(QMainWindow):
                         "下一步：先看主线是否清晰、量价是否匹配，再决定是否进入推荐池。",
                     ]
                 )
+            if chart_action_note.get("decision_text"):
+                lines.extend(["", str(chart_action_note.get("decision_text", ""))])
             self._set_plain_text_if_changed(self.market_decision_text, "\n".join(lines))
             if hasattr(self, "overview_summary_cards"):
                 decision_headline = self._display_action(recommendation.action) if recommendation is not None else "观察"
                 decision_detail = (
-                    f"{getattr(recommendation, 'primary_strategy', '') or '掘龙决策'} / 决策分 {getattr(recommendation, 'dragon_decision_score', recommendation.total_score):.1f}"
+                    f"{_recommendation_strategy_name(recommendation)} / 决策分 {_recommendation_decision_score(recommendation):.1f}"
                     if recommendation is not None
                     else (latest_signal.label if latest_signal is not None else "等待交易决策生成。")
                 )
@@ -13053,19 +16187,7 @@ QPushButton#accentButton:hover {
         return mapping.get(text, ("#24303a", "#dce4ef"))
 
     def _strategy_badge_palette(self, text: str) -> tuple[str, str]:
-        mapping = {
-            "龙头模型": ("#5b1216", "#ff6a6f"),
-            "主力雷达": ("#0f3951", "#7ed7ff"),
-            "擒龙打板": ("#57430f", "#ffd75b"),
-            "打板策略": ("#57430f", "#ffd75b"),
-            "强势接力": ("#57430f", "#ffd75b"),
-            "价值低吸": ("#204728", "#7ef5a2"),
-            "尾盘买入法": ("#4b3418", "#ffcf82"),
-            "一日持股法": ("#3b2f12", "#ffd27a"),
-            "隔日强势": ("#3b2f12", "#ffd27a"),
-            "掘龙决策": ("#4b235f", "#db9bff"),
-        }
-        return mapping.get(text, ("#24303a", "#dce4ef"))
+        return shared_strategy_badge_palette(text)
 
     def _signal_badge_palette(self, text: str) -> tuple[str, str]:
         mapping = {
@@ -13371,6 +16493,12 @@ QPushButton#accentButton:hover {
         self._ensure_selection_hook(getattr(self, "strategy_history_trade_table", None), self._on_strategy_history_trade_selection_changed)
         self._tune_workspace_splitters()
         self.set_market_timeframe(getattr(self, "market_timeframe_mode", "日线"))
+        self.apply_market_chart_preset(
+            getattr(self, "market_chart_preset", "BALANCED"),
+            save=False,
+            feedback=False,
+            record_recent=False,
+        )
         self.set_overview_focus(getattr(self, "overview_focus_mode", "市场总览"))
         self._hydrate_empty_workspace_panels()
         self._refresh_alert_cards_from_state()
@@ -13552,6 +16680,592 @@ QPushButton#accentButton:hover {
             current_text = current_text_attr() if callable(current_text_attr) else current_text_attr
         if hasattr(widget, "setPlainText") and current_text != text:
             widget.setPlainText(text)
+
+    @staticmethod
+    def _multiline_text_to_html(text: str) -> str:
+        lines = str(text or "").splitlines() or [""]
+        escaped = [html.escape(line) for line in lines]
+        return "<br/>".join(escaped)
+
+    def _dismiss_market_chart_action_note_v1(self) -> None:
+        self._stop_chart_action_note_cards_v1(remember=False)
+        note = dict(getattr(self, "_market_chart_action_note", {}) or {})
+        symbol = str(note.get("symbol", "") or getattr(self, "active_symbol", "") or "").strip()
+        if not symbol:
+            return
+        self._clear_market_chart_action_note(symbol)
+        if symbol == str(getattr(self, "active_symbol", "") or "") and symbol in getattr(self, "universe_bars", {}):
+            self._render_market_dashboard(symbol)
+        self._refresh_detail_workspace_panels()
+        if hasattr(self, "_show_market_chart_feedback"):
+            self._show_market_chart_feedback("已收起图表联动提示卡")
+
+    def _market_chart_action_note_pinned_v1(self) -> bool:
+        note = dict(getattr(self, "_market_chart_action_note", {}) or {})
+        return bool(note.get("pinned", False))
+
+    def _sync_chart_action_note_pin_button_v1(self, frame: QFrame | None) -> None:
+        if not isinstance(frame, QFrame):
+            return
+        pin_button = getattr(frame, "_qh_pin_button_v1", None)
+        if not isinstance(pin_button, QPushButton):
+            return
+        pinned = self._market_chart_action_note_pinned_v1()
+        self._set_label_text_if_changed(pin_button, "取消钉住" if pinned else "钉住")
+        if hasattr(self, "_set_button_role"):
+            self._set_button_role(pin_button, "accent" if pinned else "tonal")
+        pin_button.setToolTip("取消钉住，恢复自动淡出。" if pinned else "钉住这张提示卡，防止自动收起。")
+
+    def _sync_chart_action_note_history_controls_v1(self, frame: QFrame | None) -> None:
+        if not isinstance(frame, QFrame):
+            return
+        prev_button = getattr(frame, "_qh_prev_button_v1", None)
+        next_button = getattr(frame, "_qh_next_button_v1", None)
+        clear_button = getattr(frame, "_qh_clear_filter_button_v1", None)
+        status_label = getattr(frame, "_qh_history_label_v1", None)
+        history = self._chart_action_note_history_items_v1()
+        filter_source = self._chart_action_note_filter_source_v1()
+        index = int(getattr(self, "_market_chart_action_note_history_index_v1", len(history) - 1) or 0)
+        index = max(0, min(index, len(history) - 1)) if history else 0
+        if isinstance(prev_button, QPushButton):
+            prev_button.setEnabled(index > 0)
+            prev_preview = self._market_chart_action_note_preview_text_v1(history[index - 1]) if index > 0 and history else ""
+            prev_button.setToolTip(
+                f"查看上一条图表提示：{prev_preview} | Alt+Left" if prev_preview else "已经是最早一条图表提示。"
+            )
+            if hasattr(self, "_set_button_role"):
+                self._set_button_role(prev_button, "ghost" if index > 0 else "tonal")
+        if isinstance(next_button, QPushButton):
+            next_button.setEnabled(index < len(history) - 1)
+            next_preview = self._market_chart_action_note_preview_text_v1(history[index + 1]) if index < len(history) - 1 else ""
+            next_button.setToolTip(
+                f"查看下一条图表提示：{next_preview} | Alt+Right" if next_preview else "已经是最新一条图表提示。"
+            )
+            if hasattr(self, "_set_button_role"):
+                self._set_button_role(next_button, "ghost" if index < len(history) - 1 else "tonal")
+        if isinstance(clear_button, QPushButton):
+            clear_button.setVisible(bool(filter_source))
+            clear_button.setEnabled(bool(filter_source))
+            clear_button.setToolTip(
+                f"清除来源筛选：{filter_source} | Alt+C" if filter_source else "当前没有来源筛选。"
+            )
+            if hasattr(self, "_set_button_role"):
+                self._set_button_role(clear_button, "tonal" if filter_source else "ghost")
+        if isinstance(status_label, QLabel):
+            if history:
+                preview = self._market_chart_action_note_preview_text_v1(history[index])
+                prefix = f"筛选：{filter_source} | " if filter_source else ""
+                self._set_label_text_if_changed(
+                    status_label,
+                    f"{prefix}{index + 1}/{len(history)} · {preview}" if preview else f"{prefix}{index + 1}/{len(history)}",
+                )
+            else:
+                self._set_label_text_if_changed(status_label, "--")
+
+    def _sync_chart_action_note_source_badge_v1(self, frame: QFrame | None) -> None:
+        if not isinstance(frame, QFrame):
+            return
+        badge_label = getattr(frame, "_qh_source_label_v1", None)
+        if not isinstance(badge_label, QLabel):
+            return
+        note = dict(getattr(self, "_market_chart_action_note", {}) or {})
+        source = self._market_chart_action_note_source_v1(note)
+        filter_source = self._chart_action_note_filter_source_v1()
+        active = bool(source and filter_source == source)
+        badge_label.setProperty("filterActive", active)
+        self._set_label_text_if_changed(badge_label, f"{source} · 筛" if active else (source or "图表"))
+        badge_label.setToolTip(
+            f"只回看 {source} 类提示，点击清除筛选。" if active else f"点击后只回看 {source or '当前来源'} 类提示。"
+        )
+        style = badge_label.style() if hasattr(badge_label, "style") else None
+        if style is not None:
+            style.unpolish(badge_label)
+            style.polish(badge_label)
+
+    def _set_market_chart_action_note_pinned_v1(self, pinned: bool) -> None:
+        note = dict(getattr(self, "_market_chart_action_note", {}) or {})
+        if not note:
+            return
+        note["pinned"] = bool(pinned)
+        self._market_chart_action_note = note
+        for frame in self._iter_chart_action_note_cards_v1():
+            frame._qh_pinned_v1 = bool(pinned)
+            self._sync_chart_action_note_source_badge_v1(frame)
+            self._sync_chart_action_note_pin_button_v1(frame)
+            self._sync_chart_action_note_history_controls_v1(frame)
+        if pinned:
+            self._stop_chart_action_note_cards_v1(remember=False)
+        else:
+            self._start_chart_action_note_cards_v1(resume_only=False)
+        self._sync_chart_action_note_card_visibility_v1(restart_timer=not pinned)
+        if hasattr(self, "_show_market_chart_feedback"):
+            self._show_market_chart_feedback("已钉住图表联动提示卡" if pinned else "已取消钉住，恢复自动收起")
+
+    def _toggle_market_chart_action_note_pin_v1(self) -> None:
+        self._set_market_chart_action_note_pinned_v1(not self._market_chart_action_note_pinned_v1())
+
+    def _iter_chart_action_note_cards_v1(self):
+        for widget in [
+            getattr(self, "overview_execution_text", None),
+            getattr(self, "market_decision_text", None),
+            getattr(self, "detail_decision_text", None),
+            getattr(self, "detail_execution_text", None),
+            getattr(self, "detail_conclusion_text", None),
+        ]:
+            frame = getattr(widget, "_qh_chart_action_note_card_v1", None)
+            if isinstance(frame, QFrame):
+                yield frame
+
+    def _stop_chart_action_note_cards_v1(self, *, remember: bool) -> None:
+        for frame in self._iter_chart_action_note_cards_v1():
+            timer = getattr(frame, "_qh_auto_timer_v1", None)
+            animation = getattr(frame, "_qh_fade_animation_v1", None)
+            effect = getattr(frame, "_qh_opacity_effect_v1", None)
+            if remember:
+                if isinstance(timer, QTimer) and timer.isActive():
+                    frame._qh_resume_phase_v1 = "delay"
+                    frame._qh_remaining_ms_v1 = max(int(timer.remainingTime() or 0), 250)
+                elif isinstance(animation, QPropertyAnimation) and animation.state() == QPropertyAnimation.Running:
+                    remaining = max(int(animation.duration() - animation.currentTime()), 120)
+                    frame._qh_resume_phase_v1 = "fade"
+                    frame._qh_remaining_ms_v1 = remaining
+                    frame._qh_resume_opacity_v1 = float(effect.opacity() if isinstance(effect, QGraphicsOpacityEffect) else 1.0)
+                else:
+                    frame._qh_resume_phase_v1 = ""
+                    frame._qh_remaining_ms_v1 = 0
+            else:
+                frame._qh_remaining_ms_v1 = 0
+                frame._qh_resume_phase_v1 = ""
+                frame._qh_resume_opacity_v1 = 1.0
+            if isinstance(timer, QTimer):
+                timer.stop()
+            if isinstance(animation, QPropertyAnimation):
+                animation.stop()
+            if not remember and isinstance(effect, QGraphicsOpacityEffect):
+                effect.setOpacity(1.0)
+
+    def _start_chart_action_note_cards_v1(self, *, resume_only: bool = False) -> None:
+        if self._market_chart_action_note_pinned_v1():
+            for frame in self._iter_chart_action_note_cards_v1():
+                if frame.isHidden():
+                    continue
+                timer = getattr(frame, "_qh_auto_timer_v1", None)
+                animation = getattr(frame, "_qh_fade_animation_v1", None)
+                effect = getattr(frame, "_qh_opacity_effect_v1", None)
+                if isinstance(timer, QTimer):
+                    timer.stop()
+                if isinstance(animation, QPropertyAnimation):
+                    animation.stop()
+                if isinstance(effect, QGraphicsOpacityEffect):
+                    effect.setOpacity(1.0)
+            return
+        if self._chart_action_note_cards_under_cursor_v1():
+            return
+        for frame in self._iter_chart_action_note_cards_v1():
+            if frame.isHidden():
+                continue
+            timer = getattr(frame, "_qh_auto_timer_v1", None)
+            animation = getattr(frame, "_qh_fade_animation_v1", None)
+            effect = getattr(frame, "_qh_opacity_effect_v1", None)
+            if not isinstance(timer, QTimer):
+                continue
+            remaining = int(getattr(frame, "_qh_remaining_ms_v1", 0) or 0)
+            phase = str(getattr(frame, "_qh_resume_phase_v1", "") or "")
+            default_ms = int(getattr(frame, "_qh_auto_dismiss_ms_v1", 7000) or 7000)
+            fade_ms = int(getattr(frame, "_qh_fade_duration_ms_v1", 1000) or 1000)
+            frame._qh_remaining_ms_v1 = 0
+            if isinstance(animation, QPropertyAnimation):
+                animation.stop()
+            if isinstance(effect, QGraphicsOpacityEffect):
+                if resume_only and phase == "fade":
+                    start_opacity = float(getattr(frame, "_qh_resume_opacity_v1", effect.opacity()) or effect.opacity() or 1.0)
+                    self._start_chart_action_note_fade_v1(frame, duration_ms=max(remaining, 120), start_opacity=start_opacity)
+                    continue
+                effect.setOpacity(1.0)
+            frame._qh_resume_phase_v1 = ""
+            frame._qh_resume_opacity_v1 = 1.0
+            interval = remaining if (resume_only and remaining > 0 and phase == "delay") else default_ms
+            timer.stop()
+            timer.start(max(interval, 250 if resume_only else min(default_ms, fade_ms)))
+
+    def _pause_chart_action_note_cards_v1(self) -> None:
+        self._stop_chart_action_note_cards_v1(remember=True)
+
+    def _resume_chart_action_note_cards_v1(self) -> None:
+        if self._chart_action_note_cards_under_cursor_v1():
+            return
+        self._start_chart_action_note_cards_v1(resume_only=True)
+
+    def _chart_action_note_cards_under_cursor_v1(self) -> bool:
+        global_pos = QCursor.pos()
+        for frame in self._iter_chart_action_note_cards_v1():
+            if frame.isHidden():
+                continue
+            local = frame.mapFromGlobal(global_pos)
+            if frame.rect().contains(local):
+                return True
+        return False
+
+    def _chart_action_note_target_widget_names_v1(self) -> list[str]:
+        note = dict(getattr(self, "_market_chart_action_note", {}) or {})
+        if not note:
+            return []
+        role = str(note.get("panel_role", "execution") or "execution").lower()
+        tabs = getattr(self, "tabs", None)
+        current_widget = tabs.currentWidget() if isinstance(tabs, QTabWidget) else None
+        if current_widget is getattr(self, "overview_tab", None):
+            mapping = {
+                "execution": ["overview_execution_text", "market_decision_text"],
+                "decision": ["market_decision_text", "overview_execution_text"],
+                "conclusion": ["market_decision_text", "overview_execution_text"],
+            }
+            return list(mapping.get(role, mapping["execution"]))
+        if current_widget is getattr(self, "detail_tab", None):
+            mapping = {
+                "execution": ["detail_execution_text", "detail_decision_text", "detail_conclusion_text"],
+                "decision": ["detail_decision_text", "detail_execution_text", "detail_conclusion_text"],
+                "conclusion": ["detail_conclusion_text", "detail_execution_text", "detail_decision_text"],
+            }
+            return list(mapping.get(role, mapping["execution"]))
+        return []
+
+    def _sync_chart_action_note_card_visibility_v1(self, *, restart_timer: bool = False, preferred_widget=None) -> None:
+        target_names = self._chart_action_note_target_widget_names_v1()
+        preferred_name = str(getattr(preferred_widget, "_qh_chart_action_note_name_v1", "") or "")
+        resolved_target_name = ""
+        for candidate in (target_names or ([preferred_name] if preferred_name else [])):
+            widget = getattr(self, candidate, None)
+            frame = getattr(widget, "_qh_chart_action_note_card_v1", None)
+            note_text = str(getattr(frame, "_qh_note_text_v1", "") or "").strip() if isinstance(frame, QFrame) else ""
+            if isinstance(frame, QFrame) and note_text:
+                resolved_target_name = candidate
+                break
+        target_name = resolved_target_name or (target_names[0] if target_names else preferred_name)
+        visible_target: QFrame | None = None
+        for attr_name in [
+            "overview_execution_text",
+            "market_decision_text",
+            "detail_decision_text",
+            "detail_execution_text",
+            "detail_conclusion_text",
+        ]:
+            widget = getattr(self, attr_name, None)
+            frame = getattr(widget, "_qh_chart_action_note_card_v1", None)
+            if not isinstance(frame, QFrame):
+                continue
+            note_text = str(getattr(frame, "_qh_note_text_v1", "") or "").strip()
+            effect = getattr(frame, "_qh_opacity_effect_v1", None)
+            self._sync_chart_action_note_source_badge_v1(frame)
+            self._sync_chart_action_note_pin_button_v1(frame)
+            self._sync_chart_action_note_history_controls_v1(frame)
+            if attr_name == target_name and note_text:
+                if isinstance(effect, QGraphicsOpacityEffect):
+                    effect.setOpacity(1.0)
+                frame.show()
+                visible_target = frame
+            else:
+                timer = getattr(frame, "_qh_auto_timer_v1", None)
+                animation = getattr(frame, "_qh_fade_animation_v1", None)
+                if isinstance(timer, QTimer):
+                    timer.stop()
+                if isinstance(animation, QPropertyAnimation):
+                    animation.stop()
+                if isinstance(effect, QGraphicsOpacityEffect):
+                    effect.setOpacity(1.0)
+                frame.hide()
+        if visible_target is not None:
+            self._start_chart_action_note_cards_v1(resume_only=not restart_timer)
+
+    def _on_chart_action_note_fade_finished_v1(self) -> None:
+        if self._market_chart_action_note_pinned_v1():
+            return
+        if not dict(getattr(self, "_market_chart_action_note", {}) or {}):
+            return
+        for frame in self._iter_chart_action_note_cards_v1():
+            animation = getattr(frame, "_qh_fade_animation_v1", None)
+            if isinstance(animation, QPropertyAnimation) and animation.state() == QPropertyAnimation.Running:
+                return
+        self._dismiss_market_chart_action_note_v1()
+
+    def _start_chart_action_note_fade_v1(
+        self,
+        frame: QFrame,
+        *,
+        duration_ms: int | None = None,
+        start_opacity: float | None = None,
+    ) -> None:
+        if self._market_chart_action_note_pinned_v1():
+            return
+        if not isinstance(frame, QFrame) or frame.isHidden():
+            return
+        animation = getattr(frame, "_qh_fade_animation_v1", None)
+        effect = getattr(frame, "_qh_opacity_effect_v1", None)
+        timer = getattr(frame, "_qh_auto_timer_v1", None)
+        if not isinstance(animation, QPropertyAnimation) or not isinstance(effect, QGraphicsOpacityEffect):
+            return
+        if isinstance(timer, QTimer):
+            timer.stop()
+        frame._qh_resume_phase_v1 = "fade"
+        frame._qh_resume_opacity_v1 = float(start_opacity if start_opacity is not None else effect.opacity())
+        effect.setOpacity(max(0.12, min(frame._qh_resume_opacity_v1, 1.0)))
+        animation.stop()
+        animation.setDuration(max(int(duration_ms or getattr(frame, "_qh_fade_duration_ms_v1", 1000) or 1000), 120))
+        animation.setStartValue(effect.opacity())
+        animation.setEndValue(0.28)
+        animation.start()
+
+    def _build_chart_action_note_card_v1(self, parent: QWidget | None = None) -> QFrame:
+        frame = QFrame(parent)
+        frame.setObjectName("chartActionNoteCard")
+        frame.hide()
+        opacity_effect = QGraphicsOpacityEffect(frame)
+        opacity_effect.setOpacity(1.0)
+        frame.setGraphicsEffect(opacity_effect)
+        layout = QHBoxLayout(frame)
+        layout.setContentsMargins(10, 9, 10, 9)
+        layout.setSpacing(10)
+
+        text_layout = QVBoxLayout()
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setSpacing(3)
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(8)
+        source_label = QLabel("图表")
+        source_label.setObjectName("chartActionNoteSource")
+        source_label.setProperty("chartActionSourceBadge", True)
+        title_label = QLabel("图表联动")
+        title_label.setObjectName("chartActionNoteTitle")
+        body_label = QLabel("")
+        body_label.setObjectName("chartActionNoteBody")
+        body_label.setWordWrap(True)
+        title_row.addWidget(source_label, alignment=Qt.AlignLeft)
+        title_row.addWidget(title_label, stretch=1)
+        text_layout.addLayout(title_row)
+        text_layout.addWidget(body_label)
+
+        history_label = QLabel("--")
+        history_label.setObjectName("chartActionNoteHistory")
+        clear_filter_button = QPushButton("清筛")
+        clear_filter_button.setObjectName("ghostButton")
+        clear_filter_button.setMinimumHeight(24)
+        clear_filter_button.setMinimumWidth(68)
+        if hasattr(self, "_set_button_role"):
+            self._set_button_role(clear_filter_button, "ghost")
+        clear_filter_button.clicked.connect(self._clear_chart_action_note_source_filter_v1)
+        clear_filter_button.hide()
+        prev_button = QPushButton("上一条")
+        prev_button.setObjectName("ghostButton")
+        prev_button.setMinimumHeight(26)
+        prev_button.setMinimumWidth(68)
+        if hasattr(self, "_set_button_role"):
+            self._set_button_role(prev_button, "ghost")
+        prev_button.clicked.connect(lambda: self._step_market_chart_action_note_history_v1(-1))
+        next_button = QPushButton("下一条")
+        next_button.setObjectName("ghostButton")
+        next_button.setMinimumHeight(26)
+        next_button.setMinimumWidth(68)
+        if hasattr(self, "_set_button_role"):
+            self._set_button_role(next_button, "ghost")
+        next_button.clicked.connect(lambda: self._step_market_chart_action_note_history_v1(1))
+        pin_button = QPushButton("钉住")
+        pin_button.setObjectName("tonalButton")
+        pin_button.setMinimumHeight(28)
+        pin_button.setMinimumWidth(72)
+        if hasattr(self, "_set_button_role"):
+            self._set_button_role(pin_button, "tonal")
+        pin_button.clicked.connect(self._toggle_market_chart_action_note_pin_v1)
+        close_button = QPushButton("收起")
+        close_button.setObjectName("ghostButton")
+        close_button.setMinimumHeight(28)
+        close_button.setMinimumWidth(62)
+        if hasattr(self, "_set_button_role"):
+            self._set_button_role(close_button, "ghost")
+        close_button.clicked.connect(self._dismiss_market_chart_action_note_v1)
+        auto_timer = QTimer(frame)
+        auto_timer.setSingleShot(True)
+        auto_timer.timeout.connect(lambda current=frame: self._start_chart_action_note_fade_v1(current))
+        fade_animation = QPropertyAnimation(opacity_effect, b"opacity", frame)
+        fade_animation.setEasingCurve(QEasingCurve.OutCubic)
+        fade_animation.finished.connect(self._on_chart_action_note_fade_finished_v1)
+        hover_filter = _ChartActionNoteCardHoverFilter(self, frame)
+        action_layout = QVBoxLayout()
+        action_layout.setContentsMargins(0, 0, 0, 0)
+        action_layout.setSpacing(6)
+        action_layout.addWidget(history_label)
+        action_layout.addWidget(clear_filter_button)
+        action_layout.addWidget(prev_button)
+        action_layout.addWidget(next_button)
+        action_layout.addWidget(pin_button)
+        action_layout.addWidget(close_button)
+        action_layout.addStretch(1)
+
+        layout.addLayout(text_layout, stretch=1)
+        layout.addLayout(action_layout)
+        frame._qh_source_label_v1 = source_label
+        frame._qh_title_label_v1 = title_label
+        frame._qh_body_label_v1 = body_label
+        frame._qh_history_label_v1 = history_label
+        frame._qh_clear_filter_button_v1 = clear_filter_button
+        frame._qh_prev_button_v1 = prev_button
+        frame._qh_next_button_v1 = next_button
+        frame._qh_pin_button_v1 = pin_button
+        frame._qh_close_button_v1 = close_button
+        frame._qh_opacity_effect_v1 = opacity_effect
+        frame._qh_auto_timer_v1 = auto_timer
+        frame._qh_fade_animation_v1 = fade_animation
+        frame._qh_auto_dismiss_ms_v1 = 7000
+        frame._qh_fade_duration_ms_v1 = 1000
+        frame._qh_remaining_ms_v1 = 0
+        frame._qh_resume_phase_v1 = ""
+        frame._qh_resume_opacity_v1 = 1.0
+        frame._qh_pinned_v1 = False
+        frame._qh_hover_filter_v1 = hover_filter
+        for target in (frame, source_label, title_label, body_label, history_label, clear_filter_button, prev_button, next_button, pin_button, close_button):
+            target.installEventFilter(hover_filter)
+        return frame
+
+    def _apply_chart_action_note_card_style_v1(self, frame: QFrame, tone: str) -> None:
+        palette = {
+            "buy": ("rgba(18, 74, 54, 0.94)", "#54e0a6", "#eefdf7"),
+            "risk": ("rgba(96, 36, 36, 0.94)", "#ff8b8b", "#fff3f3"),
+            "watch": ("rgba(94, 70, 24, 0.94)", "#ffd166", "#fff8e7"),
+            "idle": ("rgba(40, 53, 70, 0.94)", "#c5d4e5", "#f1f6fb"),
+        }
+        background, border, foreground = palette.get(str(tone or "watch"), palette["watch"])
+        frame.setStyleSheet(
+            f"""
+QFrame#chartActionNoteCard {{
+    background: {background};
+    border: 1px solid {border};
+    border-radius: 12px;
+}}
+QFrame#chartActionNoteCard QLabel#chartActionNoteTitle {{
+    color: {foreground};
+    font-size: 13px;
+    font-weight: 800;
+}}
+QFrame#chartActionNoteCard QLabel#chartActionNoteSource {{
+    color: {foreground};
+    background: rgba(255,255,255,0.10);
+    border: 1px solid {border};
+    border-radius: 9px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 800;
+}}
+QFrame#chartActionNoteCard QLabel#chartActionNoteSource[filterActive="true"] {{
+    background: rgba(255,255,255,0.18);
+    border-color: {foreground};
+}}
+QFrame#chartActionNoteCard QLabel#chartActionNoteBody {{
+    color: {foreground};
+    font-size: 12px;
+    line-height: 1.5;
+}}
+"""
+        )
+
+    def _sync_chart_action_note_card_v1(
+        self,
+        widget,
+        *,
+        note_text: str,
+        note_title: str,
+        note_tone: str,
+    ) -> None:
+        frame = getattr(widget, "_qh_chart_action_note_card_v1", None)
+        if not isinstance(frame, QFrame):
+            return
+        text = str(note_text or "").strip()
+        if not text:
+            timer = getattr(frame, "_qh_auto_timer_v1", None)
+            animation = getattr(frame, "_qh_fade_animation_v1", None)
+            effect = getattr(frame, "_qh_opacity_effect_v1", None)
+            if isinstance(timer, QTimer):
+                timer.stop()
+            if isinstance(animation, QPropertyAnimation):
+                animation.stop()
+            if isinstance(effect, QGraphicsOpacityEffect):
+                effect.setOpacity(1.0)
+            frame._qh_remaining_ms_v1 = 0
+            frame._qh_resume_phase_v1 = ""
+            frame._qh_resume_opacity_v1 = 1.0
+            frame._qh_note_text_v1 = ""
+            frame.hide()
+            return
+        title_label = getattr(frame, "_qh_title_label_v1", None)
+        body_label = getattr(frame, "_qh_body_label_v1", None)
+        if isinstance(title_label, QLabel):
+            self._set_label_text_if_changed(title_label, str(note_title or "图表联动"))
+        if isinstance(body_label, QLabel):
+            self._set_label_text_if_changed(body_label, text)
+        self._apply_chart_action_note_card_style_v1(frame, str(note_tone or "watch"))
+        self._sync_chart_action_note_source_badge_v1(frame)
+        self._sync_chart_action_note_pin_button_v1(frame)
+        self._sync_chart_action_note_history_controls_v1(frame)
+        frame._qh_note_text_v1 = text
+
+    def _install_chart_action_note_cards_v1(self) -> None:
+        if getattr(self, "_qh_chart_action_cards_installed_v1", False):
+            return
+        self._qh_chart_action_cards_installed_v1 = True
+        target_widgets = [
+            ("overview_execution_text", getattr(self, "overview_execution_text", None)),
+            ("market_decision_text", getattr(self, "market_decision_text", None)),
+            ("detail_decision_text", getattr(self, "detail_decision_text", None)),
+            ("detail_execution_text", getattr(self, "detail_execution_text", None)),
+            ("detail_conclusion_text", getattr(self, "detail_conclusion_text", None)),
+        ]
+        for attr_name, widget in target_widgets:
+            if not isinstance(widget, QTextEdit):
+                continue
+            if isinstance(getattr(widget, "_qh_chart_action_note_card_v1", None), QFrame):
+                continue
+            parent = widget.parentWidget()
+            layout = parent.layout() if parent is not None else None
+            if layout is None:
+                continue
+            frame = self._build_chart_action_note_card_v1(parent)
+            index = layout.indexOf(widget)
+            if index >= 0:
+                layout.insertWidget(index, frame)
+            else:
+                layout.addWidget(frame)
+            widget._qh_chart_action_note_card_v1 = frame
+            widget._qh_chart_action_note_name_v1 = attr_name
+            widget._qh_note_panel_signature_v1 = None
+
+    def _set_note_panel_content_if_changed(
+        self,
+        widget,
+        text: str,
+        *,
+        highlight_text: str = "",
+        highlight_title: str = "图表联动",
+        highlight_tone: str = "watch",
+    ) -> None:
+        if widget is None:
+            return
+        plain_text = str(text or "")
+        note_text = str(highlight_text or "").strip()
+        signature = (
+            plain_text,
+            note_text,
+            str(highlight_title or ""),
+            str(highlight_tone or ""),
+        )
+        current_signature = getattr(widget, "_qh_note_panel_signature_v1", None)
+        if current_signature != signature:
+            self._set_plain_text_if_changed(widget, plain_text)
+            self._sync_chart_action_note_card_v1(
+                widget,
+                note_text=note_text,
+                note_title=str(highlight_title or "图表联动"),
+                note_tone=str(highlight_tone or "watch"),
+            )
+            widget._qh_note_panel_signature_v1 = signature
+            self._sync_chart_action_note_card_visibility_v1(restart_timer=bool(note_text), preferred_widget=widget)
 
     def _ui_scale_factor(self) -> float:
         app = QApplication.instance()
@@ -14696,7 +18410,7 @@ QPushButton#accentButton:hover {
 
         strategy_combo = getattr(self, "strategy_detail_combo", None)
         if strategy_combo is not None and strategy_combo.count():
-            labels = ["龙头模型", "主力雷达", "擒龙打板", "价值低吸", "尾盘买入法", "一日持股法", "掘龙决策"]
+            labels = list(STRATEGY_SCORE_FIELDS)
             current = strategy_combo.currentText()
             strategy_combo.blockSignals(True)
             strategy_combo.clear()
@@ -14842,7 +18556,7 @@ QPushButton#accentButton:hover {
 
         button_groups = [
             ("overview_quick_buttons", ["市场总览", "主线龙头", "趋势机会", "消息催化", "买卖决策", "复盘研究"], self.activate_overview_quick_action),
-            ("market_filter_buttons", ["全部", "龙头模型", "主力雷达", "擒龙打板", "价值低吸", "尾盘买入法", "一日持股法", "掘龙决策"], self.set_market_filter),
+            ("market_filter_buttons", STRATEGY_FILTER_LABELS, self.set_market_filter),
             ("timeframe_buttons", ["分时", "1分", "5分", "15分", "30分", "60分", "日线", "周线", "月线"], self.set_market_timeframe),
             ("history_window_buttons", ["近1月", "近3月", "近1年", "全部"], self.set_market_history_window),
             ("secondary_indicator_buttons", ["MACD", "RSI", "KDJ", "VOL"], self.set_market_secondary_indicator),
@@ -14870,6 +18584,12 @@ QPushButton#accentButton:hover {
             except Exception:
                 pass
             button.clicked.connect(lambda checked=False, current=name: self.toggle_market_overlay(current))
+        for name, button in getattr(self, "market_annotation_mode_buttons", {}).items():
+            try:
+                button.clicked.disconnect()
+            except Exception:
+                pass
+            button.clicked.connect(lambda checked=False, current=name: self.set_market_strategy_annotation_mode(current))
 
         if hasattr(self, "market_pool_table"):
             self.market_pool_table.setHorizontalHeaderLabels(["层级", "标的 / 代码", "资金画像", "策略归因", "涨跌", "价格 / 评分"])
@@ -15088,8 +18808,8 @@ QPushButton#accentButton:hover {
             if widget is not None and hasattr(widget, "setTitle"):
                 widget.setTitle(value)
 
-        if hasattr(self, "strategy_detail_combo") and self.strategy_detail_combo.count() <= 7:
-            labels = ["龙头模型", "主力雷达", "擒龙打板", "价值低吸", "尾盘买入法", "一日持股法", "掘龙决策"]
+        if hasattr(self, "strategy_detail_combo") and self.strategy_detail_combo.count() <= max(len(STRATEGY_SCORE_FIELDS), 1):
+            labels = list(STRATEGY_SCORE_FIELDS)
             current = self.strategy_detail_combo.currentText()
             self.strategy_detail_combo.blockSignals(True)
             self.strategy_detail_combo.clear()
@@ -15150,18 +18870,9 @@ QPushButton#accentButton:hover {
                     self._set_label_text_if_changed(self.recommend_focus_metric_accents[key], accent)
 
         if hasattr(self, "strategy_pack_cards"):
-            empty_map = {
-                "龙头模型": "等待龙头池生成后更新前排标的和位置判断。",
-                "主力雷达": "等待资金画像生成后更新主力流入和承接质量。",
-                "擒龙打板": "等待强势候选生成后更新打板窗口和回封观察。",
-                "价值低吸": "等待回踩修复候选生成后更新低吸窗口。",
-                "尾盘买入法": "等待尾盘回流候选生成后更新隔夜确认和次日开盘兑现节奏。",
-                "一日持股法": "等待短线爆发候选生成后更新隔日博弈与兑现节奏。",
-                "掘龙决策": "等待综合评分生成后更新最终执行候选。",
-            }
             for key, card in self.strategy_pack_cards.items():
                 if hasattr(card, "set_empty"):
-                    card.set_empty(empty_map.get(key, "等待推荐池生成后更新。"))
+                    card.set_empty(strategy_empty_hint(key))
 
         if hasattr(self, "action_flow_cards"):
             defaults = {
@@ -15476,6 +19187,8 @@ QPushButton#accentButton:hover {
         self._refresh_workspace_status_labels()
         if hasattr(self, "top_badge"):
             self._set_label_text_if_changed(self.top_badge, self._workspace_badge_text(current_name))
+        if hasattr(self, "_sync_chart_action_note_card_visibility_v1"):
+            self._sync_chart_action_note_card_visibility_v1(restart_timer=False)
 
     def activate_overview_quick_action(self, focus: str) -> None:
         self.set_overview_focus(focus)
@@ -15575,8 +19288,8 @@ QPushButton#accentButton:hover {
             self.market_timeframe_mode = fallback.text()
             fallback.setChecked(True)
 
-        intraday_height = 300 if self.market_timeframe_mode != "日线" else 250
-        daily_height = 320 if self.market_timeframe_mode != "日线" else 360
+        intraday_height = 320 if self.market_timeframe_mode != "日线" else 260
+        daily_height = 360 if self.market_timeframe_mode != "日线" else 420
         if hasattr(self, "intraday_chart_view"):
             self.intraday_chart_view.setMinimumHeight(intraday_height)
             chart = self.intraday_chart_view.chart()
@@ -15724,6 +19437,16 @@ QPushButton#accentButton:hover {
             self._set_label_text_if_changed(reset_button, "回到最新")
             reset_button.setToolTip("回到最新窗口。按 Home 可快速重置。" if not at_latest else "当前已经是最新窗口")
 
+        annotation_label, annotation_hint = self._market_strategy_annotation_mode_hint(
+            getattr(self, "market_strategy_annotation_mode", "FULL")
+        )
+        annotation_detail = self._market_strategy_annotation_mode_detail(
+            getattr(self, "market_strategy_annotation_mode", "FULL")
+        )
+        preset_label = self._market_chart_preset_label(getattr(self, "market_chart_preset", "BALANCED"))
+        filter_banner = self._chart_action_note_filter_banner_v1() if hasattr(self, "_chart_action_note_filter_banner_v1") else "历史筛选：全部"
+        filter_active = filter_banner != "历史筛选：全部"
+
         if hasattr(self, "market_status_label"):
             status_text = self.market_status_label.text()
             base = status_text.split(" | 区间：", 1)[0].split(" | 视窗：", 1)[0].split(" | 视窗偏移：", 1)[0]
@@ -15735,17 +19458,39 @@ QPushButton#accentButton:hover {
                 view_text = f"第 {screen_index} 屏 / 共 {screen_total} 屏 | 已到最左侧边界"
             else:
                 view_text = f"第 {screen_index} 屏 / 共 {screen_total} 屏"
-            self._set_label_text_if_changed(self.market_status_label, f"{base} | 区间：{range_text} | 视窗：{view_text}")
+            filter_suffix = f" | {filter_banner}" if filter_active else ""
+            status_label_text = f"{base} | 区间：{range_text} | 视窗：{view_text}{filter_suffix}"
+            status_tooltip = (
+                f"{status_label_text}\n"
+                f"当前图表预设：{preset_label}\n"
+                f"当前战法标注：{annotation_label} / {annotation_hint}\n"
+                f"{filter_banner}\n"
+                f"{annotation_detail}\n"
+                "快捷键：1 完整，2 计划，3 关闭，A 循环切换，Alt+Left/Right 回看提示，Alt+C 清除筛选。"
+            )
+            self._set_label_text_if_changed(self.market_status_label, status_label_text, tooltip=status_tooltip)
         if hasattr(self, "market_chart_nav_label"):
             nav_text = (
                 f"K 线导航：{self._normalize_market_timeframe()} | {self.market_history_window} | "
-                f"第 {screen_index} 屏 / 共 {screen_total} 屏 | 区间 {range_text} | {trade_zone_text} | {score_text} | {summary_text} | {resonance_text} | "
-                f"PageUp/PageDown 翻屏 | Shift+左右细步进 | Home 重置"
+                f"第 {screen_index} 屏 / 共 {screen_total} 屏 | 预设 {preset_label} | 标注 {annotation_label}/{annotation_hint} | "
+                f"{filter_banner} | 区间 {range_text} | {trade_zone_text} | {score_text} | {summary_text} | {resonance_text} | "
+                f"PageUp/PageDown 翻屏 | Shift+左右细步进 | Home 重置 | 1/2/3 战法标注 | A 循环切换 | Alt+左右回看提示 | Alt+C 清筛"
             )
-            self._set_label_text_if_changed(self.market_chart_nav_label, nav_text)
+            nav_tooltip = (
+                f"{nav_text}\n"
+                f"当前图表预设：{preset_label}\n"
+                f"当前战法标注：{annotation_label} / {annotation_hint}\n"
+                f"{filter_banner}\n"
+                f"{annotation_detail}"
+            )
+            self._set_label_text_if_changed(self.market_chart_nav_label, nav_text, tooltip=nav_tooltip)
             pending_feedback = str(getattr(self, "_market_chart_feedback_text", "") or "").strip()
             if pending_feedback:
-                self._set_label_text_if_changed(self.market_chart_nav_label, f"{nav_text} | {pending_feedback}")
+                self._set_label_text_if_changed(
+                    self.market_chart_nav_label,
+                    f"{nav_text} | {pending_feedback}",
+                    tooltip=f"{nav_tooltip}\n临时反馈：{pending_feedback}",
+                )
                 self._market_chart_feedback_text = ""
                 timer = getattr(self, "_market_chart_feedback_timer", None)
                 if timer is None:
@@ -15764,6 +19509,131 @@ QPushButton#accentButton:hover {
             chart_series = getattr(self.market_screen_result, "chart_series_by_symbol", {}).get(current_symbol)
             snapshot = getattr(self.market_screen_result, "snapshots", {}).get(current_symbol)
             self._refresh_market_chart_navigation_state(current_symbol, chart_series, snapshot)
+
+    def _apply_market_primary_chart_expanded_state(self) -> None:
+        expanded = bool(getattr(self, "market_primary_chart_expanded", False))
+        primary_tabs = getattr(self, "overview_primary_chart_tabs", None)
+        mini_tabs = getattr(self, "overview_mini_chart_tabs", None)
+        left_panel = getattr(self, "overview_left_panel", None)
+        zoom_button = getattr(self, "market_chart_zoom_button", None)
+
+        if isinstance(primary_tabs, QTabWidget):
+            if expanded:
+                primary_tabs.setCurrentIndex(0)
+            primary_tabs.setMaximumHeight(16777215)
+        if isinstance(mini_tabs, QWidget):
+            mini_tabs.setVisible(not expanded)
+        if isinstance(left_panel, QWidget):
+            left_panel.setMinimumWidth(236 if expanded else 264)
+        if isinstance(zoom_button, QPushButton):
+            zoom_button.blockSignals(True)
+            zoom_button.setText("还原主图" if expanded else "放大主图")
+            zoom_button.setToolTip("恢复主图和副图的默认布局。" if expanded else "展开 K 线主图并收起副图，便于专注看主图走势。")
+            self._set_button_role(zoom_button, "accent" if expanded else "ghost")
+            zoom_button.blockSignals(False)
+
+    def set_market_primary_chart_expanded(
+        self,
+        expanded: bool,
+        *,
+        feedback: bool = True,
+        save: bool = True,
+        update_preset: bool = True,
+    ) -> None:
+        target = bool(expanded)
+        current = bool(getattr(self, "market_primary_chart_expanded", False))
+        self.market_primary_chart_expanded = target
+        QuantHunterWindow._apply_market_primary_chart_expanded_state(self)
+        if hasattr(self, "state"):
+            self.state.market_primary_chart_expanded = target
+        if hasattr(self, "_apply_layout_polish_v19"):
+            self._apply_layout_polish_v19()
+        if update_preset:
+            self._sync_market_chart_preset_state(persist=save)
+        elif save:
+            self.save_state()
+        if feedback and target != current:
+            self._show_market_chart_feedback("已放大 K 线主图" if target else "已恢复默认图表布局")
+
+    def toggle_market_primary_chart_expanded(self) -> None:
+        QuantHunterWindow.set_market_primary_chart_expanded(
+            self,
+            not bool(getattr(self, "market_primary_chart_expanded", False)),
+        )
+
+    def open_market_chart_focus_dialog(self) -> None:
+        if bool(getattr(self, "market_chart_focus_dialog_open", False)):
+            return
+        chart_view = getattr(self, "daily_chart_view", None)
+        origin_layout = getattr(self, "overview_daily_chart_layout", None)
+        if not isinstance(chart_view, QChartView) or not isinstance(origin_layout, QVBoxLayout):
+            return
+
+        self.market_chart_focus_dialog_open = True
+        dialog = QDialog(self)
+        dialog.setWindowTitle(
+            f"全屏看图 - {str(getattr(self, 'market_header_label', None).text() if hasattr(getattr(self, 'market_header_label', None), 'text') else getattr(self, 'active_symbol', '') or 'K线主图')}"
+        )
+        dialog.setModal(True)
+        dialog.resize(1440, 920)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
+
+        title_label = QLabel("全屏看图")
+        title_label.setObjectName("workspaceTitle")
+        layout.addWidget(title_label)
+
+        hint_label = QLabel("滚轮缩放，拖拽框选，双击复位，Esc 关闭。这里使用的是当前主界面的同一张 K 线图。")
+        hint_label.setObjectName("inlineHint")
+        hint_label.setWordWrap(True)
+        layout.addWidget(hint_label)
+
+        button_row = QHBoxLayout()
+        button_row.setContentsMargins(0, 0, 0, 0)
+        button_row.setSpacing(8)
+        reset_zoom_button = QPushButton("重置缩放")
+        close_button = QPushButton("返回主界面")
+        self._set_button_role(reset_zoom_button, "tonal")
+        self._set_button_role(close_button, "accent")
+        reset_zoom_button.clicked.connect(
+            lambda: (
+                chart_view.chart().zoomReset()
+                if getattr(chart_view, "chart", None) is not None and chart_view.chart() is not None
+                else None
+            )
+        )
+        close_button.clicked.connect(dialog.accept)
+        button_row.addStretch(1)
+        button_row.addWidget(reset_zoom_button)
+        button_row.addWidget(close_button)
+        layout.addLayout(button_row)
+
+        previous_parent = chart_view.parentWidget()
+        previous_layout = previous_parent.layout() if previous_parent is not None else None
+        if previous_layout is not None:
+            previous_layout.removeWidget(chart_view)
+        chart_view.setMinimumHeight(0)
+        chart_view.setMaximumHeight(16777215)
+        chart_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        layout.addWidget(chart_view, stretch=1)
+
+        self._show_market_chart_feedback("已打开全屏看图")
+        try:
+            dialog.setWindowState(dialog.windowState() | Qt.WindowMaximized)
+            dialog.exec()
+        finally:
+            layout.removeWidget(chart_view)
+            origin_layout.addWidget(chart_view)
+            chart_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            self.market_chart_focus_dialog_open = False
+            if hasattr(self, "_apply_layout_polish_v19"):
+                self._apply_layout_polish_v19()
+            current_symbol = self._current_market_chart_symbol()
+            if current_symbol:
+                self._render_market_dashboard(current_symbol)
+            self._show_market_chart_feedback("已从全屏看图返回")
 
     def shift_market_chart_window(self, step_delta: int, *, fine: bool = False) -> None:
         current_symbol = self._current_market_chart_symbol()
@@ -15793,6 +19663,21 @@ QPushButton#accentButton:hover {
     def keyPressEvent(self, event) -> None:
         if getattr(self, "tabs", None) is not None and self.tabs.currentWidget() is self.overview_tab:
             fine = bool(event.modifiers() & Qt.ShiftModifier)
+            no_modifier = event.modifiers() in {Qt.NoModifier, Qt.KeypadModifier}
+            alt_modifier = bool(event.modifiers() & Qt.AltModifier)
+            if alt_modifier and self._market_hotkeys_available():
+                if event.key() == Qt.Key_Left and self._can_step_market_chart_action_note_history_v1(-1):
+                    self._step_market_chart_action_note_history_v1(-1)
+                    event.accept()
+                    return
+                if event.key() == Qt.Key_Right and self._can_step_market_chart_action_note_history_v1(1):
+                    self._step_market_chart_action_note_history_v1(1)
+                    event.accept()
+                    return
+                if event.key() == Qt.Key_C and self._chart_action_note_filter_source_v1():
+                    self._clear_chart_action_note_source_filter_v1()
+                    event.accept()
+                    return
             if event.key() == Qt.Key_PageUp:
                 self.shift_market_chart_window(1, fine=False)
                 event.accept()
@@ -15813,9 +19698,30 @@ QPushButton#accentButton:hover {
                 self.reset_market_chart_window()
                 event.accept()
                 return
+            if no_modifier and self._market_hotkeys_available():
+                if event.key() == Qt.Key_F:
+                    self.open_market_chart_focus_dialog()
+                    event.accept()
+                    return
+                if event.key() == Qt.Key_1:
+                    self.set_market_strategy_annotation_mode("FULL")
+                    event.accept()
+                    return
+                if event.key() == Qt.Key_2:
+                    self.set_market_strategy_annotation_mode("PLAN")
+                    event.accept()
+                    return
+                if event.key() == Qt.Key_3:
+                    self.set_market_strategy_annotation_mode("OFF")
+                    event.accept()
+                    return
+                if event.key() == Qt.Key_A:
+                    self.cycle_market_strategy_annotation_mode(1)
+                    event.accept()
+                    return
         super().keyPressEvent(event)
 
-    def toggle_market_overlay(self, overlay_name: str) -> None:
+    def toggle_market_overlay(self, overlay_name: str, *, save: bool = True, update_preset: bool = True) -> None:
         if not overlay_name:
             return
         if overlay_name in self.market_overlay_modes:
@@ -15833,10 +19739,67 @@ QPushButton#accentButton:hover {
             button.setChecked(checked)
             button.blockSignals(False)
             self._set_button_role(button, "tonal" if checked else "ghost")
+        if hasattr(self, "state"):
+            self.state.market_overlay_modes = sorted(self.market_overlay_modes)
+        if update_preset:
+            self._sync_market_chart_preset_state(persist=save)
+        elif save:
+            self.save_state()
         if self.active_symbol and self.active_symbol in self.universe_bars:
             self._render_market_dashboard(self.active_symbol)
 
-    def set_market_secondary_indicator(self, indicator_name: str) -> None:
+    def set_market_strategy_annotation_mode(
+        self,
+        mode: str,
+        *,
+        save: bool = True,
+        feedback: bool = True,
+        update_preset: bool = True,
+    ) -> None:
+        self.market_strategy_annotation_mode = self._normalize_market_strategy_annotation_mode(mode)
+        mode_label, mode_hint = self._market_strategy_annotation_mode_hint(self.market_strategy_annotation_mode)
+        for name, button in getattr(self, "market_annotation_mode_buttons", {}).items():
+            checked = name == self.market_strategy_annotation_mode
+            button.blockSignals(True)
+            button.setChecked(checked)
+            button.blockSignals(False)
+            self._set_button_role(button, "accent" if checked else "ghost")
+        if hasattr(self, "state"):
+            self.state.market_strategy_annotation_mode = self.market_strategy_annotation_mode
+        if update_preset:
+            self._sync_market_chart_preset_state(persist=save)
+        elif save:
+            self.save_state()
+        if feedback:
+            self._show_market_chart_feedback(
+                f"战法标注已切换为 {mode_label} / {mode_hint}"
+            )
+        if self.active_symbol and self.active_symbol in self.universe_bars:
+            self._render_market_dashboard(self.active_symbol)
+
+    def cycle_market_strategy_annotation_mode(self, step: int = 1) -> None:
+        modes = ["FULL", "PLAN", "OFF"]
+        current = self._normalize_market_strategy_annotation_mode(getattr(self, "market_strategy_annotation_mode", "FULL"))
+        try:
+            index = modes.index(current)
+        except ValueError:
+            index = 0
+        self.set_market_strategy_annotation_mode(modes[(index + step) % len(modes)])
+
+    def _market_hotkeys_available(self) -> bool:
+        focus = QApplication.focusWidget()
+        if isinstance(focus, (QLineEdit, QTextEdit, QComboBox)):
+            return False
+        return True
+
+    def set_market_secondary_indicator(
+        self,
+        indicator_name: str,
+        *,
+        save: bool = True,
+        feedback: bool = True,
+        update_preset: bool = True,
+    ) -> None:
         self.market_secondary_indicator_mode = indicator_name or "MACD"
         for name, button in getattr(self, "secondary_indicator_buttons", {}).items():
             checked = name == self.market_secondary_indicator_mode
@@ -15844,6 +19807,14 @@ QPushButton#accentButton:hover {
             button.setChecked(checked)
             button.blockSignals(False)
             self._set_button_role(button, "accent" if checked else "ghost")
+        if hasattr(self, "state"):
+            self.state.market_secondary_indicator_mode = str(self.market_secondary_indicator_mode or "MACD").upper()
+        if update_preset:
+            self._sync_market_chart_preset_state(persist=save)
+        elif save:
+            self.save_state()
+        if feedback:
+            self._show_market_chart_feedback(f"副图指标已切换为 {self.market_secondary_indicator_mode}")
         if self.active_symbol and self.active_symbol in self.universe_bars:
             self._update_indicator_chart(self.active_symbol)
 
@@ -16018,7 +19989,7 @@ QPushButton#accentButton:hover {
                 one_day_symbols = [
                     item.stock_name
                     for item in plan.position_advice
-                    if getattr(recommendation_map.get(item.symbol), "primary_strategy", "") in {"一日持股法", "尾盘买入法"}
+                    if _recommendation_strategy_name(recommendation_map.get(item.symbol), default="") in {"一日持股法", "尾盘买入法"}
                 ]
                 lines = [
                     f"持仓建议概览：卖出 {sell_count} 只，减仓 {reduce_count} 只，继续持有 {hold_count} 只。",
@@ -16032,7 +20003,7 @@ QPushButton#accentButton:hover {
                         (
                             item
                             for item in plan.position_advice
-                            if getattr(recommendation_map.get(item.symbol), "primary_strategy", "") in {"一日持股法", "尾盘买入法"}
+                            if _recommendation_strategy_name(recommendation_map.get(item.symbol), default="") in {"一日持股法", "尾盘买入法"}
                         ),
                         None,
                     )
@@ -17000,7 +20971,7 @@ QPushButton#accentButton:hover {
             self._set_focus_banner_state(self.overview_focus_banner, tone if target_symbol else 'idle', text)
         if hasattr(self, "recommend_focus_banner"):
             pool_count = self.daily_pool_table.rowCount() if hasattr(self, "daily_pool_table") else 0
-            strategy_name = getattr(recommendation, "primary_strategy", "") if recommendation is not None else ""
+            strategy_name = _recommendation_strategy_name(recommendation, default="") if recommendation is not None else ""
             text = f"推荐焦点：{stock_name} ({stock_id} / {target_symbol}) | 推荐池 {pool_count} | 策略 {strategy_name or '等待策略同步'}" if target_symbol else "推荐焦点：等待从推荐池、龙头榜或交易计划联动一只股票"
             self._set_focus_banner_state(self.recommend_focus_banner, tone if target_symbol else 'idle', text)
         if hasattr(self, "scanner_focus_banner"):
@@ -17038,10 +21009,10 @@ QPushButton#accentButton:hover {
         if recommendation is not None:
             theme_name = getattr(recommendation, "mainline_tag", "") or getattr(recommendation, "theme_name", "") or "待确认"
             role_name = self._display_mainline_role(getattr(recommendation, "mainline_role", "") or "")
-            strategy_name = getattr(recommendation, "primary_strategy", "") or "掘龙决策"
+            strategy_name = _recommendation_strategy_name(recommendation)
             action_label = self._display_action(getattr(recommendation, "action", "WATCH"))
             catalyst = getattr(recommendation, "catalyst", "") or "等待消息与量价共振"
-            decision_score = float(getattr(recommendation, "dragon_decision_score", getattr(recommendation, "total_score", 0.0)) or 0.0)
+            decision_score = _recommendation_decision_score(recommendation)
             self.overview_summary_cards["theme"].set_data(theme_name, f"{recommendation.stock_name} | {role_name} | 位次 {getattr(recommendation, 'mainline_rank', getattr(recommendation, 'theme_rank', '--'))}")
             self.overview_summary_cards["source"].set_data(strategy_name, f"{action_label} | 催化 {catalyst}")
             self.overview_summary_cards["capital"].set_data(f"{float(getattr(recommendation, 'mainline_window_score', 0.0) or 0.0):.1f}", f"总分 {float(getattr(recommendation, 'total_score', 0.0) or 0.0):.1f} | 风险 {getattr(recommendation, 'mainline_risk_flag', '') or '待评估'}")
@@ -17095,7 +21066,7 @@ QPushButton#accentButton:hover {
                 f"主线推演：{current.stock_name}",
                 f"第一步：主线 {theme_name} 当前处于 {stage_name}，信号为 {flow_signal}。",
                 f"第二步：当前角色是 {self._display_mainline_role(role_name)}，先看是否继续维持前排强度。",
-                f"第三步：若执行准备 {readiness:.1f} 持续抬升，可考虑按 {getattr(current, 'primary_strategy', '') or '掘龙决策'} 计划推进。",
+                f"第三步：若执行准备 {readiness:.1f} 持续抬升，可考虑按 {_recommendation_strategy_name(current)} 计划推进。",
                 f"第四步：重点观察 {next_focus}",
                 f"失效条件：{invalidation}",
             ]
@@ -17112,6 +21083,7 @@ QPushButton#accentButton:hover {
     def select_symbol(self, symbol: str, origin: str = "") -> None:
         if symbol not in self.universe_bars:
             return
+        previous_symbol = getattr(self, "active_symbol", "")
         current_revision = int(getattr(self, "_symbol_data_revision", 0) or 0)
         if (
             symbol == getattr(self, "active_symbol", "")
@@ -17120,6 +21092,8 @@ QPushButton#accentButton:hover {
         ):
             self._sync_symbol_across_workspaces(symbol, origin=origin)
             return
+        if previous_symbol and previous_symbol != symbol:
+            self._clear_market_chart_action_note(previous_symbol)
         self.active_symbol = symbol
         self.bars = self.universe_bars[symbol]
         self.analyses = self.universe_analyses[symbol]
@@ -17255,7 +21229,10 @@ QPushButton#accentButton:hover {
                 self._set_label_text_if_changed(
                     self.market_quote_label,
                     f"窗口 {self.market_history_window} | 周期 {self.market_timeframe_mode} | "
-                    f"叠加 {'/'.join(self._ordered_market_overlays(self.market_overlay_modes)) or '关闭'} | 结构 {structure_summary}",
+                    f"叠加 {'/'.join(self._ordered_market_overlays(self.market_overlay_modes)) or '关闭'} | "
+                    f"战法 {self._market_strategy_annotation_mode_hint(getattr(self, 'market_strategy_annotation_mode', 'FULL'))[0]}"
+                    f"({self._market_strategy_annotation_mode_hint(getattr(self, 'market_strategy_annotation_mode', 'FULL'))[1]}) | "
+                    f"结构 {structure_summary}",
                 )
         if hasattr(self, "market_focus_metric_labels"):
             has_chart_focus = bool(visible_bars)
@@ -17290,6 +21267,7 @@ QPushButton#accentButton:hover {
         self._update_market_text_panels(symbol, snapshot, recommendation)
         self._refresh_overview_focus_cards(symbol, snapshot, recommendation)
         self._refresh_market_chart_navigation_state(symbol, chart_series, snapshot)
+        self._set_market_chart_hover_summary("")
         self._schedule_market_auxiliary_render(symbol)
 
     def _normalize_recommend_workspace_texts(self) -> None:
@@ -17515,7 +21493,7 @@ QPushButton#accentButton:hover {
 
         button_groups = [
             ("overview_quick_buttons", ["市场总览", "龙头池", "趋势机会", "消息催化", "交易决策", "复盘研究"], self.activate_overview_quick_action),
-            ("market_filter_buttons", ["全部", "龙头模型", "主力雷达", "擒龙打板", "价值低吸", "尾盘买入法", "一日持股法", "掘龙决策"], self.set_market_filter),
+            ("market_filter_buttons", STRATEGY_FILTER_LABELS, self.set_market_filter),
             ("timeframe_buttons", ["分时", "1分", "5分", "15分", "30分", "60分", "日线", "周线", "月线"], self.set_market_timeframe),
             ("history_window_buttons", ["近1月", "近3月", "近1年", "全部"], self.set_market_history_window),
             ("secondary_indicator_buttons", ["MACD", "RSI", "KDJ", "VOL"], self.set_market_secondary_indicator),
@@ -17926,6 +21904,7 @@ QPushButton#accentButton:hover {
             fallback.setChecked(True)
 
         intraday_mode = self._is_intraday_market_timeframe()
+        expanded_chart_mode = bool(getattr(self, "market_primary_chart_expanded", False))
         if hasattr(self, "intraday_chart_view"):
             self.intraday_chart_view.setMinimumHeight(320 if intraday_mode else 250)
             chart = self.intraday_chart_view.chart()
@@ -17934,12 +21913,13 @@ QPushButton#accentButton:hover {
                 if chart.title() != title:
                     chart.setTitle(title)
         if hasattr(self, "daily_chart_view"):
-            self.daily_chart_view.setMinimumHeight(360)
+            self.daily_chart_view.setMinimumHeight(500 if expanded_chart_mode else 420)
             chart = self.daily_chart_view.chart()
             if chart is not None:
                 title = "日线主图" if self.market_timeframe_mode == "日线" else f"{self.market_timeframe_mode} 主图"
                 if chart.title() != title:
                     chart.setTitle(title)
+        QuantHunterWindow._apply_market_primary_chart_expanded_state(self)
         if hasattr(self, "fund_chart_view"):
             chart = self.fund_chart_view.chart()
             if chart is not None:
@@ -18440,7 +22420,7 @@ QPushButton#accentButton:hover {
                 lines.extend(
                     [
                         f"主线：{recommendation.mainline_tag or recommendation.theme_name or '待确认'} | 动作：{self._display_action(recommendation.action)}",
-                        f"主策略：{getattr(recommendation, 'primary_strategy', '') or '掘龙决策'} | 分层：{getattr(recommendation, 'opportunity_tier', '') or '待确认'}",
+                        f"主策略：{_recommendation_strategy_name(recommendation)} | 分层：{getattr(recommendation, 'opportunity_tier', '') or '待确认'}",
                         f"买点：{(recommendation.entry_price or recommendation.close):.2f} | 止损：{(recommendation.stop_price or recommendation.close * 0.95):.2f} | 目标：{(recommendation.target_price or recommendation.close * 1.08):.2f}",
                         f"逻辑：{recommendation.rationale or '等待推荐逻辑生成。'}",
                     ]
@@ -18791,7 +22771,7 @@ QPushButton#accentButton:hover {
                 lines.extend(
                     [
                         f"主线：{recommendation.mainline_tag or recommendation.theme_name or '待确认'} | 动作：{self._display_action(recommendation.action)}",
-                        f"主策略：{getattr(recommendation, 'primary_strategy', '') or '擒龙决策'} | 分层：{getattr(recommendation, 'opportunity_tier', '') or '待确认'}",
+                        f"主策略：{_recommendation_strategy_name(recommendation)} | 分层：{getattr(recommendation, 'opportunity_tier', '') or '待确认'}",
                         f"买点：{(recommendation.entry_price or recommendation.close):.2f} | 止损：{(recommendation.stop_price or recommendation.close * 0.95):.2f} | 目标：{(recommendation.target_price or recommendation.close * 1.08):.2f}",
                         f"逻辑：{recommendation.rationale or '等待推荐逻辑生成。'}",
                     ]
@@ -20233,7 +24213,7 @@ QPushButton#accentButton:hover {
 
         if hasattr(self, "recommend_focus_banner"):
             pool_count = self.daily_pool_table.rowCount() if hasattr(self, "daily_pool_table") else 0
-            strategy_name = getattr(recommendation, "primary_strategy", "") if recommendation is not None else ""
+            strategy_name = _recommendation_strategy_name(recommendation, default="") if recommendation is not None else ""
             suffix = self._news_focus_context_suffix(target_symbol) if hasattr(self, "_news_focus_context_suffix") else ""
             news_brief = self._news_action_brief(target_symbol) if target_symbol and hasattr(self, "_news_action_brief") else ""
             text = (
@@ -20304,6 +24284,18 @@ QPushButton#accentButton:hover {
                 daily_plan_focus_only=self.state.daily_plan_focus_only,
                 daily_plan_candidate_limit=self.state.daily_plan_candidate_limit,
                 market_data_mode=self.market_data_mode,
+                market_chart_preset=self._normalize_market_chart_preset_key(
+                    getattr(self, "market_chart_preset", self.state.market_chart_preset)
+                ),
+                market_chart_custom_presets=dict(
+                    getattr(self.state, "market_chart_custom_presets", {})
+                ),
+                market_chart_recent_presets=list(
+                    getattr(self.state, "market_chart_recent_presets", getattr(self, "market_chart_recent_presets", []))
+                ),
+                market_chart_preset_usage_counts=dict(
+                    getattr(self.state, "market_chart_preset_usage_counts", getattr(self, "market_chart_preset_usage_counts", {}))
+                ),
                 broker_profile=self.current_broker_profile(),
             ),
         )
@@ -21341,6 +25333,7 @@ def _qh_refresh_detail_workspace_panels(self: QuantHunterWindow) -> None:
     latest_signal = next((item for item in reversed(getattr(self, "analyses", [])) if getattr(item, "label", "") != "NONE"), None)
     selected_signal = self._selected_detail_signal_snapshot() if hasattr(self, "_selected_detail_signal_snapshot") else None
     selected_trade = self._selected_detail_trade_snapshot() if hasattr(self, "_selected_detail_trade_snapshot") else None
+    chart_action_note = self._market_chart_action_note_for_symbol(symbol) if hasattr(self, "_market_chart_action_note_for_symbol") else {}
     order_intent = next((item for item in getattr(self, "order_intents", []) if getattr(item, "symbol", "") == symbol), None)
     execution_row = next((item for item in reversed(getattr(self, "order_submission_records", [])) if str(item.get("symbol", "")) == symbol), None)
     strategy_history_summary = self._strategy_history_selected_summary() if hasattr(self, "_strategy_history_selected_summary") else None
@@ -21352,7 +25345,7 @@ def _qh_refresh_detail_workspace_panels(self: QuantHunterWindow) -> None:
         str(stock_id or ""),
         str(getattr(recommendation, "mainline_tag", "") or getattr(recommendation, "theme_name", "") or ""),
         str(getattr(recommendation, "action", "") or ""),
-        str(getattr(recommendation, "primary_strategy", "") or ""),
+        str(_recommendation_strategy_name(recommendation, default="") or ""),
         str(getattr(recommendation, "opportunity_tier", "") or ""),
         str(getattr(recommendation, "next_focus", "") or ""),
         str(getattr(recommendation, "rationale", "") or ""),
@@ -21405,7 +25398,7 @@ def _qh_refresh_detail_workspace_panels(self: QuantHunterWindow) -> None:
             else (f"{self._display_label(getattr(latest_signal, 'label', ''))} / 观察" if latest_signal is not None else "待同步")
         )
         theme_accent = (
-            f"主策略 {getattr(recommendation, 'primary_strategy', '') or '掘龙决策'} | 分层 {getattr(recommendation, 'opportunity_tier', '') or '待确认'}"
+            f"主策略 {_recommendation_strategy_name(recommendation)} | 分层 {getattr(recommendation, 'opportunity_tier', '') or '待确认'}"
             if recommendation is not None
             else (f"信号评分 {getattr(latest_signal, 'score', '--')}" if latest_signal is not None else "等待焦点同步")
         )
@@ -21452,7 +25445,7 @@ def _qh_refresh_detail_workspace_panels(self: QuantHunterWindow) -> None:
             lines.append(f"当前信号：{getattr(latest_signal, 'date', '--')} | {self._display_label(getattr(latest_signal, 'label', ''))} | 评分 {getattr(latest_signal, 'score', '--')}")
         if recommendation is not None:
             lines.append(
-                f"当前计划：{getattr(recommendation, 'primary_strategy', '') or '掘龙决策'} | 买 {(getattr(recommendation, 'entry_price', 0.0) or getattr(recommendation, 'close', 0.0)):.2f} | "
+                f"当前计划：{_recommendation_strategy_name(recommendation)} | 买 {(getattr(recommendation, 'entry_price', 0.0) or getattr(recommendation, 'close', 0.0)):.2f} | "
                 f"止 {(getattr(recommendation, 'stop_price', 0.0) or getattr(recommendation, 'close', 0.0) * 0.95):.2f} | "
                 f"目 {(getattr(recommendation, 'target_price', 0.0) or getattr(recommendation, 'close', 0.0) * 1.08):.2f}"
             )
@@ -21521,7 +25514,13 @@ def _qh_refresh_detail_workspace_panels(self: QuantHunterWindow) -> None:
             )
         if selected_strategy_trade is not None:
             lines.append(f"逐笔：{selected_strategy_trade['stock_name']} | 收益 {selected_strategy_trade['pnl_pct']} | {selected_strategy_trade['exit_reason']}")
-        self._set_plain_text_if_changed(self.detail_decision_text, "\n".join(lines))
+        self._set_note_panel_content_if_changed(
+            self.detail_decision_text,
+            "\n".join(lines),
+            highlight_text=str(chart_action_note.get("decision_text", "") or ""),
+            highlight_title=str(chart_action_note.get("title", "图表联动") or "图表联动"),
+            highlight_tone=str(chart_action_note.get("tone", "watch") or "watch"),
+        )
 
     if hasattr(self, "detail_execution_text"):
         lines = ["执行联动"]
@@ -21553,7 +25552,13 @@ def _qh_refresh_detail_workspace_panels(self: QuantHunterWindow) -> None:
                 f"历史逐笔：{selected_strategy_trade['entry_price']} -> {selected_strategy_trade['exit_price']} | "
                 f"持有 {selected_strategy_trade['hold_days']} 天 | {selected_strategy_trade['exit_reason']}"
             )
-        self._set_plain_text_if_changed(self.detail_execution_text, "\n".join(lines))
+        self._set_note_panel_content_if_changed(
+            self.detail_execution_text,
+            "\n".join(lines),
+            highlight_text=str(chart_action_note.get("execution_text", "") or ""),
+            highlight_title=str(chart_action_note.get("title", "图表联动") or "图表联动"),
+            highlight_tone=str(chart_action_note.get("tone", "watch") or "watch"),
+        )
 
     if hasattr(self, "detail_conclusion_text"):
         lines = ["复盘结论"]
@@ -21569,7 +25574,13 @@ def _qh_refresh_detail_workspace_panels(self: QuantHunterWindow) -> None:
             lines.append(f"历史战法复盘：{getattr(strategy_history_summary, 'strategy_name', '--')} | 最大回撤 {float(getattr(strategy_history_summary, 'max_drawdown', 0.0) or 0.0):.2%}")
         if selected_strategy_trade is not None:
             lines.append(f"历史逐笔结论：{selected_strategy_trade['stock_name']} | {selected_strategy_trade['pnl_pct']} | {selected_strategy_trade['exit_reason']}")
-        self._set_plain_text_if_changed(self.detail_conclusion_text, "\n".join(lines))
+        self._set_note_panel_content_if_changed(
+            self.detail_conclusion_text,
+            "\n".join(lines),
+            highlight_text=str(chart_action_note.get("conclusion_text", "") or ""),
+            highlight_title=str(chart_action_note.get("title", "图表联动") or "图表联动"),
+            highlight_tone=str(chart_action_note.get("tone", "watch") or "watch"),
+        )
 
 
 def _qh_refresh_scanner_focus_status(self: QuantHunterWindow, symbol: str = "") -> None:
@@ -22748,19 +26759,9 @@ def _qh_normalize_recommend_workspace_texts_v2(self: QuantHunterWindow) -> None:
 
     strategy_combo = getattr(self, "strategy_detail_combo", None)
     if strategy_combo is not None:
-        labels = ["龙头模型", "主力雷达", "擒龙打板", "价值低吸", "尾盘买入法", "一日持股法", "掘龙决策"]
+        labels = list(STRATEGY_SCORE_FIELDS)
         current = strategy_combo.currentText().strip()
-        alias_map = {
-            "龙头主线": "龙头模型",
-            "资金承接": "主力雷达",
-            "强势接力": "擒龙打板",
-            "趋势低吸": "价值低吸",
-            "尾盘抢筹": "尾盘买入法",
-            "尾盘买入": "尾盘买入法",
-            "一日持股": "一日持股法",
-            "综合决策": "掘龙决策",
-        }
-        current = alias_map.get(current, current)
+        current = _APP_STRATEGY_REGISTRY.canonical_strategy_name(current) or current
         strategy_combo.blockSignals(True)
         strategy_combo.clear()
         strategy_combo.addItems(labels)
@@ -23396,7 +27397,7 @@ def _qh_compact_overview_and_recommend_v3(self: QuantHunterWindow) -> None:
     if hasattr(self, "market_history_reset_button"):
         self.market_history_reset_button.hide()
 
-    for button_map_name in ["history_window_buttons", "market_overlay_buttons", "secondary_indicator_buttons"]:
+    for button_map_name in ["history_window_buttons", "market_overlay_buttons", "market_annotation_mode_buttons", "secondary_indicator_buttons"]:
         button_map = getattr(self, button_map_name, None) or {}
         for button in button_map.values():
             button.hide()
@@ -23433,7 +27434,7 @@ def _qh_compact_overview_and_recommend_v3(self: QuantHunterWindow) -> None:
         self.market_source_status_text.hide()
 
     if hasattr(self, "daily_chart_view"):
-        self.daily_chart_view.setMinimumHeight(320)
+        self.daily_chart_view.setMinimumHeight(380)
     if hasattr(self, "fund_chart_view"):
         self.fund_chart_view.setMinimumHeight(156)
     if hasattr(self, "momentum_chart_view"):
@@ -23523,12 +27524,11 @@ def _qh_compact_copy_v24(value: str, limit: int = 20) -> str:
         return text
     return f"{text[: max(limit - 1, 1)]}…"
 
-
 def _qh_recommend_focus_reason_v24(self: QuantHunterWindow, recommendation) -> str:
     if recommendation is None:
         return "等待推荐逻辑同步。"
     theme_name = getattr(recommendation, "mainline_tag", "") or getattr(recommendation, "theme_name", "") or "待确认"
-    strategy_name = getattr(recommendation, "primary_strategy", "") or "掘龙决策"
+    strategy_name = _recommendation_strategy_name(recommendation)
     role_formatter = getattr(self, "_display_mainline_role", lambda value: str(value or ""))
     role_name = role_formatter(getattr(recommendation, "mainline_role", "") or "") or "待确认"
     catalyst = _qh_compact_copy_v24(getattr(recommendation, "catalyst", "") or "等待消息强化", 18)
@@ -23791,7 +27791,7 @@ def _qh_refresh_recommend_focus_cards_v4(self: QuantHunterWindow, row: Recommend
     readiness = float(getattr(current, "execution_readiness", 0.0) or 0.0)
     confidence = float(getattr(current, "confidence_score", 0.0) or 0.0)
     role_name = self._display_mainline_role(getattr(current, "mainline_role", "") or "")
-    strategy_name = getattr(current, "primary_strategy", "") or "掘龙决策"
+    strategy_name = _recommendation_strategy_name(current)
 
     if hasattr(self, "recommend_summary_cards"):
         self.recommend_summary_cards["logic"].set_data(signal, f"{theme_name} | {role_name} | 风险灯 {risk_flag}")
@@ -24002,6 +28002,7 @@ def _qh_update_market_text_panels_v5(self: QuantHunterWindow, symbol: str, snaps
     signal = _qh_mainline_signal_brief_v4(recommendation) if recommendation is not None else "先观察"
     action_text = _qh_signal_action_text_v4(recommendation) if recommendation is not None else "等待机会"
     tone = {"继续跟": "buy", "只观察": "watch", "防切换": "risk"}.get(signal, "idle")
+    chart_action_note = self._market_chart_action_note_for_symbol(symbol) if hasattr(self, "_market_chart_action_note_for_symbol") else {}
     symbol_news = list(getattr(self, "news_catalysts", {}).get(symbol, []) or [])
     latest_news = symbol_news[0] if symbol_news else None
     confidence = news_confidence_label(symbol_news)
@@ -24102,7 +28103,13 @@ def _qh_update_market_text_panels_v5(self: QuantHunterWindow, symbol: str, snaps
 
     if hasattr(self, "overview_execution_text"):
         self._set_note_panel_tone_v5(self.overview_execution_text, tone)
-        self._set_plain_text_if_changed(self.overview_execution_text, overview_execution_text)
+        self._set_note_panel_content_if_changed(
+            self.overview_execution_text,
+            overview_execution_text,
+            highlight_text=str(chart_action_note.get("execution_text", "") or ""),
+            highlight_title=str(chart_action_note.get("title", "图表联动") or "图表联动"),
+            highlight_tone=str(chart_action_note.get("tone", "watch") or "watch"),
+        )
 
     if hasattr(self, "market_capital_text"):
         self._set_note_panel_tone_v5(self.market_capital_text, tone)
@@ -24110,7 +28117,13 @@ def _qh_update_market_text_panels_v5(self: QuantHunterWindow, symbol: str, snaps
 
     if hasattr(self, "market_decision_text"):
         self._set_note_panel_tone_v5(self.market_decision_text, tone)
-        self._set_plain_text_if_changed(self.market_decision_text, market_decision_text)
+        self._set_note_panel_content_if_changed(
+            self.market_decision_text,
+            market_decision_text,
+            highlight_text=str(chart_action_note.get("decision_text", "") or ""),
+            highlight_title=str(chart_action_note.get("title", "图表联动") or "图表联动"),
+            highlight_tone=str(chart_action_note.get("tone", "watch") or "watch"),
+        )
 
 
 def _qh_refresh_recommend_story_panels_v5(self: QuantHunterWindow, row=None) -> None:
@@ -24569,7 +28582,20 @@ def _qh_reorder_broker_primary_flow_v2(self: QuantHunterWindow) -> None:
     if not isinstance(layout, QVBoxLayout) or not isinstance(control, QWidget):
         return
     layout.removeWidget(control)
-    layout.addWidget(control, stretch=1)
+    anchor = next(
+        (
+            widget
+            for widget in (
+                getattr(self, "broker_execution_box", None),
+                getattr(self, "broker_metrics_box", None),
+                getattr(self, "broker_summary_box", None),
+            )
+            if isinstance(widget, QWidget)
+        ),
+        None,
+    )
+    insert_index = layout.indexOf(anchor) + 1 if isinstance(anchor, QWidget) else min(6, layout.count())
+    layout.insertWidget(max(insert_index, 0), control, stretch=2)
 
 
 def _qh_prioritize_overview_insights_v4(self: QuantHunterWindow) -> None:
@@ -26554,7 +30580,29 @@ def _qh_save_state_v17(self: QuantHunterWindow) -> None:
             market_timeframe_mode=getattr(self, "market_timeframe_mode", self.state.market_timeframe_mode),
             market_history_window=getattr(self, "market_history_window", self.state.market_history_window),
             market_review_date=getattr(self, "market_history_date", self.state.market_review_date),
-            broker_profile=self.current_broker_profile(),
+            market_strategy_annotation_mode=self._normalize_market_strategy_annotation_mode(
+                getattr(self, "market_strategy_annotation_mode", self.state.market_strategy_annotation_mode)
+            ),
+            market_overlay_modes=sorted(getattr(self, "market_overlay_modes", self.state.market_overlay_modes)),
+            market_secondary_indicator_mode=str(
+                getattr(self, "market_secondary_indicator_mode", self.state.market_secondary_indicator_mode) or "MACD"
+            ).upper(),
+            market_primary_chart_expanded=bool(
+                getattr(self, "market_primary_chart_expanded", self.state.market_primary_chart_expanded)
+            ),
+                market_chart_preset=self._normalize_market_chart_preset_key(
+                    getattr(self, "market_chart_preset", self.state.market_chart_preset)
+                ),
+                market_chart_custom_presets=dict(
+                    getattr(self.state, "market_chart_custom_presets", {})
+                ),
+                market_chart_recent_presets=list(
+                    getattr(self.state, "market_chart_recent_presets", getattr(self, "market_chart_recent_presets", []))
+                ),
+                market_chart_preset_usage_counts=dict(
+                    getattr(self.state, "market_chart_preset_usage_counts", getattr(self, "market_chart_preset_usage_counts", {}))
+                ),
+                broker_profile=self.current_broker_profile(),
             paper_trading_state=state,
             order_submission_log=list(getattr(self, "order_submission_log", []) or [])[-200:],
             order_submission_records=list(getattr(self, "order_submission_records", []) or [])[-500:],
@@ -26947,7 +30995,7 @@ def _qh_apply_layout_polish_v19(self: QuantHunterWindow) -> None:
                 button.setFixedHeight(compact_chip_button_height)
                 button.setMinimumWidth(88 if overview_density_compact else 104)
                 _set_compact_button_text(button, compact_label_map.get(button.text().strip()))
-        for button_map_name in ("timeframe_buttons", "history_window_buttons", "market_overlay_buttons", "secondary_indicator_buttons"):
+        for button_map_name in ("timeframe_buttons", "history_window_buttons", "market_overlay_buttons", "market_annotation_mode_buttons", "secondary_indicator_buttons"):
             button_map = getattr(self, button_map_name, None)
             if not isinstance(button_map, dict):
                 continue
@@ -27102,14 +31150,18 @@ def _qh_apply_layout_polish_v19(self: QuantHunterWindow) -> None:
             self.market_pool_table.verticalHeader().setDefaultSectionSize(60 if ultra_compact_height else (64 if compact_height else (72 if overview_density_compact else 82)))
         if hasattr(self, "intraday_chart_view"):
             self.intraday_chart_view.setMinimumHeight(144 if ultra_compact_height else (192 if compact_height else (220 if overview_density_compact else 260)))
+        expanded_chart_mode = bool(getattr(self, "market_primary_chart_expanded", False))
         if hasattr(self, "daily_chart_view"):
-            self.daily_chart_view.setMinimumHeight(220 if ultra_compact_height else (252 if compact_height else (284 if overview_density_compact else 320)))
+            base_daily_height = 320 if expanded_chart_mode else 260
+            compact_daily_height = 380 if expanded_chart_mode else 300
+            relaxed_daily_height = 460 if expanded_chart_mode else 380
+            self.daily_chart_view.setMinimumHeight(base_daily_height if ultra_compact_height else (compact_daily_height if compact_height else (400 if overview_density_compact and expanded_chart_mode else (340 if overview_density_compact else relaxed_daily_height))))
         if hasattr(self, "overview_primary_chart_tabs") and isinstance(self.overview_primary_chart_tabs, QTabWidget):
             primary_labels = ["日线", "分时"] if overview_density_compact else ["日线主图", "分时快照"]
             for index, label in enumerate(primary_labels):
                 if index < self.overview_primary_chart_tabs.count() and self.overview_primary_chart_tabs.tabText(index) != label:
                     self.overview_primary_chart_tabs.setTabText(index, label)
-            self.overview_primary_chart_tabs.setMaximumHeight(286 if ultra_compact_height else (336 if compact_height else (360 if overview_density_compact else 16777215)))
+            self.overview_primary_chart_tabs.setMaximumHeight(460 if expanded_chart_mode else (330 if ultra_compact_height else (390 if compact_height else (430 if overview_density_compact else 16777215))))
         if hasattr(self, "overview_chart_controls_tabs") and isinstance(self.overview_chart_controls_tabs, QTabWidget):
             control_labels = ["周期", "图层"] if overview_density_compact else ["周期窗口", "图层导航"]
             for index, label in enumerate(control_labels):
@@ -27126,6 +31178,7 @@ def _qh_apply_layout_polish_v19(self: QuantHunterWindow) -> None:
             relaxed_content=190,
         )
         if hasattr(self, "overview_mini_chart_tabs") and isinstance(self.overview_mini_chart_tabs, QTabWidget):
+            self.overview_mini_chart_tabs.setVisible(not expanded_chart_mode)
             mini_labels = ["资金", "动量", "指标"] if overview_density_compact else ["资金强度", "动量节奏", "指标副图"]
             for index, label in enumerate(mini_labels):
                 if index < self.overview_mini_chart_tabs.count() and self.overview_mini_chart_tabs.tabText(index) != label:
@@ -27210,6 +31263,7 @@ def _qh_apply_layout_polish_v19(self: QuantHunterWindow) -> None:
             ("timeframe_buttons", 68 if narrow_overview else 80),
             ("history_window_buttons", 84 if narrow_overview else 92),
             ("market_overlay_buttons", 60 if narrow_overview else 72),
+            ("market_annotation_mode_buttons", 60 if narrow_overview else 72),
             ("secondary_indicator_buttons", 64 if narrow_overview else 76),
         ):
             button_map = getattr(self, button_map_name, None)
@@ -31268,7 +35322,7 @@ QWidget#overviewRoot QLabel#workspaceFocusBanner {
             "background:qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 rgba(35,84,128,0.98), stop:1 rgba(24,39,56,0.98)); color:#f7fbff; border:1px solid rgba(126,183,255,0.22); border-radius:12px; padding:10px 16px; font-weight:800;",
         )
 
-    for button_map_name in ["market_filter_buttons", "timeframe_buttons", "history_window_buttons", "market_overlay_buttons", "secondary_indicator_buttons"]:
+    for button_map_name in ["market_filter_buttons", "timeframe_buttons", "history_window_buttons", "market_overlay_buttons", "market_annotation_mode_buttons", "secondary_indicator_buttons"]:
         button_map = getattr(self, button_map_name, None)
         if isinstance(button_map, dict):
             for button in button_map.values():
@@ -31443,7 +35497,7 @@ def _qh_apply_overview_hard_theme_v30(self: QuantHunterWindow) -> None:
         _tint(widget)
         _set(widget, ghost_button_style)
 
-    for button_map_name in ["market_filter_buttons", "timeframe_buttons", "history_window_buttons", "market_overlay_buttons", "secondary_indicator_buttons"]:
+    for button_map_name in ["market_filter_buttons", "timeframe_buttons", "history_window_buttons", "market_overlay_buttons", "market_annotation_mode_buttons", "secondary_indicator_buttons"]:
         button_map = getattr(self, button_map_name, None)
         if isinstance(button_map, dict):
             for button in button_map.values():
@@ -32899,7 +36953,7 @@ def _qh_workspace_focus_capsule_v40(
     if page == "overview":
         market_count = self.market_pool_table.rowCount() if hasattr(self, "market_pool_table") else 0
         flow_label = getattr(recommendation, "fund_model", "") if recommendation is not None else "等待联动"
-        strategy_label = getattr(recommendation, "primary_strategy", "") or getattr(recommendation, "strategy_tag", "") if recommendation is not None else ""
+        strategy_label = _recommendation_strategy_name(recommendation, default=(getattr(recommendation, "strategy_tag", "") if recommendation is not None else "")) if recommendation is not None else ""
         return (
             tone,
             f"{news_chip + ' ' if news_chip else ''}市场池摘要：{stock_name} ({stock_id} / {symbol}) | 机会池 {market_count} | 【{badge}】{stage} | 资金 {flow_label or '待同步'} | 策略 {strategy_label or next_brief}{(' | ' + news_brief) if news_brief else ''}",
@@ -34087,7 +38141,15 @@ def _qh_finalize_tail_regressions_v63(self: QuantHunterWindow) -> None:
         if available_height <= 0:
             continue
         compact_overview = (self.width() or 1920) <= 1366 or (self.height() or 1080) <= 768
-        target_height = min(168 if self.height() <= 900 else 220, max(120, available_height - (10 if compact_overview else 6)))
+        is_daily_chart = chart_name == "daily_chart_view"
+        expanded_chart_mode = bool(getattr(self, "market_primary_chart_expanded", False))
+        if is_daily_chart:
+            max_height = 420 if expanded_chart_mode else (260 if self.height() <= 900 else 340)
+            min_height = 260 if expanded_chart_mode else 180
+        else:
+            max_height = 168 if self.height() <= 900 else 220
+            min_height = 120
+        target_height = min(max_height, max(min_height, available_height - (10 if compact_overview else 6)))
         chart.setMinimumHeight(0)
         chart.setMaximumHeight(16777215)
         chart.setFixedHeight(target_height)
@@ -34527,6 +38589,7 @@ QGroupBox#emptyStatePanel QPushButton {{
         "timeframe_buttons",
         "history_window_buttons",
         "market_overlay_buttons",
+        "market_annotation_mode_buttons",
         "secondary_indicator_buttons",
     ):
         button_map = getattr(self, button_map_name, None)
@@ -34658,6 +38721,7 @@ def _qh_enforce_chip_button_heights_v64(self: QuantHunterWindow) -> None:
         "timeframe_buttons",
         "history_window_buttons",
         "market_overlay_buttons",
+        "market_annotation_mode_buttons",
         "secondary_indicator_buttons",
     ):
         button_map = getattr(self, button_map_name, None)
@@ -35006,6 +39070,18 @@ QuantHunterWindow._configure_priority_more_menu_v67 = _qh_configure_priority_mor
 
 
 _ORIGINAL_QH_REFRESH_ACTION_BUTTON_STATES_V65 = QuantHunterWindow._refresh_action_button_states_v30
+
+
+_ORIGINAL_QH_POST_BUILD_UI_TWEAKS_V65 = QuantHunterWindow._post_build_ui_tweaks
+
+
+def _qh_post_build_ui_tweaks_v65(self: QuantHunterWindow) -> None:
+    _ORIGINAL_QH_POST_BUILD_UI_TWEAKS_V65(self)
+    self._install_chart_action_note_cards_v1()
+    self._sync_chart_action_note_card_visibility_v1(restart_timer=False)
+
+
+QuantHunterWindow._post_build_ui_tweaks = _qh_post_build_ui_tweaks_v65
 
 
 def _qh_refresh_action_button_states_v65(self: QuantHunterWindow) -> None:

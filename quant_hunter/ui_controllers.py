@@ -18,6 +18,7 @@ from quant_hunter.risk import (
     RISK_PROFILE_STANDARD,
     normalize_risk_profile,
 )
+from quant_hunter.strategy_registry import resolved_primary_strategy
 from quant_hunter.ui_window_paper_experiment_patches import paper_strategy_experiment_bridge_v45
 
 
@@ -45,7 +46,7 @@ def build_order_submission_experiment_context(window) -> dict[str, object]:
 
     for symbol in preferred_symbols:
         recommendation = _submission_recommendation_for_symbol(window, symbol)
-        candidate = str(getattr(recommendation, "primary_strategy", "") or "").strip()
+        candidate = resolved_primary_strategy(recommendation, default="") or ""
         if candidate:
             strategy_name = candidate
             break
@@ -54,7 +55,7 @@ def build_order_submission_experiment_context(window) -> dict[str, object]:
         current_focus_fn = getattr(window, "_current_recommend_focus", None)
         if callable(current_focus_fn):
             current_focus = current_focus_fn()
-            strategy_name = str(getattr(current_focus, "primary_strategy", "") or "").strip()
+            strategy_name = resolved_primary_strategy(current_focus, default="") or ""
 
     if not strategy_name:
         strategy_name = "掘龙决策"
@@ -113,7 +114,7 @@ def _submission_record_plan_context(window, submitted_intent: OrderIntent) -> di
         "planned_stop_price": f"{float(getattr(original_intent, 'stop_price', 0.0) or 0.0):.3f}" if float(getattr(original_intent, "stop_price", 0.0) or 0.0) > 0 else "",
         "planned_target_price": f"{float(getattr(original_intent, 'target_price', 0.0) or 0.0):.3f}" if float(getattr(original_intent, "target_price", 0.0) or 0.0) > 0 else "",
         "strategy_name": str(
-            getattr(recommendation, "primary_strategy", "")
+            resolved_primary_strategy(recommendation, default="")
             or getattr(original_intent, "strategy_name", "")
             or "掘龙决策"
         ),

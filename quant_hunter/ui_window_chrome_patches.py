@@ -191,6 +191,153 @@ QWidget#overviewRoot QCheckBox {
     color: #d9e6f2;
     spacing: 8px;
 }
+QWidget#brokerRoot {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #101822, stop:0.52 #0d141c, stop:1 #111a24);
+    color: #eef4fb;
+}
+QWidget#brokerRoot QFrame#workspaceHero {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(20, 30, 42, 0.98), stop:1 rgba(10, 15, 22, 0.98));
+    border: 1px solid rgba(120, 141, 165, 0.18);
+    border-radius: 22px;
+}
+QWidget#brokerRoot QLabel#statusBanner,
+QWidget#brokerRoot QLabel#focusStateLabel,
+QWidget#brokerRoot QLabel#workspaceFocusBanner {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(18, 27, 38, 0.96), stop:1 rgba(11, 17, 24, 0.96));
+    border: 1px solid rgba(112, 132, 154, 0.18);
+    border-radius: 16px;
+    padding: 10px 14px;
+    color: #f4f8fd;
+    font-weight: 800;
+}
+QWidget#brokerRoot QGroupBox#workspaceToolPanel,
+QWidget#brokerRoot QGroupBox#terminalPanel,
+QWidget#brokerRoot QGroupBox[terminalPanel="true"] {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(20, 28, 38, 0.98), stop:1 rgba(11, 17, 24, 0.98));
+    border: 1px solid rgba(110, 129, 150, 0.16);
+    border-radius: 20px;
+    margin-top: 18px;
+    padding-top: 12px;
+}
+QWidget#brokerRoot QGroupBox#workspaceToolPanel[sectionRole="setup"] {
+    border-color: rgba(120, 151, 183, 0.22);
+}
+QWidget#brokerRoot QGroupBox#workspaceToolPanel[sectionRole="command"] {
+    border-color: rgba(103, 149, 214, 0.26);
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(22, 32, 46, 0.99), stop:1 rgba(12, 18, 27, 0.99));
+}
+QWidget#brokerRoot QGroupBox#workspaceToolPanel[sectionRole="runtime"],
+QWidget#brokerRoot QGroupBox[sectionRole="diagnostic"] {
+    border-color: rgba(135, 148, 166, 0.18);
+}
+QWidget#brokerRoot QGroupBox#workspaceToolPanel[sectionRole="execution"],
+QWidget#brokerRoot QGroupBox[sectionRole="portfolio"] {
+    border-color: rgba(112, 139, 172, 0.20);
+}
+QWidget#brokerRoot QGroupBox::title {
+    color: #f4f8fd;
+    font-size: 15px;
+    font-weight: 800;
+    subcontrol-origin: margin;
+    left: 16px;
+    padding: 0 6px 0 6px;
+}
+QWidget#brokerRoot QLabel#inlineHint {
+    color: #8ea4bc;
+    line-height: 1.45;
+}
+QWidget#brokerRoot QLabel#sectionTitle {
+    color: #d6e2ee;
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+}
+QWidget#brokerRoot QLineEdit,
+QWidget#brokerRoot QComboBox {
+    background: rgba(12, 18, 26, 0.98);
+    color: #edf3fa;
+    border: 1px solid rgba(104, 123, 144, 0.18);
+    border-radius: 12px;
+    padding: 9px 12px;
+}
+QWidget#brokerRoot QLineEdit:focus,
+QWidget#brokerRoot QComboBox:focus {
+    border-color: rgba(122, 182, 255, 0.40);
+    background: rgba(15, 22, 31, 0.99);
+}
+QWidget#brokerRoot QTextEdit#terminalConsole {
+    background: rgba(8, 13, 19, 0.97);
+    color: #e7eff8;
+    border: 1px solid rgba(101, 119, 140, 0.16);
+    border-radius: 14px;
+    padding: 10px 12px;
+}
+QWidget#brokerRoot QTableWidget#terminalTable,
+QWidget#brokerRoot QTableWidget#brokerOrdersTable,
+QWidget#brokerRoot QTableWidget#submissionTable {
+    background: rgba(8, 13, 19, 0.98);
+    color: #eaf1f9;
+    border: 1px solid rgba(107, 125, 146, 0.16);
+    border-radius: 16px;
+    padding: 6px;
+    gridline-color: rgba(57, 72, 88, 0.55);
+}
+QWidget#brokerRoot QHeaderView::section {
+    background: rgba(15, 22, 30, 0.98);
+    color: #8ea4bd;
+    border: none;
+    border-bottom: 1px solid rgba(96, 115, 137, 0.22);
+    padding: 10px 12px;
+    font-weight: 800;
+}
+QWidget#brokerRoot QFrame#metricCard {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(22, 32, 44, 0.98), stop:1 rgba(11, 17, 24, 0.98));
+    border: 1px solid rgba(111, 132, 156, 0.18);
+    border-radius: 18px;
+}
+QWidget#brokerRoot QFrame#metricCard QLabel#metricCaption {
+    color: #8a9eb4;
+}
+QWidget#brokerRoot QFrame#metricCard QLabel#metricValue {
+    color: #f7fbff;
+}
+QWidget#brokerRoot QFrame#metricCard QLabel#metricAccent {
+    color: #a8c4e3;
+}
+QWidget#brokerRoot QFrame#brokerSetupDrawer {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(13, 19, 27, 0.92), stop:1 rgba(9, 14, 20, 0.92));
+    border: 1px solid rgba(110, 129, 150, 0.14);
+    border-radius: 22px;
+}
+QWidget#brokerRoot QPushButton#ghostButton,
+QWidget#brokerRoot QPushButton#tonalButton,
+QWidget#brokerRoot QPushButton#accentButton {
+    border-radius: 14px;
+    padding: 10px 16px;
+    font-weight: 800;
+}
+QWidget#brokerRoot QPushButton#ghostButton {
+    background: rgba(17, 24, 33, 0.94);
+    border: 1px solid rgba(108, 127, 148, 0.18);
+    color: #d9e5f1;
+}
+QWidget#brokerRoot QPushButton#ghostButton:hover {
+    border-color: rgba(144, 193, 255, 0.26);
+    background: rgba(21, 29, 40, 0.98);
+}
+QWidget#brokerRoot QPushButton#tonalButton {
+    background: rgba(29, 42, 58, 0.92);
+    border: 1px solid rgba(126, 170, 232, 0.22);
+    color: #eef5fc;
+}
+QWidget#brokerRoot QPushButton#accentButton {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(50, 92, 144, 0.98), stop:1 rgba(76, 128, 191, 0.98));
+    border: 1px solid rgba(141, 190, 255, 0.34);
+    color: #f8fbff;
+}
+QWidget#brokerRoot QPushButton#accentButton:hover {
+    border-color: rgba(214, 233, 255, 0.62);
+}
 """
         )
         self._qh_brand_polish_applied_v34 = True

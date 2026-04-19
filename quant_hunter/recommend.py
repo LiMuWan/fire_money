@@ -6,6 +6,7 @@ from datetime import date, datetime
 from .data import extract_stock_id
 from .models import DailyAnalysis, NewsCatalyst, PortfolioBacktestResult, RecommendationRow, ScanRow, StockProfile, SymbolBacktestSummary
 from .risk import DEFAULT_RISK_CONTROLS, RiskControls, normalize_risk_profile, resolve_risk_controls, risk_profile_brief
+from .strategy_registry import get_strategy_registry
 from .theme import ThemeHeatEngine, infer_mainline_flow_signal, infer_mainline_stage, infer_theme_name
 
 
@@ -127,6 +128,7 @@ class DailyPoolBuilder:
         }
         self.risk_profile = normalize_risk_profile(risk_profile)
         self.risk_controls = risk_controls or resolve_risk_controls(self.risk_profile)
+        self.strategy_registry = get_strategy_registry()
         self.last_theme_rows = []
         self.last_leader_rows = []
         self.last_build_meta: dict[str, object] = {}
@@ -259,6 +261,7 @@ class DailyPoolBuilder:
                     total_score=total_score,
                     theme_name=theme_name,
                     primary_strategy=primary_strategy,
+                    strategy_scores=self.strategy_registry.score_map_from_payload(strategy_scores),
                     stock_pool=pool_profile["stock_pool"],
                     pool_score=pool_profile["pool_score"],
                     buy_point=pool_profile["buy_point"],
@@ -427,26 +430,30 @@ class DailyPoolBuilder:
         leader_score: float,
         strategy_scores: dict[str, float | str],
     ) -> dict[str, float | str]:
-        primary_strategy = str(strategy_scores.get("primary_strategy", "") or "")
+        primary_strategy = self.strategy_registry.canonical_strategy_name(str(strategy_scores.get("primary_strategy", "") or ""))
         if primary_strategy == "尾盘买入法":
+            defaults = self.strategy_registry.plan_defaults(primary_strategy)
+            score_field = self.strategy_registry.score_field(primary_strategy)
             entry = row.entry_price or row.close
-            stop_price = row.stop_price or entry * 0.976
-            target_price = row.target_price or entry * 1.032
+            stop_price = row.stop_price or entry * (1.0 - defaults.stop_pct)
+            target_price = row.target_price or entry * (1.0 + defaults.target_pct)
             return {
                 "stock_pool": "趋势股",
-                "pool_score": round(min(float(strategy_scores.get("tail_buy_score", 0.0)), 99.0), 2),
+                "pool_score": round(min(float(strategy_scores.get(score_field, 0.0) or 0.0), 99.0), 2),
                 "buy_point": f"仅在 14:30 之后确认尾盘回流和承接后，围绕 {entry:.2f} 小仓试单，不提前埋伏",
                 "add_point": f"尾盘最后半小时若持续站稳 {max(entry * 1.002, stop_price * 1.01):.2f} 且量能不乱，再考虑轻微加码",
                 "sell_point": f"次日开盘优先看 {target_price:.2f} 附近兑现，平开也先走一半，弱开直接离场",
                 "risk_line": f"若尾盘回流失败或跌破 {stop_price:.2f}，取消隔夜；次日低开低走不恋战",
             }
         if primary_strategy == "一日持股法":
+            defaults = self.strategy_registry.plan_defaults(primary_strategy)
+            score_field = self.strategy_registry.score_field(primary_strategy)
             entry = row.entry_price or row.close
-            stop_price = row.stop_price or entry * 0.972
-            target_price = row.target_price or entry * 1.055
+            stop_price = row.stop_price or entry * (1.0 - defaults.stop_pct)
+            target_price = row.target_price or entry * (1.0 + defaults.target_pct)
             return {
                 "stock_pool": "趋势股",
-                "pool_score": round(min(float(strategy_scores.get("one_day_hold_score", 0.0)), 99.0), 2),
+                "pool_score": round(min(float(strategy_scores.get(score_field, 0.0) or 0.0), 99.0), 2),
                 "buy_point": f"围绕 {entry:.2f} 强势确认介入，原则上只博弈隔日溢价，不追尾盘扩张",
                 "add_point": f"次日仅在高开承接强于预期且不破 {max(entry * 0.995, stop_price * 1.01):.2f} 时小幅加码",
                 "sell_point": f"次日冲高靠近 {target_price:.2f} 优先兑现，午后仍未转强就收缩战线",
@@ -625,13 +632,22 @@ class DailyPoolBuilder:
         return 0.3
 
     def _strategy_rotation_bias(self, strategy_name: str) -> float:
-        raw = float(self.strategy_bias_by_name.get(strategy_name, 0.0) or 0.0)
+        canonical = self.strategy_registry.canonical_strategy_name(strategy_name) or str(strategy_name or "").strip()
+        raw = float(
+            self.strategy_bias_by_name.get(canonical, self.strategy_bias_by_name.get(str(strategy_name or "").strip(), 0.0))
+            or 0.0
+        )
         return max(min(raw * 8.0, 6.0), -6.0)
 
     def _strategy_execution_context(self, strategy_name: str) -> dict[str, object]:
         if not strategy_name:
             return {}
-        return dict(self.strategy_execution_profile_by_name.get(strategy_name, {}) or {})
+        canonical = self.strategy_registry.canonical_strategy_name(strategy_name) or str(strategy_name or "").strip()
+        profile = self.strategy_execution_profile_by_name.get(
+            canonical,
+            self.strategy_execution_profile_by_name.get(str(strategy_name or "").strip(), {}),
+        )
+        return dict(profile or {})
 
     def _strategy_scores(
         self,
@@ -660,106 +676,36 @@ class DailyPoolBuilder:
         tail_buy_bias = 12.0 if any(keyword in context for keyword in ("尾盘", "收盘前", "14:30", "两点半", "尾盘买入", "开盘卖", "次日开盘", "尾盘回流")) else 0.0
         next_day_window_score = max(0.0, 92.0 - abs(position_score - 76.0))
         tail_buy_window_score = max(0.0, 94.0 - abs(position_score - 72.0))
-
-        leader_model_score = min(
-            98.0,
-            technical_score * 0.32
-            + persistence_score * 0.22
-            + leader_score * 0.26
-            + position_score * 0.12
-            + news_score * 0.08,
-        )
-        main_force_score = min(
-            98.0,
-            technical_score * 0.18
-            + position_score * 0.18
-            + persistence_score * 0.14
-            + news_score * 0.20
-            + leader_score * 0.12
-            + main_force_bias,
-        )
-        board_attack_score = min(
-            98.0,
-            technical_score * 0.27
-            + persistence_score * 0.24
-            + leader_score * 0.14
-            + max(0.0, 90.0 - abs(position_score - 78.0)) * 0.15
-            + news_score * 0.12
-            + board_bias,
-        )
-        value_recovery_score = min(
-            98.0,
-            position_score * 0.34
-            + technical_score * 0.20
-            + persistence_score * 0.16
-            + news_score * 0.12
-            + max(0.0, 88.0 - abs(technical_score - 70.0)) * 0.08
-            + leader_score * 0.10
-            + value_bias,
-        )
-        one_day_hold_score = min(
-            98.0,
-            technical_score * 0.22
-            + position_score * 0.18
-            + persistence_score * 0.14
-            + news_score * 0.16
-            + leader_score * 0.08
-            + board_attack_score * 0.12
-            + main_force_score * 0.08
-            + next_day_window_score * 0.10
-            + one_day_bias,
-        )
-        tail_buy_score = min(
-            98.0,
-            technical_score * 0.18
-            + position_score * 0.12
-            + persistence_score * 0.16
-            + news_score * 0.12
-            + leader_score * 0.05
-            + main_force_score * 0.14
-            + board_attack_score * 0.05
-            + one_day_hold_score * 0.18
-            + tail_buy_window_score * 0.10
-            + tail_buy_bias,
-        )
-        leader_model_score = min(99.0, max(0.0, leader_model_score + self._strategy_rotation_bias("龙头模型")))
-        main_force_score = min(99.0, max(0.0, main_force_score + self._strategy_rotation_bias("主力雷达")))
-        board_attack_score = min(99.0, max(0.0, board_attack_score + self._strategy_rotation_bias("擒龙打板")))
-        value_recovery_score = min(99.0, max(0.0, value_recovery_score + self._strategy_rotation_bias("价值低吸")))
-        one_day_hold_score = min(99.0, max(0.0, one_day_hold_score + self._strategy_rotation_bias("一日持股法")))
-        tail_buy_score = min(99.0, max(0.0, tail_buy_score + self._strategy_rotation_bias("尾盘买入法")))
-        dragon_decision_score = min(
-            99.0,
-            leader_model_score * 0.22
-            + main_force_score * 0.16
-            + board_attack_score * 0.14
-            + value_recovery_score * 0.15
-            + tail_buy_score * 0.08
-            + one_day_hold_score * 0.09
-            + technical_score * 0.07
-            + position_score * 0.04
-            + persistence_score * 0.03
-            + news_score * 0.02,
-        )
-        ranked = [
-            ("龙头模型", leader_model_score),
-            ("主力雷达", main_force_score),
-            ("强势接力", board_attack_score),
-            ("价值低吸", value_recovery_score),
-            ("掘龙决策", dragon_decision_score),
-        ]
-        ranked.append(("尾盘买入法", tail_buy_score))
-        ranked.append(("一日持股法", one_day_hold_score))
-        ranked.sort(key=lambda item: item[1], reverse=True)
+        strategy_context = {
+            "technical": technical_score,
+            "position": position_score,
+            "persistence": persistence_score,
+            "news": news_score,
+            "leader": leader_score,
+            "main_force_bias": main_force_bias,
+            "board_bias": board_bias,
+            "value_bias": value_bias,
+            "one_day_bias": one_day_bias,
+            "tail_buy_bias": tail_buy_bias,
+            "next_day_window": next_day_window_score,
+            "tail_buy_window": tail_buy_window_score,
+            "board_window": max(0.0, 90.0 - abs(position_score - 78.0)),
+            "value_window": max(0.0, 88.0 - abs(technical_score - 70.0)),
+        }
+        adjustments = {
+            strategy_name: self._strategy_rotation_bias(strategy_name)
+            for strategy_name in self.strategy_registry.base_strategy_names
+        }
+        strategy_scores = self.strategy_registry.compute_scores(strategy_context, adjustments_by_name=adjustments)
         return {
-            "primary_strategy": ranked[0][0],
-            "leader_model_score": round(leader_model_score, 2),
-            "main_force_score": round(main_force_score, 2),
-            "board_attack_score": round(board_attack_score, 2),
-            "value_recovery_score": round(value_recovery_score, 2),
-            "tail_buy_score": round(tail_buy_score, 2),
-            "one_day_hold_score": round(one_day_hold_score, 2),
-            "dragon_decision_score": round(dragon_decision_score, 2),
+            "primary_strategy": str(strategy_scores.get("primary_strategy", "") or ""),
+            "leader_model_score": round(float(strategy_scores.get("leader_model_score", 0.0) or 0.0), 2),
+            "main_force_score": round(float(strategy_scores.get("main_force_score", 0.0) or 0.0), 2),
+            "board_attack_score": round(float(strategy_scores.get("board_attack_score", 0.0) or 0.0), 2),
+            "value_recovery_score": round(float(strategy_scores.get("value_recovery_score", 0.0) or 0.0), 2),
+            "tail_buy_score": round(float(strategy_scores.get("tail_buy_score", 0.0) or 0.0), 2),
+            "one_day_hold_score": round(float(strategy_scores.get("one_day_hold_score", 0.0) or 0.0), 2),
+            "dragon_decision_score": round(float(strategy_scores.get("dragon_decision_score", 0.0) or 0.0), 2),
         }
 
     @staticmethod

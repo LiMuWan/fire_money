@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from quant_hunter.strategy_registry import resolved_primary_strategy
+
 
 def apply_cross_workspace_focus_patches(
     window_cls: type,
@@ -367,7 +369,7 @@ def apply_cross_workspace_focus_patches(
             lines = [
                 f"单票决策：{stock_name} ({stock_id} / {focus_symbol})",
                 f"主线：{theme_name} | 动作：{action_text}",
-                f"主策略：{getattr(focus_recommend, 'primary_strategy', '') or '擒龙决策'} | 分层：{getattr(focus_recommend, 'opportunity_tier', '') or '待确认'}",
+                f"主策略：{resolved_primary_strategy(focus_recommend, default='掘龙决策') or '掘龙决策'} | 分层：{getattr(focus_recommend, 'opportunity_tier', '') or '待确认'}",
                 f"题材 / 逻辑：{theme_name} | {hype_logic}",
                 f"计划价带：{price_brief}",
             ]

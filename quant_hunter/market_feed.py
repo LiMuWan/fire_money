@@ -15,6 +15,7 @@ from .models import DailyAnalysis, PriceBar, RecommendationRow, ScanRow, StockPr
 from .recommend import DailyPoolBuilder
 from .scanner import ACTION_MAP
 from .strategy import AntiHarvestStrategy, StrategyParams
+from .strategy_registry import get_strategy_registry, resolved_primary_strategy, strategy_score, strategy_score_map
 
 
 EASTMONEY_HEADERS = {
@@ -812,6 +813,7 @@ class RemoteMarketScreener:
         snapshot_map: dict[str, MarketSnapshot],
     ) -> list[RecommendationRow]:
         enriched: list[RecommendationRow] = []
+        strategy_registry = get_strategy_registry()
         for item in recommendations:
             snapshot = snapshot_map.get(item.symbol)
             if snapshot is None:
@@ -832,8 +834,13 @@ class RemoteMarketScreener:
                 2,
             )
             boosted_primary = item.primary_strategy or snapshot.strategy_tag
-            if snapshot.strategy_tag in {"龙头模型", "主力雷达", "擒龙打板", "价值低吸", "掘龙决策"}:
-                boosted_primary = snapshot.strategy_tag
+            strategy_name = strategy_registry.canonical_strategy_name(snapshot.strategy_tag)
+            if strategy_name in strategy_registry.strategy_names:
+                boosted_primary = strategy_name
+            updated_strategy_scores = strategy_score_map(item)
+            if boosted_primary in updated_strategy_scores:
+                updated_strategy_scores[boosted_primary] = round(updated_strategy_scores[boosted_primary] + 5.0, 2)
+            updated_strategy_scores["掘龙决策"] = round(max(updated_strategy_scores.get("掘龙决策", 0.0), total_score), 2)
             rationale = (
                 f"{item.rationale} | 涨幅 {snapshot.pct_change:.2f}% | "
                 f"主力净流入 {snapshot.main_inflow / 1e8:.2f} 亿 | {snapshot.strategy_tag}"
@@ -862,6 +869,7 @@ class RemoteMarketScreener:
                     theme_rank=item.theme_rank,
                     leader_level=item.leader_level,
                     primary_strategy=boosted_primary,
+                    strategy_scores=updated_strategy_scores,
                     signal_source=getattr(item, "signal_source", ""),
                     signal_age_days=int(getattr(item, "signal_age_days", 0) or 0),
                     freshness_score=float(getattr(item, "freshness_score", 0.0) or 0.0),
@@ -874,11 +882,13 @@ class RemoteMarketScreener:
                     reject_reason=getattr(item, "reject_reason", ""),
                     next_focus=getattr(item, "next_focus", ""),
                     invalidation_reason=getattr(item, "invalidation_reason", ""),
-                    leader_model_score=item.leader_model_score + (5.0 if boosted_primary == "龙头模型" else 0.0),
-                    main_force_score=item.main_force_score + (5.0 if boosted_primary == "主力雷达" else 0.0),
-                    board_attack_score=item.board_attack_score + (5.0 if boosted_primary == "擒龙打板" else 0.0),
-                    value_recovery_score=item.value_recovery_score + (5.0 if boosted_primary == "价值低吸" else 0.0),
-                    dragon_decision_score=max(item.dragon_decision_score, total_score),
+                    leader_model_score=updated_strategy_scores.get("龙头模型", item.leader_model_score),
+                    main_force_score=updated_strategy_scores.get("主力雷达", item.main_force_score),
+                    board_attack_score=updated_strategy_scores.get("擒龙打板", item.board_attack_score),
+                    value_recovery_score=updated_strategy_scores.get("价值低吸", item.value_recovery_score),
+                    tail_buy_score=updated_strategy_scores.get("尾盘买入法", item.tail_buy_score),
+                    one_day_hold_score=updated_strategy_scores.get("一日持股法", item.one_day_hold_score),
+                    dragon_decision_score=updated_strategy_scores.get("掘龙决策", max(item.dragon_decision_score, total_score)),
                     catalyst=catalyst,
                     rationale=rationale,
                 )
@@ -912,8 +922,8 @@ class RemoteMarketScreener:
                     turnover=snapshot.turnover,
                     heat_score=snapshot.heat_score,
                     fund_model=snapshot.fund_model,
-                    strategy_tag=item.primary_strategy or snapshot.strategy_tag,
-                    decision_score=item.dragon_decision_score or item.total_score,
+                    strategy_tag=resolved_primary_strategy(item, default=snapshot.strategy_tag) or snapshot.strategy_tag,
+                    decision_score=strategy_score(item, "掘龙决策", float(getattr(item, "total_score", 0.0) or 0.0)),
                     signal_label=item.label,
                     action=item.action,
                     entry_price=item.entry_price or item.close,

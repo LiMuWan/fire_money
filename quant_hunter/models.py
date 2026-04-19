@@ -196,6 +196,7 @@ class RecommendationRow:
     theme_rank: int = 0
     leader_level: str = ""
     primary_strategy: str = ""
+    strategy_scores: dict[str, float] = field(default_factory=dict)
     stock_pool: str = ""
     pool_score: float = 0.0
     buy_point: str = ""

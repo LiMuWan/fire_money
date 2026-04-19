@@ -117,6 +117,9 @@ def workspace_name_for_index(index: int) -> str:
     return "未命名"
 
 
+from .strategy_registry import get_strategy_filter_labels, get_strategy_score_fields, get_strategy_workbench_specs
+
+
 OVERVIEW_QUICK_ROUTE_SPECS = {
     "市场总览": {"workspace": "overview", "widget": "intraday_chart_view"},
     "主线龙头": {"workspace": "recommend", "widget": "daily_pool_table", "select_row": "daily_pool_table"},
@@ -126,24 +129,8 @@ OVERVIEW_QUICK_ROUTE_SPECS = {
     "复盘研究": {"workspace": "recommend", "widget": "recommend_review_text"},
 }
 
-STRATEGY_FILTER_LABELS = ["全部", "龙头模型", "主力雷达", "擒龙打板", "价值低吸", "尾盘买入法", "一日持股法", "掘龙决策"]
+STRATEGY_FILTER_LABELS = get_strategy_filter_labels()
 
-STRATEGY_SCORE_FIELDS = {
-    "龙头模型": "leader_model_score",
-    "主力雷达": "main_force_score",
-    "擒龙打板": "board_attack_score",
-    "价值低吸": "value_recovery_score",
-    "尾盘买入法": "tail_buy_score",
-    "一日持股法": "one_day_hold_score",
-    "掘龙决策": "dragon_decision_score",
-}
+STRATEGY_SCORE_FIELDS = get_strategy_score_fields()
 
-STRATEGY_WORKBENCH_SPECS = [
-    ("龙头模型", "抓主线核心龙头与趋势延续"),
-    ("主力雷达", "抓资金净流入和机构强承接"),
-    ("擒龙打板", "抓强势确认、回封确认和打板节奏"),
-    ("价值低吸", "抓分歧回踩、低位承接和修复"),
-    ("尾盘买入法", "抓尾盘回流确认、次日开盘兑现和短隔夜纪律"),
-    ("一日持股法", "抓次日溢价、隔日兑现和短线节奏"),
-    ("掘龙决策", "汇总前五大战法，给最终动作"),
-]
+STRATEGY_WORKBENCH_SPECS = get_strategy_workbench_specs()

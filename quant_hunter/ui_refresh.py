@@ -43,12 +43,14 @@ from quant_hunter.risk import RISK_PROFILE_LABELS, risk_profile_brief
 from quant_hunter.models import ScanRow
 from quant_hunter.reports import _report_mainline_followup_text
 from quant_hunter.recommend_status import execution_summary_for_rows
+from quant_hunter.strategy_registry import get_strategy_registry, resolved_primary_strategy, strategy_applicable_market_meta, strategy_capacity_limit_meta, strategy_capital_style, strategy_default_risk_level, strategy_failure_sample_meta, strategy_low_flag_risk_level, strategy_no_go_meta, strategy_position_hint_meta, strategy_product_positioning, strategy_scene_copy, strategy_score, strategy_score_map, strategy_short_label, strategy_standard_action_meta
 from quant_hunter.theme import display_mainline_role as _shared_display_mainline_role
 from quant_hunter.ui_helpers import one_day_hold_grade, one_day_hold_tripwire_metrics, tail_buy_execution_checklist, tail_buy_runtime_panel_lines, tail_buy_runtime_status
 from quant_hunter.ui_status import display_fill_status, display_order_status, market_pool_colors, signal_colors, submission_colors, submission_risk_badge_palette_v2, submission_table_snapshot_v2
 
 
 QT_USER_ROLE = Qt.UserRole if Qt is not None else 0
+_STRATEGY_REGISTRY = get_strategy_registry()
 
 
 @contextmanager
@@ -377,51 +379,43 @@ def _compact_daily_pool_strategy(value: str) -> str:
 
 def _canonical_strategy_name(value: str) -> str:
     raw = str(value or "").strip()
-    alias_map = {
-        "龙头主线": "龙头模型",
-        "龙头模型": "龙头模型",
-        "资金承接": "主力雷达",
-        "主力雷达": "主力雷达",
-        "强势接力": "擒龙打板",
-        "打板策略": "擒龙打板",
-        "擒龙打板": "擒龙打板",
-        "趋势低吸": "价值低吸",
-        "价值低吸": "价值低吸",
-        "尾盘买入": "尾盘买入法",
-        "尾盘买入法": "尾盘买入法",
-        "一日持股": "一日持股法",
-        "隔日强势": "一日持股法",
-        "一日持股法": "一日持股法",
-        "综合决策": "掘龙决策",
-        "掘龙": "掘龙决策",
-        "掘龙决策": "掘龙决策",
-    }
-    return alias_map.get(raw, raw)
+    return _STRATEGY_REGISTRY.canonical_strategy_name(raw) or raw
+
+
+def _strategy_score_value(row, strategy_name: str) -> float:
+    return float(strategy_score(row, strategy_name, 0.0) or 0.0)
+
+
+def _strategy_score_map_for_row(row) -> dict[str, float]:
+    return strategy_score_map(row)
+
+
+def _strategy_short_label(strategy_name: str) -> str:
+    return strategy_short_label(strategy_name)
+
+
+def _strategy_score_summary_lines(row) -> list[str]:
+    score_map = _strategy_score_map_for_row(row)
+    labels = [
+        f"{_strategy_short_label(name)} {score_map.get(name, 0.0):.1f}"
+        for name in _STRATEGY_REGISTRY.strategy_names
+    ]
+    if not labels:
+        return ["战法评分：待同步"]
+    compact_count = 3
+    lines = []
+    for index in range(0, len(labels), compact_count):
+        prefix = f"{len(labels)}策" if index == 0 else "续策"
+        lines.append(f"{prefix}：{' / '.join(labels[index:index + compact_count])}")
+    return lines
 
 
 def _strategy_scene_copy(strategy_name: str) -> str:
-    return {
-        "龙头模型": "适合主线最强、龙头属性明确、趋势仍在延续的票。",
-        "主力雷达": "适合资金承接清晰、量价匹配、机构或主力动作明显的票。",
-        "擒龙打板": "适合强势确认、回封确认、需要盯节奏和情绪的高弹性机会。",
-        "价值低吸": "适合回踩修复、低位承接、强调安全边际和修复预期的票。",
-        "尾盘买入法": "适合尾盘回流确认后隔夜，重点看 14:30 后承接和次日开盘兑现。",
-        "一日持股法": "适合隔日博弈，重点看竞价转强、开盘承接和次日兑现。",
-        "掘龙决策": "适合把主线、资金、位置和节奏综合起来做最终动作判断。",
-    }.get(strategy_name, "适合等待机会池同步后再看具体打法。")
+    return strategy_scene_copy(strategy_name)
 
 
 def _strategy_reason_copy(row, strategy_name: str) -> str:
-    strategy_score_map = {
-        "龙头模型": float(getattr(row, "leader_model_score", 0.0) or 0.0),
-        "主力雷达": float(getattr(row, "main_force_score", 0.0) or 0.0),
-        "擒龙打板": float(getattr(row, "board_attack_score", 0.0) or 0.0),
-        "价值低吸": float(getattr(row, "value_recovery_score", 0.0) or 0.0),
-        "尾盘买入法": float(getattr(row, "tail_buy_score", 0.0) or 0.0),
-        "一日持股法": float(getattr(row, "one_day_hold_score", 0.0) or 0.0),
-        "掘龙决策": float(getattr(row, "dragon_decision_score", getattr(row, "total_score", 0.0)) or 0.0),
-    }
-    score = strategy_score_map.get(strategy_name, 0.0)
+    score = _strategy_score_value(row, strategy_name)
     mainline_tag = getattr(row, "mainline_tag", "") or getattr(row, "theme_name", "") or "未分类"
     catalyst = getattr(row, "catalyst", "") or "暂无催化"
     if strategy_name == "擒龙打板":
@@ -440,27 +434,11 @@ def _strategy_reason_copy(row, strategy_name: str) -> str:
 
 
 def _strategy_product_positioning(strategy_name: str) -> str:
-    return {
-        "龙头模型": "主线最强确认，适合做前排龙头识别和强者恒强。",
-        "主力雷达": "资金承接跟随，适合做主力痕迹和资金流确认。",
-        "擒龙打板": "高弹性打板，适合做强势确认后的进攻型博弈。",
-        "价值低吸": "修复型低吸，适合做回踩承接和安全边际。",
-        "尾盘买入法": "尾盘隔夜，适合做尾盘回流后的短周期博弈。",
-        "一日持股法": "隔日节奏，适合做竞价转强到次日兑现。",
-        "掘龙决策": "综合决策，适合做主线、位置、资金与节奏的总判断。",
-    }.get(strategy_name, "等待机会池同步后再确认战法定位。")
+    return strategy_product_positioning(strategy_name)
 
 
 def _strategy_capital_style(strategy_name: str) -> str:
-    return {
-        "龙头模型": "主线进攻 / 趋势跟随",
-        "主力雷达": "资金跟随 / 中速切入",
-        "擒龙打板": "快进快出 / 高弹性博弈",
-        "价值低吸": "分批低吸 / 修复博弈",
-        "尾盘买入法": "尾盘试仓 / 隔夜兑现",
-        "一日持股法": "隔日试错 / 次日兑现",
-        "掘龙决策": "均衡配置 / 最终决策",
-    }.get(strategy_name, "等待同步")
+    return strategy_capital_style(strategy_name)
 
 
 def _strategy_risk_level(strategy_name: str, focus_row) -> str:
@@ -469,39 +447,21 @@ def _strategy_risk_level(strategy_name: str, focus_row) -> str:
         return "高风险"
     if strategy_name in {"擒龙打板", "尾盘买入法", "一日持股法"}:
         return "高风险"
-    if strategy_name == "价值低吸":
-        return "中低风险" if explicit_flag == "低" else "中风险"
     if explicit_flag == "低":
-        return "中风险"
-    return "中高风险" if strategy_name == "龙头模型" else "中风险"
+        return strategy_low_flag_risk_level(strategy_name)
+    return strategy_default_risk_level(strategy_name)
 
 
 def _strategy_position_hint(strategy_name: str, focus_row) -> str:
     action = str(getattr(focus_row, "action", "") or "").upper()
     if action in {"SELL", "REDUCE"}:
         return "当前以处理持仓为主，不新增仓位。"
-    return {
-        "龙头模型": "先试仓确认，再沿主线延续分批加。 ",
-        "主力雷达": "先小仓验证承接，放量确认后再加。",
-        "擒龙打板": "只做小样本试错，封板质量确认后再考虑加码。",
-        "价值低吸": "优先分批吸，不要一次性打满。",
-        "尾盘买入法": "只做尾盘试仓，隔夜后以兑现优先。",
-        "一日持股法": "先轻仓博弈，次日不及预期就快速退出。",
-        "掘龙决策": "先按综合结论试仓，确认后再进入交易计划。",
-    }.get(strategy_name, "先小仓验证，再决定是否继续。").strip()
+    return strategy_position_hint_meta(strategy_name).strip()
 
 
 def _strategy_no_go_text(strategy_name: str, focus_row) -> str:
     invalidation = _strategy_invalidation_signal_text(focus_row)
-    base = {
-        "龙头模型": "主线掉队、位次后排、龙头属性不清时不做。",
-        "主力雷达": "资金承接转弱、放量滞涨、催化失真时不做。",
-        "擒龙打板": "情绪退潮、炸板承接差、非主线硬板时不做。",
-        "价值低吸": "修复逻辑不成立、承接不足、跌破防守位时不做。",
-        "尾盘买入法": "14:30 前无回流、尾盘抢拉无承接、隔夜消息走弱时不做。",
-        "一日持股法": "竞价不转强、开盘承接弱、次日兑现逻辑缺失时不做。",
-        "掘龙决策": "主线不清、信号冲突、价位没有形成时不做。",
-    }.get(strategy_name, "等待更多确认后再决定。")
+    base = strategy_no_go_meta(strategy_name)
     return f"{base} 当前失效线：{invalidation}"
 
 
@@ -513,15 +473,7 @@ def _strategy_applicable_market(strategy_name: str, focus_row) -> str:
     ).strip()
     if custom:
         return custom
-    return {
-        "龙头模型": "适合主线最强仍在加速、龙头位次明确、板块仍有持续性的行情。",
-        "主力雷达": "适合资金承接持续增强、量价匹配清晰、机构痕迹明显的行情。",
-        "擒龙打板": "适合情绪回暖、回封质量高、前排封板溢价仍在的进攻型行情。",
-        "价值低吸": "适合主线分歧后的回踩修复、承接重新回流、追高性价比偏低的行情。",
-        "尾盘买入法": "适合尾盘回流确认、隔夜博弈仍有溢价、次日兑现窗口较明确的行情。",
-        "一日持股法": "适合隔日强弱切换快、竞价与开盘承接决定盈亏的短节奏行情。",
-        "掘龙决策": "适合主线、资金、位置与节奏需要统一判断的综合型行情。",
-    }.get(strategy_name, "等待样本和机会池同步后再确认适用行情。")
+    return strategy_applicable_market_meta(strategy_name)
 
 
 def _strategy_capacity_limit(strategy_name: str, focus_row) -> str:
@@ -531,15 +483,7 @@ def _strategy_capacity_limit(strategy_name: str, focus_row) -> str:
     action = str(getattr(focus_row, "action", "") or "").upper()
     if action in {"SELL", "REDUCE"}:
         return "当前以收缩和处理持仓为主，不适合继续扩大战法容量。"
-    return {
-        "龙头模型": "更适合核心仓位逐步放大，但前提是龙头和主线都没有掉队。",
-        "主力雷达": "更适合中等容量跟随，不适合在承接未确认前瞬间打满。",
-        "擒龙打板": "只适合小样本快节奏试错，不适合重仓持续摊大单票风险。",
-        "价值低吸": "更适合中等容量分批布局，不适合在无承接时一次性打满。",
-        "尾盘买入法": "更适合小到中等容量尾盘试仓，不适合全天追高后被动隔夜。",
-        "一日持股法": "更适合轻仓滚动试错，不适合在次日兑现逻辑不清时大仓位隔夜。",
-        "掘龙决策": "容量跟随总分与执行闸门动态调整，不适合脱离主线单独重仓。",
-    }.get(strategy_name, "先小样本运行，确认稳定后再逐步扩大战法容量。")
+    return strategy_capacity_limit_meta(strategy_name)
 
 
 def _strategy_standard_action(strategy_name: str, focus_row) -> str:
@@ -548,19 +492,22 @@ def _strategy_standard_action(strategy_name: str, focus_row) -> str:
         return custom
     buy_point = str(getattr(focus_row, "buy_point", "") or "").strip()
     sell_point = str(getattr(focus_row, "sell_point", "") or "").strip()
+    default_buy, default_sell = strategy_standard_action_meta(strategy_name)
+    default_buy = default_buy.rstrip("。；; ")
+    default_sell = default_sell.rstrip("。；; ")
     if strategy_name == "价值低吸":
-        return f"先等回踩企稳，再分批低吸；{sell_point or '修复到计划目标位后分批兑现。'}"
+        return f"{default_buy}；{sell_point or default_sell}"
     if strategy_name == "擒龙打板":
-        return f"先等强势确认和回封质量，再小仓试错；{sell_point or '炸板或次日弱转强失败时快速处理。'}"
+        return f"{default_buy}；{sell_point or default_sell}"
     if strategy_name == "尾盘买入法":
-        return f"先看 14:30 后回流和承接，再尾盘试仓；{sell_point or '次日冲高优先兑现，不恋战。'}"
+        return f"{default_buy}；{sell_point or default_sell}"
     if strategy_name == "一日持股法":
-        return f"先看竞价转强和开盘承接，再做隔日试错；{sell_point or '次日不及预期就快速退出。'}"
+        return f"{default_buy}；{sell_point or default_sell}"
     if strategy_name == "龙头模型":
-        return f"{buy_point or '先确认龙头位次和主线延续，再试仓。'}；{sell_point or '主线掉队或龙头失速时分批处理。'}"
+        return f"{buy_point or default_buy}；{sell_point or default_sell}"
     if strategy_name == "主力雷达":
-        return f"{buy_point or '先确认承接和量能，再做跟随。'}；{sell_point or '承接转弱或量价失配时及时收缩。'}"
-    return f"{buy_point or '先按综合结论试仓。'}；{sell_point or '失去优势后按计划退出。'}"
+        return f"{buy_point or default_buy}；{sell_point or default_sell}"
+    return f"{buy_point or default_buy}；{sell_point or default_sell}"
 
 
 def _strategy_failure_sample_text(strategy_name: str, focus_row) -> str:
@@ -572,15 +519,11 @@ def _strategy_failure_sample_text(strategy_name: str, focus_row) -> str:
     if custom:
         return custom
     invalidation = _strategy_invalidation_signal_text(focus_row)
-    return {
-        "龙头模型": f"最容易失败在主线切换后还把后排当龙头，或位次下降后仍试图硬抗。当前失效线：{invalidation}",
-        "主力雷达": f"最容易失败在资金假承接、放量滞涨、催化兑现后还继续追随。当前失效线：{invalidation}",
-        "擒龙打板": f"最容易失败在情绪退潮、炸板承接差、非主线硬板时继续进攻。当前失效线：{invalidation}",
-        "价值低吸": f"最容易失败在修复预期落空、承接不足、{invalidation}后还继续摊低成本。",
-        "尾盘买入法": f"最容易失败在尾盘抢拉无承接、隔夜消息走弱、次日竞价不及预期却没有先撤。当前失效线：{invalidation}",
-        "一日持股法": f"最容易失败在竞价不转强、开盘承接弱、次日兑现失败却没有及时认错。当前失效线：{invalidation}",
-        "掘龙决策": f"最容易失败在主线、位置和资金信号互相冲突时仍强行下结论。当前失效线：{invalidation}",
-    }.get(strategy_name, f"最容易失败在信号不一致却强行执行。当前失效线：{invalidation}")
+    base = strategy_failure_sample_meta(strategy_name)
+    if strategy_name == "价值低吸":
+        invalidation = invalidation.rstrip("。；; ")
+        return f"{base.rstrip('。')}、{invalidation}。后还继续摊低成本。"
+    return f"{base} 当前失效线：{invalidation}"
 
 
 def _compact_daily_pool_date(value: str) -> str:
@@ -645,7 +588,7 @@ def _daily_pool_row_tooltip(window, row, execution_status: str) -> str:
     mainline_role = _display_mainline_role(getattr(row, "mainline_role", ""))
     mainline_window = float(getattr(row, "mainline_window_score", 0.0) or 0.0)
     mainline_risk = getattr(row, "mainline_risk_flag", "--") or "--"
-    strategy = _canonical_strategy_name(getattr(row, "primary_strategy", "") or "掘龙决策")
+    strategy = resolved_primary_strategy(row, default="掘龙决策") or "掘龙决策"
     lead_level = window._display_leader_level(getattr(row, "leader_level", "")) if hasattr(window, "_display_leader_level") else str(getattr(row, "leader_level", "") or "--")
     catalyst = getattr(row, "catalyst", "") or "暂无催化"
     stock_pool = getattr(row, "stock_pool", "") or "趋势股"
@@ -666,9 +609,6 @@ def _daily_pool_row_tooltip(window, row, execution_status: str) -> str:
         f"主线：{mainline_tag} | 第 {mainline_rank} 位 | {mainline_role}",
         f"窗口：{mainline_window:.1f} | 风险：{mainline_risk}",
         f"策略：{strategy} | 级别：{lead_level} | 总分：{getattr(row, 'total_score', 0.0):.1f}",
-        f"七策：龙头 {getattr(row, 'leader_model_score', 0.0):.1f} / 主力 {getattr(row, 'main_force_score', 0.0):.1f} / "
-        f"打板 {getattr(row, 'board_attack_score', 0.0):.1f} / 低吸 {getattr(row, 'value_recovery_score', 0.0):.1f} / "
-        f"尾盘 {getattr(row, 'tail_buy_score', 0.0):.1f} / 一日 {getattr(row, 'one_day_hold_score', 0.0):.1f} / 决策 {getattr(row, 'dragon_decision_score', getattr(row, 'total_score', 0.0)):.1f}",
         f"股池：{stock_pool} | 池分：{pool_score:.1f} | 消息：{news_score:.1f}",
         f"买卖点：{buy_point} / {sell_point}",
         f"价格：买 {entry_price:.2f} / 止损 {stop_price:.2f} / 目标 {target_price:.2f}",
@@ -678,6 +618,7 @@ def _daily_pool_row_tooltip(window, row, execution_status: str) -> str:
         f"理由：{rationale}",
         f"日期：{_compact_daily_pool_date(getattr(row, 'signal_date', ''))}",
     ]
+    lines[4:4] = _strategy_score_summary_lines(row)
     grade = one_day_hold_grade(row)
     if grade:
         lines.insert(7, f"隔日博弈等级：{grade}")
@@ -1064,7 +1005,7 @@ def build_market_dashboard_snapshot(snapshot, recommendation=None) -> dict[str, 
     elif recommendation is not None:
         title = f"{recommendation.stock_name}  {recommendation.stock_id}  {recommendation.symbol}"
         subheader = (
-            f"{getattr(recommendation, 'primary_strategy', '') or '掘龙决策'} | "
+            f"{resolved_primary_strategy(recommendation, default='掘龙决策') or '掘龙决策'} | "
             f"{recommendation.theme_name or '未分类'} | 总分 {recommendation.total_score:.1f}"
         )
         signal = (
@@ -1126,7 +1067,7 @@ def build_market_text_snapshot(
             ]
         )
         decision_headline = action_text
-        decision_detail = f"{getattr(recommendation, 'stock_pool', '') or '趋势股'} / 决策分 {getattr(recommendation, 'dragon_decision_score', recommendation.total_score):.1f}"
+        decision_detail = f"{getattr(recommendation, 'stock_pool', '') or '趋势股'} / 决策分 {_strategy_score_value(recommendation, '掘龙决策') or float(getattr(recommendation, 'total_score', 0.0) or 0.0):.1f}"
     elif latest_signal is not None:
         label_text = display_label_fn(latest_signal.label) if callable(display_label_fn) else latest_signal.label
         decision_lines.extend([f"- 最新信号：{label_text}", f"- 触发原因：{latest_signal.reason}"])
@@ -1160,7 +1101,7 @@ def select_recommend_action_targets(rows: list, execution_status_by_symbol: dict
     ]
 
     sort_key = lambda item: (
-        float(getattr(item, "dragon_decision_score", getattr(item, "total_score", 0.0))),
+        _strategy_score_value(item, "掘龙决策") or float(getattr(item, "total_score", 0.0) or 0.0),
         float(getattr(item, "total_score", 0.0)),
     )
     priority_buy = max(pending_review, key=sort_key) if pending_review else None
@@ -1178,7 +1119,7 @@ def select_recommend_action_targets(rows: list, execution_status_by_symbol: dict
 
 def build_recommend_bucket_snapshot(rows: list, execution_status_by_symbol: dict[str, str]) -> dict[str, str]:
     def score_of(item) -> float:
-        return float(getattr(item, "dragon_decision_score", getattr(item, "total_score", 0.0)))
+        return _strategy_score_value(item, "掘龙决策") or float(getattr(item, "total_score", 0.0) or 0.0)
 
     core_rows = sorted(
         [
@@ -1225,7 +1166,7 @@ def build_recommend_bucket_snapshot(rows: list, execution_status_by_symbol: dict
         for index, item in enumerate(block_rows[:3], start=1):
             status = execution_status_by_symbol.get(getattr(item, "symbol", ""), "\u5f85\u89c2\u5bdf")
             lines.append(
-                f"{index}. {item.stock_name} | {(item.theme_name or '\u672a\u5206\u7c7b')} | {getattr(item, 'primary_strategy', '') or '\u63d8\u9f99\u51b3\u7b56'} | "
+                f"{index}. {item.stock_name} | {(item.theme_name or '\u672a\u5206\u7c7b')} | {resolved_primary_strategy(item, default='掘龙决策') or '\u63d8\u9f99\u51b3\u7b56'} | "
                 f"{status} | {score_of(item):.1f}"
             )
         return "\n".join(lines)
@@ -1313,11 +1254,11 @@ def build_detail_workspace_snapshot(
             "\u4ea4\u6613\u51b3\u7b56\u753b\u50cf",
             "",
             f"- \u6807\u7684: {getattr(recommendation, 'stock_name', display_symbol)} ({getattr(recommendation, 'stock_id', display_symbol)})",
-            f"- \u9898\u6750 / \u7b56\u7565 / \u80a1\u6c60: {(getattr(recommendation, 'theme_name', '') or '\u672a\u5206\u7c7b')} / {getattr(recommendation, 'primary_strategy', '') or '\u63d8\u9f99\u51b3\u7b56'} / {getattr(recommendation, 'stock_pool', '') or '\u8d8b\u52bf\u80a1'}",
+            f"- \u9898\u6750 / \u7b56\u7565 / \u80a1\u6c60: {(getattr(recommendation, 'theme_name', '') or '\u672a\u5206\u7c7b')} / {resolved_primary_strategy(recommendation, default='掘龙决策') or '\u63d8\u9f99\u51b3\u7b56'} / {getattr(recommendation, 'stock_pool', '') or '\u8d8b\u52bf\u80a1'}",
             f"- \u5f53\u524d\u52a8\u4f5c: {getattr(recommendation, 'action', '')} | \u6267\u884c\u72b6\u6001: {execution_status}",
             (
                 f"- \u8bc4\u5206: \u603b\u5206 {getattr(recommendation, 'total_score', 0.0):.1f} | "
-                f"\u51b3\u7b56\u5206 {getattr(recommendation, 'dragon_decision_score', getattr(recommendation, 'total_score', 0.0)):.1f} | "
+                f"\u51b3\u7b56\u5206 {_strategy_score_value(recommendation, '掘龙决策') or float(getattr(recommendation, 'total_score', 0.0) or 0.0):.1f} | "
                 f"\u80a1\u6c60\u5206 {getattr(recommendation, 'pool_score', 0.0):.1f}"
             ),
             (
@@ -1480,7 +1421,7 @@ def refresh_priority_cards(window, plan) -> None:
     top_pick = window.daily_pool_rows[0] if window.daily_pool_rows else None
     strategy_counter: dict[str, int] = {}
     for item in window.daily_pool_rows:
-        name = getattr(item, "primary_strategy", "") or "掘龙决策"
+        name = resolved_primary_strategy(item, default="掘龙决策") or "掘龙决策"
         strategy_counter[name] = strategy_counter.get(name, 0) + 1
     top_strategy_name, top_strategy_count = ("暂无", 0)
     if strategy_counter:
@@ -1507,10 +1448,10 @@ def refresh_priority_cards(window, plan) -> None:
         "下一步: 优先复核当前最拥挤的打法。",
     )
     window.priority_cards["focus"].set_data(
-        f"{getattr(top_pick, 'dragon_decision_score', getattr(top_pick, 'total_score', 0.0)):.1f}" if top_pick else "--",
+        f"{(_strategy_score_value(top_pick, '掘龙决策') or float(getattr(top_pick, 'total_score', 0.0) or 0.0)):.1f}" if top_pick else "--",
         f"状态: {top_pick.stock_name if top_pick else '暂无'}",
         (
-            f"下一步: {getattr(top_pick, 'primary_strategy', '') or '掘龙决策'} | {top_pick.theme_name or '未分类'}"
+            f"下一步: {resolved_primary_strategy(top_pick, default='掘龙决策') or '掘龙决策'} | {top_pick.theme_name or '未分类'}"
             if top_pick
             else "下一步: 等待推荐池刷新。"
         ),
@@ -1625,19 +1566,28 @@ def _strategy_invalidation_signal_text(focus_row) -> str:
     return '跌破计划防守线，或主线窗口继续收缩时先退出。'
 
 
+def _strategy_context_row(row, strategy_name: str):
+    canonical = _canonical_strategy_name(strategy_name)
+    current = _canonical_strategy_name(getattr(row, "primary_strategy", "") or "")
+    if not canonical or current == canonical:
+        return row
+    payload = dict(getattr(row, "__dict__", {}) or {})
+    payload["primary_strategy"] = canonical
+    return SimpleNamespace(**payload)
+
+
 def refresh_strategy_focus_detail(window, strategy_score_fields) -> None:
     if not hasattr(window, "strategy_detail_text"):
         return
     strategy_name = window.strategy_detail_combo.currentText() if hasattr(window, "strategy_detail_combo") else "掘龙决策"
     canonical_strategy_name = _canonical_strategy_name(strategy_name)
-    field_name = strategy_score_fields.get(canonical_strategy_name, "dragon_decision_score")
     selected_row = None
     if hasattr(window, "daily_pool_table"):
         row_index = window.daily_pool_table.currentRow()
         source_rows = window._filtered_daily_pool_rows()
         if 0 <= row_index < len(source_rows):
             selected_row = source_rows[row_index]
-    ranked = sorted(window.daily_pool_rows, key=lambda item: getattr(item, field_name, 0.0), reverse=True)
+    ranked = sorted(window.daily_pool_rows, key=lambda item: _strategy_score_value(item, canonical_strategy_name), reverse=True)
     focus_row = selected_row or (ranked[0] if ranked else None)
     if focus_row is None:
         empty_signature = ("empty", canonical_strategy_name)
@@ -1651,7 +1601,7 @@ def refresh_strategy_focus_detail(window, strategy_score_fields) -> None:
         for item in window.daily_pool_rows
         if _canonical_strategy_name(getattr(item, "primary_strategy", "") or "掘龙决策") == canonical_strategy_name
     )
-    strategy_score = float(getattr(focus_row, field_name, 0.0) or 0.0)
+    strategy_score = _strategy_score_value(focus_row, canonical_strategy_name)
     top_examples = ranked[:3]
     example_names = (
         " / ".join(
@@ -1664,12 +1614,12 @@ def refresh_strategy_focus_detail(window, strategy_score_fields) -> None:
     mainline_summary = _strategy_mainline_summary(window, focus_row, strategy_count)
     execution_summary = _strategy_execution_summary(window, focus_row)
     attention_focus = _strategy_attention_focus(focus_row)
-    tripwire_metrics = list(one_day_hold_tripwire_metrics(focus_row) or [])
-    tail_runtime_panel = list(tail_buy_runtime_panel_lines(focus_row) or [])
-    tail_checklist = list(tail_buy_execution_checklist(focus_row) or [])
+    helper_row = _strategy_context_row(focus_row, canonical_strategy_name)
+    tripwire_metrics = list(one_day_hold_tripwire_metrics(helper_row) or [])
+    tail_runtime_panel = list(tail_buy_runtime_panel_lines(helper_row) or [])
+    tail_checklist = list(tail_buy_execution_checklist(helper_row) or [])
     detail_signature = (
         canonical_strategy_name,
-        field_name,
         getattr(focus_row, "symbol", ""),
         getattr(focus_row, "stock_name", ""),
         getattr(focus_row, "theme_name", ""),
@@ -1680,15 +1630,10 @@ def refresh_strategy_focus_detail(window, strategy_score_fields) -> None:
         getattr(focus_row, "rationale", ""),
         getattr(focus_row, "next_focus", ""),
         getattr(focus_row, "mainline_risk_flag", ""),
-        float(getattr(focus_row, field_name, 0.0) or 0.0),
+        strategy_score,
         float(getattr(focus_row, "total_score", 0.0) or 0.0),
         float(getattr(focus_row, "mainline_window_score", 0.0) or 0.0),
-        float(getattr(focus_row, "leader_model_score", 0.0) or 0.0),
-        float(getattr(focus_row, "main_force_score", 0.0) or 0.0),
-        float(getattr(focus_row, "board_attack_score", 0.0) or 0.0),
-        float(getattr(focus_row, "value_recovery_score", 0.0) or 0.0),
-        float(getattr(focus_row, "tail_buy_score", 0.0) or 0.0),
-        float(getattr(focus_row, "one_day_hold_score", 0.0) or 0.0),
+        tuple(_strategy_score_map_for_row(focus_row).items()),
         strategy_count,
         tuple(
             (
@@ -1696,7 +1641,7 @@ def refresh_strategy_focus_detail(window, strategy_score_fields) -> None:
                 getattr(item, "stock_name", ""),
                 getattr(item, "theme_name", ""),
                 getattr(item, "action", ""),
-                float(getattr(item, field_name, 0.0) or 0.0),
+                _strategy_score_value(item, canonical_strategy_name),
             )
             for item in top_examples
         ),
@@ -1740,15 +1685,14 @@ def refresh_strategy_focus_detail(window, strategy_score_fields) -> None:
         "",
         "评分板",
         f"- 战法 {strategy_score:.1f} | 综合 {focus_row.total_score:.1f} | 窗口 {getattr(focus_row, 'mainline_window_score', 0.0):.1f}",
-        f"- 龙头 {getattr(focus_row, 'leader_model_score', 0.0):.1f} | 主力 {getattr(focus_row, 'main_force_score', 0.0):.1f} | 打板 {getattr(focus_row, 'board_attack_score', 0.0):.1f}",
-        f"- 低吸 {getattr(focus_row, 'value_recovery_score', 0.0):.1f} | 尾盘 {getattr(focus_row, 'tail_buy_score', 0.0):.1f} | 一日 {getattr(focus_row, 'one_day_hold_score', 0.0):.1f}",
+        *[f"- {line}" for line in _strategy_score_summary_lines(focus_row)],
         "",
     ]
     if tripwire_metrics:
         lines.extend(
             [
                 "隔日三段判断",
-                f"- 博弈等级：{one_day_hold_grade(focus_row) or '待确认'}",
+                f"- 博弈等级：{one_day_hold_grade(helper_row) or '待确认'}",
                 *[f"- {label}：{value:.1f} / 100 | {note}" for label, value, note in tripwire_metrics],
                 f"- 盘中节奏：{attention_focus}",
                 "",
@@ -1773,7 +1717,7 @@ def refresh_strategy_focus_detail(window, strategy_score_fields) -> None:
     lines.append("该战法 Top 3")
     for item in top_examples:
         lines.append(
-            f"- {item.stock_name} | {getattr(item, field_name, 0.0):.1f} | {item.theme_name or '未分类'} | {window._display_action(item.action)}"
+            f"- {item.stock_name} | {_strategy_score_value(item, canonical_strategy_name):.1f} | {item.theme_name or '未分类'} | {window._display_action(item.action)}"
         )
     _set_plain_text_if_changed(window.strategy_detail_text, "\n".join(lines))
 
@@ -1844,8 +1788,8 @@ def render_leaderboard_cards(window, rows: list) -> None:
                         display_row = SimpleNamespace(**getattr(row, "__dict__", {}))
                     if getattr(display_row, "stock_name", ""):
                         display_row.stock_name = prepend_badge(str(stock_name), symbol)
-            strategy_name = getattr(row, "primary_strategy", "") or getattr(row, "strategy_tag", "")
-            decision_score = getattr(row, "dragon_decision_score", getattr(row, "heat_score", 0.0))
+            strategy_name = resolved_primary_strategy(row, default=(getattr(row, "strategy_tag", "") or "")) or getattr(row, "strategy_tag", "")
+            decision_score = _strategy_score_value(row, "掘龙决策") or float(getattr(row, "heat_score", 0.0) or 0.0)
             signature = (
                 "row",
                 f"TOP {index + 1}",
@@ -1874,11 +1818,12 @@ def refresh_strategy_pack_panels(window, strategy_score_fields) -> None:
     if not hasattr(window, "strategy_pack_cards"):
         return
     rows = list(window.daily_pool_rows)
-    for strategy_name, field_name in strategy_score_fields.items():
+    for strategy_name in strategy_score_fields:
         card = window.strategy_pack_cards.get(strategy_name)
         if card is None:
             continue
-        ranked = sorted(rows, key=lambda item: getattr(item, field_name, 0.0), reverse=True)
+        canonical_strategy_name = _canonical_strategy_name(strategy_name)
+        ranked = sorted(rows, key=lambda item: _strategy_score_value(item, canonical_strategy_name), reverse=True)
         if not ranked:
             signature = ("empty", "等待机会池同步后更新。")
             if getattr(card, "_strategy_signature", None) != signature:
@@ -1894,7 +1839,7 @@ def refresh_strategy_pack_panels(window, strategy_score_fields) -> None:
         lines = []
         for item in ranked[:3]:
             lines.append(
-                f"- {item.stock_name} | {getattr(item, field_name, 0.0):.1f} | {item.theme_name or '未分类'} | {window._display_action(item.action)}"
+                f"- {item.stock_name} | {_strategy_score_value(item, canonical_strategy_name):.1f} | {item.theme_name or '未分类'} | {window._display_action(item.action)}"
             )
         lines.append(f"逻辑：{top.rationale[:88]}")
         signature = (
@@ -1902,7 +1847,7 @@ def refresh_strategy_pack_panels(window, strategy_score_fields) -> None:
             strategy_name,
             primary_count,
             f"{top.stock_name} ({top.stock_id})",
-            f"{getattr(top, field_name, 0.0):.1f}",
+            f"{_strategy_score_value(top, canonical_strategy_name):.1f}",
             top.theme_name or "未分类",
             window._display_action(top.action),
             tuple(lines),
@@ -1912,7 +1857,7 @@ def refresh_strategy_pack_panels(window, strategy_score_fields) -> None:
                 strategy_name=strategy_name,
                 primary_count=primary_count,
                 focus_name=f"{top.stock_name} ({top.stock_id})",
-                focus_score=getattr(top, field_name, 0.0),
+                focus_score=_strategy_score_value(top, canonical_strategy_name),
                 focus_theme=top.theme_name or "未分类",
                 focus_action=window._display_action(top.action),
                 top_rows=lines,
@@ -2059,13 +2004,13 @@ def populate_filtered_daily_pool_table(window) -> None:
             getattr(row, "mainline_strength_score", getattr(row, "theme_score", 0.0)),
             getattr(row, "leader_level", ""),
             getattr(row, "total_score", 0.0),
-            getattr(row, "leader_model_score", 0.0),
-            getattr(row, "main_force_score", 0.0),
-            getattr(row, "board_attack_score", 0.0),
-            getattr(row, "value_recovery_score", 0.0),
-            getattr(row, "tail_buy_score", 0.0),
-            getattr(row, "one_day_hold_score", 0.0),
-            getattr(row, "dragon_decision_score", getattr(row, "total_score", 0.0)),
+            _strategy_score_value(row, "龙头模型"),
+            _strategy_score_value(row, "主力雷达"),
+            _strategy_score_value(row, "擒龙打板"),
+            _strategy_score_value(row, "价值低吸"),
+            _strategy_score_value(row, "尾盘买入法"),
+            _strategy_score_value(row, "一日持股法"),
+            _strategy_score_value(row, "掘龙决策"),
             getattr(row, "action", ""),
             getattr(row, "catalyst", ""),
             getattr(row, "signal_date", ""),
@@ -2108,12 +2053,12 @@ def populate_filtered_daily_pool_table(window) -> None:
                 10: f"{getattr(row, 'mainline_strength_score', row.theme_score):.1f}",
                 11: _shorten_daily_pool_text(window._display_leader_level(row.leader_level), 6),
                 12: f"{row.total_score:.1f}",
-                13: f"{getattr(row, 'leader_model_score', 0.0):.0f}",
-                14: f"{getattr(row, 'main_force_score', 0.0):.0f}",
-                15: f"{getattr(row, 'board_attack_score', 0.0):.0f}",
-                16: f"{getattr(row, 'value_recovery_score', 0.0):.0f}",
-                17: f"{getattr(row, 'tail_buy_score', 0.0):.0f}",
-                18: f"{getattr(row, 'one_day_hold_score', 0.0):.0f}",
+                13: f"{_strategy_score_value(row, '龙头模型'):.0f}",
+                14: f"{_strategy_score_value(row, '主力雷达'):.0f}",
+                15: f"{_strategy_score_value(row, '擒龙打板'):.0f}",
+                16: f"{_strategy_score_value(row, '价值低吸'):.0f}",
+                17: f"{_strategy_score_value(row, '尾盘买入法'):.0f}",
+                18: f"{_strategy_score_value(row, '一日持股法'):.0f}",
                 20: _compact_daily_pool_action(row.action),
                 21: _shorten_daily_pool_text(row.catalyst, 8),
                 22: _compact_daily_pool_date(row.signal_date),
@@ -2305,7 +2250,7 @@ def _build_daily_pool_identity_item(window, row, execution_status: str) -> QTabl
     heat_score = float(getattr(row, "mainline_strength_score", getattr(row, "theme_score", row.total_score)) or 0.0)
     badge = execution_status if execution_status != "待观察" else window._display_action(row.action)
     action_text = window._display_action(getattr(row, "action", "") or "WATCH")
-    decision_score = float(getattr(row, "dragon_decision_score", getattr(row, "total_score", 0.0)) or 0.0)
+    decision_score = _strategy_score_value(row, "掘龙决策") or float(getattr(row, "total_score", 0.0) or 0.0)
     item = QTableWidgetItem(f"{stock_name}  {stock_id}\n{badge} | {action_text} | 评 {decision_score:.1f}")
     item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
     item.setToolTip(

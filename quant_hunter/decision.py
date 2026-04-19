@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 
 from .models import HoldingRecord, RecommendationRow
 from .risk import DEFAULT_RISK_CONTROLS, RiskControls, normalize_risk_profile, resolve_risk_controls
+from .strategy_registry import get_strategy_registry, resolved_primary_strategy, strategy_score
 from .theme import display_mainline_role, infer_mainline_flow_signal, infer_mainline_stage
 
 
@@ -85,6 +86,7 @@ class DecisionEngine:
     def __init__(self, risk_profile: str | None = None, risk_controls: RiskControls | None = None) -> None:
         self.risk_profile = normalize_risk_profile(risk_profile)
         self.risk_controls = risk_controls or resolve_risk_controls(self.risk_profile)
+        self.strategy_registry = get_strategy_registry()
         self._MIN_PLAN_RISK_REWARD_RATIO = self.risk_controls.plan_min_risk_reward_ratio
         self._MAX_PLAN_STOP_LOSS_PCT = self.risk_controls.max_plan_stop_loss_pct
 
@@ -99,7 +101,11 @@ class DecisionEngine:
     def _strategy_budget_multiplier(strategy_name: str, strategy_budget_bias_by_name: dict[str, float] | None = None) -> float:
         if not strategy_budget_bias_by_name:
             return 1.0
-        raw = float(strategy_budget_bias_by_name.get(strategy_name, 1.0) or 1.0)
+        canonical = get_strategy_registry().canonical_strategy_name(strategy_name) or str(strategy_name or "").strip()
+        raw = float(
+            strategy_budget_bias_by_name.get(canonical, strategy_budget_bias_by_name.get(str(strategy_name or "").strip(), 1.0))
+            or 1.0
+        )
         return max(min(raw, 1.45), 0.55)
 
     def _row_is_buy_allowed(self, row: RecommendationRow) -> bool:
@@ -234,7 +240,7 @@ class DecisionEngine:
                 float(getattr(row, "execution_readiness", 0.0) or 0.0),
                 float(getattr(row, "risk_reward_ratio", 0.0) or 0.0),
                 -int(getattr(row, "signal_age_days", 0) or 0),
-                float(getattr(row, "dragon_decision_score", 0.0) or getattr(row, "total_score", 0.0) or 0.0),
+                float(strategy_score(row, "掘龙决策", float(getattr(row, "total_score", 0.0) or 0.0)) or 0.0),
             ),
             reverse=True,
         )
@@ -258,43 +264,32 @@ class DecisionEngine:
         filtered_for_risk_count = 0
         for row in buy_candidates:
             planned_entry = row.entry_price or row.close
-            strategy_name = getattr(row, "primary_strategy", "") or "掘龙决策"
+            strategy_name = self.strategy_registry.canonical_strategy_name(getattr(row, "primary_strategy", "") or "掘龙决策") or "掘龙决策"
+            defaults = self.strategy_registry.plan_defaults(strategy_name)
             stock_pool = getattr(row, "stock_pool", "")
-            if strategy_name in {"打板策略", "擒龙打板"}:
-                planned_stop = row.stop_price or planned_entry * 0.965
-                planned_target = row.target_price or planned_entry * 1.13
-            elif strategy_name == "尾盘买入法":
-                planned_stop = row.stop_price or planned_entry * 0.976
-                planned_target = row.target_price or planned_entry * 1.032
-            elif strategy_name == "一日持股法":
-                planned_stop = row.stop_price or planned_entry * 0.972
-                planned_target = row.target_price or planned_entry * 1.055
-            elif strategy_name == "价值低吸":
-                planned_stop = row.stop_price or planned_entry * 0.945
-                planned_target = row.target_price or planned_entry * 1.09
-            else:
-                planned_stop = row.stop_price or planned_entry * 0.95
-                planned_target = row.target_price or planned_entry * 1.08
+            planned_stop = row.stop_price or planned_entry * (1.0 - defaults.stop_pct)
+            planned_target = row.target_price or planned_entry * (1.0 + defaults.target_pct)
 
             if not self._plan_setup_is_valid(planned_entry, planned_stop, planned_target):
                 filtered_for_risk_count += 1
                 continue
             computed_risk_reward_ratio = self._trade_risk_reward_ratio(planned_entry, planned_stop, planned_target)
 
-            budget_multiplier = 1.0
-            if stock_pool == "龙头股":
-                budget_multiplier = 1.08
-            elif stock_pool == "价值股":
-                budget_multiplier = 0.92
-            elif strategy_name == "尾盘买入法":
-                budget_multiplier = 0.82 if pulse.sentiment_score >= 72 else 0.72
-            elif strategy_name == "一日持股法":
-                budget_multiplier = 0.96 if pulse.sentiment_score >= 72 else 0.86
+            budget_multiplier = (
+                defaults.budget_multiplier_strong
+                if pulse.sentiment_score >= defaults.budget_sentiment_threshold
+                else defaults.budget_multiplier_normal
+            )
+            if strategy_name not in {"尾盘买入法", "一日持股法"}:
+                if stock_pool == "龙头股":
+                    budget_multiplier *= 1.08
+                elif stock_pool == "价值股":
+                    budget_multiplier *= 0.92
 
             budget_multiplier *= self._strategy_budget_multiplier(strategy_name, strategy_budget_bias_by_name)
             budget_multiplier *= self._risk_profile_budget_multiplier()
 
-            confidence_source = getattr(row, "dragon_decision_score", 0.0) or row.total_score
+            confidence_source = float(strategy_score(row, "掘龙决策", float(row.total_score or 0.0)) or 0.0)
             confidence = min(max(confidence_source / 100.0, 0.0), 0.99)
             flow_signal = self._row_mainline_flow_signal(row)
             stage_label = self._row_mainline_stage(row)
@@ -495,7 +490,7 @@ class DecisionEngine:
             pnl_pct = ((current_price - item.cost_price) / item.cost_price) if item.cost_price else 0.0
             flow_signal = self._row_mainline_flow_signal(row) if row else ""
             stage_label = self._row_mainline_stage(row) if row else ""
-            strategy_name = getattr(row, "primary_strategy", "") if row else ""
+            strategy_name = self.strategy_registry.canonical_strategy_name(getattr(row, "primary_strategy", "") if row else "") if row else ""
 
             if row and row.label == "TRAP_DETECTED":
                 action = "SELL"
@@ -543,7 +538,7 @@ class DecisionEngine:
                 confidence = 0.74
             elif row and row.label == "RECLAIM_LONG" and sentiment_score >= 70:
                 action = "HOLD"
-                rationale = f"趋势仍在延续，可继续持有观察。策略：{getattr(row, 'primary_strategy', '') or '掘龙决策'}"
+                rationale = f"趋势仍在延续，可继续持有观察。策略：{resolved_primary_strategy(row, default='掘龙决策') or '掘龙决策'}"
                 confidence = 0.78
             else:
                 action = "WATCH"
@@ -571,7 +566,7 @@ class DecisionEngine:
     def _strategy_mix(recommendations: list[RecommendationRow]) -> list[tuple[str, int]]:
         counter: dict[str, int] = {}
         for item in recommendations:
-            name = getattr(item, "primary_strategy", "") or "掘龙决策"
+            name = resolved_primary_strategy(item, default="掘龙决策") or "掘龙决策"
             counter[name] = counter.get(name, 0) + 1
         return sorted(counter.items(), key=lambda pair: pair[1], reverse=True)
 

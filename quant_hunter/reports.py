@@ -17,6 +17,7 @@ from .models import (
     StrategyHistoryReport,
     SymbolBacktestSummary,
 )
+from .strategy_registry import resolved_primary_strategy, strategy_score, strategy_score_summary
 from .theme import infer_mainline_flow_signal, infer_mainline_stage, summarize_themes
 
 
@@ -233,6 +234,15 @@ def _display_leader_level(value: str) -> str:
         "FOLLOWER": "跟风股",
         "NOISE": "噪声",
     }.get(value, value)
+
+
+def _report_strategy_brief(item: RecommendationRow) -> str:
+    primary = resolved_primary_strategy(item, default="掘龙决策") or "掘龙决策"
+    primary_score = float(strategy_score(item, primary, float(getattr(item, "total_score", 0.0) or 0.0)) or 0.0)
+    score_summary = strategy_score_summary(item, limit=3)
+    if score_summary:
+        return f"{primary} {primary_score:.1f} | {score_summary}"
+    return f"{primary} {primary_score:.1f}"
 
 
 def export_optimization_report(
@@ -759,7 +769,7 @@ def export_daily_trade_plan(
                     getattr(item, "signal_source", ""),
                     getattr(item, "next_focus", ""),
                     getattr(item, "invalidation_reason", ""),
-                    item.rationale,
+                    f"{_report_strategy_brief(item)} | {item.rationale}",
                 ]
             )
 
@@ -922,6 +932,7 @@ def export_daily_trade_plan(
                 f"   分层: {getattr(item, 'opportunity_tier', '') or '--'} | 风险: {getattr(item, 'mainline_risk_flag', '') or '--'} | "
                 f"盈亏比: {float(getattr(item, 'risk_reward_ratio', 0.0) or 0.0):.2f} | 来源: {getattr(item, 'signal_source', '') or '--'}"
             )
+            lines.append(f"   战法: {_report_strategy_brief(item)}")
             if getattr(item, "next_focus", ""):
                 lines.append(f"   下一步: {getattr(item, 'next_focus', '')}")
             if getattr(item, "invalidation_reason", ""):
@@ -1123,7 +1134,7 @@ def export_end_of_day_review(
                     item.entry_price or item.close,
                     item.stop_price or "",
                     item.target_price or "",
-                    item.rationale,
+                    f"{_report_strategy_brief(item)} | {item.rationale}",
                 ]
             )
 
@@ -1305,6 +1316,7 @@ def export_end_of_day_review(
                 f"{index}. {item.stock_name} ({item.stock_id} / {item.symbol}) | 总分 {item.total_score:.1f} | "
                 f"{item.rationale}"
             )
+            lines.append(f"   战法: {_report_strategy_brief(item)}")
     else:
         lines.append("- 今日无股票池结果。")
 

@@ -19,16 +19,9 @@ from .models import (
     RecommendationRow,
     ReportArtifacts,
 )
+from .strategy_registry import get_strategy_registry, ranked_strategy_scores
 
 _LOT_SIZE = 100
-_STRATEGY_SCORE_FIELDS = (
-    ("leader_model_score", "龙头模型"),
-    ("main_force_score", "主力雷达"),
-    ("board_attack_score", "擒龙打板"),
-    ("value_recovery_score", "价值低吸"),
-    ("dragon_decision_score", "掘龙决策"),
-    ("one_day_hold_score", "一日持股法"),
-)
 
 
 def _unique_paper_report_paths(root: Path) -> tuple[Path, Path, Path]:
@@ -59,18 +52,7 @@ def _risk_profile_position_multiplier(risk_profile: str) -> float:
 
 def _canonical_strategy_name(value: str) -> str:
     raw = str(value or "").strip()
-    alias_map = {
-        "龙头主线": "龙头模型",
-        "资金承接": "主力雷达",
-        "强势接力": "擒龙打板",
-        "打板策略": "擒龙打板",
-        "趋势低吸": "价值低吸",
-        "一日持股": "一日持股法",
-        "隔日强势": "一日持股法",
-        "综合决策": "掘龙决策",
-        "掘龙": "掘龙决策",
-    }
-    return alias_map.get(raw, raw)
+    return get_strategy_registry().canonical_strategy_name(raw) or raw
 
 
 def _normalize_auto_interval_minutes(value: float | int | None) -> float:
@@ -543,14 +525,8 @@ class PaperTradingEngine:
         strategy_name = _canonical_strategy_name(str(getattr(row, "primary_strategy", "") or "").strip())
         if strategy_name:
             return strategy_name
-        ranked = sorted(
-            (
-                (float(getattr(row, field_name, 0.0) or 0.0), label)
-                for field_name, label in _STRATEGY_SCORE_FIELDS
-            ),
-            reverse=True,
-        )
-        return ranked[0][1] if ranked and ranked[0][0] > 0 else "掘龙决策"
+        ranked = ranked_strategy_scores(row)
+        return ranked[0][0] if ranked and ranked[0][1] > 0 else "掘龙决策"
 
     def run_cycle(
         self,

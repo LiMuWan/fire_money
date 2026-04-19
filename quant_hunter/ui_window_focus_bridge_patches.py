@@ -6,6 +6,8 @@ from PySide6.QtCore import QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QTableWidget, QTextEdit, QVBoxLayout
 
+from quant_hunter.strategy_registry import resolved_primary_strategy
+
 
 def apply_focus_bridge_patches(
     window_cls: type,
@@ -251,7 +253,7 @@ def apply_focus_bridge_patches(
         stock_name = getattr(current, "stock_name", "") or self._stock_name_for_symbol(symbol)
         stock_id = getattr(current, "stock_id", "") or self._stock_id_for_symbol(symbol)
         theme_name = getattr(current, "mainline_tag", "") or getattr(current, "theme_name", "") or "待确认"
-        strategy_name = getattr(current, "primary_strategy", "") or "掘龙决策"
+        strategy_name = resolved_primary_strategy(current, default="掘龙决策") or "掘龙决策"
         signal = mainline_signal_brief_fn(current)
         action_text = signal_action_text_fn(current)
         verdict, execution_summary, can_submit, can_open_broker = recommend_execution_summary_fn(self, current)

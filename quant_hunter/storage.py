@@ -14,6 +14,10 @@ _DEFAULT_ACCOUNT_NAME = "\u4e1c\u65b9\u8d22\u5bcc\u8d26\u6237"
 _DEFAULT_MARKET_TIMEFRAME = "\u65e5\u7ebf"
 _DEFAULT_MARKET_HISTORY_WINDOW = "\u8fd11\u5e74"
 _DEFAULT_MARKET_REVIEW_DATE = "\u6700\u65b0"
+_DEFAULT_MARKET_STRATEGY_ANNOTATION_MODE = "FULL"
+_DEFAULT_MARKET_OVERLAY_MODES = ["MA", "BOLL", "HIGHLOW"]
+_DEFAULT_MARKET_SECONDARY_INDICATOR = "MACD"
+_DEFAULT_MARKET_CHART_PRESET = "BALANCED"
 _SENSITIVE_BROKER_FIELDS = ("token", "password")
 _SENSITIVE_STATE_FIELDS = ("ai_review_api_key",)
 
@@ -41,6 +45,79 @@ def _safe_int(value: object, default: int) -> int:
             return int(float(value))
         except (TypeError, ValueError):
             return default
+
+
+def _normalize_market_strategy_annotation_mode(value: object) -> str:
+    normalized = str(value or _DEFAULT_MARKET_STRATEGY_ANNOTATION_MODE).strip().upper()
+    return normalized if normalized in {"FULL", "PLAN", "OFF"} else _DEFAULT_MARKET_STRATEGY_ANNOTATION_MODE
+
+
+def _normalize_market_overlay_modes(value: object) -> list[str]:
+    allowed = ["MA", "BOLL", "HIGHLOW", "BREAK"]
+    items = [str(item or "").strip().upper() for item in _as_string_list(value)]
+    normalized = [item for item in allowed if item in items]
+    return normalized or list(_DEFAULT_MARKET_OVERLAY_MODES)
+
+
+def _normalize_market_secondary_indicator(value: object) -> str:
+    normalized = str(value or _DEFAULT_MARKET_SECONDARY_INDICATOR).strip().upper()
+    return normalized if normalized in {"MACD", "RSI", "KDJ", "VOL"} else _DEFAULT_MARKET_SECONDARY_INDICATOR
+
+
+def _normalize_market_chart_preset(value: object) -> str:
+    normalized = str(value or _DEFAULT_MARKET_CHART_PRESET).strip().upper()
+    if normalized in {"BALANCED", "CLEAN", "SIGNAL", "FLOW", "CUSTOM"}:
+        return normalized
+    if normalized.startswith("USER_"):
+        return normalized
+    return _DEFAULT_MARKET_CHART_PRESET
+
+
+def _normalize_market_chart_custom_presets(value: object) -> dict[str, dict[str, object]]:
+    if not isinstance(value, dict):
+        return {}
+    normalized: dict[str, dict[str, object]] = {}
+    for raw_key, raw_item in value.items():
+        if not isinstance(raw_item, dict):
+            continue
+        key = _normalize_market_chart_preset(raw_key)
+        if not key.startswith("USER_"):
+            continue
+        normalized[key] = {
+            "label": str(raw_item.get("label", "") or "").strip() or key.replace("USER_", "自定义 "),
+            "detail": str(raw_item.get("detail", "") or "").strip(),
+            "tags": _as_string_list(raw_item.get("tags", [])),
+            "overlays": _normalize_market_overlay_modes(raw_item.get("overlays", _DEFAULT_MARKET_OVERLAY_MODES)),
+            "annotation_mode": _normalize_market_strategy_annotation_mode(
+                raw_item.get("annotation_mode", _DEFAULT_MARKET_STRATEGY_ANNOTATION_MODE)
+            ),
+            "indicator": _normalize_market_secondary_indicator(
+                raw_item.get("indicator", _DEFAULT_MARKET_SECONDARY_INDICATOR)
+            ),
+            "expanded": bool(raw_item.get("expanded", False)),
+            "pinned": bool(raw_item.get("pinned", False)),
+        }
+    return normalized
+
+
+def _normalize_market_chart_preset_usage_counts(value: object) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    normalized: dict[str, int] = {}
+    for raw_key, raw_value in value.items():
+        key = _normalize_market_chart_preset(raw_key)
+        if not key:
+            continue
+        try:
+            count = int(raw_value)
+        except (TypeError, ValueError):
+            try:
+                count = int(float(raw_value))
+            except (TypeError, ValueError):
+                count = 0
+        if count > 0:
+            normalized[key] = count
+    return normalized
 
 
 @dataclass
@@ -83,6 +160,14 @@ class AppState:
     market_timeframe_mode: str = _DEFAULT_MARKET_TIMEFRAME
     market_history_window: str = _DEFAULT_MARKET_HISTORY_WINDOW
     market_review_date: str = _DEFAULT_MARKET_REVIEW_DATE
+    market_strategy_annotation_mode: str = _DEFAULT_MARKET_STRATEGY_ANNOTATION_MODE
+    market_overlay_modes: list[str] = field(default_factory=lambda: list(_DEFAULT_MARKET_OVERLAY_MODES))
+    market_secondary_indicator_mode: str = _DEFAULT_MARKET_SECONDARY_INDICATOR
+    market_primary_chart_expanded: bool = False
+    market_chart_preset: str = _DEFAULT_MARKET_CHART_PRESET
+    market_chart_custom_presets: dict[str, dict[str, object]] = field(default_factory=dict)
+    market_chart_recent_presets: list[str] = field(default_factory=list)
+    market_chart_preset_usage_counts: dict[str, int] = field(default_factory=dict)
     broker_profile: BrokerProfile = field(default_factory=BrokerProfile)
     paper_trading_state: PaperTradingState = field(default_factory=PaperTradingState)
     order_submission_log: list[str] = field(default_factory=list)
@@ -347,6 +432,24 @@ def load_app_state(path: str | Path) -> AppState:
         market_timeframe_mode=data.get("market_timeframe_mode", _DEFAULT_MARKET_TIMEFRAME),
         market_history_window=data.get("market_history_window", _DEFAULT_MARKET_HISTORY_WINDOW),
         market_review_date=data.get("market_review_date", _DEFAULT_MARKET_REVIEW_DATE),
+        market_strategy_annotation_mode=_normalize_market_strategy_annotation_mode(
+            data.get("market_strategy_annotation_mode", _DEFAULT_MARKET_STRATEGY_ANNOTATION_MODE)
+        ),
+        market_overlay_modes=_normalize_market_overlay_modes(data.get("market_overlay_modes", _DEFAULT_MARKET_OVERLAY_MODES)),
+        market_secondary_indicator_mode=_normalize_market_secondary_indicator(
+            data.get("market_secondary_indicator_mode", _DEFAULT_MARKET_SECONDARY_INDICATOR)
+        ),
+        market_primary_chart_expanded=bool(data.get("market_primary_chart_expanded", False)),
+        market_chart_preset=_normalize_market_chart_preset(
+            data.get("market_chart_preset", _DEFAULT_MARKET_CHART_PRESET)
+        ),
+        market_chart_custom_presets=_normalize_market_chart_custom_presets(
+            data.get("market_chart_custom_presets", {})
+        ),
+        market_chart_recent_presets=_as_string_list(data.get("market_chart_recent_presets", []))[:12],
+        market_chart_preset_usage_counts=_normalize_market_chart_preset_usage_counts(
+            data.get("market_chart_preset_usage_counts", {})
+        ),
         broker_profile=_decode_broker_profile(data.get("broker_profile", {})),
         paper_trading_state=_decode_paper_trading_state(data.get("paper_trading_state", {})),
         order_submission_log=_as_string_list(data.get("order_submission_log", []))[:200],

@@ -41,8 +41,10 @@ from quant_hunter.broker import (
 )
 from quant_hunter.backtest import Backtester, BacktestParams, PortfolioBacktester
 from quant_hunter.chart_annotations import (
+    StrategyTradeMarker,
     build_strategy_plan_levels,
     build_trade_marker_chart_label,
+    build_trade_marker_label_tone,
     build_trade_markers,
     classify_trade_exit_reason,
 )
@@ -6394,7 +6396,7 @@ class StrategyWorkflowTests(unittest.TestCase):
                 window.close()
                 app.processEvents()
 
-    def test_qt_window_hides_broker_setup_by_default(self) -> None:
+    def test_qt_window_shows_broker_setup_by_default(self) -> None:
         if importlib.util.find_spec("PySide6") is None:
             self.skipTest("PySide6 is not installed in the current interpreter")
         with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
@@ -6406,8 +6408,8 @@ class StrategyWorkflowTests(unittest.TestCase):
             try:
                 window.tabs.setCurrentWidget(window.broker_tab)
                 app.processEvents()
-                self.assertTrue(window.broker_control_splitter.isHidden())
-                self.assertEqual(window.broker_setup_toggle_button.text(), "展开账户与通道设置")
+                self.assertFalse(window.broker_control_splitter.isHidden())
+                self.assertEqual(window.broker_setup_toggle_button.text(), "收起账户与通道设置")
             finally:
                 window.close()
                 app.processEvents()
@@ -8956,6 +8958,7 @@ class StrategyWorkflowTests(unittest.TestCase):
                 market_data_mode="cache",
                 market_timeframe_mode="周线",
                 market_history_window="近3年",
+                market_strategy_annotation_mode="PLAN",
             ),
         )
         self.addCleanup(lambda: state_path.unlink(missing_ok=True))
@@ -8976,6 +8979,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(restored.market_data_mode, "cache")
         self.assertEqual(restored.market_timeframe_mode, "周线")
         self.assertEqual(restored.market_history_window, "近3年")
+        self.assertEqual(restored.market_strategy_annotation_mode, "PLAN")
 
     def test_load_app_state_normalizes_risk_profile(self) -> None:
         state_path = self._temp_dir() / "app_state_risk_profile.json"
@@ -8988,6 +8992,18 @@ class StrategyWorkflowTests(unittest.TestCase):
         restored = load_app_state(state_path)
 
         self.assertEqual(restored.strategy_risk_profile, "standard")
+
+    def test_load_app_state_normalizes_market_strategy_annotation_mode(self) -> None:
+        state_path = self._temp_dir() / "app_state_annotation_mode.json"
+        state_path.write_text(
+            json.dumps({"market_strategy_annotation_mode": "detail"}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        self.addCleanup(lambda: state_path.unlink(missing_ok=True))
+
+        restored = load_app_state(state_path)
+
+        self.assertEqual(restored.market_strategy_annotation_mode, "FULL")
 
     def test_load_app_state_falls_back_on_invalid_json(self) -> None:
         state_path = self._temp_dir() / "app_state_invalid.json"
@@ -14387,6 +14403,11 @@ class StrategyWorkflowTests(unittest.TestCase):
             rationale="主线强度和位置都在前排",
             next_focus="继续盯换手与承接。",
             invalidation_reason="跌破 9.60 防守线",
+            strategy_execution_quality_available=True,
+            strategy_execution_quality_score=0.56,
+            strategy_execution_quality_label="执行承压",
+            strategy_execution_penalty=0.44,
+            strategy_execution_review_summary="执行承压 | 这套战法最近真实执行承压，先降优先级再看确认。",
         )
         row = SimpleNamespace(**base_row.__dict__, execution_status="待观察", mainline_flow_signal="继续跟")
         waiting = SimpleNamespace(
@@ -14467,9 +14488,12 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         module.QuantHunterWindow._refresh_recommendation_focus_panels(window, row)
 
-        self.assertIn("结论：龙头样本 | 条件较齐，可以执行", window.recommend_dispatch_text.toPlainText())
+        self.assertIn("结论：龙头样本 | 先降优先级，再看确认", window.recommend_dispatch_text.toPlainText())
+        self.assertIn("战法执行：执行承压 0.56", window.recommend_dispatch_text.toPlainText())
+        self.assertIn("降权解释：执行承压 | 这套战法最近真实执行承压", window.recommend_dispatch_text.toPlainText())
         self.assertIn("确认信号：", window.recommend_focus_review_text.toPlainText())
         self.assertIn("机器人 | 主升", window.recommend_focus_review_text.toPlainText())
+        self.assertIn("战法执行：执行承压 0.56", window.recommend_focus_review_text.toPlainText())
         self.assertIn("当前优先：排队样本", window.recommend_queue_text.toPlainText())
         self.assertEqual(window.recommend_news_source_button.text(), "查看公告原文")
         self.assertIn("分层：已公告", window.recommend_news_source_button.toolTip())
@@ -20147,7 +20171,512 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(len(markers), 4)
         self.assertEqual(exit_markers[0].tone, "profit")
         self.assertEqual(exit_markers[1].tone, "risk")
+        self.assertEqual(build_trade_marker_chart_label(exit_markers[0]), "目标兑现 +8.5%")
+        self.assertEqual(build_trade_marker_chart_label(exit_markers[1]), "跌破止损 -5.7%")
+        self.assertEqual(build_trade_marker_label_tone(exit_markers[0]), "profit")
+        self.assertEqual(build_trade_marker_label_tone(exit_markers[1]), "risk")
+        self.assertEqual(
+            build_trade_marker_label_tone(
+                StrategyTradeMarker(
+                    kind="exit",
+                    date="2026-04-12",
+                    price=10.8,
+                    label="回测卖点",
+                    detail="达到目标位 | +12.20%",
+                    tone="profit",
+                    pnl_pct=0.122,
+                    exit_reason="达到目标位",
+                )
+            ),
+            "profit_strong",
+        )
+        self.assertEqual(
+            build_trade_marker_label_tone(
+                StrategyTradeMarker(
+                    kind="exit",
+                    date="2026-04-13",
+                    price=9.6,
+                    label="回测卖点",
+                    detail="跌破止损 | -8.60%",
+                    tone="risk",
+                    pnl_pct=-0.086,
+                    exit_reason="跌破止损",
+                )
+            ),
+            "risk_hard",
+        )
         self.assertEqual(classify_trade_exit_reason("样本结束平仓"), "neutral")
+
+    def test_match_trade_index_from_chart_annotation_uses_entry_exit_dates(self) -> None:
+        module = importlib.import_module("app_qt")
+        trades = [
+            Trade(
+                symbol="SHSE.600000",
+                entry_date="2026-04-03",
+                exit_date="2026-04-08",
+                entry_price=10.1,
+                exit_price=11.0,
+                shares=1000,
+                pnl=860.0,
+                pnl_pct=0.0851,
+                hold_days=4,
+                exit_reason="达到目标位",
+            ),
+            Trade(
+                symbol="SHSE.600000",
+                entry_date="2026-04-04",
+                exit_date="2026-04-08",
+                entry_price=10.2,
+                exit_price=11.0,
+                shares=800,
+                pnl=620.0,
+                pnl_pct=0.072,
+                hold_days=3,
+                exit_reason="达到目标位",
+            ),
+        ]
+
+        payload = {
+            "action": "trade_exit",
+            "entry_date": "2026-04-04",
+            "exit_date": "2026-04-08",
+            "exit_price": 11.0,
+        }
+
+        index = module.QuantHunterWindow._match_trade_index_from_chart_annotation(payload, trades)
+
+        self.assertEqual(index, 1)
+
+    def test_match_signal_index_from_chart_annotation_uses_recent_non_none_rows(self) -> None:
+        module = importlib.import_module("app_qt")
+        analyses = [
+            DailyAnalysis(
+                date="2026-04-01",
+                symbol="SHSE.600000",
+                close=10.0,
+                atr=0.3,
+                ma_fast=9.9,
+                ma_slow=9.8,
+                breakout_level=9.9,
+                volume_ratio=1.0,
+                upper_shadow_pct=0.1,
+                close_location=0.7,
+                label="NONE",
+                score=0,
+                reason="",
+            ),
+            DailyAnalysis(
+                date="2026-04-02",
+                symbol="SHSE.600000",
+                close=10.2,
+                atr=0.32,
+                ma_fast=10.0,
+                ma_slow=9.9,
+                breakout_level=10.0,
+                volume_ratio=1.1,
+                upper_shadow_pct=0.1,
+                close_location=0.8,
+                label="WATCH",
+                score=46,
+                reason="watch",
+            ),
+            DailyAnalysis(
+                date="2026-04-03",
+                symbol="SHSE.600000",
+                close=10.4,
+                atr=0.35,
+                ma_fast=10.1,
+                ma_slow=10.0,
+                breakout_level=10.1,
+                volume_ratio=1.4,
+                upper_shadow_pct=0.1,
+                close_location=0.8,
+                label="RECLAIM_LONG",
+                score=88,
+                reason="buy",
+                entry_price=10.4,
+                stop_price=9.9,
+                target_price=11.2,
+            ),
+        ]
+
+        payload = {
+            "action": "focus_signal",
+            "signal_date": "2026-04-03",
+            "signal_label": "RECLAIM_LONG",
+        }
+
+        index = module.QuantHunterWindow._match_signal_index_from_chart_annotation(payload, analyses)
+
+        self.assertEqual(index, 1)
+
+    def test_signal_action_note_from_chart_annotation_varies_by_plan_kind(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        entry_note = module.QuantHunterWindow._signal_action_note_from_chart_annotation(
+            {"signal_date": "2026-04-03", "plan_kind": "entry"}
+        )
+        stop_note = module.QuantHunterWindow._signal_action_note_from_chart_annotation(
+            {"signal_date": "2026-04-03", "plan_kind": "stop"}
+        )
+        target_note = module.QuantHunterWindow._signal_action_note_from_chart_annotation(
+            {"signal_date": "2026-04-03", "plan_kind": "target"}
+        )
+
+        self.assertEqual(entry_note["title"], "图表联动 · 计划买点")
+        self.assertEqual(entry_note["tone"], "buy")
+        self.assertIn("计划买点", entry_note["execution_text"])
+        self.assertEqual(stop_note["tone"], "risk")
+        self.assertIn("计划止损", stop_note["execution_text"])
+        self.assertEqual(target_note["tone"], "watch")
+        self.assertIn("计划止盈", target_note["execution_text"])
+        self.assertEqual(entry_note["history_summary"], "买点")
+        self.assertEqual(stop_note["history_summary"], "止损")
+        self.assertEqual(target_note["history_summary"], "止盈")
+
+    def test_chart_action_note_history_keeps_last_three_items(self) -> None:
+        module = importlib.import_module("app_qt")
+        window = SimpleNamespace()
+        window._market_chart_action_note_signature_v1 = lambda payload: module.QuantHunterWindow._market_chart_action_note_signature_v1(payload)
+        window._chart_action_note_history_items_v1 = lambda: module.QuantHunterWindow._chart_action_note_history_items_v1(window)
+        window._market_chart_action_note_summary_v1 = lambda payload: module.QuantHunterWindow._market_chart_action_note_summary_v1(payload)
+        for index in range(4):
+            module.QuantHunterWindow._set_market_chart_action_note(
+                window,
+                symbol="SHSE.600000",
+                decision_text=f"决策 {index}",
+                execution_text=f"执行 {index}",
+                conclusion_text=f"结论 {index}",
+                title=f"图表联动 {index}",
+                tone="watch",
+                panel_role="execution",
+            )
+
+        history = module.QuantHunterWindow._chart_action_note_history_items_v1(window)
+        position = module.QuantHunterWindow._chart_action_note_history_position_v1(window)
+
+        self.assertEqual(len(history), 3)
+        self.assertEqual([item["title"] for item in history], ["图表联动 1", "图表联动 2", "图表联动 3"])
+        self.assertEqual(position, (3, 3))
+        self.assertTrue(all(item.get("interacted_at") for item in history))
+
+    def test_chart_action_note_preview_text_combines_time_and_summary(self) -> None:
+        module = importlib.import_module("app_qt")
+        window = SimpleNamespace(
+            _market_chart_action_note_summary_v1=lambda payload: module.QuantHunterWindow._market_chart_action_note_summary_v1(payload),
+            _market_chart_action_note_source_v1=lambda payload: module.QuantHunterWindow._market_chart_action_note_source_v1(payload),
+        )
+        preview = module.QuantHunterWindow._market_chart_action_note_preview_text_v1(
+            window,
+            {"interacted_at": "14:32", "history_summary": "买点", "history_source": "计划"},
+        )
+        self.assertEqual(preview, "计划 · 14:32 买点")
+
+    def test_chart_action_note_visible_history_items_respects_source_filter(self) -> None:
+        module = importlib.import_module("app_qt")
+        window = SimpleNamespace(
+            _market_chart_action_note_history_v1=[
+                {"history_source": "计划", "history_summary": "买点"},
+                {"history_source": "信号", "history_summary": "信号"},
+                {"history_source": "计划", "history_summary": "止损"},
+            ],
+            _chart_action_note_filter_source_value_v1="计划",
+        )
+        window._chart_action_note_history_items_v1 = lambda: module.QuantHunterWindow._chart_action_note_history_items_v1(window)
+        window._chart_action_note_filter_source_v1 = lambda: str(getattr(window, "_chart_action_note_filter_source_value_v1", "") or "")
+        window._market_chart_action_note_source_v1 = lambda payload: module.QuantHunterWindow._market_chart_action_note_source_v1(payload)
+
+        visible = module.QuantHunterWindow._chart_action_note_visible_history_items_v1(window)
+
+        self.assertEqual([item["history_summary"] for item in visible], ["买点", "止损"])
+
+    def test_chart_action_note_filter_banner_reflects_current_filter(self) -> None:
+        module = importlib.import_module("app_qt")
+        window = SimpleNamespace(_market_chart_action_note_filter_source_v1="计划")
+        window._chart_action_note_filter_source_v1 = lambda: str(getattr(window, "_market_chart_action_note_filter_source_v1", "") or "")
+
+        self.assertEqual(module.QuantHunterWindow._chart_action_note_filter_banner_v1(window), "历史筛选：计划")
+
+        window._market_chart_action_note_filter_source_v1 = ""
+        self.assertEqual(module.QuantHunterWindow._chart_action_note_filter_banner_v1(window), "历史筛选：全部")
+
+    def test_chart_action_note_history_step_switches_current_item(self) -> None:
+        module = importlib.import_module("app_qt")
+        window = SimpleNamespace(
+            active_symbol="SHSE.600000",
+            universe_bars={"SHSE.600000": []},
+            _market_chart_action_note_history_v1=[
+                {"symbol": "SHSE.600000", "title": "一", "tone": "watch", "panel_role": "execution", "decision_text": "d1", "execution_text": "e1", "conclusion_text": "c1", "pinned": False},
+                {"symbol": "SHSE.600000", "title": "二", "tone": "buy", "panel_role": "decision", "decision_text": "d2", "execution_text": "e2", "conclusion_text": "c2", "pinned": False},
+            ],
+            _market_chart_action_note_history_index_v1=1,
+            _market_chart_action_note={"symbol": "SHSE.600000", "title": "二", "tone": "buy", "panel_role": "decision", "decision_text": "d2", "execution_text": "e2", "conclusion_text": "c2", "pinned": False},
+            _render_market_dashboard=lambda _symbol: None,
+            _refresh_detail_workspace_panels=lambda: None,
+            _sync_chart_action_note_card_visibility_v1=lambda restart_timer=False: None,
+            _show_market_chart_feedback=lambda _message: None,
+        )
+        window._market_chart_action_note_pinned_v1 = lambda: False
+        window._market_chart_action_note_signature_v1 = lambda payload: module.QuantHunterWindow._market_chart_action_note_signature_v1(payload)
+        window._chart_action_note_history_items_v1 = lambda: list(window._market_chart_action_note_history_v1)
+        window._chart_action_note_history_position_v1 = lambda: module.QuantHunterWindow._chart_action_note_history_position_v1(window)
+        window._set_market_chart_action_note = lambda **kwargs: module.QuantHunterWindow._set_market_chart_action_note(window, **kwargs)
+
+        module.QuantHunterWindow._step_market_chart_action_note_history_v1(window, -1)
+
+        self.assertEqual(window._market_chart_action_note_history_index_v1, 0)
+        self.assertEqual(window._market_chart_action_note["title"], "一")
+
+    def test_chart_action_note_history_appends_new_items_without_overwriting_pinned_note(self) -> None:
+        module = importlib.import_module("app_qt")
+        current = {
+            "symbol": "SHSE.600000",
+            "title": "当前钉住",
+            "tone": "buy",
+            "panel_role": "execution",
+            "decision_text": "d0",
+            "execution_text": "e0",
+            "conclusion_text": "c0",
+            "pinned": True,
+        }
+        window = SimpleNamespace(
+            _market_chart_action_note=current.copy(),
+            _market_chart_action_note_history_v1=[current.copy()],
+            _market_chart_action_note_history_index_v1=0,
+        )
+        window._market_chart_action_note_signature_v1 = lambda payload: module.QuantHunterWindow._market_chart_action_note_signature_v1(payload)
+
+        module.QuantHunterWindow._set_market_chart_action_note(
+            window,
+            symbol="SHSE.600000",
+            decision_text="d1",
+            execution_text="e1",
+            conclusion_text="c1",
+            title="新提示",
+            tone="watch",
+            panel_role="decision",
+        )
+
+        self.assertEqual(window._market_chart_action_note["title"], "当前钉住")
+        self.assertEqual(window._market_chart_action_note_history_index_v1, 0)
+        self.assertEqual([item["title"] for item in window._market_chart_action_note_history_v1], ["当前钉住", "新提示"])
+
+    def test_qt_note_panel_content_renders_dismissible_chart_action_card(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtCore import QAbstractAnimation
+            from PySide6.QtWidgets import QApplication, QFrame, QGraphicsOpacityEffect, QLabel, QPushButton
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window._install_chart_action_note_cards_v1()
+                window._set_market_chart_action_note(
+                    symbol="SHSE.600000",
+                    decision_text="图表联动：当前点击的是计划买点。",
+                    execution_text="图表联动：当前点击的是计划买点。",
+                    conclusion_text="图表联动：当前点击的是计划买点。",
+                    title="图表联动 · 计划买点",
+                    history_source="计划",
+                    history_summary="买点",
+                    tone="buy",
+                    panel_role="decision",
+                )
+                window.active_symbol = "SHSE.600000"
+                window._set_note_panel_content_if_changed(
+                    window.market_decision_text,
+                    "结论：买入\n风险：低\n下一步：继续观察",
+                    highlight_text="图表联动：当前点击的是计划买点。",
+                    highlight_title="图表联动 · 计划买点",
+                    highlight_tone="buy",
+                )
+                app.processEvents()
+
+                card = getattr(window.market_decision_text, "_qh_chart_action_note_card_v1", None)
+                self.assertIsInstance(card, QFrame)
+                self.assertFalse(card.isHidden())
+                title_label = getattr(card, "_qh_title_label_v1", None)
+                body_label = getattr(card, "_qh_body_label_v1", None)
+                source_label = getattr(card, "_qh_source_label_v1", None)
+                history_label = getattr(card, "_qh_history_label_v1", None)
+                clear_filter_button = getattr(card, "_qh_clear_filter_button_v1", None)
+                pin_button = getattr(card, "_qh_pin_button_v1", None)
+                timer = getattr(card, "_qh_auto_timer_v1", None)
+                effect = getattr(card, "_qh_opacity_effect_v1", None)
+                animation = getattr(card, "_qh_fade_animation_v1", None)
+                self.assertIsInstance(title_label, QLabel)
+                self.assertIsInstance(body_label, QLabel)
+                self.assertIsInstance(source_label, QLabel)
+                self.assertIsInstance(history_label, QLabel)
+                self.assertIsInstance(clear_filter_button, QPushButton)
+                self.assertIsInstance(pin_button, QPushButton)
+                self.assertIsInstance(effect, QGraphicsOpacityEffect)
+                self.assertEqual(source_label.text(), "计划")
+                self.assertEqual(title_label.text(), "图表联动 · 计划买点")
+                self.assertIn("计划买点", body_label.text())
+                self.assertAlmostEqual(effect.opacity(), 1.0, places=2)
+                self.assertTrue(clear_filter_button.isHidden())
+
+                with patch.object(window, "_chart_action_note_cards_under_cursor_v1", return_value=False):
+                    window._start_chart_action_note_cards_v1(resume_only=False)
+                self.assertTrue(timer.isActive())
+                window._pause_chart_action_note_cards_v1()
+                self.assertFalse(timer.isActive())
+                self.assertGreater(int(getattr(card, "_qh_remaining_ms_v1", 0) or 0), 0)
+                with patch.object(window, "_chart_action_note_cards_under_cursor_v1", return_value=False):
+                    window._resume_chart_action_note_cards_v1()
+                self.assertTrue(timer.isActive())
+
+                window._toggle_market_chart_action_note_pin_v1()
+                self.assertEqual(pin_button.text(), "取消钉住")
+                self.assertFalse(timer.isActive())
+                self.assertTrue(window._market_chart_action_note_pinned_v1())
+                with patch.object(window, "_chart_action_note_cards_under_cursor_v1", return_value=False):
+                    window._start_chart_action_note_cards_v1(resume_only=False)
+                self.assertFalse(timer.isActive())
+                window._toggle_market_chart_action_note_pin_v1()
+                self.assertEqual(pin_button.text(), "钉住")
+                self.assertFalse(window._market_chart_action_note_pinned_v1())
+
+                window._start_chart_action_note_fade_v1(card, duration_ms=260, start_opacity=1.0)
+                self.assertFalse(timer.isActive())
+                app.processEvents()
+                self.assertIsNotNone(animation)
+                self.assertLessEqual(effect.opacity(), 1.0)
+
+                window._set_chart_action_note_filter_source_v1("计划")
+                app.processEvents()
+                self.assertEqual(source_label.text(), "计划 · 筛")
+                self.assertFalse(clear_filter_button.isHidden())
+                self.assertIn("筛选：计划", history_label.text())
+                window._clear_chart_action_note_source_filter_v1()
+                app.processEvents()
+                self.assertEqual(source_label.text(), "计划")
+                self.assertTrue(clear_filter_button.isHidden())
+
+                window._set_note_panel_content_if_changed(
+                    window.market_decision_text,
+                    "结论：买入\n风险：低\n下一步：继续观察",
+                    highlight_text="",
+                    highlight_title="图表联动",
+                    highlight_tone="watch",
+                )
+                app.processEvents()
+                self.assertTrue(card.isHidden())
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_chart_action_note_card_only_shows_on_active_workspace(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication, QFrame
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window._install_chart_action_note_cards_v1()
+                window._set_market_chart_action_note(
+                    symbol="SHSE.600000",
+                    decision_text="图表联动：焦点信号",
+                    execution_text="图表联动：执行解释",
+                    conclusion_text="图表联动：结论提醒",
+                    title="图表联动 · 计划买点",
+                    tone="buy",
+                    panel_role="execution",
+                )
+                window.active_symbol = "SHSE.600000"
+
+                window._set_note_panel_content_if_changed(
+                    window.overview_execution_text,
+                    "结论：买点 10.20\n风险：止损 9.70\n下一步：继续观察",
+                    highlight_text="图表联动：当前点击的是计划买点。",
+                    highlight_title="图表联动 · 计划买点",
+                    highlight_tone="buy",
+                )
+                window._set_note_panel_content_if_changed(
+                    window.market_decision_text,
+                    "结论：买入\n风险：低\n下一步：继续观察",
+                    highlight_text="图表联动：当前点击的是计划买点。",
+                    highlight_title="图表联动 · 计划买点",
+                    highlight_tone="buy",
+                )
+                window._set_note_panel_content_if_changed(
+                    window.detail_execution_text,
+                    "执行联动\n结论：待执行\n下一步：继续观察",
+                    highlight_text="图表联动：当前点击的是计划买点。",
+                    highlight_title="图表联动 · 计划买点",
+                    highlight_tone="buy",
+                )
+                app.processEvents()
+
+                overview_card = getattr(window.market_decision_text, "_qh_chart_action_note_card_v1", None)
+                detail_card = getattr(window.detail_execution_text, "_qh_chart_action_note_card_v1", None)
+                self.assertIsInstance(overview_card, QFrame)
+                self.assertIsInstance(detail_card, QFrame)
+                self.assertFalse(overview_card.isHidden())
+                self.assertTrue(detail_card.isHidden())
+
+                window._toggle_market_chart_action_note_pin_v1()
+                self.assertTrue(window._market_chart_action_note_pinned_v1())
+
+                window.tabs.setCurrentWidget(window.detail_tab)
+                app.processEvents()
+                self.assertTrue(overview_card.isHidden())
+                self.assertFalse(detail_card.isHidden())
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_alt_arrow_keys_step_chart_action_note_history(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtCore import QEvent, Qt
+            from PySide6.QtGui import QKeyEvent
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                steps: list[int] = []
+                window.tabs.setCurrentWidget(window.overview_tab)
+                with patch.object(window, "_market_hotkeys_available", return_value=True), \
+                    patch.object(window, "_can_step_market_chart_action_note_history_v1", side_effect=lambda step: True), \
+                    patch.object(window, "_step_market_chart_action_note_history_v1", side_effect=lambda step: steps.append(step)):
+                    window.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Left, Qt.AltModifier))
+                    window.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Right, Qt.AltModifier))
+                self.assertEqual(steps, [-1, 1])
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_alt_c_clears_chart_action_note_filter(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtCore import QEvent, Qt
+            from PySide6.QtGui import QKeyEvent
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.tabs.setCurrentWidget(window.overview_tab)
+                with patch.object(window, "_market_hotkeys_available", return_value=True), \
+                    patch.object(window, "_chart_action_note_filter_source_v1", return_value="计划"), \
+                    patch.object(window, "_clear_chart_action_note_source_filter_v1") as clear_mock:
+                    window.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_C, Qt.AltModifier))
+                clear_mock.assert_called_once_with()
+            finally:
+                window.close()
+                app.processEvents()
 
 
 if __name__ == "__main__":

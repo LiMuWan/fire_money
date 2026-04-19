@@ -50,6 +50,7 @@ except ModuleNotFoundError:  # pragma: no cover - enables pure-logic imports wit
         pass
 
 from quant_hunter.models import PaperTradingState, RecommendationRow
+from quant_hunter.strategy_registry import resolved_primary_strategy
 from quant_hunter.ui_window_paper_experiment_patches import paper_strategy_experiment_bridge_v45
 
 
@@ -111,9 +112,9 @@ def apply_workspace_workbench_patches(window_cls: type) -> None:
         self._install_broker_workbench_banner_v27()
 
         splitter_specs = (
-            ("broker_control_splitter", [620, 720, 380]),
-            ("broker_middle_splitter", [520, 1080]),
-            ("broker_order_focus_splitter", [980, 420]),
+            ("broker_control_splitter", [640, 780, 340]),
+            ("broker_middle_splitter", [420, 1160]),
+            ("broker_order_focus_splitter", [1000, 420]),
         )
         for attr_name, sizes in splitter_specs:
             splitter = getattr(self, attr_name, None)
@@ -171,7 +172,7 @@ def apply_workspace_workbench_patches(window_cls: type) -> None:
         experiment_lines = (
             broker_pre_submit_experiment_lines_v48(
                 paper_state,
-                getattr(recommendation, "primary_strategy", "") or "掘龙决策",
+                resolved_primary_strategy(recommendation, default="掘龙决策") or "掘龙决策",
             )
             if recommendation is not None
             else []

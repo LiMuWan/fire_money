@@ -34,6 +34,8 @@ except ModuleNotFoundError:  # pragma: no cover - enables pure-logic imports wit
     class QTextEdit(QWidget):  # type: ignore[override]
         pass
 
+from quant_hunter.strategy_registry import resolved_primary_strategy
+
 from quant_hunter.models import PaperTradingState
 from quant_hunter.ui_window_paper_experiment_patches import paper_strategy_experiment_bridge_v45
 
@@ -146,7 +148,7 @@ def apply_broker_workspace_patches(window_cls: type) -> None:
         control_splitter = getattr(self, "broker_control_splitter", None)
         if isinstance(setup_drawer, QWidget):
             setup_drawer.setVisible(bool(visible))
-            setup_drawer.setMinimumHeight(388 if visible else 0)
+            setup_drawer.setMinimumHeight(430 if visible else 0)
         if isinstance(control_splitter, QWidget):
             control_splitter.setVisible(bool(visible))
         toggle_button = getattr(self, "broker_setup_toggle_button", None)
@@ -188,9 +190,9 @@ def apply_broker_workspace_patches(window_cls: type) -> None:
                     self._set_button_role(button, "accent" if key == target else "ghost")
         if hasattr(splitter, "count") and splitter.count() == 3 and hasattr(splitter, "setSizes"):
             size_map = {
-                "profile": [720, 420, 280],
-                "action": [360, 760, 280],
-                "runtime": [280, 340, 760],
+                "profile": [760, 520, 320],
+                "action": [420, 820, 320],
+                "runtime": [320, 520, 780],
             }
             splitter.setSizes(size_map.get(target, size_map["profile"]))
         status_label = getattr(self, "broker_setup_status_label", None)
@@ -256,7 +258,7 @@ def apply_broker_workspace_patches(window_cls: type) -> None:
     def _post_build_ui_tweaks_v40(self) -> None:
         original_post_build_ui_tweaks_v40(self)
         self._set_broker_execution_detail_visibility_v40(False)
-        self._set_broker_setup_visibility_v41(False)
+        self._set_broker_setup_visibility_v41(True)
 
     def _refresh_submission_focus_v47(self) -> None:
         original_refresh_submission_focus_v47(self)
@@ -279,7 +281,7 @@ def apply_broker_workspace_patches(window_cls: type) -> None:
         )
         experiment_lines = broker_experiment_review_lines_v47(
             paper_state,
-            getattr(recommendation, "primary_strategy", "") or "掘龙决策",
+            resolved_primary_strategy(recommendation, default="掘龙决策") or "掘龙决策",
         )
         for attr_name in ("broker_mainline_review_text", "broker_execution_text"):
             widget = getattr(self, attr_name, None)

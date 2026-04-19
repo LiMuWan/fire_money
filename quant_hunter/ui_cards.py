@@ -5,6 +5,8 @@ import html
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
+from .strategy_registry import resolved_primary_strategy, strategy_score
+
 
 class InsightCardBase(QFrame):
     def __init__(self, object_name: str, parent: QWidget | None = None) -> None:
@@ -193,8 +195,8 @@ class LeaderboardCard(InsightCardBase):
 
     def set_row(self, rank_text: str, row) -> None:
         accent = {"TOP 1": "#f5c451", "TOP 2": "#cfd8e3", "TOP 3": "#b7835a"}.get(rank_text, "#7ed7ff")
-        strategy_name = getattr(row, "primary_strategy", "") or getattr(row, "strategy_tag", "")
-        decision_score = getattr(row, "dragon_decision_score", getattr(row, "heat_score", 0.0))
+        strategy_name = resolved_primary_strategy(row, default=(getattr(row, "strategy_tag", "") or ""))
+        decision_score = strategy_score(row, "掘龙决策", float(getattr(row, "heat_score", 0.0) or 0.0))
         pct_change = float(getattr(row, "pct_change", 0.0) or 0.0)
         main_inflow = float(getattr(row, "main_inflow", 0.0) or 0.0)
         heat_score = float(getattr(row, "heat_score", 0.0) or 0.0)
@@ -350,9 +352,9 @@ def _leaderboard_set_density_v2(self: LeaderboardCard, compact: bool) -> None:
 
 def _leaderboard_set_row_v2(self: LeaderboardCard, rank_text: str, row) -> None:
     accent = {"TOP 1": "#f5c451", "TOP 2": "#cfd8e3", "TOP 3": "#b7835a"}.get(rank_text, "#7ed7ff")
-    strategy_name = getattr(row, "primary_strategy", "") or getattr(row, "strategy_tag", "")
+    strategy_name = resolved_primary_strategy(row, default=(getattr(row, "strategy_tag", "") or ""))
     theme_name = getattr(row, "mainline_tag", "") or getattr(row, "theme_name", "") or strategy_name or "待同步"
-    decision_score = float(getattr(row, "dragon_decision_score", getattr(row, "heat_score", 0.0)) or 0.0)
+    decision_score = float(strategy_score(row, "掘龙决策", float(getattr(row, "heat_score", 0.0) or 0.0)) or 0.0)
     pct_change = float(getattr(row, "pct_change", 0.0) or 0.0)
     heat_score = float(getattr(row, "heat_score", 0.0) or 0.0)
     main_inflow = float(getattr(row, "main_inflow", 0.0) or 0.0)
@@ -478,9 +480,9 @@ def _leaderboard_set_density_v3(self: LeaderboardCard, compact: bool) -> None:
 
 def _leaderboard_set_row_v3(self: LeaderboardCard, rank_text: str, row) -> None:
     accent = {"TOP 1": "#f5c451", "TOP 2": "#cfd8e3", "TOP 3": "#b7835a"}.get(rank_text, "#7ed7ff")
-    strategy_name = getattr(row, "primary_strategy", "") or getattr(row, "strategy_tag", "")
+    strategy_name = resolved_primary_strategy(row, default=(getattr(row, "strategy_tag", "") or ""))
     theme_name = getattr(row, "mainline_tag", "") or getattr(row, "theme_name", "") or strategy_name or "待同步"
-    decision_score = float(getattr(row, "dragon_decision_score", getattr(row, "heat_score", 0.0)) or 0.0)
+    decision_score = float(strategy_score(row, "掘龙决策", float(getattr(row, "heat_score", 0.0) or 0.0)) or 0.0)
     pct_change = float(getattr(row, "pct_change", 0.0) or 0.0)
     heat_score = float(getattr(row, "heat_score", 0.0) or 0.0)
     main_inflow = float(getattr(row, "main_inflow", 0.0) or 0.0)
@@ -608,9 +610,9 @@ def _leaderboard_set_density_v4(self: LeaderboardCard, compact: bool) -> None:
 
 def _leaderboard_set_row_v4(self: LeaderboardCard, rank_text: str, row) -> None:
     accent = {"TOP 1": "#f5c451", "TOP 2": "#cfd8e3", "TOP 3": "#b7835a"}.get(rank_text, "#7ed7ff")
-    strategy_name = getattr(row, "primary_strategy", "") or getattr(row, "strategy_tag", "")
+    strategy_name = resolved_primary_strategy(row, default=(getattr(row, "strategy_tag", "") or ""))
     theme_name = getattr(row, "mainline_tag", "") or getattr(row, "theme_name", "") or strategy_name or "待同步"
-    decision_score = float(getattr(row, "dragon_decision_score", getattr(row, "heat_score", 0.0)) or 0.0)
+    decision_score = float(strategy_score(row, "掘龙决策", float(getattr(row, "heat_score", 0.0) or 0.0)) or 0.0)
     pct_change = float(getattr(row, "pct_change", 0.0) or 0.0)
     heat_score = float(getattr(row, "heat_score", 0.0) or 0.0)
     main_inflow = float(getattr(row, "main_inflow", 0.0) or 0.0)

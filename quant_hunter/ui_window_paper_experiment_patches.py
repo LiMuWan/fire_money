@@ -40,6 +40,7 @@ except ModuleNotFoundError:  # pragma: no cover - enables pure-logic imports wit
 from quant_hunter.models import PaperTradingState
 from quant_hunter.broker import build_execution_quality_profile, summarize_trade_recap
 from quant_hunter.paper_trading import build_strategy_rotation_snapshot, summarize_paper_trading_performance
+from quant_hunter.strategy_registry import get_strategy_registry
 
 
 def paper_experiment_role_specs_v43(
@@ -222,19 +223,7 @@ def paper_experiment_table_context_v44(
 
 def _canonical_paper_strategy_name_v45(strategy_name: str) -> str:
     raw = str(strategy_name or "").strip()
-    alias_map = {
-        "龙头主线": "龙头模型",
-        "资金承接": "主力雷达",
-        "强势接力": "擒龙打板",
-        "打板策略": "擒龙打板",
-        "趋势低吸": "价值低吸",
-        "尾盘买入": "尾盘买入法",
-        "一日持股": "一日持股法",
-        "隔日强势": "一日持股法",
-        "综合决策": "掘龙决策",
-        "掘龙": "掘龙决策",
-    }
-    return alias_map.get(raw, raw)
+    return get_strategy_registry().canonical_strategy_name(raw) or raw
 
 
 def paper_strategy_experiment_bridge_v45(

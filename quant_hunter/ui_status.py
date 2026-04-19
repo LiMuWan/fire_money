@@ -7,6 +7,7 @@ except ModuleNotFoundError:  # pragma: no cover - enables non-Qt test environmen
         def __init__(self, value: str) -> None:
             self.value = value
 
+from .strategy_registry import get_strategy_registry, strategy_badge_palette_meta, strategy_empty_hint_meta
 from .ui_config import DISPLAY_TEXT
 
 
@@ -285,14 +286,30 @@ def fund_badge_palette(text: str) -> tuple[str, str]:
 
 
 def strategy_badge_palette(text: str) -> tuple[str, str]:
-    mapping = {
-        "龙头模型": ("#5b1216", "#ff6a6f"),
-        "主力雷达": ("#0f3951", "#7ed7ff"),
-        "擒龙打板": ("#57430f", "#ffd75b"),
-        "价值低吸": ("#204728", "#7ef5a2"),
-        "掘龙决策": ("#4b235f", "#db9bff"),
-    }
-    return mapping.get(text, ("#24303a", "#dce4ef"))
+    registry = get_strategy_registry()
+    strategy_name = registry.canonical_strategy_name(str(text or "").strip()) or str(text or "").strip()
+    palette = strategy_badge_palette_meta(strategy_name)
+    if palette != ("#24303a", "#dce4ef"):
+        return palette
+    fallback_cycle = [
+        ("#5b1216", "#ff6a6f"),
+        ("#0f3951", "#7ed7ff"),
+        ("#57430f", "#ffd75b"),
+        ("#204728", "#7ef5a2"),
+        ("#4b3418", "#ffcf82"),
+        ("#3b2f12", "#ffd27a"),
+        ("#4b235f", "#db9bff"),
+    ]
+    strategy_names = list(registry.strategy_names)
+    if strategy_name in strategy_names:
+        return fallback_cycle[strategy_names.index(strategy_name) % len(fallback_cycle)]
+    return ("#24303a", "#dce4ef")
+
+
+def strategy_empty_hint(text: str) -> str:
+    registry = get_strategy_registry()
+    strategy_name = registry.canonical_strategy_name(str(text or "").strip()) or str(text or "").strip()
+    return strategy_empty_hint_meta(strategy_name)
 
 
 def signal_badge_palette(text: str) -> tuple[str, str]:
