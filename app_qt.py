@@ -62,6 +62,7 @@ from PySide6.QtWidgets import (
 )
 
 from quant_hunter.backtest import Backtester, format_result
+from quant_hunter.chart_annotations import build_strategy_plan_levels, build_trade_marker_chart_label, build_trade_markers
 from quant_hunter.ai_review import (
     AIReviewConfig,
     AIReviewResult,
@@ -75,9 +76,11 @@ from quant_hunter.ai_review import (
 from quant_hunter.board import BoardModeEngine
 from quant_hunter.broker import (
     EastmoneyBrokerAdapter,
+    build_execution_quality_profile,
     merge_submission_records_with_execution_records,
     normalize_submission_result,
     reconcile_submission_records_with_holdings,
+    summarize_trade_recap,
     submission_record_execution_delta,
 )
 from quant_hunter.decision import DecisionEngine
@@ -111,13 +114,18 @@ from quant_hunter.message_center import (
     SmartMessageEvent,
     append_message_event,
     build_message_center_snapshot,
+    mark_all_message_events_read,
     message_category_label,
     message_event_action_hint,
     message_event_signature,
     message_event_status_label,
+    message_center_counts,
     message_level_label,
     message_level_tone,
     normalize_message_bool,
+    normalize_message_sort_mode,
+    remove_handled_message_events,
+    sort_message_events,
     update_message_event_flags,
 )
 from quant_hunter.news_sources import (
@@ -582,6 +590,9 @@ class MarketChartView(QChartView):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._context: dict[str, object] = {}
+        self._static_annotations: list[dict[str, object]] = []
+        self._static_annotation_payloads: list[dict[str, object]] = []
+        self._static_annotation_items: list[QGraphicsSimpleTextItem] = []
         self._crosshair_items_ready = False
         self._crosshair_v = QGraphicsLineItem()
         self._crosshair_h = QGraphicsLineItem()
@@ -598,12 +609,22 @@ class MarketChartView(QChartView):
         self.setRubberBand(QChartView.NoRubberBand)
 
     def setChart(self, chart: QChart) -> None:
+        self._clear_static_annotations()
         super().setChart(chart)
         self._ensure_crosshair_items()
+        QTimer.singleShot(0, self._layout_static_annotations)
 
     def set_chart_context(self, **context: object) -> None:
         self._context = dict(context)
+        self._static_annotations = [
+            item for item in list(self._context.get("static_annotations", []) or []) if isinstance(item, dict)
+        ]
         self._current_hover_key = ""
+        self._refresh_static_annotations()
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        QTimer.singleShot(0, self._layout_static_annotations)
 
     def leaveEvent(self, event) -> None:
         self._hide_crosshair(notify=True)
@@ -637,6 +658,104 @@ class MarketChartView(QChartView):
             if item.scene() is not scene:
                 scene.addItem(item)
         self._crosshair_items_ready = True
+
+    def _clear_static_annotations(self) -> None:
+        for item in list(self._static_annotation_items):
+            scene = item.scene()
+            if scene is not None:
+                scene.removeItem(item)
+        self._static_annotation_payloads = []
+        self._static_annotation_items = []
+
+    def _refresh_static_annotations(self) -> None:
+        self._clear_static_annotations()
+        scene = self.scene()
+        if scene is None or not self._static_annotations:
+            return
+        label_font = QFont()
+        label_font.setPointSize(9)
+        label_font.setBold(True)
+        color_map = {
+            "profit": QColor("#7fffb1"),
+            "risk": QColor("#ff8b8b"),
+            "neutral": QColor("#ffd166"),
+            "plan_entry": QColor("#4cf2a8"),
+            "plan_stop": QColor("#ff7a7a"),
+            "plan_target": QColor("#7ed7ff"),
+            "buy": QColor("#7ed7ff"),
+            "focus": QColor("#ffe07a"),
+        }
+        for payload in self._static_annotations[:24]:
+            text = str(payload.get("text", "") or "").strip()
+            if not text:
+                continue
+            item = QGraphicsSimpleTextItem(text)
+            item.setFont(label_font)
+            item.setBrush(color_map.get(str(payload.get("tone", "") or ""), QColor("#eff6ff")))
+            item.setZValue(54)
+            scene.addItem(item)
+            self._static_annotation_payloads.append(payload)
+            self._static_annotation_items.append(item)
+        QTimer.singleShot(0, self._layout_static_annotations)
+
+    def _layout_static_annotations(self) -> None:
+        chart = self.chart()
+        if chart is None or not self._static_annotation_items:
+            return
+        plot_area = chart.plotArea()
+        if plot_area.width() <= 0 or plot_area.height() <= 0:
+            return
+        positioned: list[tuple[QGraphicsSimpleTextItem, dict[str, object], float, float, float, float]] = []
+        for item, payload in zip(self._static_annotation_items, self._static_annotation_payloads):
+            try:
+                x_value = float(payload.get("x", 0.0) or 0.0)
+                y_value = float(payload.get("y", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                item.hide()
+                continue
+            point = chart.mapToPosition(QPointF(x_value, y_value))
+            rect = item.boundingRect()
+            anchor = str(payload.get("anchor", "above") or "above")
+            extra_dx = float(payload.get("dx", 0.0) or 0.0)
+            extra_dy = float(payload.get("dy", 0.0) or 0.0)
+            offset_x = 8.0
+            offset_y = -rect.height() - 6.0
+            if anchor == "below":
+                offset_x = 8.0
+                offset_y = 6.0
+            elif anchor == "right":
+                offset_x = 10.0
+                offset_y = -(rect.height() / 2.0)
+            elif anchor == "left":
+                offset_x = -rect.width() - 10.0
+                offset_y = -(rect.height() / 2.0)
+            elif anchor == "center":
+                offset_x = -(rect.width() / 2.0)
+                offset_y = -(rect.height() / 2.0) - 6.0
+            x_pos = point.x() + offset_x + extra_dx
+            y_pos = point.y() + offset_y + extra_dy
+            x_pos = max(plot_area.left() + 4.0, min(x_pos, plot_area.right() - rect.width() - 4.0))
+            y_pos = max(plot_area.top() + 4.0, min(y_pos, plot_area.bottom() - rect.height() - 4.0))
+            positioned.append((item, payload, x_pos, y_pos, rect.width(), rect.height()))
+
+        right_labels = sorted(
+            [row for row in positioned if str(row[1].get("anchor", "") or "") == "right"],
+            key=lambda row: row[3],
+        )
+        last_bottom = plot_area.top() + 4.0
+        for item, _payload, x_pos, y_pos, _width, height in right_labels:
+            if y_pos < last_bottom:
+                y_pos = min(last_bottom + 2.0, plot_area.bottom() - height - 4.0)
+            item.setPos(x_pos, y_pos)
+            item.show()
+            last_bottom = y_pos + height
+
+        for item, payload, x_pos, y_pos, _width, _height in positioned:
+            anchor = str(payload.get("anchor", "") or "")
+            if anchor == "right":
+                continue
+            item.setPos(x_pos, y_pos)
+            item.show()
 
     def _plot_contains(self, position: QPointF) -> bool:
         chart = self.chart()
@@ -867,6 +986,20 @@ class _ReplayEventCardClickFilter(QObject):
         if event.type() == QEvent.MouseButtonRelease and isinstance(watched, QFrame):
             if role and hasattr(self._owner, "_on_replay_event_card_clicked_v1"):
                 self._owner._on_replay_event_card_clicked_v1(str(role))
+                return True
+        return super().eventFilter(watched, event)
+
+
+class _MessageCenterMetricCardClickFilter(QObject):
+    def __init__(self, owner) -> None:
+        super().__init__(owner if isinstance(owner, QObject) else None)
+        self._owner = owner
+
+    def eventFilter(self, watched, event) -> bool:
+        role = watched.property("messageCenterCardKey") if isinstance(watched, QWidget) else ""
+        if event.type() == QEvent.MouseButtonRelease and isinstance(watched, QFrame):
+            if role and hasattr(self._owner, "_on_recommend_message_center_metric_card_clicked"):
+                self._owner._on_recommend_message_center_metric_card_clicked(str(role))
                 return True
         return super().eventFilter(watched, event)
 
@@ -3775,13 +3908,17 @@ class QuantHunterWindow(QMainWindow):
                 detail=str(item.get("detail", "") or ""),
                 symbol=str(item.get("symbol", "") or ""),
                 level=str(item.get("level", "INFO") or "INFO"),
+                is_read=normalize_message_bool(item.get("is_read", False)),
+                is_handled=normalize_message_bool(item.get("is_handled", False)),
             )
             for item in list(getattr(self.state, "smart_message_events", []) or [])
             if isinstance(item, dict)
         ]
         self._recommend_message_center_visible_events: list[SmartMessageEvent] = []
         self.recommend_message_center_selected_signature: tuple[str, str, str, str, str, str] | None = None
-        self.recommend_message_center_filter = "all"
+        self.recommend_message_center_filter = str(getattr(self.state, "recommend_message_center_filter", "all") or "all")
+        self.recommend_message_center_show_unhandled_only = bool(getattr(self.state, "recommend_message_center_show_unhandled_only", False))
+        self.recommend_message_center_sort = normalize_message_sort_mode(getattr(self.state, "recommend_message_center_sort", "latest"))
         self.ai_review_results_by_symbol: dict[str, AIReviewResult] = {}
         self.ai_review_partial_content_by_symbol: dict[str, str] = {}
         self.ai_review_completed_signature_by_symbol: dict[str, str] = {}
@@ -4423,6 +4560,26 @@ class QuantHunterWindow(QMainWindow):
         self._refresh_recommend_message_center()
         self._maybe_show_recommend_message_toast(self.smart_message_events[-1] if self.smart_message_events else None)
 
+    def _update_smart_message_event(
+        self,
+        target_signature: tuple[str, str, str, str, str, str] | None,
+        *,
+        is_read: bool | None = None,
+        is_handled: bool | None = None,
+    ) -> bool:
+        updated = update_message_event_flags(
+            self.smart_message_events,
+            target_signature=target_signature,
+            is_read=is_read,
+            is_handled=is_handled,
+        )
+        if list(updated) == list(self.smart_message_events):
+            return False
+        self.smart_message_events = list(updated)
+        self._refresh_recommend_message_center()
+        self.save_state()
+        return True
+
     def _hide_recommend_message_toast(self) -> None:
         label = getattr(self, "recommend_message_toast_label", None)
         if isinstance(label, QLabel):
@@ -4491,9 +4648,22 @@ class QuantHunterWindow(QMainWindow):
             current_data = combo.currentData()
             if current_data:
                 filter_key = str(current_data)
-        if filter_key == "all":
-            return list(self.smart_message_events)
-        return [item for item in self.smart_message_events if str(getattr(item, "category", "") or "").strip().lower() == filter_key]
+        sort_key = str(getattr(self, "recommend_message_center_sort", "latest") or "latest")
+        sort_combo = getattr(self, "recommend_message_center_sort_combo", None)
+        if sort_combo is not None and sort_combo.currentIndex() >= 0:
+            current_sort = sort_combo.currentData()
+            if current_sort:
+                sort_key = str(current_sort)
+        show_unhandled_only = bool(getattr(self, "recommend_message_center_show_unhandled_only", False))
+        checkbox = getattr(self, "recommend_message_center_unhandled_checkbox", None)
+        if isinstance(checkbox, QCheckBox):
+            show_unhandled_only = checkbox.isChecked()
+        rows = list(self.smart_message_events)
+        if filter_key != "all":
+            rows = [item for item in rows if str(getattr(item, "category", "") or "").strip().lower() == filter_key]
+        if show_unhandled_only:
+            rows = [item for item in rows if not bool(getattr(item, "is_handled", False))]
+        return sort_message_events(rows, mode=sort_key)
 
     def _selected_recommend_message_event(self) -> SmartMessageEvent | None:
         events = list(getattr(self, "_recommend_message_center_visible_events", []) or [])
@@ -4525,11 +4695,81 @@ class QuantHunterWindow(QMainWindow):
             return "config", "ai_review_status_text", "打开配置页"
         return "recommend", "daily_pool_table", "打开推荐页"
 
+    def _bind_recommend_message_center_metric_card(self, card: QFrame | None, card_key: str) -> None:
+        if not isinstance(card, QFrame):
+            return
+        card.setProperty("messageCenterCardKey", card_key)
+        card.setCursor(Qt.PointingHandCursor)
+        click_filter = getattr(self, "_qh_message_center_metric_card_click_filter_v1", None)
+        if click_filter is None:
+            click_filter = _MessageCenterMetricCardClickFilter(self)
+            self._qh_message_center_metric_card_click_filter_v1 = click_filter
+        if not getattr(card, "_qh_message_center_metric_card_bound_v1", False):
+            card.installEventFilter(click_filter)
+            card._qh_message_center_metric_card_bound_v1 = True
+
+    def _on_recommend_message_center_metric_card_clicked(self, card_key: str) -> None:
+        combo = getattr(self, "recommend_message_center_filter_combo", None)
+        sort_combo = getattr(self, "recommend_message_center_sort_combo", None)
+        unhandled_checkbox = getattr(self, "recommend_message_center_unhandled_checkbox", None)
+
+        if card_key in {"ai", "news", "trade"}:
+            self.recommend_message_center_filter = card_key
+            if isinstance(combo, QComboBox):
+                index = combo.findData(card_key)
+                if index >= 0:
+                    combo.setCurrentIndex(index)
+            if isinstance(unhandled_checkbox, QCheckBox):
+                unhandled_checkbox.setChecked(False)
+            self.recommend_message_center_show_unhandled_only = False
+            if isinstance(sort_combo, QComboBox):
+                index = sort_combo.findData("latest")
+                if index >= 0:
+                    sort_combo.setCurrentIndex(index)
+            self.recommend_message_center_sort = "latest"
+        elif card_key == "unread":
+            self.recommend_message_center_filter = "all"
+            if isinstance(combo, QComboBox):
+                index = combo.findData("all")
+                if index >= 0:
+                    combo.setCurrentIndex(index)
+            if isinstance(unhandled_checkbox, QCheckBox):
+                unhandled_checkbox.setChecked(False)
+            self.recommend_message_center_show_unhandled_only = False
+            if isinstance(sort_combo, QComboBox):
+                index = sort_combo.findData("unread")
+                if index >= 0:
+                    sort_combo.setCurrentIndex(index)
+            self.recommend_message_center_sort = "unread"
+        elif card_key == "open":
+            self.recommend_message_center_filter = "all"
+            if isinstance(combo, QComboBox):
+                index = combo.findData("all")
+                if index >= 0:
+                    combo.setCurrentIndex(index)
+            if isinstance(unhandled_checkbox, QCheckBox):
+                unhandled_checkbox.setChecked(True)
+            self.recommend_message_center_show_unhandled_only = True
+            if isinstance(sort_combo, QComboBox):
+                index = sort_combo.findData("open")
+                if index >= 0:
+                    sort_combo.setCurrentIndex(index)
+            self.recommend_message_center_sort = "open"
+
+        if hasattr(self, "state"):
+            self.state.recommend_message_center_filter = self.recommend_message_center_filter
+            self.state.recommend_message_center_show_unhandled_only = self.recommend_message_center_show_unhandled_only
+            self.state.recommend_message_center_sort = self.recommend_message_center_sort
+        self.save_state()
+        self._append_runtime_log(f"消息中心卡片已切换：{card_key}")
+        self._refresh_recommend_message_center()
+
     def _refresh_recommend_message_center(self) -> None:
         text_widget = getattr(self, "recommend_message_center_text", None)
         summary_label = getattr(self, "recommend_message_center_summary_label", None)
+        badge_label = getattr(self, "recommend_message_center_badge_label", None)
         table = getattr(self, "recommend_message_center_table", None)
-        if text_widget is None and summary_label is None and table is None:
+        if text_widget is None and summary_label is None and badge_label is None and table is None:
             return
         filter_key = str(getattr(self, "recommend_message_center_filter", "all") or "all")
         combo = getattr(self, "recommend_message_center_filter_combo", None)
@@ -4538,9 +4778,22 @@ class QuantHunterWindow(QMainWindow):
             if current_data:
                 filter_key = str(current_data)
                 self.recommend_message_center_filter = filter_key
+        sort_key = str(getattr(self, "recommend_message_center_sort", "latest") or "latest")
+        sort_combo = getattr(self, "recommend_message_center_sort_combo", None)
+        if sort_combo is not None and sort_combo.currentIndex() >= 0:
+            current_sort = sort_combo.currentData()
+            if current_sort:
+                sort_key = str(current_sort)
+                self.recommend_message_center_sort = sort_key
+        checkbox = getattr(self, "recommend_message_center_unhandled_checkbox", None)
+        show_unhandled_only = bool(getattr(self, "recommend_message_center_show_unhandled_only", False))
+        if isinstance(checkbox, QCheckBox):
+            show_unhandled_only = checkbox.isChecked()
+            self.recommend_message_center_show_unhandled_only = show_unhandled_only
         snapshot = build_message_center_snapshot(self.smart_message_events, category_filter=filter_key)
+        counts = message_center_counts(self.smart_message_events)
         filtered_events = self._filtered_smart_message_events()
-        visible_events = list(reversed(filtered_events[-18:]))
+        visible_events = list(filtered_events[:18])
         selected_signature = self.recommend_message_center_selected_signature
         target_row = 0 if visible_events else -1
         if selected_signature is not None:
@@ -4560,6 +4813,13 @@ class QuantHunterWindow(QMainWindow):
             snapshot["headline"],
             snapshot["detail"],
             snapshot["text"],
+            counts["unread"],
+            counts["open"],
+            counts.get("ai", 0),
+            counts.get("news", 0),
+            counts.get("trade", 0),
+            show_unhandled_only,
+            sort_key,
             route_workspace,
             route_widget,
             route_label,
@@ -4567,6 +4827,7 @@ class QuantHunterWindow(QMainWindow):
             action_hint.summary,
             symbol,
             symbol_name,
+            message_event_status_label(selected_event),
         )
         if getattr(self, "_recommend_message_center_refresh_signature_v1", None) == refresh_signature:
             return
@@ -4574,15 +4835,62 @@ class QuantHunterWindow(QMainWindow):
         self._recommend_message_center_visible_events = visible_events
         if summary_label is not None:
             self._set_label_text_if_changed(summary_label, f"{snapshot['headline']} | {snapshot['detail']}")
+        if isinstance(badge_label, QLabel):
+            self._set_label_text_if_changed(badge_label, f"未读 {counts['unread']} | 待处理 {counts['open']}")
+        metric_labels = getattr(self, "recommend_message_center_metric_labels", None)
+        metric_accents = getattr(self, "recommend_message_center_metric_accents", None)
+        if isinstance(metric_labels, dict) and isinstance(metric_accents, dict):
+            card_values = {
+                "unread": (str(counts["unread"]), "等待查看的新事件"),
+                "open": (str(counts["open"]), "仍未处理的待办"),
+                "ai": (str(counts.get("ai", 0)), "评测开始 / 完成 / 失败"),
+                "news": (str(counts.get("news", 0)), "消息源载入与联动"),
+                "trade": (str(counts.get("trade", 0)), "提交回执与交易反馈"),
+            }
+            for key, (value, accent) in card_values.items():
+                if key in metric_labels:
+                    self._set_label_text_if_changed(metric_labels[key], value)
+                if key in metric_accents:
+                    self._set_label_text_if_changed(metric_accents[key], accent)
+            metric_cards = getattr(self, "recommend_message_center_metric_cards", None)
+            if isinstance(metric_cards, dict):
+                for key, card in metric_cards.items():
+                    self._bind_recommend_message_center_metric_card(card, key)
+                    tooltip = {
+                        "unread": "点击后切到未读优先排序。",
+                        "open": "点击后只看未处理事件。",
+                        "ai": "点击后只看 AI 评测事件。",
+                        "news": "点击后只看消息事件。",
+                        "trade": "点击后只看交易事件。",
+                    }.get(key, "")
+                    if isinstance(card, QFrame) and tooltip:
+                        card.setToolTip(tooltip)
+        tabs = getattr(self, "tabs", None)
+        recommend_tab = getattr(self, "recommend_tab", None)
+        if isinstance(tabs, QTabWidget) and recommend_tab is not None:
+            tab_index = tabs.indexOf(recommend_tab)
+            if tab_index >= 0:
+                tab_text = "推荐"
+                if counts["unread"] or counts["open"]:
+                    tab_text = f"推荐({counts['unread']}/{counts['open']})"
+                if tabs.tabText(tab_index) != tab_text:
+                    tabs.setTabText(tab_index, tab_text)
+                try:
+                    tabs.tabBar().setTabToolTip(tab_index, f"未读 {counts['unread']} | 待处理 {counts['open']}")
+                except Exception:
+                    pass
         if isinstance(table, QTableWidget):
             table_signature = tuple(
                 (
                     str(getattr(event, "timestamp", "") or "--:--:--"),
                     f"{message_category_label(getattr(event, 'category', 'system'))}/{message_level_label(getattr(event, 'level', 'INFO'))}",
+                    message_event_status_label(event),
                     str(getattr(event, "title", "") or "未命名事件"),
                     str(getattr(event, "symbol", "") or "--"),
                     message_level_tone(getattr(event, "level", "INFO")),
                     str(getattr(event, "detail", "") or getattr(event, "title", "") or ""),
+                    bool(getattr(event, "is_read", False)),
+                    bool(getattr(event, "is_handled", False)),
                     message_event_signature(event),
                 )
                 for event in visible_events
@@ -4594,8 +4902,8 @@ class QuantHunterWindow(QMainWindow):
                 for row_index, signature_row in enumerate(table_signature):
                     if row_index < len(previous_signature) and previous_signature[row_index] == signature_row:
                         continue
-                    timestamp, category_level, title, event_symbol, tone, tooltip_text, event_signature = signature_row
-                    values = [timestamp, category_level, title, event_symbol]
+                    timestamp, category_level, status_text, title, event_symbol, tone, tooltip_text, is_read, is_handled, event_signature = signature_row
+                    values = [timestamp, category_level, status_text, title, event_symbol]
                     for column, value in enumerate(values):
                         item = table.item(row_index, column)
                         if item is None:
@@ -4617,6 +4925,10 @@ class QuantHunterWindow(QMainWindow):
                             "risk": QColor("#ffeceb"),
                             "idle": QColor("#eaf2fb"),
                         }.get(tone, QColor("#eaf2fb"))
+                        if is_read:
+                            background.setAlpha(175 if not is_handled else 145)
+                        if is_handled:
+                            foreground = QColor("#c6d1dc")
                         item.setBackground(background)
                         item.setForeground(foreground)
                         if item.toolTip() != tooltip_text:
@@ -4633,6 +4945,8 @@ class QuantHunterWindow(QMainWindow):
         symbol_button = getattr(self, "recommend_message_center_symbol_button", None)
         open_button = getattr(self, "recommend_message_center_open_button", None)
         action_label = getattr(self, "recommend_message_center_action_label", None)
+        mark_all_read_button = getattr(self, "recommend_message_center_mark_all_read_button", None)
+        clear_handled_button = getattr(self, "recommend_message_center_clear_handled_button", None)
         if isinstance(symbol_button, QPushButton):
             QuantHunterWindow._set_widget_enabled_if_changed(self, symbol_button, bool(symbol))
             QuantHunterWindow._set_label_text_if_changed(self, symbol_button, f"定位 {self._stock_name_for_symbol(symbol)}" if symbol else "无关联股票")
@@ -4644,9 +4958,37 @@ class QuantHunterWindow(QMainWindow):
                 action_hint.button_label if selected_event is not None else route_label,
                 tooltip=action_hint.summary if selected_event is not None else f"打开 {route_workspace} 页",
             )
+        if isinstance(mark_all_read_button, QPushButton):
+            QuantHunterWindow._set_widget_enabled_if_changed(self, mark_all_read_button, counts["unread"] > 0)
+            QuantHunterWindow._set_label_text_if_changed(
+                self,
+                mark_all_read_button,
+                f"全标已读({counts['unread']})" if counts["unread"] > 0 else "全标已读",
+                tooltip="将当前消息中心里的所有未读事件统一标为已读。",
+            )
+        handled_count = max(len(self.smart_message_events) - counts["open"], 0)
+        if isinstance(clear_handled_button, QPushButton):
+            QuantHunterWindow._set_widget_enabled_if_changed(self, clear_handled_button, handled_count > 0)
+            QuantHunterWindow._set_label_text_if_changed(
+                self,
+                clear_handled_button,
+                f"清已处理({handled_count})" if handled_count > 0 else "清已处理",
+                tooltip="批量移除已经处理完成的历史事件。",
+            )
+        mark_read_button = getattr(self, "recommend_message_center_mark_read_button", None)
+        mark_handled_button = getattr(self, "recommend_message_center_mark_handled_button", None)
+        if isinstance(mark_read_button, QPushButton):
+            is_read = bool(getattr(selected_event, "is_read", False)) if selected_event is not None else False
+            QuantHunterWindow._set_widget_enabled_if_changed(self, mark_read_button, bool(selected_event is not None and not is_read))
+            QuantHunterWindow._set_label_text_if_changed(self, mark_read_button, "已读" if is_read else "标已读")
+        if isinstance(mark_handled_button, QPushButton):
+            is_handled = bool(getattr(selected_event, "is_handled", False)) if selected_event is not None else False
+            QuantHunterWindow._set_widget_enabled_if_changed(self, mark_handled_button, bool(selected_event is not None and not is_handled))
+            QuantHunterWindow._set_label_text_if_changed(self, mark_handled_button, "已处理" if is_handled else "标已处理")
         if isinstance(action_label, QLabel):
             action_text = action_hint.summary if selected_event is not None else "等待你选中一条事件后，再给出下一步动作。"
-            self._set_label_text_if_changed(action_label, f"建议动作：{action_text}")
+            prefix = message_event_status_label(selected_event) if selected_event is not None else "未选中"
+            self._set_label_text_if_changed(action_label, f"建议动作：{action_text} | 当前状态：{prefix}")
         if text_widget is not None:
             if selected_event is None:
                 self._set_plain_text_if_changed(text_widget, snapshot["text"])
@@ -4656,6 +4998,7 @@ class QuantHunterWindow(QMainWindow):
                     f"时间：{getattr(selected_event, 'timestamp', '') or '--:--:--'}",
                     f"类型：{message_category_label(getattr(selected_event, 'category', 'system'))}",
                     f"状态：{message_level_label(getattr(selected_event, 'level', 'INFO'))}",
+                    f"处理进度：{message_event_status_label(selected_event)}",
                     f"标题：{getattr(selected_event, 'title', '') or '未命名事件'}",
                     f"标的：{symbol or '无'}",
                     f"建议动作：{action_hint.button_label}",
@@ -4672,6 +5015,27 @@ class QuantHunterWindow(QMainWindow):
         combo = getattr(self, "recommend_message_center_filter_combo", None)
         if combo is not None and combo.currentIndex() >= 0:
             self.recommend_message_center_filter = str(combo.currentData() or "all")
+            if hasattr(self, "state"):
+                self.state.recommend_message_center_filter = self.recommend_message_center_filter
+            self.save_state()
+        self._refresh_recommend_message_center()
+
+    def _on_recommend_message_center_sort_changed(self) -> None:
+        combo = getattr(self, "recommend_message_center_sort_combo", None)
+        if combo is not None and combo.currentIndex() >= 0:
+            self.recommend_message_center_sort = str(combo.currentData() or "latest")
+            if hasattr(self, "state"):
+                self.state.recommend_message_center_sort = self.recommend_message_center_sort
+            self.save_state()
+        self._refresh_recommend_message_center()
+
+    def _on_recommend_message_center_unhandled_toggled(self) -> None:
+        checkbox = getattr(self, "recommend_message_center_unhandled_checkbox", None)
+        if isinstance(checkbox, QCheckBox):
+            self.recommend_message_center_show_unhandled_only = checkbox.isChecked()
+            if hasattr(self, "state"):
+                self.state.recommend_message_center_show_unhandled_only = self.recommend_message_center_show_unhandled_only
+            self.save_state()
         self._refresh_recommend_message_center()
 
     def _on_recommend_message_center_selection_changed(self) -> None:
@@ -4680,6 +5044,11 @@ class QuantHunterWindow(QMainWindow):
         if next_signature == getattr(self, "recommend_message_center_selected_signature", None):
             return
         self.recommend_message_center_selected_signature = next_signature
+        if next_signature is not None and current is not None and not bool(getattr(current, "is_read", False)):
+            updated = self._update_smart_message_event(next_signature, is_read=True)
+            if updated:
+                self._append_runtime_log("消息中心事件已标记为已读")
+                return
         self._refresh_recommend_message_center()
 
     def clear_recommend_message_center(self) -> None:
@@ -4691,11 +5060,54 @@ class QuantHunterWindow(QMainWindow):
         self._append_runtime_log("统一消息中心已清空")
         self.save_state()
 
+    def mark_all_recommend_messages_read(self) -> None:
+        unread_count = sum(1 for item in self.smart_message_events if not bool(getattr(item, "is_read", False)))
+        if unread_count <= 0:
+            self._append_runtime_log("消息中心没有可标记的未读事件")
+            return
+        updated = mark_all_message_events_read(self.smart_message_events)
+        if list(updated) == list(self.smart_message_events):
+            self._append_runtime_log("消息中心没有可标记的未读事件")
+            return
+        self.smart_message_events = list(updated)
+        self._refresh_recommend_message_center()
+        self._append_runtime_log(f"消息中心已将 {unread_count} 条事件标记为已读")
+        self.save_state()
+
+    def clear_handled_recommend_message_events(self) -> None:
+        remaining = remove_handled_message_events(self.smart_message_events)
+        removed = len(self.smart_message_events) - len(remaining)
+        if removed <= 0:
+            self._append_runtime_log("消息中心没有可清理的已处理事件")
+            return
+        self.smart_message_events = list(remaining)
+        self._recommend_message_center_visible_events = []
+        self.recommend_message_center_selected_signature = None
+        self._refresh_recommend_message_center()
+        self._append_runtime_log(f"消息中心已清理 {removed} 条已处理事件")
+        self.save_state()
+
+    def mark_selected_recommend_message_read(self) -> None:
+        event = self._selected_recommend_message_event()
+        signature = message_event_signature(event) if event is not None else None
+        if not self._update_smart_message_event(signature, is_read=True):
+            return
+        self._append_runtime_log("消息中心事件已标记为已读")
+
+    def mark_selected_recommend_message_handled(self) -> None:
+        event = self._selected_recommend_message_event()
+        signature = message_event_signature(event) if event is not None else None
+        if not self._update_smart_message_event(signature, is_read=True, is_handled=True):
+            return
+        self._append_runtime_log("消息中心事件已标记为已处理")
+
     def focus_selected_recommend_message_symbol(self) -> None:
         event = self._selected_recommend_message_event()
         symbol = str(getattr(event, "symbol", "") or "") if event is not None else ""
         if not symbol:
             return
+        signature = message_event_signature(event) if event is not None else None
+        self._update_smart_message_event(signature, is_read=True)
         if hasattr(self, "_focus_symbol_everywhere"):
             self._focus_symbol_everywhere(symbol, origin="recommend")
         else:
@@ -4706,6 +5118,8 @@ class QuantHunterWindow(QMainWindow):
         event = self._selected_recommend_message_event()
         if event is None:
             return
+        signature = message_event_signature(event)
+        self._update_smart_message_event(signature, is_read=True)
         symbol = str(getattr(event, "symbol", "") or "")
         workspace_key, widget_name, _route_label = self._message_event_route(event)
         if workspace_key == "broker":
@@ -5224,9 +5638,20 @@ class QuantHunterWindow(QMainWindow):
             return list(self.state.focus_themes)
         return [item.strip() for item in self.focus_themes_input.text().replace("，", ",").split(",") if item.strip()]
 
+    def _current_execution_profile(self) -> dict[str, object]:
+        return build_execution_quality_profile(
+            submission_records=list(getattr(self, "order_submission_records", []) or []),
+            holdings=list(getattr(self, "holdings", []) or []),
+            order_intents=list(getattr(self, "order_intents", []) or []),
+            order_log=list(getattr(self, "order_submission_log", []) or []),
+        )
+
+    def _current_execution_recap(self) -> dict[str, object]:
+        return dict(self._current_execution_profile().get("recap", {}) or {})
+
     def _current_strategy_budget_bias_map(self) -> dict[str, float]:
         paper_state = getattr(self, "paper_trading_state", getattr(self.state, "paper_trading_state", PaperTradingState()))
-        rows = build_strategy_rotation_snapshot(paper_state)
+        rows = build_strategy_rotation_snapshot(paper_state, execution_profile=self._current_execution_profile())
         return {
             str(item.get("strategy_name", "") or ""): float(item.get("budget_multiplier", 1.0) or 1.0)
             for item in rows
@@ -8030,6 +8455,7 @@ class QuantHunterWindow(QMainWindow):
         planned_quantity: str = "",
         planned_stop_price: str = "",
         planned_target_price: str = "",
+        strategy_name: str = "",
         opportunity_tier: str = "",
         planned_risk_reward_ratio: str = "",
         portfolio_fit_score: str = "",
@@ -8054,6 +8480,7 @@ class QuantHunterWindow(QMainWindow):
                 "planned_quantity": str(planned_quantity or ""),
                 "planned_stop_price": str(planned_stop_price or ""),
                 "planned_target_price": str(planned_target_price or ""),
+                "strategy_name": str(strategy_name or ""),
                 "opportunity_tier": str(opportunity_tier or ""),
                 "planned_risk_reward_ratio": str(planned_risk_reward_ratio or ""),
                 "portfolio_fit_score": str(portfolio_fit_score or ""),
@@ -9643,6 +10070,9 @@ class QuantHunterWindow(QMainWindow):
         risk_flag = getattr(current, "mainline_risk_flag", "") or "待评估"
         confidence = float(getattr(current, "confidence_score", 0.0) or 0.0)
         readiness = float(getattr(current, "execution_readiness", 0.0) or 0.0)
+        strategy_execution_label = str(getattr(current, "strategy_execution_quality_label", "") or "").strip()
+        strategy_execution_score = float(getattr(current, "strategy_execution_quality_score", 1.0) or 1.0)
+        strategy_execution_summary = str(getattr(current, "strategy_execution_review_summary", "") or "").strip()
 
         if hasattr(self, "recommend_dispatch_text"):
             dispatch_lines = [
@@ -9652,6 +10082,10 @@ class QuantHunterWindow(QMainWindow):
                 f"催化：{catalyst}",
                 f"分发建议：{next_focus}",
             ]
+            if strategy_execution_label:
+                dispatch_lines.append(f"战法执行：{strategy_execution_label} {strategy_execution_score:.2f}")
+                if strategy_execution_summary:
+                    dispatch_lines.append(f"降权解释：{strategy_execution_summary}")
             self._set_plain_text_if_changed(self.recommend_dispatch_text, "\n".join(dispatch_lines))
 
         if hasattr(self, "recommend_focus_review_text"):
@@ -9661,6 +10095,10 @@ class QuantHunterWindow(QMainWindow):
             ]
             review_lines.extend(recommendation_focus_lines(current))
             review_lines.append(f"核心理由：{rationale}")
+            if strategy_execution_label:
+                review_lines.append(f"战法执行：{strategy_execution_label} {strategy_execution_score:.2f}")
+                if strategy_execution_summary:
+                    review_lines.append(f"执行解释：{strategy_execution_summary}")
             self._set_plain_text_if_changed(self.recommend_focus_review_text, "\n".join(review_lines))
 
         if hasattr(self, "recommend_queue_text"):
@@ -9710,16 +10148,22 @@ class QuantHunterWindow(QMainWindow):
         action_label = self._display_action(getattr(current, "action", "WATCH"))
         readiness = float(getattr(current, "execution_readiness", 0.0) or 0.0)
         confidence = float(getattr(current, "confidence_score", 0.0) or 0.0)
+        strategy_execution_label = str(getattr(current, "strategy_execution_quality_label", "") or "").strip()
+        strategy_execution_score = float(getattr(current, "strategy_execution_quality_score", 1.0) or 1.0)
+        strategy_execution_summary = str(getattr(current, "strategy_execution_review_summary", "") or "").strip()
         if hasattr(self, "recommend_status_label"):
+            status_text = f"推荐状态：{current.stock_name} | {theme_name} | {action_label} | 执行准备 {readiness:.1f} | 置信 {confidence:.1f}"
+            if strategy_execution_label:
+                status_text = f"{status_text} | 战法 {strategy_execution_label} {strategy_execution_score:.2f}"
             self._set_label_text_if_changed(
                 self.recommend_status_label,
-                f"推荐状态：{current.stock_name} | {theme_name} | {action_label} | 执行准备 {readiness:.1f} | 置信 {confidence:.1f}"
+                status_text
             )
         if hasattr(self, "daily_pool_focus_label"):
-            self._set_label_text_if_changed(
-                self.daily_pool_focus_label,
-                f"当前焦点：{current.stock_name} | {getattr(current, 'opportunity_tier', '') or '待确认'} | 主线 {theme_name}"
-            )
+            focus_text = f"当前焦点：{current.stock_name} | {getattr(current, 'opportunity_tier', '') or '待确认'} | 主线 {theme_name}"
+            if strategy_execution_label in {"执行承压", "执行失真"}:
+                focus_text = f"{focus_text} | 战法 {strategy_execution_label}"
+            self._set_label_text_if_changed(self.daily_pool_focus_label, focus_text)
         self._refresh_workspace_status_labels()
 
     def _refresh_recommend_bucket_panels(self, row: RecommendationRow | None = None) -> None:
@@ -10881,8 +11325,10 @@ class QuantHunterWindow(QMainWindow):
         chart_series = getattr(self.market_screen_result, "chart_series_by_symbol", {}).get(symbol)
         snapshot = getattr(self.market_screen_result, "snapshots", {}).get(symbol)
         bars = self._market_chart_bars(symbol, snapshot, chart_series)
+        recommendation = next((item for item in getattr(self, "daily_pool_rows", []) if item.symbol == symbol), None)
         chart = QChart()
         timeframe = self._normalize_market_timeframe()
+        strategy_annotation_enabled = timeframe == "日线"
         self._style_dark_chart(chart, "日线主图" if timeframe == "日线" else f"{timeframe} 主图")
 
         candle_series = QCandlestickSeries()
@@ -10956,8 +11402,68 @@ class QuantHunterWindow(QMainWindow):
         candle_tag_down_series.setColor(QColor("#ff8f6b"))
         candle_tag_down_series.setBorderColor(QColor("#ffe1d6"))
         candle_tag_down_series.setMarkerSize(8.5)
+        strategy_buy_series = QScatterSeries()
+        strategy_buy_series.setName("战法买点")
+        strategy_buy_series.setColor(QColor("#4cf2a8"))
+        strategy_buy_series.setBorderColor(QColor("#edfff7"))
+        strategy_buy_series.setMarkerSize(13.0)
+        strategy_risk_series = QScatterSeries()
+        strategy_risk_series.setName("风险信号")
+        strategy_risk_series.setColor(QColor("#ff9c6a"))
+        strategy_risk_series.setBorderColor(QColor("#fff0e6"))
+        strategy_risk_series.setMarkerSize(11.0)
+        trade_entry_series = QScatterSeries()
+        trade_entry_series.setName("回测买入")
+        trade_entry_series.setColor(QColor("#7ed7ff"))
+        trade_entry_series.setBorderColor(QColor("#eff9ff"))
+        trade_entry_series.setMarkerSize(11.5)
+        trade_exit_profit_series = QScatterSeries()
+        trade_exit_profit_series.setName("回测止盈")
+        trade_exit_profit_series.setColor(QColor("#7fffb1"))
+        trade_exit_profit_series.setBorderColor(QColor("#effff5"))
+        trade_exit_profit_series.setMarkerSize(10.8)
+        trade_exit_risk_series = QScatterSeries()
+        trade_exit_risk_series.setName("回测止损")
+        trade_exit_risk_series.setColor(QColor("#ff7a7a"))
+        trade_exit_risk_series.setBorderColor(QColor("#fff0f0"))
+        trade_exit_risk_series.setMarkerSize(10.8)
+        trade_exit_neutral_series = QScatterSeries()
+        trade_exit_neutral_series.setName("回测卖出")
+        trade_exit_neutral_series.setColor(QColor("#ffd166"))
+        trade_exit_neutral_series.setBorderColor(QColor("#fff6da"))
+        trade_exit_neutral_series.setMarkerSize(10.4)
+        selected_signal_series = QScatterSeries()
+        selected_signal_series.setName("选中信号")
+        selected_signal_series.setColor(QColor("#ffe07a"))
+        selected_signal_series.setBorderColor(QColor("#fff7dd"))
+        selected_signal_series.setMarkerSize(15.0)
+        plan_entry_series = QLineSeries()
+        plan_entry_series.setName("计划买点")
+        plan_entry_series.setPen(QPen(QColor("#4cf2a8"), 1.4, Qt.DashLine))
+        plan_stop_series = QLineSeries()
+        plan_stop_series.setName("计划止损")
+        plan_stop_series.setPen(QPen(QColor("#ff7a7a"), 1.3, Qt.DashLine))
+        plan_target_series = QLineSeries()
+        plan_target_series.setName("计划止盈")
+        plan_target_series.setPen(QPen(QColor("#7ed7ff"), 1.3, Qt.DashLine))
 
-        visible_bars, _ = self._windowed_market_bars(symbol, bars, [])
+        analysis_source = list(getattr(self, "universe_analyses", {}).get(symbol, [])) if strategy_annotation_enabled else []
+        visible_bars, visible_analyses = self._windowed_market_bars(symbol, bars, analysis_source)
+        selected_signal = self._selected_detail_signal_snapshot() if symbol == getattr(self, "active_symbol", "") else None
+        active_trades = getattr(getattr(self, "last_backtest_result", None), "trades", [])
+        plan_levels = build_strategy_plan_levels(
+            recommendation=recommendation,
+            analyses=visible_analyses,
+            selected_signal_date=selected_signal.get("date", "") if selected_signal is not None else "",
+        ) if strategy_annotation_enabled else None
+        trade_markers = build_trade_markers(active_trades) if strategy_annotation_enabled and symbol == getattr(self, "active_symbol", "") else []
+        plan_source_name = {
+            "recommendation": "当前计划",
+            "selected_signal": "选中信号计划",
+            "latest_signal": "最近信号计划",
+        }.get(getattr(plan_levels, "source", ""), "策略计划")
+        annotation_lines_by_date: dict[str, list[str]] = {bar.date: [] for bar in visible_bars}
+        static_annotations: list[dict[str, object]] = []
         swing_points = self._market_swing_points(visible_bars)
         swing_point_by_index = {index: (kind, value, label) for index, kind, value, label in swing_points}
         dates = []
@@ -11065,6 +11571,30 @@ class QuantHunterWindow(QMainWindow):
                     candle_tag_up_series.append(ts, bar.close)
                 else:
                     candle_tag_down_series.append(ts, bar.close)
+            if strategy_annotation_enabled and index < len(visible_analyses):
+                analysis = visible_analyses[index]
+                if analysis.label == "RECLAIM_LONG":
+                    buy_price = float(analysis.entry_price or bar.close)
+                    strategy_buy_series.append(ts, buy_price)
+                    plan_parts = [f"战法买点: {self._display_label(analysis.label)}", f"买 {buy_price:.2f}"]
+                    if analysis.stop_price is not None:
+                        plan_parts.append(f"损 {analysis.stop_price:.2f}")
+                    if analysis.target_price is not None:
+                        plan_parts.append(f"目 {analysis.target_price:.2f}")
+                    if analysis.reason:
+                        plan_parts.append(analysis.reason)
+                    annotation_lines_by_date[bar.date].append(" | ".join(plan_parts))
+                elif analysis.label == "TRAP_DETECTED":
+                    strategy_risk_series.append(ts, bar.high)
+                    annotation_lines_by_date[bar.date].append(
+                        f"风险信号: {self._display_label(analysis.label)} | {analysis.reason}"
+                    )
+                if selected_signal is not None and bar.date == selected_signal.get("date", ""):
+                    highlight_price = float(analysis.entry_price or (bar.high if analysis.label == "TRAP_DETECTED" else bar.close))
+                    selected_signal_series.append(ts, highlight_price)
+                    annotation_lines_by_date[bar.date].append(
+                        f"当前聚焦: {self._display_label(analysis.label)} | 评分 {analysis.score}"
+                    )
             if "HIGHLOW" in self.market_overlay_modes and index in swing_point_by_index:
                 swing_kind, swing_value, _ = swing_point_by_index[index]
                 if swing_kind == "high":
@@ -11077,6 +11607,89 @@ class QuantHunterWindow(QMainWindow):
                 attack_series.append(ts, float(trade_zone["attack"]))
                 defense_series.append(ts, float(trade_zone["defense"]))
         latest_candle_tag_summary = self._latest_market_candle_tag_summary(visible_bars, breakout_values, breakout_states)
+        date_to_ts = {bar.date: dates[index] for index, bar in enumerate(visible_bars)}
+        if strategy_annotation_enabled:
+            for marker in trade_markers:
+                point_ts = date_to_ts.get(marker.date)
+                if point_ts is None:
+                    continue
+                if marker.kind == "entry":
+                    trade_entry_series.append(point_ts, marker.price)
+                elif marker.tone == "profit":
+                    trade_exit_profit_series.append(point_ts, marker.price)
+                elif marker.tone == "risk":
+                    trade_exit_risk_series.append(point_ts, marker.price)
+                else:
+                    trade_exit_neutral_series.append(point_ts, marker.price)
+                annotation_lines_by_date.setdefault(marker.date, []).append(f"{marker.label}: {marker.detail}")
+                chart_label = build_trade_marker_chart_label(marker)
+                if marker.kind == "exit" and chart_label:
+                    static_annotations.append(
+                        {
+                            "x": point_ts,
+                            "y": marker.price,
+                            "text": chart_label,
+                            "tone": marker.tone,
+                            "anchor": "below" if marker.tone == "risk" else "above",
+                            "dy": 8.0 if marker.tone == "risk" else -6.0,
+                        }
+                    )
+            if plan_levels is not None and dates:
+                plan_start_ts = date_to_ts.get(plan_levels.signal_date, dates[0])
+                plan_end_ts = dates[-1]
+                if plan_levels.entry_price is not None:
+                    plan_entry_series.append(plan_start_ts, plan_levels.entry_price)
+                    plan_entry_series.append(plan_end_ts, plan_levels.entry_price)
+                if plan_levels.stop_price is not None:
+                    plan_stop_series.append(plan_start_ts, plan_levels.stop_price)
+                    plan_stop_series.append(plan_end_ts, plan_levels.stop_price)
+                if plan_levels.target_price is not None:
+                    plan_target_series.append(plan_start_ts, plan_levels.target_price)
+                    plan_target_series.append(plan_end_ts, plan_levels.target_price)
+                if plan_levels.signal_date in annotation_lines_by_date:
+                    price_parts = [plan_source_name]
+                    if plan_levels.entry_price is not None:
+                        price_parts.append(f"买 {plan_levels.entry_price:.2f}")
+                    if plan_levels.stop_price is not None:
+                        price_parts.append(f"损 {plan_levels.stop_price:.2f}")
+                    if plan_levels.target_price is not None:
+                        price_parts.append(f"目 {plan_levels.target_price:.2f}")
+                    if plan_levels.reason:
+                        price_parts.append(plan_levels.reason)
+                    annotation_lines_by_date[plan_levels.signal_date].append(" | ".join(price_parts))
+                if plan_levels.entry_price is not None:
+                    static_annotations.append(
+                        {
+                            "x": plan_end_ts,
+                            "y": plan_levels.entry_price,
+                            "text": f"买点 {plan_levels.entry_price:.2f}",
+                            "tone": "plan_entry",
+                            "anchor": "right",
+                            "dy": 0.0,
+                        }
+                    )
+                if plan_levels.stop_price is not None:
+                    static_annotations.append(
+                        {
+                            "x": plan_end_ts,
+                            "y": plan_levels.stop_price,
+                            "text": f"止损 {plan_levels.stop_price:.2f}",
+                            "tone": "plan_stop",
+                            "anchor": "right",
+                            "dy": 12.0,
+                        }
+                    )
+                if plan_levels.target_price is not None:
+                    static_annotations.append(
+                        {
+                            "x": plan_end_ts,
+                            "y": plan_levels.target_price,
+                            "text": f"止盈 {plan_levels.target_price:.2f}",
+                            "tone": "plan_target",
+                            "anchor": "right",
+                            "dy": -12.0,
+                        }
+                    )
 
         chart.addSeries(candle_series)
         if "MA" in self.market_overlay_modes and ma_fast_series.count():
@@ -11108,6 +11721,26 @@ class QuantHunterWindow(QMainWindow):
             chart.addSeries(breakout_up_series)
         if "BREAK" in self.market_overlay_modes and breakout_down_series.count():
             chart.addSeries(breakout_down_series)
+        if strategy_annotation_enabled and plan_entry_series.count():
+            chart.addSeries(plan_entry_series)
+        if strategy_annotation_enabled and plan_stop_series.count():
+            chart.addSeries(plan_stop_series)
+        if strategy_annotation_enabled and plan_target_series.count():
+            chart.addSeries(plan_target_series)
+        if strategy_annotation_enabled and strategy_buy_series.count():
+            chart.addSeries(strategy_buy_series)
+        if strategy_annotation_enabled and strategy_risk_series.count():
+            chart.addSeries(strategy_risk_series)
+        if strategy_annotation_enabled and trade_entry_series.count():
+            chart.addSeries(trade_entry_series)
+        if strategy_annotation_enabled and trade_exit_profit_series.count():
+            chart.addSeries(trade_exit_profit_series)
+        if strategy_annotation_enabled and trade_exit_risk_series.count():
+            chart.addSeries(trade_exit_risk_series)
+        if strategy_annotation_enabled and trade_exit_neutral_series.count():
+            chart.addSeries(trade_exit_neutral_series)
+        if strategy_annotation_enabled and selected_signal_series.count():
+            chart.addSeries(selected_signal_series)
 
         axis_x = QDateTimeAxis()
         axis_x.setFormat(self._market_axis_format(timeframe))
@@ -11119,6 +11752,23 @@ class QuantHunterWindow(QMainWindow):
         if highs and lows:
             low = min(lows)
             high = max(highs)
+            annotation_prices = []
+            if strategy_annotation_enabled:
+                annotation_prices.extend(
+                    marker.price for marker in trade_markers if marker.date in date_to_ts and marker.price > 0
+                )
+                annotation_prices.extend(
+                    price
+                    for price in (
+                        getattr(plan_levels, "entry_price", None),
+                        getattr(plan_levels, "stop_price", None),
+                        getattr(plan_levels, "target_price", None),
+                    )
+                    if price is not None
+                )
+            if annotation_prices:
+                low = min(low, *annotation_prices)
+                high = max(high, *annotation_prices)
             if trade_zone is not None:
                 low = min(low, float(trade_zone["defense"]), float(trade_zone["watch_low"]))
                 high = max(high, float(trade_zone["attack"]), float(trade_zone["watch_high"]))
@@ -11150,6 +11800,26 @@ class QuantHunterWindow(QMainWindow):
             attach_series.append(breakout_up_series)
         if "BREAK" in self.market_overlay_modes and breakout_down_series.count():
             attach_series.append(breakout_down_series)
+        if strategy_annotation_enabled and plan_entry_series.count():
+            attach_series.append(plan_entry_series)
+        if strategy_annotation_enabled and plan_stop_series.count():
+            attach_series.append(plan_stop_series)
+        if strategy_annotation_enabled and plan_target_series.count():
+            attach_series.append(plan_target_series)
+        if strategy_annotation_enabled and strategy_buy_series.count():
+            attach_series.append(strategy_buy_series)
+        if strategy_annotation_enabled and strategy_risk_series.count():
+            attach_series.append(strategy_risk_series)
+        if strategy_annotation_enabled and trade_entry_series.count():
+            attach_series.append(trade_entry_series)
+        if strategy_annotation_enabled and trade_exit_profit_series.count():
+            attach_series.append(trade_exit_profit_series)
+        if strategy_annotation_enabled and trade_exit_risk_series.count():
+            attach_series.append(trade_exit_risk_series)
+        if strategy_annotation_enabled and trade_exit_neutral_series.count():
+            attach_series.append(trade_exit_neutral_series)
+        if strategy_annotation_enabled and selected_signal_series.count():
+            attach_series.append(selected_signal_series)
         for series in attach_series:
             series.attachAxis(axis_x)
             series.attachAxis(axis_y)
@@ -11191,6 +11861,7 @@ class QuantHunterWindow(QMainWindow):
                 if candle_tags[index] is not None:
                     detail = candle_tag_details[index] or "等待细节补充"
                     lines.append(f"关键K线: {candle_tags[index]} | {detail}")
+                lines.extend(annotation_lines_by_date.get(bar.date, []))
                 if index == len(visible_bars) - 1:
                     lines.append(structure_summary)
                     lines.append(rhythm_summary)
@@ -11207,6 +11878,7 @@ class QuantHunterWindow(QMainWindow):
                 y_values=closes,
                 hover_keys=hover_keys,
                 hover_payloads=hover_payloads,
+                static_annotations=static_annotations,
             )
         self._connect_market_chart_hover_links()
 
@@ -20792,6 +21464,7 @@ def _qh_refresh_detail_workspace_panels(self: QuantHunterWindow) -> None:
                     f"总收益：{float(getattr(strategy_history_summary, 'total_return', 0.0) or 0.0):.2%} | 胜率：{float(getattr(strategy_history_summary, 'win_rate', 0.0) or 0.0):.2%} | 最大回撤：{float(getattr(strategy_history_summary, 'max_drawdown', 0.0) or 0.0):.2%}",
                     f"信号 {int(getattr(strategy_history_summary, 'signal_count', 0) or 0)} | 成交 {int(getattr(strategy_history_summary, 'trade_count', 0) or 0)} | 成交率 {float(getattr(strategy_history_summary, 'filled_ratio', 0.0) or 0.0):.2%} | 平均持有 {float(getattr(strategy_history_summary, 'avg_hold_days', 0.0) or 0.0):.2f} 天",
                     f"收益因子 {float(getattr(strategy_history_summary, 'profit_factor', 0.0) or 0.0):.2f} | 盈亏比 {float(getattr(strategy_history_summary, 'payoff_ratio', 0.0) or 0.0):.2f} | 最大连赢 {int(getattr(strategy_history_summary, 'max_consecutive_wins', 0) or 0)} | 最大连亏 {int(getattr(strategy_history_summary, 'max_consecutive_losses', 0) or 0)}",
+                    f"执行画像 {getattr(strategy_history_summary, 'execution_quality_label', '') or '待接实盘'} {float(getattr(strategy_history_summary, 'execution_quality_score', 1.0) or 1.0):.2f} | 样本 {int(getattr(strategy_history_summary, 'execution_sample_count', 0) or 0)}",
                     f"最大单笔收益 {float(getattr(strategy_history_summary, 'best_trade_return', 0.0) or 0.0):.2%} | 最大单笔亏损 {float(getattr(strategy_history_summary, 'worst_trade_return', 0.0) or 0.0):.2%}",
                     f"止盈 {int(getattr(strategy_history_summary, 'target_hits', 0) or 0)} | 止损 {int(getattr(strategy_history_summary, 'stop_hits', 0) or 0)} | 超时 {int(getattr(strategy_history_summary, 'timeout_exits', 0) or 0)}",
                 ]
@@ -20867,6 +21540,11 @@ def _qh_refresh_detail_workspace_panels(self: QuantHunterWindow) -> None:
             lines.append(f"成交：{selected_trade['entry_price']} -> {selected_trade['exit_price']} | {selected_trade['exit_reason']}")
         if strategy_history_summary is not None:
             lines.append(f"历史纪律：成交率 {float(getattr(strategy_history_summary, 'filled_ratio', 0.0) or 0.0):.2%} | 平均持有 {float(getattr(strategy_history_summary, 'avg_hold_days', 0.0) or 0.0):.2f} 天")
+            lines.append(
+                f"历史执行：{getattr(strategy_history_summary, 'execution_quality_label', '') or '待接实盘'} "
+                f"{float(getattr(strategy_history_summary, 'execution_quality_score', 1.0) or 1.0):.2f} | "
+                f"{str(getattr(strategy_history_summary, 'execution_review_summary', '') or '等待真实执行样本补齐。')}"
+            )
             lines.append(
                 f"连续性：最大连赢 {int(getattr(strategy_history_summary, 'max_consecutive_wins', 0) or 0)} | 最大连亏 {int(getattr(strategy_history_summary, 'max_consecutive_losses', 0) or 0)}"
             )
@@ -22870,12 +23548,20 @@ def _qh_recommend_execution_summary_v24(self: QuantHunterWindow, recommendation)
     execution_status = str(getattr(recommendation, "execution_status", "") or "").strip()
     risk_flag = str(getattr(recommendation, "mainline_risk_flag", "") or "").strip()
     readiness = float(getattr(recommendation, "execution_readiness", 0.0) or 0.0)
+    strategy_execution_label = str(getattr(recommendation, "strategy_execution_quality_label", "") or "").strip()
+    strategy_execution_summary = str(getattr(recommendation, "strategy_execution_review_summary", "") or "").strip()
     if execution_status == "已提交":
         return ("已进入交易执行", "委托已提交，优先去交易页跟踪回执和成交。", False, True)
     if execution_status == "已送审":
         return ("等待送审确认", "已进入送审链路，优先跟踪确认结果。", False, True)
     if execution_status == "提交失败":
         return ("需要复核后重试", "送审或提交失败，先回看风险和委托参数。", True, True)
+    if strategy_execution_label == "执行失真" and action == "BUY":
+        detail = strategy_execution_summary or "这套战法最近真实执行失真，先回看委托偏差，再决定是否推进。"
+        return ("先修执行，再谈推进", detail, False, False)
+    if strategy_execution_label == "执行承压" and action == "BUY":
+        detail = strategy_execution_summary or "这套战法最近真实执行承压，先降优先级再看确认。"
+        return ("先降优先级，再看确认", detail, False, True)
     if signal == "防切换" or action in {"SELL", "REDUCE"}:
         return ("先防守，处理风险", f"{action_text}优先，按风险计划处理。", action in {"SELL", "REDUCE"}, True)
     if action == "BUY" and signal == "继续跟" and risk_flag != "高" and readiness >= 55:
@@ -25254,7 +25940,13 @@ def _qh_refresh_paper_trading_panels_v17(self: QuantHunterWindow) -> None:
     self.paper_metric_labels["equity"].setText(f"{float(state.total_equity or 0.0):,.0f}")
     self.paper_metric_labels["realized"].setText(f"{float(state.realized_pnl or 0.0):,.0f}")
     self.paper_metric_labels["return"].setText(f"{float(state.total_return or 0.0):.2%}")
-    analytics = summarize_paper_trading_performance(state)
+    execution_profile = self._current_execution_profile() if hasattr(self, "_current_execution_profile") else {}
+    execution_recap = dict(execution_profile.get("recap", {}) or {})
+    analytics = summarize_paper_trading_performance(
+        state,
+        execution_recap=execution_recap,
+        execution_profile=execution_profile,
+    )
     self.paper_metric_labels["win_rate"].setText(f"{float(analytics.get('win_rate', 0.0) or 0.0):.1%}")
     self.paper_metric_labels["closed"].setText(str(int(analytics.get("closed_trade_count", 0) or 0)))
     self.paper_metric_labels["positions"].setText(str(len(getattr(state, "positions", []) or [])))
@@ -25333,7 +26025,11 @@ def _qh_refresh_paper_trading_panels_v17(self: QuantHunterWindow) -> None:
         self.paper_ledger_table.setUpdatesEnabled(ledger_updates_enabled)
 
     strategy_rows = list(analytics.get("strategy_rows", []) or [])
-    rotation_rows = build_strategy_rotation_snapshot(state)
+    rotation_rows = build_strategy_rotation_snapshot(
+        state,
+        execution_recap=execution_recap,
+        execution_profile=execution_profile,
+    )
     rotation_map = {str(item.get("strategy_name", "") or ""): item for item in rotation_rows}
     experiment_context_map = _qh_paper_experiment_table_context_v44(analytics, rotation_rows)
     strategy_updates_enabled = self.paper_strategy_table.updatesEnabled()
@@ -25450,11 +26146,15 @@ def _qh_refresh_paper_trading_panels_v17(self: QuantHunterWindow) -> None:
         f"- 可用资金：{float(state.cash or 0.0):,.2f} | 总权益：{float(state.total_equity or 0.0):,.2f} | 累计收益率：{float(state.total_return or 0.0):.2%}",
         f"- 闭环单：{int(analytics.get('closed_trade_count', 0) or 0)} | 胜率：{float(analytics.get('win_rate', 0.0) or 0.0):.2%} | 平均单笔已实现：{float(analytics.get('avg_realized_pnl', 0.0) or 0.0):,.2f}",
     ]
+    if bool(analytics.get("execution_quality_available", False)):
+        lines.append(f"- 真实执行：{str(analytics.get('execution_review_summary', '') or '')}")
     if rotation_rows:
         lead_rotation = rotation_rows[0]
         lines.append(
             f"- 本轮实验：主测 {lead_rotation['strategy_name']} | 倾向 {lead_rotation['bias_label']} x{float(lead_rotation['budget_multiplier']):.2f} | 样本 {int(lead_rotation['sample_count'] or 0)}"
         )
+        if str(lead_rotation.get("execution_guard", "") or "").strip():
+            lines.append(f"- 预算闸门：{lead_rotation['execution_guard']}")
         if len(rotation_rows) > 1:
             follow_rotation = rotation_rows[1]
             lines.append(
@@ -25602,10 +26302,13 @@ def _qh_export_paper_trading_report_v17(self: QuantHunterWindow) -> None:
         QMessageBox.information(self, "提示", "当前模拟盘还没有成交或持仓，先运行一轮再导出。")
         return
     output_dir = self._paper_trading_output_dir()
+    execution_profile = self._current_execution_profile() if hasattr(self, "_current_execution_profile") else {}
     artifacts = export_paper_trading_report(
         state,
         output_dir=output_dir,
         exported_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        execution_recap=dict(execution_profile.get("recap", {}) or {}),
+        execution_profile=execution_profile,
     )
     self._set_plain_text_if_changed(
         self.paper_trading_text,
@@ -25807,6 +26510,9 @@ def _qh_save_state_v17(self: QuantHunterWindow) -> None:
     self.state.ai_review_auto_run_on_news_refresh = auto_on_news
     self.state.ai_review_auto_run_on_pool_refresh = auto_on_pool
     self.state.smart_message_events = [asdict(item) for item in list(getattr(self, "smart_message_events", []) or [])[-MESSAGE_CENTER_MAX_EVENTS:]]
+    self.state.recommend_message_center_filter = str(getattr(self, "recommend_message_center_filter", "all") or "all")
+    self.state.recommend_message_center_show_unhandled_only = bool(getattr(self, "recommend_message_center_show_unhandled_only", False))
+    self.state.recommend_message_center_sort = str(getattr(self, "recommend_message_center_sort", "latest") or "latest")
     save_app_state(
         STATE_FILE,
         AppState(
@@ -25853,6 +26559,9 @@ def _qh_save_state_v17(self: QuantHunterWindow) -> None:
             order_submission_log=list(getattr(self, "order_submission_log", []) or [])[-200:],
             order_submission_records=list(getattr(self, "order_submission_records", []) or [])[-500:],
             smart_message_events=[asdict(item) for item in list(getattr(self, "smart_message_events", []) or [])[-MESSAGE_CENTER_MAX_EVENTS:]],
+            recommend_message_center_filter=str(getattr(self, "recommend_message_center_filter", "all") or "all"),
+            recommend_message_center_show_unhandled_only=bool(getattr(self, "recommend_message_center_show_unhandled_only", False)),
+            recommend_message_center_sort=str(getattr(self, "recommend_message_center_sort", "latest") or "latest"),
         ),
     )
 
@@ -28431,6 +29140,9 @@ def _qh_refresh_recommend_focus_status_v23(self: QuantHunterWindow, row: Recomme
     if current is not None:
         runtime_phase, runtime_hint = tail_buy_runtime_status(current)
     portfolio_fit = float(getattr(current, "portfolio_fit_score", 0.0) or 0.0) if current is not None else 0.0
+    strategy_execution_label = str(getattr(current, "strategy_execution_quality_label", "") or "").strip() if current is not None else ""
+    strategy_execution_score = float(getattr(current, "strategy_execution_quality_score", 1.0) or 1.0) if current is not None else 1.0
+    strategy_execution_summary = str(getattr(current, "strategy_execution_review_summary", "") or "").strip() if current is not None else ""
     portfolio_health = str((getattr(self, "last_daily_pool_meta", {}) or {}).get("portfolio_health_text", "") or "")
     total_rows = len(getattr(self, "daily_pool_rows", []) or [])
     symbol = str(getattr(current, "symbol", "") or "") if current is not None else ""
@@ -28483,6 +29195,10 @@ def _qh_refresh_recommend_focus_status_v23(self: QuantHunterWindow, row: Recomme
         base_text = (getattr(label, "text", lambda: "")() or "").strip()
         if base_text and "组合适配" not in base_text:
             self._set_label_text_if_changed(label, f"{base_text} | 组合适配 {portfolio_fit:.0f}")
+    if label is not None and current is not None and strategy_execution_label:
+        base_text = (getattr(label, "text", lambda: "")() or "").strip()
+        if base_text and "战法" not in base_text:
+            self._set_label_text_if_changed(label, f"{base_text} | 战法 {strategy_execution_label}")
     if label is not None:
         if current is None:
             _qh_set_tooltip_v7(label, "推荐状态：等待高优先候选同步后，再查看送审理由、价格计划和催化消息。")
@@ -28499,6 +29215,12 @@ def _qh_refresh_recommend_focus_status_v23(self: QuantHunterWindow, row: Recomme
                         f"焦点：{stock_name} ({stock_id} / {symbol})",
                         f"主线：{theme_name} | 动作：{action_text}",
                         f"组合：适配 {portfolio_fit:.0f} | {portfolio_health or '组合回测待生成'}",
+                        (
+                            f"战法：{strategy_execution_label} {strategy_execution_score:.2f} | "
+                            f"{strategy_execution_summary or '战法执行样本待补齐'}"
+                            if strategy_execution_label
+                            else "战法：执行画像待同步"
+                        ),
                         f"价格计划：{price_brief}",
                         f"尾盘阶段：{runtime_phase or '常规观察'}",
                         f"执行节奏：{runtime_hint or '先核对送审理由、价格计划和消息催化。'}",
@@ -31236,12 +31958,17 @@ def _qh_recommend_primary_cta_v38(
 ) -> tuple[str, str]:
     reject_reason = str(getattr(current, "reject_reason", "") or "").strip()
     next_focus = str(getattr(current, "next_focus", "") or "").strip()
+    strategy_execution_label = str(getattr(current, "strategy_execution_quality_label", "") or "").strip()
     if execution_state == "已提交":
         return ("去交易页盯回执", "这只票已经进入提交/回执阶段，优先确认成交结果、偏差和后续处理。")
     if execution_state == "已送审":
         return ("先盯送审结果", "当前已经送审，先确认是否通过，再决定是否切到交易执行。")
     if execution_state == "提交失败":
         return ("先回看失败原因", f"先处理失败原因和参数偏差，再决定是否重试。{execution_summary}")
+    if strategy_execution_label == "执行失真":
+        return ("先修执行，再谈推进", execution_summary or "这套战法最近真实执行失真，先回看委托偏差。")
+    if strategy_execution_label == "执行承压":
+        return ("先降优先级，再看确认", execution_summary or "这套战法最近真实执行承压，先降优先级再看确认。")
     if can_submit:
         return ("推进送审", "当前条件已经比较齐，先送审，再去交易页复核委托和仓位。")
     if reject_reason:

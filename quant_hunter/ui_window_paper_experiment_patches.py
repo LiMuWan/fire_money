@@ -38,6 +38,7 @@ except ModuleNotFoundError:  # pragma: no cover - enables pure-logic imports wit
         pass
 
 from quant_hunter.models import PaperTradingState
+from quant_hunter.broker import build_execution_quality_profile, summarize_trade_recap
 from quant_hunter.paper_trading import build_strategy_rotation_snapshot, summarize_paper_trading_performance
 
 
@@ -93,6 +94,9 @@ def paper_experiment_role_specs_v43(
                 f"{bias_label} x{multiplier:.2f} | 样本 {sample_count} | 胜率 {win_rate:.1%} | "
                 f"已实现 {realized:,.0f} | {next_step}"
             )
+            execution_guard = str(rotation.get("execution_guard", "") or "")
+            if execution_guard:
+                detail = f"{detail} | {execution_guard}"
         else:
             strategy_name = "待补样本"
             if slot_key == "lead":
@@ -239,11 +243,30 @@ def paper_strategy_experiment_bridge_v45(
     *,
     analytics: dict[str, object] | None = None,
     rotation_rows: list[dict[str, object]] | None = None,
+    execution_recap: dict[str, object] | None = None,
+    execution_profile: dict[str, object] | None = None,
 ) -> dict[str, str]:
     canonical_strategy = _canonical_paper_strategy_name_v45(strategy_name) or "掘龙决策"
     paper_state = state if isinstance(state, PaperTradingState) else PaperTradingState()
-    experiment_analytics = analytics if analytics is not None else summarize_paper_trading_performance(paper_state)
-    experiment_rows = rotation_rows if rotation_rows is not None else build_strategy_rotation_snapshot(paper_state)
+    profile = dict(execution_profile or {})
+    experiment_analytics = (
+        analytics
+        if analytics is not None
+        else summarize_paper_trading_performance(
+            paper_state,
+            execution_recap=execution_recap,
+            execution_profile=profile,
+        )
+    )
+    experiment_rows = (
+        rotation_rows
+        if rotation_rows is not None
+        else build_strategy_rotation_snapshot(
+            paper_state,
+            execution_recap=execution_recap,
+            execution_profile=profile,
+        )
+    )
 
     if not getattr(paper_state, "enabled", False):
         return {
@@ -280,6 +303,19 @@ def paper_strategy_experiment_bridge_v45(
     win_rate = float(context.get("win_rate", 0.0) or 0.0)
     avg_hold_days = float(context.get("avg_hold_days", 0.0) or 0.0)
     budget_multiplier = float(context.get("budget_multiplier", 1.0) or 1.0)
+    execution_label = str(experiment_analytics.get("execution_quality_label", "") or "")
+    execution_summary = str(experiment_analytics.get("execution_review_summary", "") or "")
+    execution_available = bool(experiment_analytics.get("execution_quality_available", False))
+    strategy_quality_map = {
+        str(key): dict(value or {})
+        for key, value in dict(profile.get("strategy_quality_map", {}) or {}).items()
+        if str(key).strip()
+    }
+    strategy_execution = strategy_quality_map.get(canonical_strategy, {})
+    if strategy_execution:
+        execution_label = str(strategy_execution.get("execution_quality_label", execution_label) or execution_label)
+        execution_summary = str(strategy_execution.get("execution_quality_summary", execution_summary) or execution_summary)
+        execution_available = bool(strategy_execution.get("execution_quality_available", execution_available))
 
     if role_label == "主测":
         cta = "推荐页优先筛同战法前排，交易页按主测纪律推进，但先别因为单票强弱临时改打法。"
@@ -290,10 +326,16 @@ def paper_strategy_experiment_bridge_v45(
     else:
         cta = "先把它放在推荐页备选区观察，等样本和胜率继续抬升后再进入交易链路。"
 
+    detail = f"样本 {sample_count} | 胜率 {win_rate:.1%} | 平均持有 {avg_hold_days:.1f} 天 | 预算 x{budget_multiplier:.2f}"
+    if execution_available and execution_label:
+        detail = f"{detail} | 实盘 {execution_label}"
+        if execution_summary:
+            cta = f"{cta.rstrip('。')}；{execution_summary}"
+
     return {
         "badge": role_label,
         "title": f"{role_label} | {canonical_strategy} | {decision}",
-        "detail": f"样本 {sample_count} | 胜率 {win_rate:.1%} | 平均持有 {avg_hold_days:.1f} 天 | 预算 x{budget_multiplier:.2f}",
+        "detail": detail,
         "cta": cta,
     }
 
@@ -346,8 +388,27 @@ def apply_paper_experiment_patches(
         if not isinstance(role_labels, dict) or not role_labels:
             return
         state = getattr(self, "paper_trading_state", getattr(self.state, "paper_trading_state", PaperTradingState()))
-        analytics = summarize_paper_trading_performance(state)
-        rotation_rows = build_strategy_rotation_snapshot(state)
+        execution_profile = (
+            self._current_execution_profile()
+            if hasattr(self, "_current_execution_profile")
+            else build_execution_quality_profile(
+                submission_records=list(getattr(self, "order_submission_records", []) or []),
+                holdings=list(getattr(self, "holdings", []) or []),
+                order_intents=list(getattr(self, "order_intents", []) or []),
+                order_log=list(getattr(self, "order_submission_log", []) or []),
+            )
+        )
+        execution_recap = dict(execution_profile.get("recap", {}) or {})
+        analytics = summarize_paper_trading_performance(
+            state,
+            execution_recap=execution_recap,
+            execution_profile=execution_profile,
+        )
+        rotation_rows = build_strategy_rotation_snapshot(
+            state,
+            execution_recap=execution_recap,
+            execution_profile=execution_profile,
+        )
         specs = paper_experiment_role_specs_v43(
             state,
             analytics,

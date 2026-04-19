@@ -110,6 +110,7 @@ class DailyPoolBuilder:
         focus_themes: list[str] | None = None,
         focus_theme_boost: float = 0.0,
         strategy_bias_by_name: dict[str, float] | None = None,
+        strategy_execution_profile_by_name: dict[str, dict[str, object]] | None = None,
         risk_profile: str | None = None,
         risk_controls: RiskControls | None = None,
     ) -> None:
@@ -119,6 +120,11 @@ class DailyPoolBuilder:
         self.focus_themes = tuple(item.strip() for item in (focus_themes or []) if item.strip())
         self.focus_theme_boost = max(focus_theme_boost, 0.0)
         self.strategy_bias_by_name = {str(key).strip(): float(value or 0.0) for key, value in (strategy_bias_by_name or {}).items() if str(key).strip()}
+        self.strategy_execution_profile_by_name = {
+            str(key).strip(): dict(value or {})
+            for key, value in (strategy_execution_profile_by_name or {}).items()
+            if str(key).strip()
+        }
         self.risk_profile = normalize_risk_profile(risk_profile)
         self.risk_controls = risk_controls or resolve_risk_controls(self.risk_profile)
         self.last_theme_rows = []
@@ -167,6 +173,13 @@ class DailyPoolBuilder:
                 leader_score=leader_score,
                 catalyst=catalyst,
             )
+            primary_strategy = str(strategy_scores.get("primary_strategy", "") or "")
+            strategy_execution = self._strategy_execution_context(primary_strategy)
+            strategy_execution_available = bool(strategy_execution.get("execution_quality_available", False))
+            strategy_execution_score = float(strategy_execution.get("execution_quality_score", 1.0) or 1.0)
+            strategy_execution_label = str(strategy_execution.get("execution_quality_label", "") or "")
+            strategy_execution_penalty = float(strategy_execution.get("execution_quality_penalty", 0.0) or 0.0)
+            strategy_execution_summary = str(strategy_execution.get("execution_quality_summary", "") or "")
             pool_profile = self._stock_pool_profile(
                 row=row,
                 profile=profile,
@@ -210,6 +223,13 @@ class DailyPoolBuilder:
                 f"打板 {strategy_scores['board_attack_score']:.0f} / 低吸 {strategy_scores['value_recovery_score']:.0f} / "
                 f"尾盘 {strategy_scores['tail_buy_score']:.0f} / 一日 {strategy_scores['one_day_hold_score']:.0f} / 决策 {strategy_scores['dragon_decision_score']:.0f})"
             )
+            if strategy_execution_available and strategy_execution_label:
+                execution_reason = f"战法执行 {strategy_execution_label} {strategy_execution_score:.2f}"
+                if strategy_execution_penalty > 0:
+                    execution_reason = f"{execution_reason} | 惩罚 {strategy_execution_penalty:.2f}"
+                reasons.append(execution_reason)
+                if strategy_execution_label in {"执行承压", "执行失真"} and strategy_execution_summary:
+                    reasons.append(f"战法执行提示 {strategy_execution_summary}")
             reasons.append(
                 f"股票池 {pool_profile['stock_pool']} | 买点 {pool_profile['buy_point']} | 卖点 {pool_profile['sell_point']}"
             )
@@ -229,11 +249,16 @@ class DailyPoolBuilder:
                     position_score=position_score,
                     persistence_score=persistence_score,
                     backtest_quality_score=backtest_quality_score,
+                    strategy_execution_quality_available=strategy_execution_available,
+                    strategy_execution_quality_score=strategy_execution_score,
+                    strategy_execution_quality_label=strategy_execution_label,
+                    strategy_execution_penalty=strategy_execution_penalty,
+                    strategy_execution_review_summary=strategy_execution_summary,
                     news_score=news_score,
                     leader_score=leader_score,
                     total_score=total_score,
                     theme_name=theme_name,
-                    primary_strategy=strategy_scores["primary_strategy"],
+                    primary_strategy=primary_strategy,
                     stock_pool=pool_profile["stock_pool"],
                     pool_score=pool_profile["pool_score"],
                     buy_point=pool_profile["buy_point"],
@@ -265,6 +290,26 @@ class DailyPoolBuilder:
         self.last_leader_rows = leader_rows
         final_rows = themed_candidates[:top_n]
         portfolio_health_score = self._portfolio_health_score(portfolio_backtest)
+        strategy_execution_focus = ""
+        strategy_execution_detail = ""
+        execution_rows = [item for item in final_rows if getattr(item, "strategy_execution_quality_available", False)]
+        if execution_rows:
+            priority_map = {"执行失真": 3, "执行承压": 2, "轻微偏差": 1, "执行稳定": 0}
+            focus_row = sorted(
+                execution_rows,
+                key=lambda item: (
+                    priority_map.get(str(getattr(item, "strategy_execution_quality_label", "") or ""), -1),
+                    float(getattr(item, "strategy_execution_penalty", 0.0) or 0.0),
+                    float(getattr(item, "total_score", 0.0) or 0.0),
+                ),
+                reverse=True,
+            )[0]
+            strategy_execution_focus = (
+                f"{getattr(focus_row, 'primary_strategy', '') or '掘龙决策'} "
+                f"{getattr(focus_row, 'strategy_execution_quality_label', '') or '待接实盘'} "
+                f"{float(getattr(focus_row, 'strategy_execution_quality_score', 1.0) or 1.0):.2f}"
+            ).strip()
+            strategy_execution_detail = str(getattr(focus_row, "strategy_execution_review_summary", "") or "").strip()
         self.last_build_meta = {
             "risk_profile": self.risk_profile,
             "risk_profile_brief": risk_profile_brief(self.risk_profile),
@@ -282,6 +327,8 @@ class DailyPoolBuilder:
             "portfolio_max_drawdown": round(float(getattr(portfolio_backtest, "max_drawdown", 0.0) or 0.0), 4),
             "portfolio_avg_exposure": round(float(getattr(portfolio_backtest, "avg_exposure", 0.0) or 0.0), 4),
             "portfolio_max_concurrent_positions": int(getattr(portfolio_backtest, "max_concurrent_positions", 0) or 0),
+            "strategy_execution_focus": strategy_execution_focus,
+            "strategy_execution_detail": strategy_execution_detail,
         }
         return final_rows
 
@@ -580,6 +627,11 @@ class DailyPoolBuilder:
     def _strategy_rotation_bias(self, strategy_name: str) -> float:
         raw = float(self.strategy_bias_by_name.get(strategy_name, 0.0) or 0.0)
         return max(min(raw * 8.0, 6.0), -6.0)
+
+    def _strategy_execution_context(self, strategy_name: str) -> dict[str, object]:
+        if not strategy_name:
+            return {}
+        return dict(self.strategy_execution_profile_by_name.get(strategy_name, {}) or {})
 
     def _strategy_scores(
         self,

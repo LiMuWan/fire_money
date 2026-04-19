@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .decision import DecisionEngine
+from .execution_quality import build_execution_quality_snapshot
 from .models import (
     HoldingRecord,
     PaperEquityPoint,
@@ -206,10 +207,16 @@ def _build_recent_experiment_summary(state: PaperTradingState) -> dict[str, obje
     }
 
 
+def _execution_quality_snapshot(execution_recap: dict[str, object] | None) -> dict[str, object]:
+    return build_execution_quality_snapshot(execution_recap)
+
+
 def describe_strategy_experiment(
     state: PaperTradingState,
     analytics: dict[str, object],
     rotation_rows: list[dict[str, float | int | str]],
+    execution_recap: dict[str, object] | None = None,
+    execution_profile: dict[str, object] | None = None,
 ) -> dict[str, object]:
     win_rate = float(analytics.get("win_rate", 0.0) or 0.0)
     avg_hold_days = float(analytics.get("avg_hold_days", 0.0) or 0.0)
@@ -229,6 +236,17 @@ def describe_strategy_experiment(
     )
     if hold_note:
         risk_summary = f"{risk_summary} | {hold_note}"
+    profile = dict(execution_profile or {})
+    execution_summary = _execution_quality_snapshot(execution_recap or profile.get("recap"))
+    execution_label = str(analytics.get("execution_quality_label", execution_summary["label"]) or execution_summary["label"])
+    execution_review_summary = str(
+        analytics.get("execution_review_summary", execution_summary["summary"]) or execution_summary["summary"]
+    )
+    strategy_quality_map = {
+        str(key): dict(value or {})
+        for key, value in dict(profile.get("strategy_quality_map", {}) or {}).items()
+        if str(key).strip()
+    }
 
     top_strategies: list[dict[str, object]] = []
     for entry in (rotation_rows or [])[:3]:
@@ -241,8 +259,18 @@ def describe_strategy_experiment(
                 "sample_count": int(entry.get("sample_count", 0) or 0),
                 "avg_hold_days": float(entry.get("avg_hold_days", 0.0) or 0.0),
                 "realized_pnl": float(entry.get("realized_pnl", 0.0) or 0.0),
+                "execution_guard": str(entry.get("execution_guard", "") or ""),
             }
         )
+    primary_strategy_name = str(top_strategies[0]["strategy_name"]) if top_strategies else ""
+    strategy_execution = strategy_quality_map.get(primary_strategy_name, {})
+    if strategy_execution:
+        execution_label = str(strategy_execution.get("execution_quality_label", execution_label) or execution_label)
+        execution_review_summary = str(
+            strategy_execution.get("execution_quality_summary", execution_review_summary) or execution_review_summary
+        )
+    if bool(analytics.get("execution_quality_available", execution_summary["available"])):
+        risk_summary = f"{risk_summary} | {execution_label}"
 
     recent = _build_recent_experiment_summary(state)
     return {
@@ -251,6 +279,8 @@ def describe_strategy_experiment(
         "top_strategies": top_strategies,
         "recent_experiment": recent,
         "win_rate": win_rate,
+        "execution_label": execution_label,
+        "execution_summary": execution_review_summary,
     }
 
 
@@ -270,7 +300,11 @@ def should_auto_run_paper_trading(
     return (current_dt - last_run_dt).total_seconds() >= interval_minutes * 60.0
 
 
-def summarize_paper_trading_performance(state: PaperTradingState) -> dict[str, object]:
+def summarize_paper_trading_performance(
+    state: PaperTradingState,
+    execution_recap: dict[str, object] | None = None,
+    execution_profile: dict[str, object] | None = None,
+) -> dict[str, object]:
     ledger = list(getattr(state, "ledger", []) or [])
     realized_records = [
         item
@@ -346,6 +380,9 @@ def summarize_paper_trading_performance(state: PaperTradingState) -> dict[str, o
         row["avg_hold_days"] = round(float(hold_entry.get("avg_hold_days", 0.0)) if hold_entry else 0.0, 2)
         row["hold_cycle_note"] = str(hold_entry.get("hold_cycle_note", "")) if hold_entry else ""
 
+    profile = dict(execution_profile or {})
+    execution_quality = _execution_quality_snapshot(execution_recap or profile.get("recap"))
+
     return {
         "closed_trade_count": closed_trade_count,
         "win_count": win_count,
@@ -360,12 +397,40 @@ def summarize_paper_trading_performance(state: PaperTradingState) -> dict[str, o
         "hold_cycle_note": hold_cycle_stats["hold_cycle_note"],
         "hold_cycle_sample_count": hold_cycle_stats["total_samples"],
         "hold_cycle": hold_cycle_stats,
+        "execution_quality_available": bool(execution_quality["available"]),
+        "execution_quality_score": float(execution_quality["score"]),
+        "execution_quality_penalty": float(execution_quality["penalty"]),
+        "execution_quality_label": str(execution_quality["label"]),
+        "execution_budget_cap": float(execution_quality["budget_cap"]),
+        "execution_review_summary": str(execution_quality["summary"]),
+        "execution_latest_note": str(execution_quality["latest_note"]),
+        "execution_focus_symbols": list(execution_quality["focus_symbols"]),
     }
 
 
-def build_strategy_rotation_snapshot(state: PaperTradingState) -> list[dict[str, float | int | str]]:
-    analytics = summarize_paper_trading_performance(state)
+def build_strategy_rotation_snapshot(
+    state: PaperTradingState,
+    execution_recap: dict[str, object] | None = None,
+    execution_profile: dict[str, object] | None = None,
+) -> list[dict[str, float | int | str]]:
+    profile = dict(execution_profile or {})
+    analytics = summarize_paper_trading_performance(
+        state,
+        execution_recap=execution_recap,
+        execution_profile=profile,
+    )
     initial_cash = max(float(getattr(state, "initial_cash", 0.0) or 0.0), 1.0)
+    execution_available = bool(analytics.get("execution_quality_available", False))
+    execution_penalty = float(analytics.get("execution_quality_penalty", 0.0) or 0.0)
+    execution_score = float(analytics.get("execution_quality_score", 1.0) or 1.0)
+    execution_label = str(analytics.get("execution_quality_label", "待接实盘") or "待接实盘")
+    execution_budget_cap = float(analytics.get("execution_budget_cap", 1.45) or 1.45)
+    execution_summary = str(analytics.get("execution_review_summary", "") or "")
+    strategy_quality_map = {
+        str(key): dict(value or {})
+        for key, value in dict(profile.get("strategy_quality_map", {}) or {}).items()
+        if str(key).strip()
+    }
     rows: list[dict[str, float | int | str]] = []
     for item in list(analytics.get("strategy_rows", []) or []):
         strategy_name = _canonical_strategy_name(str(item.get("strategy_name", "") or "").strip()) or "未命名战法"
@@ -380,25 +445,58 @@ def build_strategy_rotation_snapshot(state: PaperTradingState) -> list[dict[str,
         sample_factor = min(sample_count / 6.0, 1.0)
         pnl_score = max(min(realized_pnl / max(initial_cash * 0.02, 1000.0), 1.0), -1.0)
         win_score = max(min((win_rate - 0.5) * 2.0, 1.0), -1.0) if sell_count else 0.0
-        rotation_score = round((pnl_score * 0.55 + win_score * 0.45) * (0.35 + 0.65 * sample_factor), 4)
+        base_rotation_score = round((pnl_score * 0.55 + win_score * 0.45) * (0.35 + 0.65 * sample_factor), 4)
+        rotation_score = base_rotation_score
+        if execution_available:
+            rotation_score = round(rotation_score - execution_penalty * (0.16 if rotation_score >= 0 else 0.08), 4)
         if rotation_score >= 0.18:
             bias_label = "加权"
         elif rotation_score <= -0.18:
             bias_label = "降权"
         else:
             bias_label = "中性"
+        raw_budget_multiplier = round(min(max(1.0 + rotation_score * 0.6, 0.35), 1.45), 4)
+        budget_multiplier = raw_budget_multiplier
+        execution_guard = execution_summary
+        strategy_execution = strategy_quality_map.get(strategy_name, {})
+        strategy_execution_available = bool(strategy_execution.get("execution_quality_available", False))
+        strategy_execution_score = float(strategy_execution.get("execution_quality_score", execution_score) or execution_score)
+        strategy_execution_penalty = float(strategy_execution.get("execution_quality_penalty", 0.0) or 0.0)
+        strategy_execution_label = str(strategy_execution.get("execution_quality_label", execution_label) or execution_label)
+        strategy_execution_cap = float(strategy_execution.get("execution_budget_cap", execution_budget_cap) or execution_budget_cap)
+        strategy_execution_summary = str(strategy_execution.get("execution_quality_summary", execution_summary) or execution_summary)
+        if execution_available:
+            budget_multiplier = round(min(raw_budget_multiplier, execution_budget_cap), 4)
+            execution_guard = f"{execution_label} | 预算上限 x{execution_budget_cap:.2f}"
+            latest_note = str(analytics.get("execution_latest_note", "") or "")
+            if latest_note:
+                execution_guard = f"{execution_guard} | {latest_note}"
+        if strategy_execution_available:
+            rotation_score = round(rotation_score - strategy_execution_penalty * 0.18, 4)
+            budget_multiplier = round(min(budget_multiplier, strategy_execution_cap), 4)
+            execution_guard = f"{strategy_execution_label} | 预算上限 x{strategy_execution_cap:.2f}"
+            strategy_note = str(strategy_execution.get("execution_latest_note", "") or "")
+            if strategy_note:
+                execution_guard = f"{execution_guard} | {strategy_note}"
+            elif strategy_execution_summary:
+                execution_guard = strategy_execution_summary
         rows.append(
             {
                 "strategy_name": strategy_name,
                 "sample_count": sample_count,
                 "rotation_score": rotation_score,
-                "budget_multiplier": round(min(max(1.0 + rotation_score * 0.6, 0.35), 1.45), 4),
+                "base_rotation_score": base_rotation_score,
+                "budget_multiplier": budget_multiplier,
                 "bias_label": bias_label,
                 "win_rate": round(win_rate, 4),
                 "realized_pnl": round(realized_pnl, 2),
                 "hold_sample_count": hold_sample_count,
                 "avg_hold_days": avg_hold_days,
                 "hold_cycle_note": hold_cycle_note,
+                "execution_quality_score": round(strategy_execution_score, 4),
+                "execution_quality_label": strategy_execution_label,
+                "execution_budget_cap": round(strategy_execution_cap, 2),
+                "execution_guard": execution_guard,
             }
         )
     rows.sort(key=lambda item: (float(item["rotation_score"]), float(item["realized_pnl"])), reverse=True)
@@ -844,6 +942,8 @@ def export_paper_trading_report(
     *,
     output_dir: str | Path,
     exported_at: str | None = None,
+    execution_recap: dict[str, object] | None = None,
+    execution_profile: dict[str, object] | None = None,
 ) -> ReportArtifacts:
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
@@ -900,13 +1000,33 @@ def export_paper_trading_report(
                 ]
             )
 
-    analytics = summarize_paper_trading_performance(state)
+    analytics = summarize_paper_trading_performance(
+        state,
+        execution_recap=execution_recap,
+        execution_profile=execution_profile,
+    )
     recent_experiment = _build_recent_experiment_summary(state)
+    rotation_rows = build_strategy_rotation_snapshot(
+        state,
+        execution_recap=execution_recap,
+        execution_profile=execution_profile,
+    )
+    experiment_summary = describe_strategy_experiment(
+        state,
+        analytics,
+        rotation_rows,
+        execution_recap=execution_recap,
+        execution_profile=execution_profile,
+    )
     payload = {
         "exported_at": exported_at,
         "paper_trading_state": asdict(state),
         "analytics": analytics,
         "recent_experiment": recent_experiment,
+        "rotation_rows": rotation_rows,
+        "experiment_summary": experiment_summary,
+        "execution_recap": dict(execution_recap or {}),
+        "execution_profile": dict(execution_profile or {}),
     }
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -969,6 +1089,11 @@ def export_paper_trading_report(
             f"- 最佳单笔：{float(analytics.get('best_trade', 0.0) or 0.0):,.2f}",
             f"- 最差单笔：{float(analytics.get('worst_trade', 0.0) or 0.0):,.2f}",
             *strategy_lines,
+            "",
+            "## 真实执行复核",
+            f"- 执行质量：{str(analytics.get('execution_quality_label', '待接实盘') or '待接实盘')}",
+            f"- 执行摘要：{str(analytics.get('execution_review_summary', '') or '尚无真实委托样本，暂不按执行质量调整预算。')}",
+            f"- 实验结论：{str(experiment_summary.get('execution_summary', '') or str(analytics.get('execution_review_summary', '') or ''))}",
             "",
             "## 巡航日志",
             *patrol_lines,

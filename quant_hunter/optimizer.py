@@ -6,6 +6,7 @@ from pathlib import Path
 from statistics import median, pstdev
 
 from .backtest import BacktestParams, Backtester, PortfolioBacktester
+from .execution_quality import build_execution_quality_snapshot
 from .models import BacktestResult, OptimizationRun, PortfolioBacktestResult, PriceBar, ReportArtifacts
 from .reports import export_optimization_report
 from .strategy import AntiHarvestStrategy, StrategyParams
@@ -32,6 +33,7 @@ class OptimizationWindowEvaluation:
 
 @dataclass(frozen=True)
 class OptimizationSymbolEvaluation:
+    symbol: str
     total_return: float
     max_drawdown: float
     win_rate: float
@@ -208,6 +210,7 @@ class ParameterOptimizer:
 
     def _evaluate_symbol(
         self,
+        symbol: str,
         bars: list[PriceBar],
         params: StrategyParams,
     ) -> OptimizationSymbolEvaluation | None:
@@ -248,6 +251,7 @@ class ParameterOptimizer:
             positive_window_ratio = 1.0 if full_result.total_return > 0 else 0.0
 
         return OptimizationSymbolEvaluation(
+            symbol=symbol,
             total_return=full_result.total_return,
             max_drawdown=full_result.max_drawdown,
             win_rate=full_result.win_rate,
@@ -324,12 +328,28 @@ class ParameterOptimizer:
         )
         return round(max(0.0, min(robustness, 1.0)), 4)
 
+    def _execution_pressure_score(
+        self,
+        *,
+        total_trades: int,
+        symbols_tested: int,
+        portfolio_avg_exposure: float,
+        portfolio_max_concurrent_positions: int,
+    ) -> float:
+        normalized_turnover = min(max(total_trades / max(symbols_tested * 6, 1), 0.0), 1.0)
+        normalized_exposure = min(max(portfolio_avg_exposure / 0.42, 0.0), 1.0)
+        normalized_concurrency = min(max(portfolio_max_concurrent_positions / 5.0, 0.0), 1.0)
+        pressure = normalized_turnover * 0.46 + normalized_exposure * 0.34 + normalized_concurrency * 0.2
+        return round(max(0.0, min(pressure, 1.0)), 4)
+
     def _score_candidate(
         self,
         evaluations: list[OptimizationSymbolEvaluation],
         portfolio_evaluation: OptimizationPortfolioEvaluation | None,
         symbols_tested: int,
-    ) -> tuple[float, dict[str, float | int]]:
+        execution_recap: dict[str, object] | None = None,
+        execution_profile: dict[str, object] | None = None,
+    ) -> tuple[float, dict[str, object]]:
         avg_return = sum(item.total_return for item in evaluations) / symbols_tested
         avg_drawdown = sum(item.max_drawdown for item in evaluations) / symbols_tested
         avg_win_rate = sum(item.win_rate for item in evaluations) / symbols_tested
@@ -352,9 +372,33 @@ class ParameterOptimizer:
         portfolio_positive_window_ratio = (
             portfolio_evaluation.positive_window_ratio if portfolio_evaluation is not None else avg_positive_window_ratio
         )
+        profile = dict(execution_profile or {})
+        execution_quality = build_execution_quality_snapshot(execution_recap or profile.get("recap"))
+        execution_quality_available = bool(execution_quality["available"])
+        execution_quality_score = float(execution_quality["score"])
+        execution_quality_penalty_base = float(execution_quality["penalty"]) if execution_quality_available else 0.0
+        symbol_quality_map = {
+            str(key): dict(value or {})
+            for key, value in dict(profile.get("symbol_quality_map", {}) or {}).items()
+            if str(key).strip()
+        }
+        execution_pressure_score = self._execution_pressure_score(
+            total_trades=total_trades,
+            symbols_tested=symbols_tested,
+            portfolio_avg_exposure=portfolio_avg_exposure,
+            portfolio_max_concurrent_positions=portfolio_max_concurrent_positions,
+        )
 
         symbol_trade_penalty = max(0.0, 2.5 - (total_trades / symbols_tested)) * 0.03
         deployment_penalty = max(0.0, 0.14 - portfolio_avg_exposure) * 0.08
+        symbol_execution_penalty = 0.0
+        if symbol_quality_map and total_trades > 0:
+            symbol_execution_penalty = sum(
+                float(symbol_quality_map.get(item.symbol, {}).get("execution_quality_penalty", 0.0) or 0.0)
+                * item.trade_count
+                for item in evaluations
+            ) / total_trades
+        execution_penalty = execution_quality_penalty_base * execution_pressure_score * 0.04 + symbol_execution_penalty * 0.035
         objective = (
             avg_return * 0.08
             + avg_out_of_sample_return * 0.18
@@ -372,6 +416,7 @@ class ParameterOptimizer:
             - portfolio_return_std * 0.32
             - symbol_trade_penalty
             - deployment_penalty
+            - execution_penalty
         )
         symbol_robustness = self._robustness_score(
             avg_drawdown=avg_drawdown,
@@ -388,6 +433,11 @@ class ParameterOptimizer:
             avg_positive_window_ratio=portfolio_positive_window_ratio,
         )
         robustness_score = round(symbol_robustness * 0.55 + portfolio_robustness * 0.45, 4)
+        if execution_quality_available:
+            robustness_score = round(
+                max(0.0, min(robustness_score * 0.9 + execution_quality_score * 0.1, 1.0)),
+                4,
+            )
         return objective, {
             "avg_return": round(avg_return, 6),
             "avg_drawdown": round(avg_drawdown, 6),
@@ -408,6 +458,13 @@ class ParameterOptimizer:
             "portfolio_profit_factor": round(portfolio_profit_factor, 6),
             "portfolio_avg_exposure": round(portfolio_avg_exposure, 6),
             "portfolio_max_concurrent_positions": int(portfolio_max_concurrent_positions),
+            "execution_quality_available": 1 if execution_quality_available else 0,
+            "execution_quality_score": round(execution_quality_score, 6),
+            "execution_pressure_score": round(execution_pressure_score, 6),
+            "execution_symbol_penalty": round(symbol_execution_penalty, 6),
+            "execution_penalty": round(execution_penalty, 6),
+            "execution_quality_label": str(execution_quality["label"]),
+            "execution_quality_summary": str(execution_quality["summary"]),
         }
 
     def optimize(
@@ -415,6 +472,8 @@ class ParameterOptimizer:
         bars_by_symbol: dict[str, list[PriceBar]],
         grid: dict[str, list[float | int]] | None = None,
         top_n: int = 10,
+        execution_recap: dict[str, object] | None = None,
+        execution_profile: dict[str, object] | None = None,
     ) -> list[OptimizationRun]:
         if not bars_by_symbol:
             raise ValueError("没有可用于优化的股票池数据。")
@@ -427,8 +486,8 @@ class ParameterOptimizer:
             params = self._merge_params(overrides)
             evaluations: list[OptimizationSymbolEvaluation] = []
 
-            for bars in bars_by_symbol.values():
-                evaluation = self._evaluate_symbol(bars, params)
+            for symbol, bars in bars_by_symbol.items():
+                evaluation = self._evaluate_symbol(symbol, bars, params)
                 if evaluation is not None:
                     evaluations.append(evaluation)
 
@@ -437,7 +496,13 @@ class ParameterOptimizer:
                 continue
 
             portfolio_evaluation = self._evaluate_portfolio(bars_by_symbol, params)
-            objective, metrics = self._score_candidate(evaluations, portfolio_evaluation, symbols_tested)
+            objective, metrics = self._score_candidate(
+                evaluations,
+                portfolio_evaluation,
+                symbols_tested,
+                execution_recap=execution_recap,
+                execution_profile=execution_profile,
+            )
             results.append(
                 OptimizationRun(
                     rank=0,
@@ -463,6 +528,12 @@ class ParameterOptimizer:
                     portfolio_profit_factor=float(metrics["portfolio_profit_factor"]),
                     portfolio_avg_exposure=float(metrics["portfolio_avg_exposure"]),
                     portfolio_max_concurrent_positions=int(metrics["portfolio_max_concurrent_positions"]),
+                    execution_quality_available=bool(metrics["execution_quality_available"]),
+                    execution_quality_score=float(metrics["execution_quality_score"]),
+                    execution_pressure_score=float(metrics["execution_pressure_score"]),
+                    execution_penalty=float(metrics["execution_penalty"]),
+                    execution_quality_label=str(metrics["execution_quality_label"]),
+                    execution_quality_summary=str(metrics["execution_quality_summary"]),
                 )
             )
 
@@ -470,6 +541,8 @@ class ParameterOptimizer:
             key=lambda item: (
                 item.objective,
                 item.robustness_score,
+                1 if item.execution_quality_available else 0,
+                item.execution_quality_score,
                 item.portfolio_out_of_sample_return,
                 item.portfolio_return,
                 item.portfolio_worst_window_return,
@@ -503,6 +576,12 @@ class ParameterOptimizer:
                 portfolio_profit_factor=item.portfolio_profit_factor,
                 portfolio_avg_exposure=item.portfolio_avg_exposure,
                 portfolio_max_concurrent_positions=item.portfolio_max_concurrent_positions,
+                execution_quality_available=item.execution_quality_available,
+                execution_quality_score=item.execution_quality_score,
+                execution_pressure_score=item.execution_pressure_score,
+                execution_penalty=item.execution_penalty,
+                execution_quality_label=item.execution_quality_label,
+                execution_quality_summary=item.execution_quality_summary,
             )
             for index, item in enumerate(results[:top_n])
         ]

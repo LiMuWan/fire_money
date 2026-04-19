@@ -251,6 +251,10 @@ def export_optimization_report(
                 "rank",
                 "objective",
                 "robustness_score",
+                "execution_quality_label",
+                "execution_quality_score",
+                "execution_pressure_score",
+                "execution_penalty",
                 "avg_return",
                 "avg_out_of_sample_return",
                 "avg_median_window_return",
@@ -279,6 +283,10 @@ def export_optimization_report(
                     item.rank,
                     item.objective,
                     item.robustness_score,
+                    item.execution_quality_label,
+                    item.execution_quality_score,
+                    item.execution_pressure_score,
+                    item.execution_penalty,
                     item.avg_return,
                     item.avg_out_of_sample_return,
                     item.avg_median_window_return,
@@ -310,12 +318,13 @@ def export_optimization_report(
     markdown_lines = [
         f"# {title}",
         "",
-        "| Rank | Objective | Robustness | Portfolio Return | Portfolio OOS | Portfolio DD | Avg Return | OOS Return | Worst Window | Trades | Params |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Rank | Objective | Robustness | Exec | Exec Penalty | Portfolio Return | Portfolio OOS | Portfolio DD | Avg Return | OOS Return | Worst Window | Trades | Params |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for item in results:
         markdown_lines.append(
-            f"| {item.rank} | {item.objective:.4f} | {item.robustness_score:.0%} | {item.portfolio_return:.2%} | "
+            f"| {item.rank} | {item.objective:.4f} | {item.robustness_score:.0%} | "
+            f"{(item.execution_quality_label or '--')} {item.execution_quality_score:.2f} | {item.execution_penalty:.4f} | {item.portfolio_return:.2%} | "
             f"{item.portfolio_out_of_sample_return:.2%} | {item.portfolio_max_drawdown:.2%} | {item.avg_return:.2%} | "
             f"{item.avg_out_of_sample_return:.2%} | {item.avg_worst_window_return:.2%} | {item.trade_count} | "
             f"`{json.dumps(item.params, ensure_ascii=False)}` |"
@@ -450,6 +459,9 @@ def export_strategy_history_report(
             "missing_data_count",
             "profit_factor",
             "payoff_ratio",
+            "execution_quality_label",
+            "execution_quality_score",
+            "execution_sample_count",
             "max_consecutive_wins",
             "max_consecutive_losses",
             "target_hits",
@@ -498,6 +510,9 @@ def export_strategy_history_report(
                     "missing_data_count": item.missing_data_count,
                     "profit_factor": item.profit_factor,
                     "payoff_ratio": item.payoff_ratio,
+                    "execution_quality_label": item.execution_quality_label,
+                    "execution_quality_score": item.execution_quality_score,
+                    "execution_sample_count": item.execution_sample_count,
                     "max_consecutive_wins": item.max_consecutive_wins,
                     "max_consecutive_losses": item.max_consecutive_losses,
                     "target_hits": item.target_hits,
@@ -593,12 +608,13 @@ def export_strategy_history_report(
         lines.append(f"- 当前战法: {target_strategy}")
     lines.extend(["", "## 战法汇总", ""])
     if summary_rows:
-        lines.append("| 战法 | 信号数 | 成交数 | 成交率 | 总收益 | 胜率 | 最大回撤 | 平均持有 |")
-        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
+        lines.append("| 战法 | 信号数 | 成交数 | 成交率 | 总收益 | 胜率 | 最大回撤 | 平均持有 | 执行 |")
+        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
         for item in summary_rows:
             lines.append(
                 f"| {item.strategy_name} | {item.signal_count} | {item.trade_count} | {item.filled_ratio:.2%} | "
-                f"{item.total_return:.2%} | {item.win_rate:.2%} | {item.max_drawdown:.2%} | {item.avg_hold_days:.2f} 天 |"
+                f"{item.total_return:.2%} | {item.win_rate:.2%} | {item.max_drawdown:.2%} | {item.avg_hold_days:.2f} 天 | "
+                f"{(item.execution_quality_label or '--')} {item.execution_quality_score:.2f} |"
             )
     else:
         lines.append("- 当前筛选下暂无战法汇总。")

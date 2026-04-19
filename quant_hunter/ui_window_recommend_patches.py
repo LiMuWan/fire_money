@@ -109,6 +109,9 @@ def apply_recommend_workspace_patches(
             paper_state,
             getattr(current, "primary_strategy", "") or "掘龙决策",
         )
+        strategy_execution_label = str(getattr(current, "strategy_execution_quality_label", "") or "").strip()
+        strategy_execution_score = float(getattr(current, "strategy_execution_quality_score", 1.0) or 1.0)
+        strategy_execution_summary = str(getattr(current, "strategy_execution_review_summary", "") or "").strip()
         if isinstance(label, QLabel):
             self._set_label_text_if_changed(
                 label,
@@ -136,6 +139,10 @@ def apply_recommend_workspace_patches(
                     f"实验 CTA：{experiment_bridge['cta']}",
                 ]
             )
+            if strategy_execution_label:
+                base_lines.append(f"战法执行：{strategy_execution_label} {strategy_execution_score:.2f}")
+                if strategy_execution_summary:
+                    base_lines.append(f"降权解释：{strategy_execution_summary}")
             self._set_plain_text_if_changed(summary_widget, "\n".join(base_lines))
         button_labels = recommend_cta_labels_v37(
             can_submit=can_submit,
@@ -189,6 +196,9 @@ def apply_recommend_workspace_patches(
             paper_state,
             getattr(current, "primary_strategy", "") or "掘龙决策",
         )
+        strategy_execution_label = str(getattr(current, "strategy_execution_quality_label", "") or "").strip()
+        strategy_execution_score = float(getattr(current, "strategy_execution_quality_score", 1.0) or 1.0)
+        strategy_execution_summary = str(getattr(current, "strategy_execution_review_summary", "") or "").strip()
         dispatch_lines = [
             "执行速览",
             f"阶段：{stage_title}",
@@ -196,6 +206,10 @@ def apply_recommend_workspace_patches(
             f"模拟盘：{experiment_bridge['title']}",
             f"阶段说明：{stage_detail}",
         ]
+        if strategy_execution_label:
+            dispatch_lines.append(f"战法执行：{strategy_execution_label} {strategy_execution_score:.2f}")
+            if strategy_execution_summary:
+                dispatch_lines.append(f"降权解释：{strategy_execution_summary}")
         self._set_plain_text_if_changed(dispatch_widget, "\n".join(dispatch_lines))
         review_widget = getattr(self, "recommend_focus_review_text", None)
         if isinstance(review_widget, QTextEdit):
@@ -212,6 +226,10 @@ def apply_recommend_workspace_patches(
                     f"实验 CTA：{experiment_bridge['cta']}",
                 ]
             )
+            if strategy_execution_label:
+                review_lines.append(f"战法执行：{strategy_execution_label} {strategy_execution_score:.2f}")
+                if strategy_execution_summary:
+                    review_lines.append(f"降权解释：{strategy_execution_summary}")
             self._set_plain_text_if_changed(review_widget, "\n".join(review_lines))
         if isinstance(queue_widget, QTextEdit):
             queue_text = queue_widget.toPlainText().splitlines()

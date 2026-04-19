@@ -2708,10 +2708,12 @@ def build_recommend_workspace(
     message_center_header = QHBoxLayout()
     message_center_header.setContentsMargins(0, 0, 0, 0)
     message_center_header.setSpacing(10)
-    window.recommend_message_center_summary_label = QLabel("等待新事件")
+    window.recommend_message_center_summary_label = QLabel("等待消息中心更新")
     window.recommend_message_center_summary_label.setObjectName("focusStateLabel")
     window.recommend_message_center_summary_label.setProperty("pageTone", "recommend")
     window.recommend_message_center_summary_label.setWordWrap(True)
+    window.recommend_message_center_badge_label = QLabel("未读 0 | 待办 0")
+    window.recommend_message_center_badge_label.setObjectName("workspaceHeroStamp")
     window.recommend_message_center_filter_combo = QComboBox()
     for label, value in [
         ("全部", "all"),
@@ -2721,17 +2723,73 @@ def build_recommend_workspace(
         ("系统", "system"),
     ]:
         window.recommend_message_center_filter_combo.addItem(label, value)
+    window.recommend_message_center_sort_combo = QComboBox()
+    for label, value in [
+        ("最新优先", "latest"),
+        ("未读优先", "unread"),
+        ("待处理优先", "open"),
+        ("异常优先", "priority"),
+    ]:
+        window.recommend_message_center_sort_combo.addItem(label, value)
+    window.recommend_message_center_unhandled_checkbox = QCheckBox("只看待办")
+    current_filter = str(getattr(window, "recommend_message_center_filter", "all") or "all")
+    for index in range(window.recommend_message_center_filter_combo.count()):
+        if window.recommend_message_center_filter_combo.itemData(index) == current_filter:
+            window.recommend_message_center_filter_combo.setCurrentIndex(index)
+            break
+    current_sort = str(getattr(window, "recommend_message_center_sort", "latest") or "latest")
+    for index in range(window.recommend_message_center_sort_combo.count()):
+        if window.recommend_message_center_sort_combo.itemData(index) == current_sort:
+            window.recommend_message_center_sort_combo.setCurrentIndex(index)
+            break
+    window.recommend_message_center_unhandled_checkbox.setChecked(bool(getattr(window, "recommend_message_center_show_unhandled_only", False)))
     if hasattr(window, "_on_recommend_message_center_filter_changed"):
         window.recommend_message_center_filter_combo.currentIndexChanged.connect(window._on_recommend_message_center_filter_changed)
+    if hasattr(window, "_on_recommend_message_center_sort_changed"):
+        window.recommend_message_center_sort_combo.currentIndexChanged.connect(window._on_recommend_message_center_sort_changed)
+    if hasattr(window, "_on_recommend_message_center_unhandled_toggled"):
+        window.recommend_message_center_unhandled_checkbox.toggled.connect(window._on_recommend_message_center_unhandled_toggled)
     window.recommend_message_center_clear_button = QPushButton("清空")
     window._set_button_role(window.recommend_message_center_clear_button, "ghost")
     if hasattr(window, "clear_recommend_message_center"):
         window.recommend_message_center_clear_button.clicked.connect(window.clear_recommend_message_center)
+    window.recommend_message_center_mark_all_read_button = QPushButton("全标已读")
+    window._set_button_role(window.recommend_message_center_mark_all_read_button, "ghost")
+    if hasattr(window, "mark_all_recommend_messages_read"):
+        window.recommend_message_center_mark_all_read_button.clicked.connect(window.mark_all_recommend_messages_read)
+    window.recommend_message_center_clear_handled_button = QPushButton("清已办")
+    window._set_button_role(window.recommend_message_center_clear_handled_button, "ghost")
+    if hasattr(window, "clear_handled_recommend_message_events"):
+        window.recommend_message_center_clear_handled_button.clicked.connect(window.clear_handled_recommend_message_events)
     message_center_header.addWidget(window.recommend_message_center_summary_label, stretch=1)
+    message_center_header.addWidget(window.recommend_message_center_badge_label)
     message_center_header.addWidget(window.recommend_message_center_filter_combo)
+    message_center_header.addWidget(window.recommend_message_center_sort_combo)
+    message_center_header.addWidget(window.recommend_message_center_unhandled_checkbox)
+    message_center_header.addWidget(window.recommend_message_center_mark_all_read_button)
+    message_center_header.addWidget(window.recommend_message_center_clear_handled_button)
     message_center_header.addWidget(window.recommend_message_center_clear_button)
     message_center_layout.addLayout(message_center_header)
-    window.recommend_message_center_table = build_table(["时间", "类型", "事件", "标的"])
+    message_center_metric_band = AdaptivePanelGrid(min_item_width=142, compact_item_width=132, max_columns=5)
+    message_center_metric_band.setObjectName("recommendMessageCenterMetricBand")
+    message_center_metric_band.set_grid_spacing(8, 8)
+    window.recommend_message_center_metric_cards = {}
+    window.recommend_message_center_metric_labels = {}
+    window.recommend_message_center_metric_accents = {}
+    for key, title, accent in [
+        ("unread", "未读", "等待查看"),
+        ("open", "待处理", "等待消化"),
+        ("ai", "AI 事件", "研究辅助"),
+        ("news", "消息事件", "消息驱动"),
+        ("trade", "交易事件", "执行回执"),
+    ]:
+        card, value_label, accent_label = window._create_metric_card(title, "--", accent)
+        window.recommend_message_center_metric_cards[key] = card
+        window.recommend_message_center_metric_labels[key] = value_label
+        window.recommend_message_center_metric_accents[key] = accent_label
+        message_center_metric_band.add_panel(card)
+    message_center_layout.addWidget(message_center_metric_band)
+    window.recommend_message_center_table = build_table(["时间", "类型", "状态", "事件", "标的"])
     window.recommend_message_center_table.setObjectName("terminalTable")
     window.recommend_message_center_table.setProperty("pageTone", "recommend")
     window.recommend_message_center_table.setMinimumHeight(186)
@@ -2743,18 +2801,28 @@ def build_recommend_workspace(
     message_center_action_row = QHBoxLayout()
     message_center_action_row.setContentsMargins(0, 2, 0, 0)
     message_center_action_row.setSpacing(10)
-    window.recommend_message_center_action_label = QLabel("建议动作：等待新事件")
+    window.recommend_message_center_action_label = QLabel("下一步：等待你选中一条事件")
     window.recommend_message_center_action_label.setObjectName("inlineHint")
     window.recommend_message_center_action_label.setWordWrap(True)
+    window.recommend_message_center_mark_read_button = QPushButton("标已读")
+    window.recommend_message_center_mark_handled_button = QPushButton("标已办")
     window.recommend_message_center_symbol_button = QPushButton("定位股票")
     window.recommend_message_center_open_button = QPushButton("打开关联页")
+    window._set_button_role(window.recommend_message_center_mark_read_button, "ghost")
+    window._set_button_role(window.recommend_message_center_mark_handled_button, "tonal")
     window._set_button_role(window.recommend_message_center_symbol_button, "tonal")
     window._set_button_role(window.recommend_message_center_open_button, "accent")
+    if hasattr(window, "mark_selected_recommend_message_read"):
+        window.recommend_message_center_mark_read_button.clicked.connect(window.mark_selected_recommend_message_read)
+    if hasattr(window, "mark_selected_recommend_message_handled"):
+        window.recommend_message_center_mark_handled_button.clicked.connect(window.mark_selected_recommend_message_handled)
     if hasattr(window, "focus_selected_recommend_message_symbol"):
         window.recommend_message_center_symbol_button.clicked.connect(window.focus_selected_recommend_message_symbol)
     if hasattr(window, "open_selected_recommend_message_event"):
         window.recommend_message_center_open_button.clicked.connect(window.open_selected_recommend_message_event)
     message_center_action_row.addWidget(window.recommend_message_center_action_label, stretch=1)
+    message_center_action_row.addWidget(window.recommend_message_center_mark_read_button)
+    message_center_action_row.addWidget(window.recommend_message_center_mark_handled_button)
     message_center_action_row.addWidget(window.recommend_message_center_symbol_button)
     message_center_action_row.addWidget(window.recommend_message_center_open_button)
     message_center_layout.addLayout(message_center_action_row)

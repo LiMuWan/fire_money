@@ -55,6 +55,11 @@ def normalize_message_filter(value: str) -> str:
     return normalized if normalized in _CATEGORY_LABELS else "all"
 
 
+def normalize_message_sort_mode(value: str) -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in {"latest", "unread", "open", "priority"} else "latest"
+
+
 def normalize_message_level(value: str) -> str:
     return str(value or "INFO").strip().upper() or "INFO"
 
@@ -202,6 +207,67 @@ def update_message_event_flags(
             )
         )
     return updated
+
+
+def remove_handled_message_events(events: list[SmartMessageEvent] | None) -> list[SmartMessageEvent]:
+    return [item for item in list(events or []) if not bool(getattr(item, "is_handled", False))]
+
+
+def mark_all_message_events_read(events: list[SmartMessageEvent] | None) -> list[SmartMessageEvent]:
+    updated: list[SmartMessageEvent] = []
+    for item in list(events or []):
+        if bool(getattr(item, "is_read", False)):
+            updated.append(item)
+            continue
+        updated.append(
+            SmartMessageEvent(
+                timestamp=item.timestamp,
+                category=item.category,
+                title=item.title,
+                detail=item.detail,
+                symbol=item.symbol,
+                level=item.level,
+                is_read=True,
+                is_handled=item.is_handled,
+            )
+        )
+    return updated
+
+
+def sort_message_events(events: list[SmartMessageEvent] | None, *, mode: str = "latest") -> list[SmartMessageEvent]:
+    items = list(events or [])
+    sort_mode = normalize_message_sort_mode(mode)
+    level_priority = {"ERROR": 0, "WARN": 1, "INFO": 2, "SUCCESS": 3}
+
+    indexed = list(enumerate(items))
+
+    def base_key(index: int, item: SmartMessageEvent) -> tuple[int]:
+        return (-index,)
+
+    def unread_key(index: int, item: SmartMessageEvent) -> tuple[bool, int]:
+        return (bool(getattr(item, "is_read", False)), -index)
+
+    def open_key(index: int, item: SmartMessageEvent) -> tuple[bool, int]:
+        return (bool(getattr(item, "is_handled", False)), -index)
+
+    def priority_key(index: int, item: SmartMessageEvent) -> tuple[int, bool, bool, int]:
+        level = normalize_message_level(getattr(item, "level", "INFO"))
+        return (
+            level_priority.get(level, 9),
+            bool(getattr(item, "is_handled", False)),
+            bool(getattr(item, "is_read", False)),
+            -index,
+        )
+
+    key_fn = {
+        "latest": lambda pair: base_key(pair[0], pair[1]),
+        "unread": lambda pair: unread_key(pair[0], pair[1]),
+        "open": lambda pair: open_key(pair[0], pair[1]),
+        "priority": lambda pair: priority_key(pair[0], pair[1]),
+    }[sort_mode]
+
+    indexed.sort(key=key_fn)
+    return [item for _index, item in indexed]
 
 
 def message_center_counts(events: list[SmartMessageEvent] | None) -> dict[str, int]:

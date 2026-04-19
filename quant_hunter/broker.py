@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .decision import TradeDecision
+from .execution_quality import build_execution_quality_bucket, build_execution_quality_snapshot
 from .models import BrokerProfile, BrokerStatus, CashSnapshot, HoldingRecord, OrderIntent, ScanRow
 from .risk import DEFAULT_RISK_CONTROLS, normalize_risk_profile, resolve_risk_controls
 from .theme import display_mainline_role
@@ -1006,6 +1007,7 @@ class EastmoneyBrokerAdapter:
                         "planned_stop_price",
                         "planned_target_price",
                         "planned_risk_reward_ratio",
+                        "strategy_name",
                         "opportunity_tier",
                         "portfolio_fit_score",
                         "diversification_score",
@@ -1044,6 +1046,7 @@ class EastmoneyBrokerAdapter:
                             item.get("planned_stop_price", ""),
                             item.get("planned_target_price", ""),
                             item.get("planned_risk_reward_ratio", ""),
+                            item.get("strategy_name", getattr(recommendation, "primary_strategy", "") if recommendation is not None else ""),
                             item.get("opportunity_tier", getattr(recommendation, "opportunity_tier", "") if recommendation is not None else ""),
                             item.get("portfolio_fit_score", getattr(recommendation, "portfolio_fit_score", 0.0) if recommendation is not None else fit_row.get("fit_score", 0.0)),
                             item.get("diversification_score", getattr(recommendation, "diversification_score", 0.0) if recommendation is not None else fit_row.get("diversification_score", 0.0)),
@@ -2004,6 +2007,63 @@ def summarize_trade_recap(
         "max_price_deviation_bps": round(max_price_deviation_bps, 1),
         "max_quantity_deviation": max_quantity_deviation,
         "latest_deviation_note": str(latest_deviation.get("note", "") or ""),
+    }
+
+
+def build_execution_quality_profile(
+    submission_records: list[dict[str, str]],
+    holdings: list[HoldingRecord],
+    order_intents: list[OrderIntent],
+    order_log: list[str],
+) -> dict[str, Any]:
+    recap = summarize_trade_recap(submission_records, holdings, order_intents, order_log)
+    quality = build_execution_quality_snapshot(recap)
+    records = [dict(item or {}) for item in submission_records or []]
+
+    def _bucket_records(field: str) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+        grouped: dict[str, list[dict[str, str]]] = {}
+        for item in records:
+            key = str(item.get(field, "") or "").strip()
+            if not key:
+                continue
+            grouped.setdefault(key, []).append(item)
+        buckets: list[dict[str, Any]] = []
+        bucket_map: dict[str, dict[str, Any]] = {}
+        for key, rows in grouped.items():
+            bucket_recap = summarize_trade_recap(rows, [], [], [])
+            bucket_summary = build_execution_quality_bucket(key, bucket_recap, record_count=len(rows))
+            buckets.append(bucket_summary)
+            bucket_map[key] = bucket_summary
+        buckets.sort(
+            key=lambda item: (
+                bool(item.get("execution_quality_available", False)),
+                -float(item.get("execution_quality_penalty", 0.0) or 0.0),
+                -int(item.get("record_count", 0) or 0),
+                str(item.get("bucket", "") or ""),
+            ),
+            reverse=True,
+        )
+        return buckets, bucket_map
+
+    strategy_buckets, strategy_quality_map = _bucket_records("strategy_name")
+    symbol_buckets, symbol_quality_map = _bucket_records("symbol")
+    side_buckets, side_quality_map = _bucket_records("side")
+    fill_buckets, fill_quality_map = _bucket_records("fill_status")
+    opportunity_buckets, opportunity_quality_map = _bucket_records("opportunity_tier")
+
+    return {
+        "recap": recap,
+        "quality": quality,
+        "strategy_buckets": strategy_buckets,
+        "strategy_quality_map": strategy_quality_map,
+        "symbol_buckets": symbol_buckets,
+        "symbol_quality_map": symbol_quality_map,
+        "side_buckets": side_buckets,
+        "side_quality_map": side_quality_map,
+        "fill_buckets": fill_buckets,
+        "fill_quality_map": fill_quality_map,
+        "opportunity_buckets": opportunity_buckets,
+        "opportunity_quality_map": opportunity_quality_map,
     }
 
 

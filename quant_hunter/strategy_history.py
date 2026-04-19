@@ -5,7 +5,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from .broker import build_execution_quality_profile
 from .data import extract_stock_id, normalize_symbol
+from .execution_quality import build_execution_quality_bucket
 from .market_feed import EastmoneyMarketFeed
 from .models import (
     PriceBar,
@@ -67,7 +69,8 @@ class StrategyHistoryReplayer:
         source_files = self._discover_source_files(roots=roots)
         signals = self._load_signals(source_files, params)
         trades, notes = self._replay_signals(signals, params)
-        summaries = self._build_summaries(signals, trades, notes)
+        execution_profiles_by_file = self._build_execution_profiles(source_files)
+        summaries = self._build_summaries(signals, trades, notes, execution_profiles_by_file)
         equity_points = self._build_equity_points(trades)
         yearly_stats = self._build_period_stats(trades, period="year")
         monthly_stats = self._build_period_stats(trades, period="month")
@@ -266,6 +269,25 @@ class StrategyHistoryReplayer:
                 continue
             signals.append(signal)
         return signals
+
+    def _build_execution_profiles(self, source_files: list[Path]) -> dict[str, dict[str, Any]]:
+        profiles: dict[str, dict[str, Any]] = {}
+        for path in source_files:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            stored_profile = payload.get("execution_profile")
+            if isinstance(stored_profile, dict):
+                profiles[str(path)] = stored_profile
+                continue
+            profiles[str(path)] = build_execution_quality_profile(
+                submission_records=[dict(item) for item in list(payload.get("submission_records", []) or []) if isinstance(item, dict)],
+                holdings=[],
+                order_intents=[],
+                order_log=[str(item) for item in list(payload.get("order_log", []) or []) if str(item).strip()],
+            )
+        return profiles
 
     def _build_signal(
         self,
@@ -507,7 +529,9 @@ class StrategyHistoryReplayer:
         signals: list[StrategyHistorySignal],
         trades: list[StrategyHistoryTrade],
         notes: list[str],
+        execution_profiles_by_file: dict[str, dict[str, Any]] | None = None,
     ) -> list[StrategyHistorySummary]:
+        execution_profiles_by_file = execution_profiles_by_file or {}
         trades_by_strategy: dict[str, list[StrategyHistoryTrade]] = {}
         for trade in trades:
             trades_by_strategy.setdefault(trade.strategy_name, []).append(trade)
@@ -548,6 +572,61 @@ class StrategyHistoryReplayer:
             worst_trade_return = min(returns) if returns else 0.0
             avg_hold_days = (sum(item.hold_days for item in strategy_trades) / trade_count) if trade_count else 0.0
             no_fill_count = max(signal_count - trade_count, 0)
+            source_profiles = [
+                execution_profiles_by_file.get(item.source_file, {})
+                for item in strategy_signals
+                if execution_profiles_by_file.get(item.source_file)
+            ]
+            execution_bucket: dict[str, Any] = {}
+            if source_profiles:
+                aggregated_recap: dict[str, Any] = {
+                    "submitted_count": 0,
+                    "failed_count": 0,
+                    "pending_count": 0,
+                    "rejected_count": 0,
+                    "deviation_count": 0,
+                    "max_price_deviation_bps": 0.0,
+                    "max_quantity_deviation": 0,
+                    "review_flags": [],
+                    "latest_deviation_note": "",
+                    "focus_symbols": [],
+                }
+                seen_flags: set[str] = set()
+                seen_symbols: set[str] = set()
+                record_count = 0
+                for profile in source_profiles:
+                    strategy_bucket = dict((profile.get("strategy_quality_map", {}) or {})).get(strategy_name, {})
+                    if not strategy_bucket:
+                        continue
+                    record_count += int(strategy_bucket.get("record_count", 0) or 0)
+                    aggregated_recap["submitted_count"] += int(strategy_bucket.get("submitted_count", 0) or 0)
+                    aggregated_recap["failed_count"] += int(strategy_bucket.get("failed_count", 0) or 0)
+                    aggregated_recap["pending_count"] += int(strategy_bucket.get("pending_count", 0) or 0)
+                    aggregated_recap["rejected_count"] += int(strategy_bucket.get("rejected_count", 0) or 0)
+                    aggregated_recap["deviation_count"] += int(strategy_bucket.get("deviation_count", 0) or 0)
+                    aggregated_recap["max_price_deviation_bps"] = max(
+                        float(aggregated_recap["max_price_deviation_bps"] or 0.0),
+                        float(strategy_bucket.get("max_price_deviation_bps", 0.0) or 0.0),
+                    )
+                    aggregated_recap["max_quantity_deviation"] = max(
+                        int(aggregated_recap["max_quantity_deviation"] or 0),
+                        int(strategy_bucket.get("max_quantity_deviation", 0) or 0),
+                    )
+                    latest_note = str(strategy_bucket.get("latest_deviation_note", "") or "").strip()
+                    if latest_note:
+                        aggregated_recap["latest_deviation_note"] = latest_note
+                    for flag in list(strategy_bucket.get("review_flags", []) or []):
+                        flag_text = str(flag or "").strip()
+                        if flag_text and flag_text not in seen_flags:
+                            seen_flags.add(flag_text)
+                            aggregated_recap["review_flags"].append(flag_text)
+                    for symbol in list(strategy_bucket.get("execution_focus_symbols", []) or strategy_bucket.get("focus_symbols", []) or []):
+                        symbol_text = str(symbol or "").strip()
+                        if symbol_text and symbol_text not in seen_symbols:
+                            seen_symbols.add(symbol_text)
+                            aggregated_recap["focus_symbols"].append(symbol_text)
+                if record_count > 0:
+                    execution_bucket = build_execution_quality_bucket(strategy_name, aggregated_recap, record_count=record_count)
             summaries.append(
                 StrategyHistorySummary(
                     strategy_name=strategy_name,
@@ -572,6 +651,11 @@ class StrategyHistoryReplayer:
                     stop_hits=sum(1 for item in strategy_trades if item.exit_reason == "止损"),
                     timeout_exits=sum(1 for item in strategy_trades if item.exit_reason == "超时"),
                     end_exits=sum(1 for item in strategy_trades if item.exit_reason == "样本结束"),
+                    execution_quality_available=bool(execution_bucket.get("execution_quality_available", False)),
+                    execution_quality_score=float(execution_bucket.get("execution_quality_score", 1.0) or 1.0),
+                    execution_quality_label=str(execution_bucket.get("execution_quality_label", "") or ""),
+                    execution_sample_count=int(execution_bucket.get("record_count", 0) or 0),
+                    execution_review_summary=str(execution_bucket.get("execution_quality_summary", "") or ""),
                 )
             )
         summaries.sort(key=lambda item: (item.total_return, item.win_rate, item.trade_count, item.strategy_name), reverse=True)

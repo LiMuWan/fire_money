@@ -9,7 +9,12 @@ from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
 from quant_hunter.backtest import Backtester, format_result
-from quant_hunter.broker import EastmoneyBrokerAdapter, build_order_intent_from_trade_decision
+from quant_hunter.broker import (
+    EastmoneyBrokerAdapter,
+    build_execution_quality_profile,
+    build_order_intent_from_trade_decision,
+    summarize_trade_recap,
+)
 from quant_hunter.data import (
     load_bars_from_csv,
     load_cash_snapshot_from_csv,
@@ -781,18 +786,31 @@ class QuantHunterApp(tk.Tk):
             messagebox.showinfo("Info", "Please load a universe before optimization.")
             return
         optimizer = ParameterOptimizer(self.strategy_params())
-        self.optimization_results = optimizer.optimize(self.universe_bars, top_n=8)
+        execution_profile = build_execution_quality_profile(
+            submission_records=list(getattr(self, "order_submission_records", []) or []),
+            holdings=list(getattr(self, "holdings", []) or []),
+            order_intents=list(getattr(self, "order_intents", []) or []),
+            order_log=list(getattr(self, "order_submission_log", []) or []),
+        )
+        self.optimization_results = optimizer.optimize(
+            self.universe_bars,
+            top_n=8,
+            execution_recap=dict(execution_profile.get("recap", {}) or {}),
+            execution_profile=execution_profile,
+        )
         lines = ["Optimization Top 8", ""]
         for item in self.optimization_results:
             lines.append(
                 f"{item.rank}. objective={item.objective:.4f} | robustness={item.robustness_score:.0%} | "
+                f"exec={item.execution_quality_label or 'none'} {item.execution_quality_score:.2f} | "
                 f"portfolio={item.portfolio_return:.2%} | portfolio_oos={item.portfolio_out_of_sample_return:.2%} | "
                 f"portfolio_dd={item.portfolio_max_drawdown:.2%}"
             )
             lines.append(
                 f"   return={item.avg_return:.2%} | drawdown={item.avg_drawdown:.2%} | win={item.avg_win_rate:.2%} | "
                 f"oos={item.avg_out_of_sample_return:.2%} | worst_window={item.avg_worst_window_return:.2%} | "
-                f"return_std={item.avg_return_std:.2%} | positive_windows={item.avg_positive_window_ratio:.0%} | params={item.params}"
+                f"return_std={item.avg_return_std:.2%} | positive_windows={item.avg_positive_window_ratio:.0%} | "
+                f"exec_penalty={item.execution_penalty:.4f} | params={item.params}"
             )
         artifacts = optimizer.export_report(self.optimization_results, REPORT_DIR)
         lines.extend(["", f"Report exported: {artifacts.markdown_path}"])

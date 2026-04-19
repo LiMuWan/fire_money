@@ -34,6 +34,8 @@ def apply_daily_pool_rows(window, rows, summarize_themes_fn) -> None:
             buy_ready_count = int(build_meta.get("buy_ready_count", 0) or 0)
             rejected_count = int(build_meta.get("rejected_count", 0) or 0)
             portfolio_health_text = str(build_meta.get("portfolio_health_text", "") or "组合回测待生成")
+            strategy_execution_focus = str(build_meta.get("strategy_execution_focus", "") or "")
+            strategy_execution_detail = str(build_meta.get("strategy_execution_detail", "") or "")
             lines = [
                 "今日算法优先候选：",
                 f"- 风险档位：{risk_label} | {risk_hint}",
@@ -42,11 +44,19 @@ def apply_daily_pool_rows(window, rows, summarize_themes_fn) -> None:
                 f"- 主线题材：{theme_summary}",
                 f"- 本轮过滤：{buy_ready_count} 只可执行 / {rejected_count} 只被拦截",
                 f"- 组合视角：{portfolio_health_text}",
-                f"- 组合适配：{float(getattr(top, 'portfolio_fit_score', 0.0) or 0.0):.1f} | 分散度：{float(getattr(top, 'diversification_score', 0.0) or 0.0):.1f}",
-                f"- 总分：{top.total_score:.1f}",
-                f"- 逻辑：{top.rationale}",
-                f"- 催化：{top.catalyst or '暂无外部催化，偏技术面驱动'}",
             ]
+            if strategy_execution_focus:
+                lines.append(f"- 战法执行：{strategy_execution_focus}")
+                if strategy_execution_detail:
+                    lines.append(f"- 降权解释：{strategy_execution_detail}")
+            lines.extend(
+                [
+                    f"- 组合适配：{float(getattr(top, 'portfolio_fit_score', 0.0) or 0.0):.1f} | 分散度：{float(getattr(top, 'diversification_score', 0.0) or 0.0):.1f}",
+                    f"- 总分：{top.total_score:.1f}",
+                    f"- 逻辑：{top.rationale}",
+                    f"- 催化：{top.catalyst or '暂无外部催化，偏技术面驱动'}",
+                ]
+            )
             window.daily_pool_text.setPlainText("\n".join(lines))
         else:
             window.daily_pool_text.setPlainText(
@@ -64,9 +74,13 @@ def apply_daily_pool_rows(window, rows, summarize_themes_fn) -> None:
         top_theme = build_meta.get("top_theme", "") or (window.theme_heat_rows[0].theme_name if window.theme_heat_rows else "未分类")
         rejected_count = int(build_meta.get("rejected_count", 0) or 0)
         portfolio_return = float(build_meta.get("portfolio_return", 0.0) or 0.0)
-        window.recommend_status_label.setText(
+        status_text = (
             f"每日推荐池已生成：{len(window.daily_pool_rows)} 只候选，风险档位 {risk_label}，当前主线题材 {top_theme}，组合回测 {portfolio_return:.2%}，拦截 {rejected_count} 只。"
         )
+        strategy_execution_focus = str(build_meta.get("strategy_execution_focus", "") or "")
+        if strategy_execution_focus:
+            status_text = f"{status_text} | 战法 {strategy_execution_focus}"
+        window.recommend_status_label.setText(status_text)
 
     if hasattr(window, "_update_recommend_empty_state"):
         window._update_recommend_empty_state()
@@ -347,6 +361,7 @@ def append_submission_record_entry(
     planned_quantity: str = "",
     planned_stop_price: str = "",
     planned_target_price: str = "",
+    strategy_name: str = "",
     opportunity_tier: str = "",
     planned_risk_reward_ratio: str = "",
     portfolio_fit_score: str = "",
@@ -371,6 +386,7 @@ def append_submission_record_entry(
             "planned_quantity": str(planned_quantity or ""),
             "planned_stop_price": str(planned_stop_price or ""),
             "planned_target_price": str(planned_target_price or ""),
+            "strategy_name": str(strategy_name or ""),
             "opportunity_tier": str(opportunity_tier or ""),
             "planned_risk_reward_ratio": str(planned_risk_reward_ratio or ""),
             "portfolio_fit_score": str(portfolio_fit_score or ""),

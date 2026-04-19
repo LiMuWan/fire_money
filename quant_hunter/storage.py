@@ -87,7 +87,10 @@ class AppState:
     paper_trading_state: PaperTradingState = field(default_factory=PaperTradingState)
     order_submission_log: list[str] = field(default_factory=list)
     order_submission_records: list[dict[str, str]] = field(default_factory=list)
-    smart_message_events: list[dict[str, str]] = field(default_factory=list)
+    smart_message_events: list[dict[str, object]] = field(default_factory=list)
+    recommend_message_center_filter: str = "all"
+    recommend_message_center_show_unhandled_only: bool = False
+    recommend_message_center_sort: str = "latest"
 
 
 _SUBMISSION_RECORD_FIELDS = (
@@ -105,6 +108,7 @@ _SUBMISSION_RECORD_FIELDS = (
     "planned_quantity",
     "planned_stop_price",
     "planned_target_price",
+    "strategy_name",
     "opportunity_tier",
     "planned_risk_reward_ratio",
     "portfolio_fit_score",
@@ -121,6 +125,8 @@ _SMART_MESSAGE_EVENT_FIELDS = (
     "detail",
     "symbol",
     "level",
+    "is_read",
+    "is_handled",
 )
 
 
@@ -156,14 +162,25 @@ def _decode_submission_records(value: object) -> list[dict[str, str]]:
     return rows
 
 
-def _decode_smart_message_events(value: object) -> list[dict[str, str]]:
+def _decode_smart_message_events(value: object) -> list[dict[str, object]]:
     if not isinstance(value, list):
         return []
-    rows: list[dict[str, str]] = []
+    rows: list[dict[str, object]] = []
     for item in value[:120]:
         if not isinstance(item, dict):
             continue
-        rows.append({field: str(item.get(field, "") or "") for field in _SMART_MESSAGE_EVENT_FIELDS})
+        rows.append(
+            {
+                "timestamp": str(item.get("timestamp", "") or ""),
+                "category": str(item.get("category", "") or ""),
+                "title": str(item.get("title", "") or ""),
+                "detail": str(item.get("detail", "") or ""),
+                "symbol": str(item.get("symbol", "") or ""),
+                "level": str(item.get("level", "") or ""),
+                "is_read": bool(item.get("is_read", False)),
+                "is_handled": bool(item.get("is_handled", False)),
+            }
+        )
     return rows
 
 
@@ -335,6 +352,9 @@ def load_app_state(path: str | Path) -> AppState:
         order_submission_log=_as_string_list(data.get("order_submission_log", []))[:200],
         order_submission_records=_decode_submission_records(data.get("order_submission_records", [])),
         smart_message_events=_decode_smart_message_events(data.get("smart_message_events", [])),
+        recommend_message_center_filter=str(data.get("recommend_message_center_filter", "all") or "all"),
+        recommend_message_center_show_unhandled_only=bool(data.get("recommend_message_center_show_unhandled_only", False)),
+        recommend_message_center_sort=str(data.get("recommend_message_center_sort", "latest") or "latest"),
     )
 
 

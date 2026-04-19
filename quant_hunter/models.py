@@ -186,6 +186,11 @@ class RecommendationRow:
     portfolio_fit_score: float = 0.0
     diversification_score: float = 0.0
     concentration_penalty_score: float = 0.0
+    strategy_execution_quality_available: bool = False
+    strategy_execution_quality_score: float = 1.0
+    strategy_execution_quality_label: str = ""
+    strategy_execution_penalty: float = 0.0
+    strategy_execution_review_summary: str = ""
     theme_name: str = ""
     theme_score: float = 0.0
     theme_rank: int = 0
@@ -425,6 +430,12 @@ class OptimizationRun:
     portfolio_profit_factor: float = 0.0
     portfolio_avg_exposure: float = 0.0
     portfolio_max_concurrent_positions: int = 0
+    execution_quality_available: bool = False
+    execution_quality_score: float = 1.0
+    execution_pressure_score: float = 0.0
+    execution_penalty: float = 0.0
+    execution_quality_label: str = ""
+    execution_quality_summary: str = ""
 
 
 @dataclass(frozen=True)
@@ -492,6 +503,11 @@ class StrategyHistorySummary:
     max_consecutive_losses: int = 0
     best_trade_return: float = 0.0
     worst_trade_return: float = 0.0
+    execution_quality_available: bool = False
+    execution_quality_score: float = 1.0
+    execution_quality_label: str = ""
+    execution_sample_count: int = 0
+    execution_review_summary: str = ""
 
 
 @dataclass(frozen=True)

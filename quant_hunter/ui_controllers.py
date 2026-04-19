@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from quant_hunter.backtest import BacktestParams, PortfolioBacktester
 from quant_hunter.broker import (
+    build_execution_quality_profile,
     build_submission_intents,
     merge_submission_records_with_execution_records,
     normalize_submission_result,
     reconcile_submission_records_with_holdings,
+    summarize_trade_recap,
 )
 from quant_hunter.broker_status import build_broker_execution_summary
 from quant_hunter.models import OrderIntent, PaperTradingState
@@ -60,10 +62,29 @@ def build_order_submission_experiment_context(window) -> dict[str, object]:
     paper_state = getattr(window, "paper_trading_state", getattr(getattr(window, "state", None), "paper_trading_state", None))
     if not isinstance(paper_state, PaperTradingState):
         paper_state = PaperTradingState()
+    if hasattr(window, "_current_execution_profile"):
+        execution_profile = window._current_execution_profile()
+        execution_recap = dict(execution_profile.get("recap", {}) or {})
+    elif hasattr(window, "_current_execution_recap"):
+        execution_recap = dict(window._current_execution_recap() or {})
+        execution_profile = {"recap": execution_recap}
+    else:
+        execution_profile = build_execution_quality_profile(
+            submission_records=list(getattr(window, "order_submission_records", []) or []),
+            holdings=list(getattr(window, "holdings", []) or []),
+            order_intents=intents,
+            order_log=list(getattr(window, "order_submission_log", []) or []),
+        )
+        execution_recap = dict(execution_profile.get("recap", {}) or {})
 
     return {
         "strategy_name": strategy_name,
-        "experiment_bridge": paper_strategy_experiment_bridge_v45(paper_state, strategy_name),
+        "experiment_bridge": paper_strategy_experiment_bridge_v45(
+            paper_state,
+            strategy_name,
+            execution_recap=execution_recap,
+            execution_profile=execution_profile,
+        ),
     }
 
 
@@ -91,6 +112,11 @@ def _submission_record_plan_context(window, submitted_intent: OrderIntent) -> di
         "planned_quantity": str(int(getattr(original_intent, "quantity", 0) or 0)) if int(getattr(original_intent, "quantity", 0) or 0) > 0 else "",
         "planned_stop_price": f"{float(getattr(original_intent, 'stop_price', 0.0) or 0.0):.3f}" if float(getattr(original_intent, "stop_price", 0.0) or 0.0) > 0 else "",
         "planned_target_price": f"{float(getattr(original_intent, 'target_price', 0.0) or 0.0):.3f}" if float(getattr(original_intent, "target_price", 0.0) or 0.0) > 0 else "",
+        "strategy_name": str(
+            getattr(recommendation, "primary_strategy", "")
+            or getattr(original_intent, "strategy_name", "")
+            or "掘龙决策"
+        ),
         "opportunity_tier": str(
             getattr(recommendation, "opportunity_tier", "") or getattr(original_intent, "opportunity_tier", "") or ""
         ),
@@ -755,7 +781,17 @@ def refresh_daily_pool_controller(window, async_mode: bool, *, daily_pool_builde
     theme_aliases = dict(window.theme_aliases)
     capabilities = window._license_capabilities()
     paper_state = getattr(window.state, "paper_trading_state", PaperTradingState())
-    rotation_rows = build_strategy_rotation_snapshot(paper_state)
+    execution_profile = (
+        window._current_execution_profile()
+        if hasattr(window, "_current_execution_profile")
+        else build_execution_quality_profile(
+            submission_records=list(getattr(window, "order_submission_records", []) or []),
+            holdings=list(getattr(window, "holdings", []) or []),
+            order_intents=list(getattr(window, "order_intents", []) or []),
+            order_log=list(getattr(window, "order_submission_log", []) or []),
+        )
+    )
+    rotation_rows = build_strategy_rotation_snapshot(paper_state, execution_profile=execution_profile)
     strategy_bias_by_name = {
         str(item.get("strategy_name", "") or ""): float(item.get("rotation_score", 0.0) or 0.0)
         for item in rotation_rows
@@ -787,6 +823,7 @@ def refresh_daily_pool_controller(window, async_mode: bool, *, daily_pool_builde
                 focus_themes=focus_themes,
                 focus_theme_boost=focus_theme_boost,
                 strategy_bias_by_name=strategy_bias_by_name,
+                strategy_execution_profile_by_name=dict(execution_profile.get("strategy_quality_map", {}) or {}),
                 risk_profile=profile_key,
             )
             rows = builder.build(
@@ -896,12 +933,31 @@ def run_parameter_optimization_controller(
 
     params = window.strategy_params()
     bars_by_symbol = {symbol: list(items) for symbol, items in window.universe_bars.items()}
+    if hasattr(window, "_current_execution_profile"):
+        execution_profile = window._current_execution_profile()
+        execution_recap = dict(execution_profile.get("recap", {}) or {})
+    elif hasattr(window, "_current_execution_recap"):
+        execution_recap = dict(window._current_execution_recap() or {})
+        execution_profile = {"recap": execution_recap}
+    else:
+        execution_profile = build_execution_quality_profile(
+            submission_records=list(getattr(window, "order_submission_records", []) or []),
+            holdings=list(getattr(window, "holdings", []) or []),
+            order_intents=list(getattr(window, "order_intents", []) or []),
+            order_log=list(getattr(window, "order_submission_log", []) or []),
+        )
+        execution_recap = dict(execution_profile.get("recap", {}) or {})
     if hasattr(window, "optimization_text"):
         window.optimization_text.setPlainText("正在后台运行参数优化，请稍候...\n")
 
     def optimize_payload():
         optimizer = parameter_optimizer_cls(params)
-        results = optimizer.optimize(bars_by_symbol, top_n=8)
+        results = optimizer.optimize(
+            bars_by_symbol,
+            top_n=8,
+            execution_recap=execution_recap,
+            execution_profile=execution_profile,
+        )
         artifacts = optimizer.export_report(results, report_dir)
         return results, artifacts
 
@@ -912,7 +968,8 @@ def run_parameter_optimization_controller(
         for item in window.optimization_results:
             lines.append(
                 f"{item.rank}. 目标值={item.objective:.4f} | 收益={item.avg_return:.2%} | "
-                f"回撤={item.avg_drawdown:.2%} | 胜率={item.avg_win_rate:.2%} | 参数={item.params}"
+                f"回撤={item.avg_drawdown:.2%} | 胜率={item.avg_win_rate:.2%} | "
+                f"执行={item.execution_quality_label or '待接实盘'} {item.execution_quality_score:.2f} | 参数={item.params}"
             )
         lines.extend(["", f"报告已导出：{artifacts.markdown_path}"])
         for item in window.optimization_results:
@@ -920,6 +977,13 @@ def run_parameter_optimization_controller(
                 f"   绋冲仴={item.robustness_score:.0%} | 鏍锋湰澶栨敹鐩?={item.avg_out_of_sample_return:.2%} | "
                 f"鏈€宸獥鍙?={item.avg_worst_window_return:.2%} | 鏀剁泭娉㈠姩={item.avg_return_std:.2%} | "
                 f"姝ｆ敹绐楀彛={item.avg_positive_window_ratio:.0%}"
+            )
+        if any(item.execution_quality_available for item in window.optimization_results):
+            lines.extend(
+                [
+                    "",
+                    f"执行复盘：{window.optimization_results[0].execution_quality_summary}",
+                ]
             )
         window.optimization_text.setPlainText("\n".join(lines))
         window._append_runtime_log(f"参数优化完成：输出 {len(results)} 组结果")
