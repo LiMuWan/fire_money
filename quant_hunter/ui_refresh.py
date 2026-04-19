@@ -6,11 +6,12 @@ from types import SimpleNamespace
 
 try:
     from PySide6.QtCore import Qt
-    from PySide6.QtGui import QColor
+    from PySide6.QtGui import QColor, QFont
     from PySide6.QtWidgets import QApplication, QTableWidgetItem
 except ModuleNotFoundError:  # pragma: no cover - enables pure-logic tests without Qt runtime
     Qt = None
     QColor = None
+    QFont = None
 
     class QApplication:  # type: ignore[override]
         @staticmethod
@@ -51,6 +52,7 @@ from quant_hunter.ui_status import display_fill_status, display_order_status, ma
 
 QT_USER_ROLE = Qt.UserRole if Qt is not None else 0
 _STRATEGY_REGISTRY = get_strategy_registry()
+_TERMINAL_MONO_FONT_CACHE: dict[tuple[int, bool], object] = {}
 
 
 @contextmanager
@@ -81,11 +83,12 @@ def _batched_table_update(table):
 def _build_identity_table_item(window, symbol: str, *, badge: str = "--") -> QTableWidgetItem:
     stock_name = window._stock_name_for_symbol(symbol) if symbol else "--"
     stock_id = window._stock_id_for_symbol(symbol) if symbol else "--"
-    text = f"{stock_name}  {stock_id}\n状态 {badge} | 标识 {symbol or '--'}"
+    text = f"{stock_name}  {stock_id}\n{symbol or '--'} | 优先 {badge}"
     item = QTableWidgetItem(text)
     item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-    item.setToolTip(f"{stock_name}\n代码：{stock_id}\n交易标识：{symbol or '--'}\n状态：{badge}")
+    item.setToolTip(f"{stock_name}\n代码：{stock_id}\n交易标识：{symbol or '--'}\n优先级：{badge}")
     item.setData(QT_USER_ROLE, {"symbol": symbol, "stock_name": stock_name, "stock_id": stock_id, "badge": badge})
+    _apply_table_item_font(item, bold=True)
     return item
 
 
@@ -128,7 +131,7 @@ def _build_daily_pool_identity_item(window, row, execution_status: str) -> QTabl
     symbol = row.symbol or "--"
     heat_score = float(getattr(row, "mainline_strength_score", getattr(row, "theme_score", row.total_score)) or 0.0)
     badge = execution_status if execution_status != "待观察" else window._display_action(row.action)
-    text = f"{stock_name} | {stock_id} | {badge}"
+    text = f"{stock_name}  {stock_id}\n{symbol} | {badge}"
     item = QTableWidgetItem(text)
     item.setToolTip(
         "\n".join(
@@ -152,6 +155,8 @@ def _build_daily_pool_identity_item(window, row, execution_status: str) -> QTabl
             "heat_score": heat_score,
         },
     )
+    item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+    _apply_table_item_font(item, bold=True)
     return item
 
 
@@ -159,9 +164,10 @@ def _build_status_badge_item(primary: str, secondary: str) -> QTableWidgetItem:
     text = f"{primary or '--'} / {secondary or '--'}"
     item = QTableWidgetItem(text)
     item.setTextAlignment(Qt.AlignCenter)
-    item.setBackground(QColor("#24303A"))
-    item.setForeground(QColor("#7ED7FF"))
+    item.setBackground(QColor("#162330"))
+    item.setForeground(QColor("#9DD0FF"))
     item.setToolTip(f"动作：{primary or '--'}\n成交：{secondary or '--'}")
+    _apply_table_item_font(item, bold=True)
     return item
 
 
@@ -179,19 +185,67 @@ def _build_compact_badge_item(
     item.setForeground(QColor(foreground))
     if tooltip:
         item.setToolTip(tooltip)
+    _apply_table_item_font(item, bold=True)
     return item
 
 
 def _apply_risk_lamp_colors(item: QTableWidgetItem, risk_lamp: str) -> None:
-    if risk_lamp.startswith("红灯"):
-        item.setBackground(QColor("#FBEAEA"))
-        item.setForeground(QColor("#842029"))
-    elif risk_lamp.startswith("黄灯"):
-        item.setBackground(QColor("#FFF4DB"))
-        item.setForeground(QColor("#7C4A03"))
+    background, foreground = _risk_lamp_palette(risk_lamp)
+    item.setBackground(background)
+    item.setForeground(foreground)
+
+
+def _terminal_mono_font(point_size: int = 10, *, bold: bool = False):
+    if QFont is None:
+        return None
+    key = (int(point_size), bool(bold))
+    cached = _TERMINAL_MONO_FONT_CACHE.get(key)
+    if cached is not None:
+        return QFont(cached)
+    font = QFont("Consolas")
+    try:
+        font.setStyleHint(QFont.Monospace)
+        font.setFixedPitch(True)
+    except Exception:
+        pass
+    font.setPointSize(max(8, int(point_size)))
+    font.setBold(bool(bold))
+    _TERMINAL_MONO_FONT_CACHE[key] = QFont(font)
+    return font
+
+
+def _apply_table_item_font(item: QTableWidgetItem | None, *, mono: bool = False, bold: bool = False, point_size: int | None = None) -> None:
+    if item is None or QFont is None or not hasattr(item, "setFont"):
+        return
+    if mono:
+        font = _terminal_mono_font(point_size or 10, bold=bold)
     else:
-        item.setBackground(QColor("#E8F7EC"))
-        item.setForeground(QColor("#0F5132"))
+        font = item.font() if hasattr(item, "font") else QFont()
+        if point_size is not None:
+            font.setPointSize(max(8, int(point_size)))
+        font.setBold(bool(bold))
+    if font is not None:
+        item.setFont(font)
+
+
+def _priority_palette(priority: str) -> tuple[QColor, QColor]:
+    priority_key = str(priority or "").strip().upper()
+    palette = {
+        "A": ("#132A22", "#6EE7AE"),
+        "B": ("#2B2415", "#FFD46B"),
+        "C": ("#2B1719", "#FF9AA4"),
+    }
+    background, foreground = palette.get(priority_key, ("#1B2430", "#D9E2EE"))
+    return QColor(background), QColor(foreground)
+
+
+def _risk_lamp_palette(risk_lamp: str) -> tuple[QColor, QColor]:
+    text = str(risk_lamp or "")
+    if text.startswith("红灯"):
+        return QColor("#34171B"), QColor("#FFB4BC")
+    if text.startswith("黄灯"):
+        return QColor("#332712"), QColor("#FFD46B")
+    return QColor("#122A21"), QColor("#73E0A5")
 
 
 def _ensure_table_item(table, row_index: int, column: int, value: str = "") -> QTableWidgetItem:
@@ -1980,6 +2034,8 @@ def populate_filtered_daily_pool_table(window) -> None:
         return
     rows = window._filtered_daily_pool_rows() if hasattr(window, "_filtered_daily_pool_rows") else list(window.daily_pool_rows)
     selected_symbol = _selected_table_symbol(window.daily_pool_table, rows)
+    if not selected_symbol and rows:
+        selected_symbol = str(getattr(rows[0], "symbol", "") or "")
     execution_status_by_symbol = {
         getattr(row, "symbol", ""): (
             window._execution_status_for_symbol(row.symbol)
@@ -2081,34 +2137,56 @@ def populate_filtered_daily_pool_table(window) -> None:
                         background, foreground = submission_colors({"order_status": "FAILED", "fill_status": "REJECTED"})
                         table_item.setBackground(background)
                         table_item.setForeground(foreground)
+                    table_item.setTextAlignment(Qt.AlignCenter)
+                    _apply_table_item_font(table_item, bold=True)
                 elif column == 8:
                     risk_label = str(value)
                     if risk_label == "高":
-                        table_item.setBackground(QColor("#FBEAEA"))
-                        table_item.setForeground(QColor("#842029"))
+                        table_item.setBackground(QColor("#23181C"))
+                        table_item.setForeground(QColor("#D7AAB0"))
                     elif risk_label == "中":
-                        table_item.setBackground(QColor("#FFF4DB"))
-                        table_item.setForeground(QColor("#7C4A03"))
+                        table_item.setBackground(QColor("#242116"))
+                        table_item.setForeground(QColor("#D8C07D"))
                     else:
-                        table_item.setBackground(QColor("#E8F7EC"))
-                        table_item.setForeground(QColor("#0F5132"))
+                        table_item.setBackground(QColor("#16231D"))
+                        table_item.setForeground(QColor("#9DCBB3"))
+                    _apply_table_item_font(table_item, bold=True)
                 elif column == 12:
                     try:
                         score = float(value)
                     except ValueError:
                         score = 0.0
                     if score >= 85:
-                        table_item.setBackground(QColor("#E8F7EC"))
-                        table_item.setForeground(QColor("#0F5132"))
+                        table_item.setBackground(QColor("#16231D"))
+                        table_item.setForeground(QColor("#9DCBB3"))
                     elif score >= 70:
-                        table_item.setBackground(QColor("#FFF4DB"))
-                        table_item.setForeground(QColor("#7C4A03"))
+                        table_item.setBackground(QColor("#242116"))
+                        table_item.setForeground(QColor("#D8C07D"))
+                    else:
+                        table_item.setBackground(QColor("#151D25"))
+                        table_item.setForeground(QColor("#C4D1DC"))
+                    table_item.setTextAlignment(Qt.AlignCenter)
+                    _apply_table_item_font(table_item, mono=True, bold=True)
+                elif column in {5, 7, 10, 13, 14, 15, 16, 17, 18}:
+                    numeric_value = 0.0
+                    try:
+                        numeric_value = float(str(value).replace("%", "").strip())
+                    except ValueError:
+                        numeric_value = 0.0
+                    tone = "positive" if numeric_value >= 80 else ("warning" if numeric_value >= 60 else "neutral")
+                    _set_numeric_item_style(table_item, tone=tone)
+                elif column in {20, 21, 22}:
+                    table_item.setTextAlignment(Qt.AlignCenter if column != 21 else (Qt.AlignLeft | Qt.AlignVCenter))
+                    _apply_table_item_font(table_item, bold=(column == 20))
                 elif column == 19:
                     action_bg, action_fg = signal_colors(row.action, row.action)
                     table_item.setBackground(action_bg)
                     table_item.setForeground(action_fg)
+                    table_item.setTextAlignment(Qt.AlignCenter)
+                    _apply_table_item_font(table_item, bold=True)
                 elif column == 23:
                     table_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                    _apply_table_item_font(table_item, mono=True, bold=True)
             identity_item = _build_daily_pool_identity_item(window, row, execution_status)
             if identity_item.toolTip() != row_tooltip:
                 identity_item.setToolTip(row_tooltip)
@@ -2121,8 +2199,9 @@ def populate_filtered_daily_pool_table(window) -> None:
                 f"{getattr(row, 'mainline_tag', '') or row.theme_name or '未分类'}\n{_compact_daily_pool_role(getattr(row, 'mainline_role', ''))} | 位次 {getattr(row, 'mainline_rank', row.theme_rank) or '--'}",
             )
             theme_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            theme_item.setBackground(QColor("#24303A"))
-            theme_item.setForeground(QColor("#FFD166"))
+            theme_item.setBackground(QColor("#19212A"))
+            theme_item.setForeground(QColor("#D2BE93"))
+            _apply_table_item_font(theme_item, bold=True)
             if theme_item.toolTip() != row_tooltip:
                 theme_item.setToolTip(row_tooltip)
             _set_item_data_if_changed(
@@ -2142,8 +2221,16 @@ def populate_filtered_daily_pool_table(window) -> None:
                 f"{_compact_daily_pool_action(row.action)}\n{_compact_daily_pool_strategy(getattr(row, 'primary_strategy', '') or '掘龙决策')}",
             )
             action_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            action_item.setBackground(QColor("#1A2430"))
-            action_item.setForeground(QColor("#F4F7FB"))
+            if row.action == "BUY":
+                action_item.setBackground(QColor("#16231D"))
+                action_item.setForeground(QColor("#A2CFB8"))
+            elif row.action in {"SELL", "REDUCE"}:
+                action_item.setBackground(QColor("#23181C"))
+                action_item.setForeground(QColor("#D7AAB0"))
+            else:
+                action_item.setBackground(QColor("#171F28"))
+                action_item.setForeground(QColor("#D8E1EB"))
+            _apply_table_item_font(action_item, bold=True)
             if action_item.toolTip() != row_tooltip:
                 action_item.setToolTip(row_tooltip)
 
@@ -2155,8 +2242,8 @@ def populate_filtered_daily_pool_table(window) -> None:
                 f"买 {entry_text} / 卖 {target_text}\n盈亏比 {rr_ratio:.2f}" if rr_ratio else f"买 {entry_text} / 卖 {target_text}",
             )
             price_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            price_item.setBackground(QColor("#183126" if rr_ratio >= 1.8 else ("#3A2F16" if rr_ratio >= 1.0 else "#2A1F1F")))
-            price_item.setForeground(QColor("#8FE3B0" if rr_ratio >= 1.8 else ("#FFD166" if rr_ratio >= 1.0 else "#FFB4AE")))
+            price_item.setBackground(QColor("#16241D" if rr_ratio >= 1.8 else ("#252216" if rr_ratio >= 1.0 else "#231A1C")))
+            price_item.setForeground(QColor("#9FCDB6" if rr_ratio >= 1.8 else ("#D5BF80" if rr_ratio >= 1.0 else "#D5A9B1")))
             if price_item.toolTip() != row_tooltip:
                 price_item.setToolTip(row_tooltip)
             price_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -2173,8 +2260,9 @@ def populate_filtered_daily_pool_table(window) -> None:
             )
             risk_item = _ensure_table_item(window.daily_pool_table, row_index, 8, f"{getattr(row, 'mainline_risk_flag', '--')}\n总分 {row.total_score:.1f}")
             risk_item.setTextAlignment(Qt.AlignCenter)
-            risk_item.setBackground(QColor("#2A1F1F" if getattr(row, "mainline_risk_flag", "--") == "高" else ("#3A2F16" if getattr(row, "mainline_risk_flag", "--") == "中" else "#183126")))
-            risk_item.setForeground(QColor("#FFB4AE" if getattr(row, "mainline_risk_flag", "--") == "高" else ("#FFD166" if getattr(row, "mainline_risk_flag", "--") == "中" else "#8FE3B0")))
+            risk_item.setBackground(QColor("#23181C" if getattr(row, "mainline_risk_flag", "--") == "高" else ("#252216" if getattr(row, "mainline_risk_flag", "--") == "中" else "#16231D")))
+            risk_item.setForeground(QColor("#D7AAB0" if getattr(row, "mainline_risk_flag", "--") == "高" else ("#D5BF80" if getattr(row, "mainline_risk_flag", "--") == "中" else "#9FCDB6")))
+            _apply_table_item_font(risk_item, bold=True)
             if risk_item.toolTip() != row_tooltip:
                 risk_item.setToolTip(row_tooltip)
     window._daily_pool_table_signature = table_signature
@@ -2187,10 +2275,12 @@ def populate_filtered_daily_pool_table(window) -> None:
 def _build_identity_table_item(window, symbol: str, *, badge: str = "--") -> QTableWidgetItem:
     stock_name = window._stock_name_for_symbol(symbol) if symbol else "--"
     stock_id = window._stock_id_for_symbol(symbol) if symbol else "--"
-    text = f"{stock_name} | {stock_id} | {symbol or '--'}"
+    text = f"{stock_name}  {stock_id}\n{symbol or '--'} | 优先 {badge}"
     item = QTableWidgetItem(text)
+    item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
     item.setToolTip(f"{stock_name}\n代码：{stock_id}\n交易标识：{symbol or '--'}\n状态：{badge}")
     item.setData(QT_USER_ROLE, {"symbol": symbol, "stock_name": stock_name, "stock_id": stock_id, "badge": badge})
+    _apply_table_item_font(item, bold=True)
     return item
 
 
@@ -2251,7 +2341,8 @@ def _build_daily_pool_identity_item(window, row, execution_status: str) -> QTabl
     badge = execution_status if execution_status != "待观察" else window._display_action(row.action)
     action_text = window._display_action(getattr(row, "action", "") or "WATCH")
     decision_score = _strategy_score_value(row, "掘龙决策") or float(getattr(row, "total_score", 0.0) or 0.0)
-    item = QTableWidgetItem(f"{stock_name}  {stock_id}\n{badge} | {action_text} | 评 {decision_score:.1f}")
+    theme_text = getattr(row, "mainline_tag", "") or getattr(row, "theme_name", "") or "未分类"
+    item = QTableWidgetItem(f"{stock_name}  {stock_id}\n{badge} | {theme_text} | 评 {decision_score:.1f}")
     item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
     item.setToolTip(
         "\n".join(
@@ -2275,6 +2366,7 @@ def _build_daily_pool_identity_item(window, row, execution_status: str) -> QTabl
             "heat_score": heat_score,
         },
     )
+    _apply_table_item_font(item, bold=True)
     return item
 
 
@@ -2284,7 +2376,22 @@ def _build_status_badge_item(primary: str, secondary: str) -> QTableWidgetItem:
     item.setBackground(QColor("#24303A"))
     item.setForeground(QColor("#7ED7FF"))
     item.setToolTip(f"动作：{primary or '--'}\n成交：{secondary or '--'}")
+    _apply_table_item_font(item, bold=True)
     return item
+
+
+def _set_numeric_item_style(item: QTableWidgetItem, *, tone: str = "neutral") -> None:
+    palette = {
+        "positive": (QColor("#15231D"), QColor("#9ECAB4")),
+        "warning": (QColor("#252216"), QColor("#D4C07F")),
+        "negative": (QColor("#24191D"), QColor("#D4A9B0")),
+        "neutral": (QColor("#151D25"), QColor("#C2CFDA")),
+    }
+    background, foreground = palette.get(tone, palette["neutral"])
+    item.setBackground(background)
+    item.setForeground(foreground)
+    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+    _apply_table_item_font(item, mono=True, bold=True)
 
 
 def _decision_tone(decision_score: float) -> tuple[str, QColor, QColor]:
@@ -3251,7 +3358,15 @@ def fill_order_intents_table(window) -> None:
                 details["reason_summary"],
                 risk_lamp,
             ]
-            action_bg, action_fg = signal_colors(item.side, item.side)
+            side_key = str(getattr(item, "side", "") or "").upper()
+            if side_key == "BUY":
+                action_bg, action_fg = QColor("#123124"), QColor("#7CE5C2")
+            elif side_key in {"SELL", "REDUCE"}:
+                action_bg, action_fg = QColor("#351820"), QColor("#FFB4BC")
+            elif side_key == "WATCH":
+                action_bg, action_fg = QColor("#332712"), QColor("#FFD46B")
+            else:
+                action_bg, action_fg = QColor("#1A2430"), QColor("#F4F7FB")
             for column, value in enumerate(values):
                 table_item = QTableWidgetItem(value)
                 if hasattr(table_item, "setToolTip"):
@@ -3271,38 +3386,29 @@ def fill_order_intents_table(window) -> None:
                     table_item.setToolTip("\n".join(tooltip_parts))
                 if column == 0:
                     priority = str(details["priority"])
-                    if priority == "A":
-                        table_item.setBackground(QColor("#E8F7EC"))
-                        table_item.setForeground(QColor("#0F5132"))
-                    elif priority == "B":
-                        table_item.setBackground(QColor("#FFF4DB"))
-                        table_item.setForeground(QColor("#7C4A03"))
-                    else:
-                        table_item.setBackground(QColor("#FBEAEA"))
-                        table_item.setForeground(QColor("#842029"))
+                    priority_bg, priority_fg = _priority_palette(priority)
+                    table_item.setBackground(priority_bg)
+                    table_item.setForeground(priority_fg)
+                    table_item.setTextAlignment(Qt.AlignCenter)
+                    _apply_table_item_font(table_item, mono=True, bold=True)
                 elif column == 2:
                     table_item.setBackground(action_bg)
                     table_item.setForeground(action_fg)
+                    table_item.setTextAlignment(Qt.AlignCenter)
+                    _apply_table_item_font(table_item, bold=True)
+                elif column in {3, 4, 5, 6, 7, 8}:
+                    numeric_tone = "positive" if column == 6 and float(details["risk_reward_ratio"] or 0.0) >= 1.8 else ("warning" if column == 6 and float(details["risk_reward_ratio"] or 0.0) >= 1.0 else "neutral")
+                    _set_numeric_item_style(table_item, tone=numeric_tone)
                 elif column == 9:
-                    if risk_lamp.startswith("红灯"):
-                        table_item.setBackground(QColor("#FBEAEA"))
-                        table_item.setForeground(QColor("#842029"))
-                    elif risk_lamp.startswith("黄灯"):
-                        table_item.setBackground(QColor("#FFF4DB"))
-                        table_item.setForeground(QColor("#7C4A03"))
-                    else:
-                        table_item.setBackground(QColor("#E8F7EC"))
-                        table_item.setForeground(QColor("#0F5132"))
+                    _apply_risk_lamp_colors(table_item, risk_lamp)
+                    table_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                    _apply_table_item_font(table_item, bold=True)
                 elif column == len(values) - 1:
-                    if risk_lamp.startswith("红灯"):
-                        table_item.setBackground(QColor("#FBEAEA"))
-                        table_item.setForeground(QColor("#842029"))
-                    elif risk_lamp.startswith("黄灯"):
-                        table_item.setBackground(QColor("#FFF4DB"))
-                        table_item.setForeground(QColor("#7C4A03"))
-                    else:
-                        table_item.setBackground(QColor("#E8F7EC"))
-                        table_item.setForeground(QColor("#0F5132"))
+                    _apply_risk_lamp_colors(table_item, risk_lamp)
+                    table_item.setTextAlignment(Qt.AlignCenter)
+                    _apply_table_item_font(table_item, bold=True)
+                elif column == 1:
+                    _apply_table_item_font(table_item, bold=True)
                 window.orders_table.setItem(row_index, column, table_item)
 
             stock_name = window._stock_name_for_symbol(item.symbol)
@@ -3331,14 +3437,17 @@ def fill_order_intents_table(window) -> None:
                 },
             )
             if str(details["priority"]) == "A":
-                identity_item.setBackground(QColor("#E8F7EC"))
-                identity_item.setForeground(QColor("#0F5132"))
+                identity_bg, identity_fg = _priority_palette("A")
+                identity_item.setBackground(identity_bg)
+                identity_item.setForeground(identity_fg)
             elif str(details["priority"]) == "B":
-                identity_item.setBackground(QColor("#FFF4DB"))
-                identity_item.setForeground(QColor("#7C4A03"))
+                identity_bg, identity_fg = _priority_palette("B")
+                identity_item.setBackground(identity_bg)
+                identity_item.setForeground(identity_fg)
             else:
-                identity_item.setBackground(QColor("#FBEAEA"))
-                identity_item.setForeground(QColor("#842029"))
+                identity_bg, identity_fg = _priority_palette("C")
+                identity_item.setBackground(identity_bg)
+                identity_item.setForeground(identity_fg)
             window.orders_table.setItem(row_index, 1, identity_item)
             action_item = _build_compact_badge_item(
                 [window._display_action(item.side), str(details["priority"])],
@@ -3429,10 +3538,16 @@ def refresh_submission_table(window) -> None:
                     table_item.setToolTip(snapshot["tooltip"])
                 if column == 0:
                     table_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                    _apply_table_item_font(table_item, mono=True, bold=True)
                 elif column in {5, 6}:
                     table_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                    _apply_table_item_font(table_item, mono=True)
                 else:
                     table_item.setTextAlignment(Qt.AlignCenter if column in {1, 2, 7} else (Qt.AlignLeft | Qt.AlignVCenter))
+                    if column in {1, 2, 7}:
+                        _apply_table_item_font(table_item, bold=True)
+                    elif column in {3, 4}:
+                        _apply_table_item_font(table_item, bold=True)
                 if column == 7:
                     badge_bg, badge_fg = submission_risk_badge_palette_v2(item)
                     table_item.setBackground(badge_bg)

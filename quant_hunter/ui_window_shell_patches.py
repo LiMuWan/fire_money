@@ -44,6 +44,7 @@ def shell_workflow_stage_specs_v42(
             "workspace": "overview",
             "widget": "market_pool_table",
             "hint": "回到市场总览，先确认主线、资金和题材快照。",
+            "note": "先看主线与资金快照",
         },
         {
             "key": "recommend",
@@ -52,6 +53,7 @@ def shell_workflow_stage_specs_v42(
             "workspace": "recommend",
             "widget": "trade_plan_table" if trade_decisions_count else "daily_pool_table",
             "hint": "进入推荐成交台，压缩候选判断并生成执行计划。",
+            "note": "压缩候选并生成计划",
         },
         {
             "key": "trade",
@@ -60,6 +62,7 @@ def shell_workflow_stage_specs_v42(
             "workspace": "broker",
             "widget": "execution_table" if submitted_orders else "orders_table",
             "hint": "进入交易执行台，复核委托、风控和成交回执。",
+            "note": "复核闸门后确认提交",
         },
         {
             "key": "experiment",
@@ -68,6 +71,7 @@ def shell_workflow_stage_specs_v42(
             "workspace": "broker",
             "widget": experiment_widget,
             "hint": "进入 AI 策略实验室，跟踪模拟盘样本与复盘结论。",
+            "note": "回看样本与执行偏差",
         },
     ]
 
@@ -97,7 +101,7 @@ def shell_workflow_stage_specs_v42(
             if spec["key"] == next_stage_key:
                 role = "accent"
         spec["role"] = role
-        spec["button_text"] = f"{spec['title']} {spec['status']}"
+        spec["button_text"] = f"{spec['title']} · {spec['status']}"
     return specs, next_stage_key
 
 
@@ -125,13 +129,14 @@ def apply_shell_workflow_patches(window_cls: type) -> None:
             return
 
         bar = QFrame()
-        bar.setObjectName("shellPulseBar")
+        bar.setObjectName("shellWorkflowBar")
         layout = QHBoxLayout(bar)
-        layout.setContentsMargins(16, 10, 16, 10)
-        layout.setSpacing(10)
+        layout.setContentsMargins(14, 8, 14, 8)
+        layout.setSpacing(8)
+        bar.setProperty("pageTone", "overview")
 
-        label = QLabel("流程直达")
-        label.setObjectName("shellPulseMeta")
+        label = QLabel("流程")
+        label.setObjectName("shellWorkflowLabel")
         layout.addWidget(label)
 
         self.shell_workflow_buttons = {}
@@ -147,19 +152,23 @@ def apply_shell_workflow_patches(window_cls: type) -> None:
         )
         for spec in specs:
             button = QPushButton(spec["button_text"])
-            button.setMinimumWidth(128)
+            button.setMinimumWidth(102)
+            button.setMaximumWidth(138)
+            button.setMinimumHeight(34)
             button.setToolTip(spec["hint"])
             self._set_button_role(button, spec["role"])
             button.clicked.connect(lambda checked=False, target=spec["key"]: self._open_shell_workflow_stage(target))
             self.shell_workflow_buttons[spec["key"]] = button
             layout.addWidget(button)
 
-        note_label = QLabel(f"建议动作：{next((item['hint'] for item in specs if item['key'] == next_stage_key), '先刷新市场快照。')}")
-        note_label.setObjectName("shellPulseMeta")
+        next_item = next((item for item in specs if item["key"] == next_stage_key), None)
+        note_label = QLabel(f"建议：{next_item.get('note', '先刷新市场快照') if next_item else '先刷新市场快照'}")
+        note_label.setObjectName("shellWorkflowNote")
         note_label.setWordWrap(True)
+        note_label.setToolTip(next_item.get("hint", "先刷新市场快照。") if next_item else "先刷新市场快照。")
         self.shell_workflow_note_label = note_label
         layout.addStretch(1)
-        layout.addWidget(note_label, stretch=2)
+        layout.addWidget(note_label, stretch=1)
 
         pulse_index = root_layout.indexOf(self.shell_pulse_bar) if hasattr(self, "shell_pulse_bar") else -1
         root_layout.insertWidget(pulse_index + 1 if pulse_index >= 0 else 1, bar)
@@ -225,10 +234,14 @@ def apply_shell_workflow_patches(window_cls: type) -> None:
 
         note_label = getattr(self, "shell_workflow_note_label", None)
         if isinstance(note_label, QLabel):
-            next_hint = next((item["hint"] for item in specs if item["key"] == next_stage_key), "先刷新市场快照。")
-            note_text = f"建议动作：{next_hint}"
+            next_item = next((item for item in specs if item["key"] == next_stage_key), None)
+            next_note = next_item.get("note", "先刷新市场快照") if next_item else "先刷新市场快照"
+            next_hint = next_item.get("hint", "先刷新市场快照。") if next_item else "先刷新市场快照。"
+            note_text = f"建议：{next_note}"
             if note_label.text() != note_text:
                 note_label.setText(note_text)
+            if note_label.toolTip() != next_hint:
+                note_label.setToolTip(next_hint)
 
     window_cls._current_workspace_key_v42 = _current_workspace_key_v42
     window_cls._install_shell_workflow_bar_v42 = _install_shell_workflow_bar_v42

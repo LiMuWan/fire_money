@@ -103,6 +103,28 @@ def submission_risk_badge_palette_v2(item: dict[str, str]) -> tuple[QColor, QCol
     return QColor(background), QColor(foreground)
 
 
+def submission_feedback_text(item: dict[str, str]) -> str:
+    raw_message = str(item.get("message", "") or "").strip()
+    normalized = raw_message.replace("？", "?").strip()
+    meaningful = normalized.strip("? -_/|.")
+    if meaningful and normalized.count("?") < max(3, len(normalized) // 2):
+        return raw_message
+
+    failure_reason = str(item.get("failure_reason", "") or "").strip()
+    if failure_reason:
+        return f"风控回写：{failure_reason}"
+
+    fallback = {
+        "filled": "柜台回执正常",
+        "partial": "部分成交，等待剩余回写",
+        "pending": "已送审，等待柜台回执",
+        "submitted": "已报单，等待受理确认",
+        "exception": "执行异常，待人工复核",
+        "idle": "柜台回执待补充",
+    }
+    return fallback.get(submission_stage_key(item), "柜台回执待补充")
+
+
 def submission_table_snapshot_v2(
     item: dict[str, str],
     *,
@@ -128,7 +150,7 @@ def submission_table_snapshot_v2(
     timestamp_text = str(item.get("timestamp", "") or "--")
     time_part = timestamp_text.split(" ", 1)[-1] if " " in timestamp_text else timestamp_text
     failure_reason = str(item.get("failure_reason", "") or "").strip()
-    message_text = str(item.get("message", "") or "").strip() or "\u7b49\u5f85\u66f4\u591a\u53cd\u9988"
+    message_text = submission_feedback_text(item)
     order_id = str(item.get("order_id", "") or "").strip()
     planned_price = _safe_float(str(item.get("planned_price", "") or "0"))
     submitted_price = _safe_float(str(item.get("price", "") or "0"))
@@ -172,7 +194,7 @@ def submission_table_snapshot_v2(
         )
         deviation_note = f"{deviation_note} | {quantity_note}".strip(" |")
     timeline_value = f"{time_part}\n{submission_node_label(item)}"
-    focus_value = f"{stock_name}  {stock_id}\n\u6807\u8bc6 {symbol or '--'} | {order_status_text or '--'}"
+    focus_value = f"{stock_name}  {stock_id}\n{symbol or '--'} | {order_status_text or '--'}"
     action_value = f"{action_text}\n{order_status_text or '--'} / {fill_status_text or '--'}"
     tooltip = "\n".join(
         [

@@ -125,7 +125,8 @@ def apply_scan_universe_result(window, folder, payload) -> None:
     window._fill_scan_rows()
     window._fill_backtest_summaries()
     window._refresh_intraday_monitor()
-    window.refresh_daily_pool(async_mode=True)
+    force_sync = bool(getattr(window, "_force_sync_daily_pool_after_scan_v81", False))
+    window.refresh_daily_pool(async_mode=not force_sync)
 
     if window.state.selected_symbol and window.state.selected_symbol in bars_by_symbol:
         window.select_symbol(window.state.selected_symbol)

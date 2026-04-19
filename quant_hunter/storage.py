@@ -18,6 +18,7 @@ _DEFAULT_MARKET_STRATEGY_ANNOTATION_MODE = "FULL"
 _DEFAULT_MARKET_OVERLAY_MODES = ["MA", "BOLL", "HIGHLOW"]
 _DEFAULT_MARKET_SECONDARY_INDICATOR = "MACD"
 _DEFAULT_MARKET_CHART_PRESET = "BALANCED"
+_DEFAULT_MARKET_CHART_ACTION_NOTE_FILTER_SOURCE = ""
 _SENSITIVE_BROKER_FIELDS = ("token", "password")
 _SENSITIVE_STATE_FIELDS = ("ai_review_api_key",)
 
@@ -120,6 +121,61 @@ def _normalize_market_chart_preset_usage_counts(value: object) -> dict[str, int]
     return normalized
 
 
+def _normalize_market_chart_action_note_filter_source(value: object) -> str:
+    normalized = str(value or _DEFAULT_MARKET_CHART_ACTION_NOTE_FILTER_SOURCE).strip()
+    return normalized if normalized in {"", "计划", "信号", "复盘", "图表"} else _DEFAULT_MARKET_CHART_ACTION_NOTE_FILTER_SOURCE
+
+
+_MARKET_CHART_ACTION_NOTE_FIELDS = (
+    "symbol",
+    "decision_text",
+    "execution_text",
+    "conclusion_text",
+    "title",
+    "history_source",
+    "history_summary",
+    "interacted_at",
+    "tone",
+    "panel_role",
+    "pinned",
+)
+
+
+def _normalize_market_chart_action_note_history(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[dict[str, object]] = []
+    for item in value[-3:]:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            {
+                "symbol": str(item.get("symbol", "") or ""),
+                "decision_text": str(item.get("decision_text", "") or ""),
+                "execution_text": str(item.get("execution_text", "") or ""),
+                "conclusion_text": str(item.get("conclusion_text", "") or ""),
+                "title": str(item.get("title", "") or ""),
+                "history_source": _normalize_market_chart_action_note_filter_source(item.get("history_source", "")),
+                "history_summary": str(item.get("history_summary", "") or ""),
+                "interacted_at": str(item.get("interacted_at", "") or ""),
+                "tone": str(item.get("tone", "watch") or "watch"),
+                "panel_role": str(item.get("panel_role", "execution") or "execution"),
+                "pinned": bool(item.get("pinned", False)),
+            }
+        )
+    return rows
+
+
+def _normalize_market_chart_action_note_history_index(value: object, history: list[dict[str, object]]) -> int:
+    if not history:
+        return 0
+    try:
+        index = int(value)
+    except (TypeError, ValueError):
+        index = len(history) - 1
+    return max(0, min(index, len(history) - 1))
+
+
 @dataclass
 class AppState:
     universe_dir: str = ""
@@ -168,6 +224,9 @@ class AppState:
     market_chart_custom_presets: dict[str, dict[str, object]] = field(default_factory=dict)
     market_chart_recent_presets: list[str] = field(default_factory=list)
     market_chart_preset_usage_counts: dict[str, int] = field(default_factory=dict)
+    market_chart_action_note_filter_source: str = _DEFAULT_MARKET_CHART_ACTION_NOTE_FILTER_SOURCE
+    market_chart_action_note_history: list[dict[str, object]] = field(default_factory=list)
+    market_chart_action_note_history_index: int = 0
     broker_profile: BrokerProfile = field(default_factory=BrokerProfile)
     paper_trading_state: PaperTradingState = field(default_factory=PaperTradingState)
     order_submission_log: list[str] = field(default_factory=list)
@@ -280,6 +339,13 @@ def _serialize_state(state: AppState) -> dict[str, object]:
     payload["order_submission_log"] = [str(item or "") for item in list(payload.get("order_submission_log", []) or [])[:200] if str(item or "").strip()]
     payload["order_submission_records"] = _decode_submission_records(payload.get("order_submission_records", []))
     payload["smart_message_events"] = _decode_smart_message_events(payload.get("smart_message_events", []))
+    payload["market_chart_action_note_history"] = _normalize_market_chart_action_note_history(
+        payload.get("market_chart_action_note_history", [])
+    )
+    payload["market_chart_action_note_history_index"] = _normalize_market_chart_action_note_history_index(
+        payload.get("market_chart_action_note_history_index", 0),
+        payload["market_chart_action_note_history"],
+    )
     return payload
 
 
@@ -393,6 +459,7 @@ def load_app_state(path: str | Path) -> AppState:
         data = json.loads(raw_text)
     except (OSError, json.JSONDecodeError):
         return AppState(ui_theme="sunrise")
+    chart_action_note_history = _normalize_market_chart_action_note_history(data.get("market_chart_action_note_history", []))
     return AppState(
         universe_dir=data.get("universe_dir", ""),
         selected_symbol=data.get("selected_symbol", ""),
@@ -449,6 +516,14 @@ def load_app_state(path: str | Path) -> AppState:
         market_chart_recent_presets=_as_string_list(data.get("market_chart_recent_presets", []))[:12],
         market_chart_preset_usage_counts=_normalize_market_chart_preset_usage_counts(
             data.get("market_chart_preset_usage_counts", {})
+        ),
+        market_chart_action_note_filter_source=_normalize_market_chart_action_note_filter_source(
+            data.get("market_chart_action_note_filter_source", _DEFAULT_MARKET_CHART_ACTION_NOTE_FILTER_SOURCE)
+        ),
+        market_chart_action_note_history=chart_action_note_history,
+        market_chart_action_note_history_index=_normalize_market_chart_action_note_history_index(
+            data.get("market_chart_action_note_history_index", 0),
+            chart_action_note_history,
         ),
         broker_profile=_decode_broker_profile(data.get("broker_profile", {})),
         paper_trading_state=_decode_paper_trading_state(data.get("paper_trading_state", {})),

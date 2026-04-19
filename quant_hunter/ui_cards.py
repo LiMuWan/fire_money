@@ -392,14 +392,7 @@ def _leaderboard_set_row_v2(self: LeaderboardCard, rank_text: str, row) -> None:
         emphasis_size=14,
     )
     self._set_density_style(self.rank_label, color=accent, compact_size=11, regular_size=12, weight=900, extra="letter-spacing:0.6px;")
-    self._set_density_style(
-        self.status_label,
-        color=accent,
-        compact_size=10,
-        regular_size=11,
-        weight=800,
-        extra="letter-spacing:0.8px; background:rgba(255,255,255,0.03); border:1px solid rgba(126, 183, 255, 0.14); border-radius:9px; padding:4px 8px;",
-    )
+    self.status_label.hide()
     self._set_label_if_changed(self.rank_label, rank_text)
     self._set_label_if_changed(self.status_label, status_text)
     full_name = f"{row.stock_name} {row.stock_id}"
@@ -535,7 +528,6 @@ def _leaderboard_set_row_v3(self: LeaderboardCard, rank_text: str, row) -> None:
     metrics_line = f"决策 {decision_score:.1f} | 涨 {pct_change:.1f}%"
 
     self._set_label_if_changed(self.rank_label, rank_text)
-    self._set_label_if_changed(self.status_label, status_text)
     self._set_label_if_changed(self.name_label, headline)
     self._set_label_if_changed(self.strategy_label, theme_line)
     self._set_label_if_changed(self.metrics_label, metrics_line)
@@ -579,9 +571,11 @@ def _leaderboard_set_density_v4(self: LeaderboardCard, compact: bool) -> None:
     self.rank_label.setMinimumHeight(18 if self._compact_density else 20)
     self.rank_label.setMaximumHeight(18 if self._compact_density else 20)
     self.rank_label.setMaximumWidth(64)
-    self.status_label.setMinimumHeight(22 if self._compact_density else 24)
-    self.status_label.setMaximumHeight(22 if self._compact_density else 24)
-    self.status_label.setMaximumWidth(88 if self._compact_density else 104)
+    self.status_label.hide()
+    self.status_label.setMinimumHeight(0)
+    self.status_label.setMaximumHeight(0)
+    self.status_label.setMinimumWidth(0)
+    self.status_label.setMaximumWidth(0)
     self.name_label.setMinimumHeight(34 if self._compact_density else 42)
     self.name_label.setMaximumHeight(42 if self._compact_density else 54)
     self.strategy_label.setMinimumHeight(18 if self._compact_density else 22)
@@ -595,14 +589,7 @@ def _leaderboard_set_density_v4(self: LeaderboardCard, compact: bool) -> None:
     self.flow_label.setMinimumHeight(0)
     self.flow_label.setMaximumHeight(0)
     self._set_density_style(self.rank_label, color="#8fa0b6", compact_size=11, regular_size=12, weight=900, extra="letter-spacing:0.6px;")
-    self._set_density_style(
-        self.status_label,
-        color="#d8e7f6",
-        compact_size=10,
-        regular_size=11,
-        weight=800,
-        extra="letter-spacing:0.8px; background:rgba(255,255,255,0.03); border:1px solid rgba(126, 183, 255, 0.16); border-radius:11px; padding:3px 10px;",
-    )
+    self.status_label.setStyleSheet("background: transparent; border: none; padding: 0; margin: 0;")
     self._set_density_style(self.name_label, color="#f5f7fa", compact_size=14, regular_size=16, weight=900, extra="line-height:1.22;")
     self._set_density_style(self.strategy_label, color="#b7c8da", compact_size=11, regular_size=12, weight=650, extra="line-height:1.2;")
     self._set_density_style(self.metrics_label, color="#eef5fd", compact_size=12, regular_size=13, weight=800, extra="line-height:1.2;")

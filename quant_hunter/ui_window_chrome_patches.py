@@ -20,10 +20,11 @@ def apply_commercial_chrome_patches(window_cls: type, *, set_shell_chip_fn) -> N
 QFrame#shellHeader {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #18212c, stop:0.55 #101820, stop:1 #0b1117);
     border: 1px solid rgba(119, 146, 175, 0.26);
-    border-radius: 24px;
+    border-radius: 20px;
 }
 QFrame#shellHeader QLabel,
 QFrame#shellPulseBar QLabel,
+QFrame#shellWorkflowBar QLabel,
 QFrame#workspaceHero QLabel,
 QFrame#workspaceBadge QLabel,
 QFrame#shellChip QLabel,
@@ -53,28 +54,42 @@ QFrame#shellHeader[stateTone="risk"] {
 QFrame#shellChip {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(14, 20, 28, 0.98), stop:1 rgba(10, 15, 22, 0.98));
     border: 1px solid rgba(120, 142, 165, 0.22);
-    border-radius: 18px;
+    border-radius: 14px;
 }
 QFrame#shellPulseBar {
-    border-radius: 18px;
+    border-radius: 14px;
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(18, 27, 38, 0.98), stop:1 rgba(11, 17, 24, 0.98));
     border: 1px solid rgba(120, 142, 165, 0.20);
+}
+QFrame#shellWorkflowBar {
+    border-radius: 14px;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(16, 24, 34, 0.98), stop:1 rgba(10, 15, 21, 0.98));
+    border: 1px solid rgba(120, 142, 165, 0.16);
 }
 QFrame#shellPulseBar[stateTone="buy"] {
     border: 1px solid rgba(77, 226, 154, 0.28);
 }
+QFrame#shellWorkflowBar[stateTone="buy"] {
+    border: 1px solid rgba(77, 226, 154, 0.22);
+}
 QFrame#shellPulseBar[stateTone="watch"] {
     border: 1px solid rgba(255, 209, 102, 0.28);
+}
+QFrame#shellWorkflowBar[stateTone="watch"] {
+    border: 1px solid rgba(255, 209, 102, 0.22);
 }
 QFrame#shellPulseBar[stateTone="risk"] {
     border: 1px solid rgba(255, 123, 114, 0.28);
 }
+QFrame#shellWorkflowBar[stateTone="risk"] {
+    border: 1px solid rgba(255, 123, 114, 0.22);
+}
 QLabel#topBadge {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #f0aa4d, stop:1 #ffd166);
     color: #111720;
-    border-radius: 12px;
-    padding: 8px 12px;
-    font-size: 12px;
+    border-radius: 10px;
+    padding: 6px 10px;
+    font-size: 11px;
     font-weight: 900;
 }
 QTabWidget::pane {
@@ -84,10 +99,10 @@ QTabWidget::pane {
     top: -2px;
 }
 QTabBar::tab {
-    min-width: 108px;
-    padding: 11px 16px;
-    margin-right: 8px;
-    border-radius: 14px;
+    min-width: 96px;
+    padding: 9px 14px;
+    margin-right: 6px;
+    border-radius: 12px;
     background: rgba(19, 28, 39, 0.90);
     border: 1px solid rgba(109, 131, 153, 0.14);
     color: #91a4b8;
@@ -191,6 +206,30 @@ QWidget#overviewRoot QCheckBox {
     color: #d9e6f2;
     spacing: 8px;
 }
+QLabel#shellWorkflowLabel {
+    color: #90a4bb;
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+}
+QLabel#shellWorkflowNote {
+    color: #c5d5e5;
+    font-size: 11px;
+    font-weight: 700;
+}
+QLabel#shellChipLabel {
+    font-size: 10px;
+}
+QLabel#shellChipValue {
+    font-size: 12px;
+}
+QLabel#shellPulseLabel {
+    font-size: 12px;
+}
+QLabel#shellPulseHint,
+QLabel#shellPulseMeta {
+    font-size: 11px;
+}
 QWidget#brokerRoot {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #101822, stop:0.52 #0d141c, stop:1 #111a24);
     color: #eef4fb;
@@ -281,6 +320,16 @@ QWidget#brokerRoot QTableWidget#submissionTable {
     border-radius: 16px;
     padding: 6px;
     gridline-color: rgba(57, 72, 88, 0.55);
+}
+QWidget#brokerRoot QTableWidget#brokerOrdersTable::item,
+QWidget#brokerRoot QTableWidget#submissionTable::item {
+    padding: 7px 10px;
+    border-bottom: 1px solid rgba(48, 62, 78, 0.46);
+}
+QWidget#brokerRoot QTableWidget#brokerOrdersTable::item:selected,
+QWidget#brokerRoot QTableWidget#submissionTable::item:selected {
+    background: rgba(44, 84, 132, 0.84);
+    color: #f8fbff;
 }
 QWidget#brokerRoot QHeaderView::section {
     background: rgba(15, 22, 30, 0.98);
@@ -398,17 +447,17 @@ QWidget#brokerRoot QPushButton#accentButton:hover {
         page_copy = {
             "overview": (
                 "量化猎手 Pro",
-                "把市场结构、主线持续性、消息催化与交易节奏收束进统一驾驶舱。",
+                "把市场结构、主线持续性与交易节奏收束进统一驾驶舱。",
                 "全局态势",
             ),
             "scanner": (
                 "量化猎手 Pro / 扫描观察",
-                "把盘中扫描、观察池与临门一脚的焦点筛选收成一条连续工作流。",
+                "把盘中扫描、观察池与焦点筛选收成一条连续工作流。",
                 "观察筛选",
             ),
             "recommend": (
                 "量化猎手 Pro / 机会推荐",
-                "从候选排序、主线审查到交易计划生成，尽量压缩人工切页成本。",
+                "从候选排序到交易计划生成，尽量压缩人工切页成本。",
                 "推荐分发",
             ),
             "board": (
@@ -428,12 +477,12 @@ QWidget#brokerRoot QPushButton#accentButton:hover {
             ),
             "detail": (
                 "量化猎手 Pro / 复盘研究",
-                "围绕单票形成决策画像、执行回放与复盘结论，沉淀可复用经验。",
+                "围绕单票形成决策画像、执行回放与复盘结论。",
                 "复盘研究",
             ),
             "broker": (
                 "量化猎手 Pro / 交易执行",
-                "把委托生成、下单确认、回执回看与模拟盘试运行压进同一执行工作台。",
+                "把委托生成、确认提交与回执回看压进同一执行工作台。",
                 "交易执行",
             ),
         }
@@ -448,6 +497,9 @@ QWidget#brokerRoot QPushButton#accentButton:hover {
             "broker": "EXECUTION CORE",
         }
         title, subtitle, badge = page_copy.get(page_key, ("量化猎手 Pro", "统一管理行情、推荐、执行与复盘。", "机构终端"))
+        pulse_label_detail = getattr(getattr(self, "shell_pulse_label", None), "text", lambda: "")()
+        pulse_hint_detail = getattr(getattr(self, "shell_pulse_hint", None), "text", lambda: "")()
+        pulse_meta_detail = getattr(getattr(self, "shell_pulse_meta", None), "text", lambda: "")()
         if hasattr(self, "shell_product_title"):
             self._set_label_text_if_changed(self.shell_product_title, title, tooltip=title)
         if hasattr(self, "shell_product_subtitle"):
@@ -464,6 +516,7 @@ QWidget#brokerRoot QPushButton#accentButton:hover {
             "top_badge",
             "shell_header",
             "shell_pulse_bar",
+            "shell_workflow_bar",
             "shell_pulse_label",
             "shell_pulse_hint",
             "shell_pulse_meta",
@@ -544,16 +597,16 @@ QWidget#brokerRoot QPushButton#accentButton:hover {
                 self.style().polish(chart)
                 chart.update()
         if hasattr(self, "top_badge"):
-            badge_text = f"{badge} | 推荐 {pool_count} | 计划 {plan_count} | 待审 {pending_orders}"
+            badge_text = f"{badge} · 推{pool_count} · 计{plan_count} · 审{pending_orders}"
             self._set_label_text_if_changed(self.top_badge, badge_text, tooltip=badge_text)
         if hasattr(self, "shell_runtime_chip"):
             runtime_value = f"已提交 {submitted_orders} / 风险 {'红灯' if blockers else ('黄灯' if warnings else '绿灯')}"
             set_shell_chip_fn(self.shell_runtime_chip, runtime_value)
 
         if page_key == "recommend":
-            focus_hint = "先看前排候选，再送审，再去交易执行。"
+            focus_hint = "先看前排候选，再推进计划与送审。"
         elif page_key == "broker":
-            focus_hint = "先核对闸门与风险灯，再确认下单，再回看回执。"
+            focus_hint = "先核对闸门，再确认下单，再回看回执。"
         elif page_key == "detail":
             focus_hint = "先看决策画像，再看执行偏差，最后沉淀结论。"
         elif page_key == "scanner":
@@ -563,9 +616,26 @@ QWidget#brokerRoot QPushButton#accentButton:hover {
         else:
             focus_hint = "先确认市场快照，再推进推荐、计划和交易链路。"
         if hasattr(self, "shell_pulse_hint"):
-            self._set_label_text_if_changed(self.shell_pulse_hint, focus_hint, tooltip=focus_hint)
+            self._set_label_text_if_changed(self.shell_pulse_hint, focus_hint, tooltip=pulse_hint_detail or focus_hint)
 
-        for widget_name in ["shell_header", "shell_pulse_bar"]:
+        risk_label = "红灯" if blockers else ("黄灯" if warnings or pending_orders else "绿灯")
+        pulse_summary = {
+            "overview": f"市场总览：已生成 {pool_count} 只候选，{plan_count} 笔计划待推进。",
+            "scanner": f"扫描观察：已完成 {pool_count} 条候选梳理，可继续聚焦重点标的。",
+            "recommend": f"机会推荐：当前 {pool_count} 只候选，{plan_count} 笔计划待确认。",
+            "board": f"打板监控：当前 {pool_count} 只候选，继续跟踪回封强度与承接。",
+            "config": f"系统配置：当前任务{'运行中' if risk_tone == 'buy' else '待机中'}，状态 {risk_label}。",
+            "auth": f"账户接入：连接状态待确认，当前风险提示 {risk_label}。",
+            "detail": f"复盘研究：已回写 {submitted_orders} 笔执行记录，可继续查看复盘结论。",
+            "broker": f"交易执行：{pending_orders} 笔待确认，{submitted_orders} 笔已提交。",
+        }.get(page_key, f"终端概览：当前 {pool_count} 只候选，{plan_count} 笔计划待推进。")
+        meta_summary = f"状态 {risk_label} | 候选 {pool_count} | 计划 {plan_count} | 已提交 {submitted_orders}"
+        if hasattr(self, "shell_pulse_label"):
+            self._set_label_text_if_changed(self.shell_pulse_label, pulse_summary, tooltip=pulse_label_detail or pulse_summary)
+        if hasattr(self, "shell_pulse_meta"):
+            self._set_label_text_if_changed(self.shell_pulse_meta, meta_summary, tooltip=pulse_meta_detail or meta_summary)
+
+        for widget_name in ["shell_header", "shell_pulse_bar", "shell_workflow_bar"]:
             widget = getattr(self, widget_name, None)
             if isinstance(widget, QWidget):
                 if widget.property("stateTone") != risk_tone:

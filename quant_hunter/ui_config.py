@@ -99,13 +99,13 @@ DAILY_POOL_TABLE_HEADERS = [
     "价格 / 计划",
 ]
 
-RECOMMEND_DEFAULT_STATUS_TEXT = "推荐状态：先看主线、趋势、消息与风险，再决定是否送审。"
+RECOMMEND_DEFAULT_STATUS_TEXT = "推荐台状态：等待机会池、计划与执行链路同步。"
 RECOMMEND_DEFAULT_EMPTY_TITLE = "等待市场快照"
 RECOMMEND_DEFAULT_EMPTY_HINT = "先载入样例数据，或直接重算机会池。"
 RECOMMEND_DEFAULT_EMPTY_META = "刷新市场、导入样例或同步本地数据后，系统会生成今日综合机会池、送审优先级与执行链路。"
 RECOMMEND_EMPTY_SAMPLE_BUTTON_TEXT = "载入完整示例"
 RECOMMEND_EMPTY_REFRESH_BUTTON_TEXT = "重算机会池"
-RECOMMEND_DEFAULT_FOCUS_TEXT = "推荐焦点：等待高优先、观察与风险候选同步"
+RECOMMEND_DEFAULT_FOCUS_TEXT = "Desk Focus：等待前排候选、主线判断与执行状态同步。"
 TRADE_PLAN_DEFAULT_FOCUS_TEXT = "计划焦点：等待生成今日交易计划"
 ORDERS_DEFAULT_FOCUS_TEXT = "委托动作面板 / 委托焦点：等待选中委托建议"
 BROKER_DEFAULT_STATUS_TEXT = "交易状态：先确认主线、趋势与消息，再进入委托确认。"

@@ -422,9 +422,9 @@ def create_shell_chip(label: str, value: str) -> dict[str, object]:
     frame = QFrame()
     frame.setObjectName("shellChip")
     layout = QVBoxLayout(frame)
-    layout.setContentsMargins(11, 7, 11, 7)
-    layout.setSpacing(2)
-    frame.setMinimumHeight(42)
+    layout.setContentsMargins(10, 6, 10, 6)
+    layout.setSpacing(1)
+    frame.setMinimumHeight(36)
     label_widget = QLabel(label)
     label_widget.setObjectName("shellChipLabel")
     label_widget.setWordWrap(False)
@@ -442,9 +442,9 @@ def create_shell_chip(label: str, value: str) -> dict[str, object]:
 def build_shell_chip_rail(
     chips: list[dict[str, object]] | tuple[dict[str, object], ...],
     *,
-    min_item_width: int = 176,
-    compact_item_width: int = 144,
-    max_columns: int = 3,
+    min_item_width: int = 152,
+    compact_item_width: int = 128,
+    max_columns: int = 4,
 ) -> AdaptivePanelGrid:
     rail = AdaptivePanelGrid(
         min_item_width=min_item_width,
@@ -453,7 +453,7 @@ def build_shell_chip_rail(
     )
     rail.setObjectName("shellChipRail")
     rail.set_grid_margins(0, 0, 0, 0)
-    rail.set_grid_spacing(10, 8)
+    rail.set_grid_spacing(8, 6)
     for chip in chips:
         frame = chip.get("frame") if isinstance(chip, dict) else None
         if isinstance(frame, QWidget):

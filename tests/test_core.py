@@ -6374,7 +6374,28 @@ class StrategyWorkflowTests(unittest.TestCase):
                 app.processEvents()
                 broker_layout = window.broker_scroll_area.widget().layout()
                 target = getattr(window, "broker_setup_drawer", window.broker_control_splitter)
-                self.assertLess(broker_layout.indexOf(window.broker_middle_splitter), broker_layout.indexOf(target))
+                self.assertLess(broker_layout.indexOf(window.broker_workbench_splitter), broker_layout.indexOf(target))
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_broker_workspace_uses_cockpit_workbench_posttrade_flow(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.tabs.setCurrentWidget(window.broker_tab)
+                app.processEvents()
+                broker_layout = window.broker_scroll_area.widget().layout()
+                self.assertLess(broker_layout.indexOf(window.broker_cockpit_section), broker_layout.indexOf(window.broker_workbench_splitter))
+                self.assertLess(broker_layout.indexOf(window.broker_workbench_splitter), broker_layout.indexOf(window.broker_posttrade_section))
+                self.assertEqual(window.broker_workbench_splitter.count(), 2)
+                self.assertEqual(window.broker_workbench_splitter.widget(1), window.broker_middle_splitter)
             finally:
                 window.close()
                 app.processEvents()
@@ -6396,7 +6417,7 @@ class StrategyWorkflowTests(unittest.TestCase):
                 window.close()
                 app.processEvents()
 
-    def test_qt_window_shows_broker_setup_by_default(self) -> None:
+    def test_qt_window_hides_broker_setup_by_default(self) -> None:
         if importlib.util.find_spec("PySide6") is None:
             self.skipTest("PySide6 is not installed in the current interpreter")
         with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
@@ -6408,8 +6429,8 @@ class StrategyWorkflowTests(unittest.TestCase):
             try:
                 window.tabs.setCurrentWidget(window.broker_tab)
                 app.processEvents()
-                self.assertFalse(window.broker_control_splitter.isHidden())
-                self.assertEqual(window.broker_setup_toggle_button.text(), "收起账户与通道设置")
+                self.assertTrue(window.broker_control_splitter.isHidden())
+                self.assertEqual(window.broker_setup_toggle_button.text(), "展开账户与通道设置")
             finally:
                 window.close()
                 app.processEvents()
@@ -6503,6 +6524,7 @@ class StrategyWorkflowTests(unittest.TestCase):
                 self.assertLessEqual(window.recommend_controls_section.layout().spacing(), 6)
                 self.assertLessEqual(window.recommend_status_label.maximumHeight(), 58)
                 self.assertLessEqual(window.broker_status_banner.maximumHeight(), 58)
+                self.assertGreaterEqual(window.broker_execution_box.minimumHeight(), 300)
             finally:
                 window.close()
                 app.processEvents()
@@ -7436,6 +7458,30 @@ class StrategyWorkflowTests(unittest.TestCase):
                 self.assertIn("启动阶段", window.startup_loading_meta.text())
             finally:
                 window.close()
+
+    def test_startup_splash_window_shows_progress_bar(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            splash = module.StartupSplashWindow()
+            try:
+                app.processEvents()
+                self.assertTrue(hasattr(splash, "startup_loading_progress"))
+                self.assertEqual(splash.startup_loading_progress.minimum(), 0)
+                self.assertEqual(splash.startup_loading_progress.maximum(), 100)
+                self.assertGreaterEqual(splash.startup_loading_progress.value(), 0)
+                self.assertIn("%", splash.startup_loading_meta.text())
+                splash.set_progress(63, "正在恢复启动进度条")
+                self.assertEqual(splash.startup_loading_progress.value(), 63)
+                self.assertIn("启动阶段", splash.startup_loading_meta.text())
+                self.assertIn("63%", splash.startup_loading_meta.text())
+                self.assertIn("恢复启动进度条", splash.startup_loading_label.text())
+            finally:
+                splash.close()
                 app.processEvents()
 
     def test_qt_window_can_collapse_startup_loading_strip(self) -> None:
@@ -8959,6 +9005,23 @@ class StrategyWorkflowTests(unittest.TestCase):
                 market_timeframe_mode="周线",
                 market_history_window="近3年",
                 market_strategy_annotation_mode="PLAN",
+                market_chart_action_note_filter_source="计划",
+                market_chart_action_note_history=[
+                    {
+                        "symbol": "SHSE.600000",
+                        "title": "图表联动 · 计划买点",
+                        "history_source": "计划",
+                        "history_summary": "买点",
+                        "interacted_at": "14:32",
+                        "decision_text": "d1",
+                        "execution_text": "e1",
+                        "conclusion_text": "c1",
+                        "tone": "buy",
+                        "panel_role": "execution",
+                        "pinned": False,
+                    }
+                ],
+                market_chart_action_note_history_index=0,
             ),
         )
         self.addCleanup(lambda: state_path.unlink(missing_ok=True))
@@ -8980,6 +9043,10 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(restored.market_timeframe_mode, "周线")
         self.assertEqual(restored.market_history_window, "近3年")
         self.assertEqual(restored.market_strategy_annotation_mode, "PLAN")
+        self.assertEqual(restored.market_chart_action_note_filter_source, "计划")
+        self.assertEqual(len(restored.market_chart_action_note_history), 1)
+        self.assertEqual(restored.market_chart_action_note_history[0]["history_summary"], "买点")
+        self.assertEqual(restored.market_chart_action_note_history_index, 0)
 
     def test_load_app_state_normalizes_risk_profile(self) -> None:
         state_path = self._temp_dir() / "app_state_risk_profile.json"
@@ -9004,6 +9071,41 @@ class StrategyWorkflowTests(unittest.TestCase):
         restored = load_app_state(state_path)
 
         self.assertEqual(restored.market_strategy_annotation_mode, "FULL")
+
+    def test_load_app_state_normalizes_market_chart_action_note_filter_source(self) -> None:
+        state_path = self._temp_dir() / "app_state_chart_note_filter.json"
+        state_path.write_text(
+            json.dumps({"market_chart_action_note_filter_source": "未知"}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        self.addCleanup(lambda: state_path.unlink(missing_ok=True))
+
+        restored = load_app_state(state_path)
+
+        self.assertEqual(restored.market_chart_action_note_filter_source, "")
+
+    def test_load_app_state_normalizes_market_chart_action_note_history_index(self) -> None:
+        state_path = self._temp_dir() / "app_state_chart_note_history.json"
+        state_path.write_text(
+            json.dumps(
+                {
+                    "market_chart_action_note_history": [
+                        {"symbol": "SHSE.600000", "title": "一", "history_source": "计划", "history_summary": "买点"},
+                        {"symbol": "SHSE.600000", "title": "二", "history_source": "信号", "history_summary": "信号"},
+                    ],
+                    "market_chart_action_note_history_index": 9,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        self.addCleanup(lambda: state_path.unlink(missing_ok=True))
+
+        restored = load_app_state(state_path)
+
+        self.assertEqual(len(restored.market_chart_action_note_history), 2)
+        self.assertEqual(restored.market_chart_action_note_history_index, 1)
 
     def test_load_app_state_falls_back_on_invalid_json(self) -> None:
         state_path = self._temp_dir() / "app_state_invalid.json"
@@ -15210,18 +15312,20 @@ class StrategyWorkflowTests(unittest.TestCase):
         )
 
         self.assertEqual(cold_next, "market")
-        self.assertEqual(cold_specs[0]["button_text"], "市场 待刷新")
+        self.assertEqual(cold_specs[0]["button_text"], "市场 · 待刷新")
         self.assertEqual(cold_specs[0]["role"], "accent")
         self.assertEqual(cold_specs[1]["widget"], "daily_pool_table")
         self.assertEqual(cold_specs[3]["widget"], "paper_initialize_button")
-        self.assertEqual(cold_specs[3]["button_text"], "实验 待初始化")
+        self.assertEqual(cold_specs[3]["button_text"], "实验 · 待初始化")
+        self.assertEqual(cold_specs[0]["note"], "先看主线与资金快照")
 
         self.assertEqual(review_next, "experiment")
         self.assertEqual(review_specs[1]["widget"], "trade_plan_table")
-        self.assertEqual(review_specs[2]["button_text"], "交易 跟踪中")
+        self.assertEqual(review_specs[2]["button_text"], "交易 · 跟踪中")
         self.assertEqual(review_specs[2]["role"], "accent")
         self.assertEqual(review_specs[3]["widget"], "paper_positions_table")
-        self.assertEqual(review_specs[3]["button_text"], "实验 可复盘")
+        self.assertEqual(review_specs[3]["button_text"], "实验 · 可复盘")
+        self.assertEqual(review_specs[2]["note"], "复核闸门后确认提交")
 
     def test_open_shell_workflow_stage_uses_dynamic_routes(self) -> None:
         module = importlib.import_module("app_qt")
@@ -16443,7 +16547,8 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         module._qh_refresh_scanner_focus_status(window)
 
-        self.assertIn("异常文件 1", window.scan_summary_label.text())
+        self.assertIn("已扫描 2 条信号", window.scan_summary_label.text())
+        self.assertNotIn("异常文件", window.scan_summary_label.text())
 
     def test_refresh_monitor_summary_skips_repeated_same_signature(self) -> None:
         module = importlib.import_module("app_qt")
@@ -20371,6 +20476,17 @@ class StrategyWorkflowTests(unittest.TestCase):
             {"interacted_at": "14:32", "history_summary": "买点", "history_source": "计划"},
         )
         self.assertEqual(preview, "计划 · 14:32 买点")
+
+    def test_chart_restore_feedback_text_includes_filter_when_present(self) -> None:
+        module = importlib.import_module("app_qt")
+        self.assertEqual(
+            module.QuantHunterWindow._market_chart_restore_feedback_text_v1(3, "计划"),
+            "已恢复上次图表提示历史 3 条 | 筛选 计划",
+        )
+        self.assertEqual(
+            module.QuantHunterWindow._market_chart_restore_feedback_text_v1(2, ""),
+            "已恢复上次图表提示历史 2 条",
+        )
 
     def test_chart_action_note_visible_history_items_respects_source_filter(self) -> None:
         module = importlib.import_module("app_qt")
