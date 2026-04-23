@@ -7,7 +7,7 @@ def clean_next_step(text: str, *, fallback: str) -> str:
     candidate = str(text or "").strip()
     if not candidate:
         return fallback
-    invalid_tokens = ("????", "？？", "待补", "待补充", "unknown", "null", "None")
+    invalid_tokens = ("????", "寰呰ˉ", "unknown", "null", "None")
     if any(token in candidate for token in invalid_tokens):
         return fallback
     candidate = candidate.replace("下一步：", "").replace("下一步", "").strip(" |:：")
@@ -41,29 +41,34 @@ def build_focus_summary_parts(
     display_action: Callable[[str], str],
     strategy_name: str = "",
 ) -> dict[str, object]:
-    prefix_map = {"overview": "市场池摘要", "recommend": "推荐焦点", "detail": "复盘焦点"}
-    empty_map = {
-        "overview": "市场池摘要：等待从机会池、推荐池或扫描页联动一只股票",
-        "recommend": "推荐焦点：等待从推荐池、龙头榜或交易计划联动一只股票",
-        "detail": "复盘焦点：等待扫描、推荐或交易页同步单票标的",
+    prefix_map = {
+        "overview": "市场池摘要",
+        "recommend": "推荐焦点",
+        "detail": "复盘焦点",
     }
+    empty_map = {
+        "overview": "市场池摘要：等待从机会池、龙头榜或扫描页联动一只股票 | 审查 继续复核",
+        "recommend": "推荐焦点：等待从机会池、龙头榜或交易计划联动一只股票 | 审查 继续复核",
+        "detail": "复盘焦点：等待扫描、机会池或执行中控同步单票标的 | 审查 继续复核",
+    }
+
     if not symbol:
         return {
             "symbol": "",
             "tone": "idle",
             "prefix": prefix_map.get(page, "焦点"),
-            "plain_text": empty_map.get(page, "焦点：等待联动"),
+            "plain_text": empty_map.get(page, "焦点：等待联动 | 审查 继续复核"),
             "stock_name": "",
             "stock_id": "--",
             "badge": "观察中",
             "stage": "等待联动",
             "stage_key": "watching",
-            "next_step": "等待焦点联动。",
-            "next_brief": "等待联动",
+            "next_step": "先从推荐、交易或复盘链路同步当前标的。",
+            "next_brief": "先同步焦点",
             "news_brief": "",
             "news_badge_html": "",
-            "aux_kind": "next",
-            "aux_text": "等待联动",
+            "aux_kind": "action",
+            "aux_text": "审查 继续复核",
             "recommendation": None,
             "intent": None,
             "execution_row": None,
@@ -100,19 +105,19 @@ def build_focus_summary_parts(
     elif execution_row is not None:
         aux_kind, aux_text = "action", "回执跟踪"
     else:
-        aux_kind, aux_text = "next", "等待联动"
+        aux_kind, aux_text = "action", "审查 继续复核"
 
     if page == "overview":
         flow_label = getattr(recommendation, "fund_model", "") if recommendation is not None else "待同步"
         plain_text = (
             f"{prefix_map.get(page, '焦点')}：{stock_name} ({stock_id} / {symbol}) | "
-            f"机会池 {market_count} | 【{badge}】{stage} | 资金 {flow_label or '待同步'} | "
+            f"{badge} / {stage} | 审查 继续复核 | 资金 {flow_label or '待同步'} | "
             f"策略 {strategy_name or next_brief}{(' | ' + news_brief) if news_brief else ''}"
         )
     else:
         plain_text = (
             f"{prefix_map.get(page, '焦点')}：{stock_name} ({stock_id} / {symbol}) | "
-            f"【{badge}】{stage} | 动作 {next_brief}{(' | ' + news_brief) if news_brief else ''}"
+            f"{badge} / {stage} | 审查 继续复核 | 动作 {next_brief}{(' | ' + news_brief) if news_brief else ''}"
         )
 
     return {

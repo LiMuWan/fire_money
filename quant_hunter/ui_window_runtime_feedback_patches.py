@@ -2,6 +2,8 @@
 
 from PySide6.QtWidgets import QGridLayout, QGroupBox, QHBoxLayout, QLabel, QTextEdit, QVBoxLayout, QWidget
 
+from quant_hunter.ui_config import workbench_empty_panel_copy
+
 
 def apply_runtime_feedback_patches(
     window_cls: type,
@@ -49,11 +51,11 @@ def apply_runtime_feedback_patches(
     def _open_detail_to_recommend_v11(self) -> None:
         original_open_detail_to_recommend_v11(self)
         symbol = getattr(self, "active_symbol", "") or ""
-        detail = f"复盘页 -> 机会池 | {self._stock_name_for_symbol(symbol)}" if symbol else "复盘页 -> 机会池"
+        detail = f"复盘 -> 机会池 | {self._stock_name_for_symbol(symbol)}" if symbol else "复盘 -> 机会池"
         recommend_text = (
-            f"推荐状态：已从复盘页同步 {self._stock_name_for_symbol(symbol)} ({self._stock_id_for_symbol(symbol)})，继续核对主线、计划与风险。"
+            f"推荐状态：已从复盘同步 {self._stock_name_for_symbol(symbol)} ({self._stock_id_for_symbol(symbol)}) | 当前结论：继续复核 | 下一步：继续看主线、计划与风险。"
             if symbol
-            else "推荐状态：已从复盘页切回机会池，继续核对主线、计划与风险。"
+            else "推荐状态：已从复盘切回机会池 | 当前结论：继续复核 | 下一步：继续看主线、计划与风险。"
         )
         self._emit_action_feedback_v11("机会池", detail, recommend_text=recommend_text)
 
@@ -61,46 +63,46 @@ def apply_runtime_feedback_patches(
         original_open_detail_to_scanner_v11(self)
         symbol = getattr(self, "active_symbol", "") or ""
         scan_text = (
-            f"扫描状态：已从复盘页同步 {self._stock_name_for_symbol(symbol)} ({self._stock_id_for_symbol(symbol)})，继续查看盘中监控与观察池。"
+            f"扫描状态：已从复盘同步 {self._stock_name_for_symbol(symbol)} ({self._stock_id_for_symbol(symbol)}) | 当前结论：继续复核 | 下一步：继续看盘中监控与观察池。"
             if symbol
-            else "扫描状态：已从复盘页切回扫描页，继续查看盘中监控与观察池。"
+            else "扫描状态：已从复盘切回信号扫描 | 当前结论：继续复核 | 下一步：继续看盘中监控与观察池。"
         )
-        self._emit_action_feedback_v11("扫描页", "复盘页 -> 扫描页", scan_text=scan_text)
+        self._emit_action_feedback_v11("信号扫描", "复盘 -> 信号扫描", scan_text=scan_text)
 
     def _open_detail_to_broker_v11(self) -> None:
         original_open_detail_to_broker_v11(self)
         symbol = getattr(self, "active_symbol", "") or ""
         broker_text = (
-            f"交易台：已从复盘页同步 {self._stock_name_for_symbol(symbol)} ({self._stock_id_for_symbol(symbol)}) | 请先复核委托链路与风险灯。"
+            f"交易状态：已从复盘同步 {self._stock_name_for_symbol(symbol)} ({self._stock_id_for_symbol(symbol)}) | 当前结论：继续复核 | 下一步：先复核委托链路与风险灯。"
             if symbol
-            else "交易台：已从复盘页切到交易执行页 | 请优先核对当前委托链路。"
+            else "交易状态：已从复盘切到执行中控 | 当前结论：继续复核 | 下一步：优先核对当前委托链路。"
         )
-        self._emit_action_feedback_v11("交易页", "复盘页 -> 交易执行", broker_text=broker_text)
+        self._emit_action_feedback_v11("执行中控", "复盘 -> 执行中控", broker_text=broker_text)
 
     def _open_broker_focus_recommend_v11(self) -> None:
         original_open_broker_focus_recommend_v11(self)
         symbol = getattr(self, "active_symbol", "") or ""
         recommend_text = (
-            f"推荐状态：已从交易页回看 {self._stock_name_for_symbol(symbol)} ({self._stock_id_for_symbol(symbol)})，继续复核主线与送审理由。"
+            f"推荐状态：已从执行中控回看 {self._stock_name_for_symbol(symbol)} ({self._stock_id_for_symbol(symbol)}) | 当前结论：继续复核 | 下一步：继续看主线与送审理由。"
             if symbol
-            else "推荐状态：已从交易页回到机会池，继续复核主线与送审理由。"
+            else "推荐状态：已从执行中控回到机会池 | 当前结论：继续复核 | 下一步：继续看主线与送审理由。"
         )
-        self._emit_action_feedback_v11("机会池", "交易页 -> 机会池", recommend_text=recommend_text)
+        self._emit_action_feedback_v11("机会池", "执行中控 -> 机会池", recommend_text=recommend_text)
 
     def _open_broker_focus_orders_v11(self) -> None:
         original_open_broker_focus_orders_v11(self)
         self._emit_action_feedback_v11(
             "委托区",
-            "交易页定位到委托建议",
-            broker_text="交易台：已定位到委托建议区，请优先核对价格、数量、主线闸门与原因摘要。",
+            "执行中控定位到委托建议",
+            broker_text="交易状态：已定位到委托建议区 | 当前结论：继续复核 | 下一步：优先核对价格、数量、主线闸门与原因摘要。",
         )
 
     def _open_broker_focus_execution_v11(self) -> None:
         original_open_broker_focus_execution_v11(self)
         self._emit_action_feedback_v11(
             "成交区",
-            "交易页定位到提交记录",
-            broker_text="交易台：已定位到提交记录区，请继续核对回执、成交状态与执行偏差。",
+            "执行中控定位到提交记录",
+            broker_text="交易状态：已定位到提交记录区 | 当前结论：继续复核 | 下一步：继续看回执、成交状态与执行偏差。",
         )
 
     def _open_runtime_to_overview_v11(self) -> None:
@@ -108,7 +110,7 @@ def apply_runtime_feedback_patches(
         self._emit_action_feedback_v11(
             "市场总览",
             "运行页 -> 市场总览",
-            scan_text="扫描状态：已回到市场总览链路，可继续刷新市场、扫描候选并建立跨页焦点。",
+            scan_text="扫描状态：已回到市场总览链路 | 当前结论：继续复核 | 下一步：继续刷新市场、扫描候选并建立跨页焦点。",
         )
 
     def _refresh_runtime_panel_v11(self) -> None:
@@ -117,7 +119,7 @@ def apply_runtime_feedback_patches(
 
     def _export_runtime_log_v11(self) -> None:
         original_export_runtime_log_v11(self)
-        self._emit_action_feedback_v11("运行页", "已导出运行日志，请继续核对最新事件与异常记录")
+        self._emit_action_feedback_v11("运行页", "已导出运行日志，请继续看最新事件与异常记录")
 
     def _refresh_workspace_status_labels_v11(self) -> None:
         original_refresh_workspace_status_labels_v11(self)
@@ -166,16 +168,20 @@ def apply_runtime_feedback_patches(
         if hasattr(self, "broker_live_summary_headline"):
             self.broker_live_summary_headline.setText("交易态势")
         if hasattr(self, "broker_live_summary_detail"):
-            self.broker_live_summary_detail.setText(f"委托建议 {order_count} 笔，提交记录 {runtime_count} 笔。")
+            self.broker_live_summary_detail.setText(f"委托建议 {order_count} 笔，提交记录 {runtime_count} 笔 | 审查 继续复核。")
         if hasattr(self, "broker_live_summary_meta"):
-            self.broker_live_summary_meta.setText("下一步：复核委托后再确认提交。" if order_count else "下一步：先从机会池生成委托链路。")
+            self.broker_live_summary_meta.setText(
+                "当前结论：继续复核 | 下一步：复核委托后再进确认弹窗提交。"
+                if order_count
+                else "当前结论：继续复核 | 下一步：先从机会池生成委托链路。"
+            )
 
     def _load_sample_universe_v12(self) -> None:
         self._emit_action_feedback_v11(
             "扫描页",
             "准备载入样例市场数据",
-            recommend_text="推荐状态：正在准备样例市场与机会池数据。",
-            scan_text="扫描状态：正在载入示例数据并建立观察池、监控与联动焦点。",
+            recommend_text="推荐状态：载入中 | 样例市场与机会池待建立 | 当前结论：继续复核 | 下一步：等待样例数据接入。",
+            scan_text="扫描状态：载入中 | 示例数据、观察池与监控待建立 | 当前结论：继续复核 | 下一步：等待扫描结果写回。",
         )
         original_load_sample_universe_v12(self)
         self._sync_pipeline_panels_v12()
@@ -184,8 +190,8 @@ def apply_runtime_feedback_patches(
         self._emit_action_feedback_v11(
             "扫描页",
             "开始重新扫描市场与观察池",
-            recommend_text="推荐状态：正在等待扫描结果回流，稍后自动刷新机会池。",
-            scan_text="扫描状态：正在重新扫描市场、观察池与盘中监控。",
+            recommend_text="推荐状态：等待回流 | 新扫描结果待写回 | 当前结论：继续复核 | 下一步：稍后自动刷新机会池。",
+            scan_text="扫描状态：重扫中 | 市场、观察池与盘中监控待更新 | 当前结论：继续复核 | 下一步：等待扫描结果写回。",
         )
         original_rescan_universe_v12(self)
         self._sync_pipeline_panels_v12()
@@ -194,8 +200,8 @@ def apply_runtime_feedback_patches(
         self._emit_action_feedback_v11(
             "市场总览",
             "开始刷新市场快照",
-            recommend_text="推荐状态：正在等待市场快照刷新，稍后自动重算机会池。",
-            scan_text="扫描状态：正在同步市场快照与盘中候选。",
+            recommend_text="推荐状态：等待市场快照 | 机会池待重算 | 当前结论：继续复核 | 下一步：稍后自动重算机会池。",
+            scan_text="扫描状态：刷新中 | 市场快照与盘中候选待同步 | 当前结论：继续复核 | 下一步：等待快照写回。",
         )
         original_refresh_remote_market_v12(self, quiet=quiet, update_chart=update_chart, async_mode=async_mode)
         self._sync_pipeline_panels_v12()
@@ -204,7 +210,7 @@ def apply_runtime_feedback_patches(
         self._emit_action_feedback_v11(
             "机会池",
             "开始重算每日机会池",
-            recommend_text="推荐状态：正在根据主线、位置、消息与风险重算机会池。",
+            recommend_text="推荐状态：重算中 | 主线、位置、消息与风险待回写 | 当前结论：继续复核 | 下一步：等待机会池生成。",
         )
         original_refresh_daily_pool_v12(self, async_mode=async_mode)
         if getattr(self, "daily_pool_rows", None):
@@ -212,29 +218,29 @@ def apply_runtime_feedback_patches(
             self._emit_action_feedback_v11(
                 "机会池",
                 f"机会池已更新，共 {len(self.daily_pool_rows)} 只候选",
-                recommend_text=f"推荐状态：已生成 {len(self.daily_pool_rows)} 只候选，当前前排 {top.stock_name}，可继续核对后送审。",
+                recommend_text=f"推荐状态：已生成 {len(self.daily_pool_rows)} 只候选 | 当前前排 {top.stock_name} | 当前结论：继续复核 | 下一步：先继续看，再决定是否送审。",
             )
         self._sync_pipeline_panels_v12()
 
     def _generate_order_suggestions_v12(self) -> None:
         self._emit_action_feedback_v11(
-            "交易页",
+            "执行中控",
             "开始生成委托链路",
-            broker_text="交易台：正在生成委托建议，请等待价格、数量和风险灯计算完成。",
+            broker_text="交易状态：继续复核 | 正在生成委托建议 | 下一步：等待价格、数量和风险灯计算完成。",
         )
         original_generate_order_suggestions_v12(self)
         if getattr(self, "order_intents", None):
             top = self.order_intents[0]
             self._emit_action_feedback_v11(
-                "交易页",
+                "执行中控",
                 f"委托链路已更新，共 {len(self.order_intents)} 笔建议",
-                broker_text=f"交易台：已生成 {len(self.order_intents)} 笔委托建议，优先复核 {self._stock_name_for_symbol(top.symbol)} 的执行链路。",
+                broker_text=f"交易状态：已生成 {len(self.order_intents)} 笔委托建议 | 当前结论：继续复核 | 优先复核 {self._stock_name_for_symbol(top.symbol)} 的执行链路。",
             )
         else:
             self._emit_action_feedback_v11(
-                "交易页",
+                "执行中控",
                 "当前参数下未生成新的委托建议",
-                broker_text="交易台：当前参数下暂无新的委托建议，请先回看机会池、预算和主线状态。",
+                broker_text="交易状态：当前参数下暂无新的委托建议 | 当前结论：继续复核 | 下一步：请先回看机会池、预算和主线状态。",
             )
         self._sync_pipeline_panels_v12()
 
@@ -242,16 +248,35 @@ def apply_runtime_feedback_patches(
         self._emit_action_feedback_v11(
             "机会池",
             "开始载入示例资料",
-            recommend_text="推荐状态：正在载入股票资料、消息面和题材词典。",
+            recommend_text="推荐状态：载入中 | 股票资料、消息面和题材词典待接入 | 当前结论：继续复核 | 下一步：等待资料写回。",
         )
         original_load_sample_reference_data_v12(self)
         loaded_profiles = len(getattr(self, "stock_profiles", {}) or {})
         loaded_rows = len(getattr(self, "daily_pool_rows", []) or [])
+        recommend_text = f"推荐状态：样例资料已接入 | 当前生成 {loaded_rows} 只候选 | 当前结论：继续复核 | 下一步：可继续重算计划或进入执行中控。"
+        status_builder = getattr(self, "_sample_reference_status_text_v1", None)
+        if callable(status_builder):
+            loaded_parts: list[str] = []
+            if loaded_profiles:
+                loaded_parts.append(f"股票资料 {loaded_profiles} 条")
+            if getattr(self, "news_catalysts", None):
+                provider_label = "示例消息源"
+                resolve_label = getattr(self, "resolve_news_source_label", None)
+                if callable(resolve_label):
+                    provider_label = str(resolve_label("sample") or provider_label)
+                loaded_parts.append(f"消息源 {provider_label}")
+            theme_aliases = getattr(self, "theme_aliases", {}) or {}
+            if theme_aliases:
+                loaded_parts.append(f"题材词典 {len(theme_aliases)} 个主题")
+            try:
+                recommend_text = status_builder(loaded_parts=loaded_parts, scan_ready=bool(loaded_rows))
+            except Exception:
+                pass
         self._emit_action_feedback_v11(
             "机会池",
             f"示例资料已载入，股票资料 {loaded_profiles} 条",
-            recommend_text=f"推荐状态：样例资料已接入，当前生成 {loaded_rows} 只候选，可继续重算计划或进入交易执行。",
-            scan_text="扫描状态：样例资料已接入，可继续查看观察池与盘中监控。",
+            recommend_text=recommend_text,
+            scan_text="扫描状态：样例资料已接入 | 当前结论：继续复核 | 下一步：继续看观察池与盘中监控。",
         )
         self._sync_pipeline_panels_v12()
 
@@ -294,48 +319,16 @@ def apply_runtime_feedback_patches(
 
     def _upgrade_recommend_and_broker_empty_states_v13(self) -> None:
         text_defaults = {
-            "recommend_core_bucket_text": (
-                "主线前排执行桶\n\n"
-                "结论：这里只保留最值得优先送审的前排候选，不把观察票和风险票混在一起。\n"
-                "检查项：看主线地位、量能承接、催化是否强化，以及计划仓位是否还能承载。\n"
-                "下一步：有前排机会时先重算计划，没有的话先回综合机会池继续筛。"
-            ),
-            "recommend_watch_bucket_text": (
-                "观察池\n\n"
-                "结论：这里放延续待确认、需要二次确认或只适合盯盘的标的。\n"
-                "检查项：优先看分时承接、主线强度、消息兑现和是否重新回到前排。\n"
-                "下一步：一旦条件转强，就转入前排执行桶；若逻辑失效，就转风险池。"
-            ),
-            "recommend_risk_bucket_text": (
-                "风险池\n\n"
-                "结论：这里集中展示减仓、卖出、回避和逻辑失效的标的，不让风险散落在别处。\n"
-                "检查项：重点看主线切换、跌破防守位、量价背离和消息落空。\n"
-                "下一步：优先处理风险，再决定是否回看机会池补新候选。"
-            ),
-            "broker_mainline_review_text": (
-                "主线闸门 / 为什么\n\n"
-                "结论：这里先判断委托有没有站在主线前排、有没有硬阻塞，再决定能不能送审。\n"
-                "检查项：优先核对题材位置、主线角色、风险灯和计划仓位是否匹配。\n"
-                "下一步：主线成立再进入一键确认；主线不成立就回机会池重看。"
-            ),
-            "broker_execution_text": (
-                "最近执行\n\n"
-                "结论：这里沉淀当前委托、提交回执和执行链路，不需要来回切页看。\n"
-                "检查项：重点看订单状态、成交状态、失败原因和是否偏离计划价格。\n"
-                "下一步：若还未提交，先复核；若已提交，继续跟踪回执和成交偏差。"
-            ),
-            "broker_recap_text": (
-                "成交回顾\n\n"
-                "结论：这里复盘通过率、阻塞原因、成交偏差，以及主线是否还成立。\n"
-                "检查项：优先看失败原因、滑点、仓位偏差和是否需要重新送审。\n"
-                "下一步：执行合格就继续跟踪；执行失真就回头修正机会池和委托参数。"
-            ),
-            "order_result_text": (
-                "执行回放\n\n"
-                "结论：新的提交结果会按时间顺序沉淀在这里，包括订单状态、成交状态和系统反馈。\n"
-                "检查项：先看最新一条记录，再回看是否存在重复失败或连续阻塞。\n"
-                "下一步：确认提交后，这里会自动滚动到最新记录，便于盘中快速复核。"
-            ),
+            key: workbench_empty_panel_copy(key)
+            for key in (
+                "recommend_core_bucket_text",
+                "recommend_watch_bucket_text",
+                "recommend_risk_bucket_text",
+                "broker_mainline_review_text",
+                "broker_execution_text",
+                "broker_recap_text",
+                "order_result_text",
+            )
         }
         for attr_name, text in text_defaults.items():
             widget = getattr(self, attr_name, None)
@@ -396,19 +389,23 @@ def apply_runtime_feedback_patches(
                 detail = (
                     f"当前委托：{self._stock_name_for_symbol(getattr(selected_intent, 'symbol', '') or '')} | "
                     f"{self._display_action(getattr(selected_intent, 'side', ''))} | "
-                    f"数量 {int(getattr(selected_intent, 'quantity', 0) or 0)}"
+                    f"数量 {int(getattr(selected_intent, 'quantity', 0) or 0)} | 审查 继续复核"
                 )
             elif latest_record is not None:
                 detail = (
                     f"最近回执：{self._stock_name_for_symbol(str(latest_record.get('symbol', '') or ''))} | "
                     f"{self._display_order_status(latest_record.get('order_status', ''))} / "
-                    f"{self._display_fill_status(latest_record.get('fill_status', ''))}"
+                    f"{self._display_fill_status(latest_record.get('fill_status', ''))} | 审查 继续复核"
                 )
             else:
-                detail = "等待委托链路建立，先从机会池生成可执行建议。"
+                detail = "等待委托链路建立，先从机会池生成可执行建议。 | 审查 继续复核"
             self._set_label_text_if_changed(self.broker_live_summary_detail, detail)
         if hasattr(self, "broker_live_summary_meta"):
-            meta = "下一步：复核价格、仓位、主线闸门和风险灯后，再进入一键确认。" if order_count else "下一步：先从机会池生成委托链路。"
+            meta = (
+                "当前结论：继续复核 | 下一步：复核价格、仓位、主线闸门和风险灯后，再进确认弹窗。"
+                if order_count
+                else "当前结论：继续复核 | 下一步：先从机会池生成委托链路。"
+            )
             self._set_label_text_if_changed(self.broker_live_summary_meta, meta)
 
     def _refresh_live_workspace_summary_panels_v16(self) -> None:
@@ -454,7 +451,7 @@ def apply_runtime_feedback_patches(
             action_text = signal_action_text_fn(current_recommend)
             theme_name = getattr(current_recommend, "mainline_tag", "") or getattr(current_recommend, "theme_name", "") or "待确认"
             risk_flag = getattr(current_recommend, "mainline_risk_flag", "") or "待评估"
-            next_focus = getattr(current_recommend, "next_focus", "") or "继续核对主线、位置和催化。"
+            next_focus = getattr(current_recommend, "next_focus", "") or "继续看主线、位置和催化。"
             if hasattr(self, "recommend_live_summary_detail"):
                 self._set_label_text_if_changed(
                     self.recommend_live_summary_detail,
@@ -525,7 +522,7 @@ def apply_runtime_feedback_patches(
             latest_signal = next((item for item in reversed(getattr(self, "analyses", [])) if getattr(item, "label", "") != "NONE"), None)
             action_text = self._display_action(getattr(recommendation, "action", "WATCH")) if recommendation is not None else "观察"
             theme_name = getattr(recommendation, "mainline_tag", "") or getattr(recommendation, "theme_name", "") or "待确认"
-            self._set_label_text_if_changed(self.detail_live_summary_headline, f"复盘焦点：{stock_name} ({stock_id})")
+            self._set_label_text_if_changed(self.detail_live_summary_headline, f"复盘焦点：{stock_name} ({stock_id}) | 审查 继续复核")
             if hasattr(self, "detail_live_summary_detail"):
                 self._set_label_text_if_changed(
                     self.detail_live_summary_detail,
@@ -534,25 +531,29 @@ def apply_runtime_feedback_patches(
             if hasattr(self, "detail_live_summary_meta"):
                 self._set_label_text_if_changed(self.detail_live_summary_meta, "下一步：优先回看执行纪律、买卖节奏和是否仍值得继续跟踪。")
         elif hasattr(self, "detail_live_summary_headline"):
-            self._set_label_text_if_changed(self.detail_live_summary_headline, "复盘焦点：等待联动")
+            self._set_label_text_if_changed(self.detail_live_summary_headline, "复盘焦点：等待联动 | 审查 继续复核")
             if hasattr(self, "detail_live_summary_detail"):
                 self._set_label_text_if_changed(
                     self.detail_live_summary_detail,
-                    "等待从推荐页、扫描页或交易页同步一只股票，再展开信号、成交与复盘结论。",
+                    "等待从机会池、扫描页或执行中控同步一只股票，再展开信号、成交与复盘结论。",
                 )
             if hasattr(self, "detail_live_summary_meta"):
                 self._set_label_text_if_changed(
                     self.detail_live_summary_meta,
-                    "下一步：先在机会池、扫描页或交易页选中一只票，再进入复盘研究。",
+                    "下一步：先在机会池、扫描页或执行中控选中一只票，再进入复盘研究。",
                 )
 
     def _focus_symbol_in_recommend_workspace_v16(self, symbol: str) -> None:
         original_focus_symbol_in_recommend_workspace_v16(self, symbol)
         self._refresh_live_workspace_summary_panels()
+        if hasattr(self, "_refresh_workspace_focus_banners"):
+            self._refresh_workspace_focus_banners()
 
     def _focus_symbol_in_broker_workspace_v16(self, symbol: str) -> None:
         original_focus_symbol_in_broker_workspace_v16(self, symbol)
         self._refresh_live_workspace_summary_panels()
+        if hasattr(self, "_refresh_workspace_focus_banners"):
+            self._refresh_workspace_focus_banners()
 
     window_cls._inject_recommend_broker_summary_panels_v13 = _inject_recommend_broker_summary_panels_v13
     window_cls._upgrade_recommend_and_broker_empty_states_v13 = _upgrade_recommend_and_broker_empty_states_v13

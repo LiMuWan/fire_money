@@ -700,7 +700,7 @@ class StrategyWorkbenchCard(InsightCardBase):
         self.subtitle_label = QLabel(subtitle)
         self.subtitle_label.setObjectName("strategyWorkbenchSubtitle")
         self.subtitle_label.setWordWrap(True)
-        self.summary_label = QLabel("等待生成推荐池后更新。")
+        self.summary_label = QLabel("等待生成机会池后更新。")
         self.summary_label.setObjectName("strategyWorkbenchSummary")
         self.summary_label.setWordWrap(True)
         self.meta_label = QLabel("")
@@ -747,12 +747,12 @@ class StrategyWorkbenchCard(InsightCardBase):
             self.meta_label,
             f"{strategy_name} 命中 {primary_count} 只 | 评分 {focus_score:.1f} | 题材 {focus_theme} | 动作 {focus_action}",
         )
-        self._set_label_if_changed(self.top_list_label, "\n".join(top_rows) if top_rows else "等待生成推荐池后更新。")
+        self._set_label_if_changed(self.top_list_label, "\n".join(top_rows) if top_rows else "等待生成机会池后更新。")
 
-    def set_empty(self, message: str = "等待生成推荐池后更新。") -> None:
+    def set_empty(self, message: str = "等待生成机会池后更新。") -> None:
         self._set_label_if_changed(self.summary_label, message)
         self._set_label_if_changed(self.meta_label, "建议先刷新市场、同步题材和候选，再看该战法的前排标的。")
-        self._set_label_if_changed(self.top_list_label, "前排列表会在生成推荐池后出现在这里。")
+        self._set_label_if_changed(self.top_list_label, "前排列表会在生成机会池后出现在这里。")
 
 
 class ActionFlowCard(InsightCardBase):

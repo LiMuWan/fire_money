@@ -2,40 +2,129 @@ from __future__ import annotations
 
 from pathlib import Path
 
+_RUNTIME_LOG_LEVEL_LABELS = {
+    "INFO": "状态",
+    "SUCCESS": "完成",
+    "WARN": "提示",
+    "ERROR": "异常",
+}
+
+_RUNTIME_JOB_STATUS_LABELS = {
+    "idle": "待机",
+    "running": "执行中",
+    "success": "已完成",
+    "failed": "异常结束",
+}
+
+
+def runtime_log_level_label(level: str) -> str:
+    normalized = str(level or "INFO").strip().upper() or "INFO"
+    return _RUNTIME_LOG_LEVEL_LABELS.get(normalized, normalized)
+
+
+def build_runtime_log_line(message: str, *, datetime_cls, level: str = "INFO") -> str:
+    timestamp = datetime_cls.now().strftime("%H:%M:%S")
+    return f"[{timestamp}] [{runtime_log_level_label(level)}] {str(message or '').strip()}"
+
+
+def _runtime_log_payload(lines: list[str]) -> str:
+    payload = "\n".join(lines)
+    return f"{payload}\n" if payload else ""
+
+
+def _widget_plain_text(widget) -> str:
+    cached = getattr(widget, "_qh_plain_text_cache_v1", None)
+    if isinstance(cached, str):
+        return cached
+    if hasattr(widget, "toPlainText"):
+        try:
+            text = str(widget.toPlainText())
+        except Exception:
+            text = ""
+        setattr(widget, "_qh_plain_text_cache_v1", text)
+        return text
+    return ""
+
+
+def _set_plain_text_if_changed(widget, text: str) -> None:
+    if widget is None or not hasattr(widget, "setPlainText"):
+        return
+    if _widget_plain_text(widget) != text:
+        widget.setPlainText(text)
+        setattr(widget, "_qh_plain_text_cache_v1", text)
+
+
+def _append_plain_text_line(widget, line: str) -> bool:
+    if widget is None:
+        return False
+    current = _widget_plain_text(widget)
+    payload = f"{current}{line}\n" if current else f"{line}\n"
+    if hasattr(widget, "textCursor") and hasattr(widget, "setTextCursor"):
+        try:
+            cursor = widget.textCursor()
+            move_operation = getattr(getattr(cursor, "MoveOperation", None), "End", None)
+            if move_operation is None:
+                move_operation = getattr(cursor, "End", None)
+            if move_operation is not None and hasattr(cursor, "movePosition"):
+                cursor.movePosition(move_operation)
+            if hasattr(cursor, "insertText"):
+                cursor.insertText(f"{line}\n")
+                widget.setTextCursor(cursor)
+                setattr(widget, "_qh_plain_text_cache_v1", payload)
+                return True
+        except Exception:
+            pass
+    if hasattr(widget, "appendPlainText"):
+        try:
+            widget.appendPlainText(line)
+            setattr(widget, "_qh_plain_text_cache_v1", payload)
+            return True
+        except Exception:
+            pass
+    if hasattr(widget, "setPlainText"):
+        widget.setPlainText(payload)
+        setattr(widget, "_qh_plain_text_cache_v1", payload)
+        return True
+    return False
+
 
 def append_runtime_log(window, message: str, *, datetime_cls, level: str = "INFO") -> None:
-    timestamp = datetime_cls.now().strftime("%H:%M:%S")
-    line = f"[{timestamp}] [{level}] {message}"
+    line = build_runtime_log_line(message, datetime_cls=datetime_cls, level=level)
+    previous_count = len(window.runtime_events)
     window.runtime_events.append(line)
     window.runtime_events = window.runtime_events[-200:]
-    if hasattr(window, "runtime_log_text"):
-        window.runtime_log_text.setPlainText("\n".join(window.runtime_events) + "\n")
+    payload = _runtime_log_payload(window.runtime_events)
+    widget = getattr(window, "runtime_log_text", None)
+    if widget is None:
+        return
+    previous_payload = getattr(window, "_runtime_log_rendered_payload_v1", "")
+    trimmed = len(window.runtime_events) != previous_count + 1
+    if not trimmed and isinstance(previous_payload, str) and f"{previous_payload}{line}\n" == payload:
+        if _append_plain_text_line(widget, line):
+            window._runtime_log_rendered_payload_v1 = payload
+            return
+    _set_plain_text_if_changed(widget, payload)
+    window._runtime_log_rendered_payload_v1 = payload
 
 
 def build_runtime_overview_text(window, *, cache_cls, datetime_cls) -> str:
     cache_stats = cache_cls().cache_stats()
-    last_status_label = {
-        "idle": "空闲",
-        "running": "执行中",
-        "success": "成功",
-        "failed": "失败",
-    }.get(window.last_job_status, window.last_job_status or "未知")
-    last_job_line = "最近任务：暂无"
+    last_status_label = _RUNTIME_JOB_STATUS_LABELS.get(window.last_job_status, window.last_job_status or "未知")
+    last_job_line = "当前任务：待机 | 等待新的刷新、重算、导出或执行动作。"
     if window.last_job_name:
         last_job_line = (
-            f"最近任务：{window.last_job_name} | {last_status_label} | "
+            f"当前任务：{window.last_job_name} | {last_status_label} | "
             f"{window.last_job_duration_ms:.0f} ms"
         )
     lines = [
-        f"活跃任务：{len(window.active_jobs)}",
-        f"累计任务：{window.job_run_count} | 成功 {window.job_success_count} | 失败 {window.job_failure_count}",
-        f"缓存文件：{cache_stats['files']}",
-        f"缓存体积：{cache_stats['bytes'] / 1024:.1f} KB",
-        f"最近日志：{len(window.runtime_events)} 条",
+        f"运行中枢：活跃 {len(window.active_jobs)} | 累计 {window.job_run_count}",
+        f"任务结果：完成 {window.job_success_count} | 异常 {window.job_failure_count}",
+        f"缓存概览：文件 {cache_stats['files']} | 体积 {cache_stats['bytes'] / 1024:.1f} KB",
+        f"日志队列：最近 {len(window.runtime_events)} 条",
         last_job_line,
     ]
     if window.last_job_finished_at:
-        lines.append(f"最近完成：{window.last_job_finished_at}")
+        lines.append(f"最近落点：{window.last_job_finished_at}")
     if window.active_jobs:
         lines.append(f"执行队列：{', '.join(sorted(window.active_jobs))}")
     if window.last_cache_purge_summary:
@@ -48,10 +137,11 @@ def build_runtime_overview_text(window, *, cache_cls, datetime_cls) -> str:
 def refresh_runtime_panel(window, *, cache_cls, datetime_cls) -> None:
     overview_text = build_runtime_overview_text(window, cache_cls=cache_cls, datetime_cls=datetime_cls)
     if hasattr(window, "runtime_status_text"):
-        window.runtime_status_text.setPlainText(overview_text)
+        _set_plain_text_if_changed(window.runtime_status_text, overview_text)
     if hasattr(window, "runtime_log_text"):
-        payload = "\n".join(window.runtime_events)
-        window.runtime_log_text.setPlainText(f"{payload}\n" if payload else "")
+        payload = _runtime_log_payload(window.runtime_events)
+        _set_plain_text_if_changed(window.runtime_log_text, payload)
+        window._runtime_log_rendered_payload_v1 = payload
 
 
 def runtime_export_dir(window, *, project_root) -> Path:
@@ -122,15 +212,15 @@ def export_runtime_log(window, *, project_root, datetime_cls, info_dialog_fn, ca
     export_dir.mkdir(parents=True, exist_ok=True)
     target = export_dir / f"runtime_log_{datetime_cls.now().strftime('%Y%m%d_%H%M%S')}.txt"
     content_lines = [
-        "量化猎手 Pro 运行日志",
+        "量化猎手 Pro / 运行日志",
         f"导出时间：{datetime_cls.now().strftime('%Y-%m-%d %H:%M:%S')}",
         "",
-        "[运行概览]",
+        "[状态摘要]",
         build_runtime_overview_text(window, cache_cls=cache_cls, datetime_cls=datetime_cls),
         "",
-        "[事件日志]",
+        "[事件流水]",
     ]
-    content_lines.extend(window.runtime_events or ["暂无运行日志"])
+    content_lines.extend(window.runtime_events or ["当前还没有运行日志。"])
     target.write_text("\n".join(content_lines) + "\n", encoding="utf-8")
     window.last_runtime_export_path = str(target)
     window._append_runtime_log(f"运行日志已导出：{target}")

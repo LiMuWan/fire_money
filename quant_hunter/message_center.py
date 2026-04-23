@@ -26,6 +26,32 @@ _TONE_BY_LEVEL = {
     "ERROR": "risk",
 }
 
+_MESSAGE_CENTER_BUTTON_LABELS = {
+    "clear": "清空事件",
+    "mark_all_read": "全标已读",
+    "clear_handled": "清已处理",
+    "mark_read": "标已读",
+    "mark_handled": "标已处理",
+    "symbol": "定位焦点",
+    "open": "看链路",
+}
+
+_MESSAGE_CENTER_METRIC_ACCENTS = {
+    "unread": "待看新事件",
+    "open": "等待落地的处理动作",
+    "ai": "AI 评测与重试链路",
+    "news": "消息源刷新与催化联动",
+    "trade": "委托回执与执行反馈",
+}
+
+_MESSAGE_CENTER_METRIC_TOOLTIPS = {
+    "unread": "点击后切到未读优先排序。",
+    "open": "点击后只看未处理事件。",
+    "ai": "点击后只看 AI 评测事件。",
+    "news": "点击后只看消息事件。",
+    "trade": "点击后只看交易事件。",
+}
+
 
 @dataclass(frozen=True)
 class SmartMessageEvent:
@@ -43,6 +69,18 @@ class SmartMessageEvent:
 class MessageActionHint:
     button_label: str
     summary: str
+
+
+def message_center_button_label(key: str, fallback: str = "") -> str:
+    return str(_MESSAGE_CENTER_BUTTON_LABELS.get(str(key or "").strip(), fallback) or fallback)
+
+
+def message_center_metric_accent(key: str, fallback: str = "") -> str:
+    return str(_MESSAGE_CENTER_METRIC_ACCENTS.get(str(key or "").strip(), fallback) or fallback)
+
+
+def message_center_metric_tooltip(key: str, fallback: str = "") -> str:
+    return str(_MESSAGE_CENTER_METRIC_TOOLTIPS.get(str(key or "").strip(), fallback) or fallback)
 
 
 def normalize_message_category(value: str) -> str:
@@ -102,9 +140,59 @@ def message_event_status_label(event: SmartMessageEvent | None) -> str:
     return f"{read_text} / {handled_text}"
 
 
+def message_center_badge_text(counts: dict[str, int] | None) -> str:
+    stats = dict(counts or {})
+    return f"状态：待处理 {int(stats.get('open', 0) or 0)} | 未读 {int(stats.get('unread', 0) or 0)}"
+
+
+def message_center_summary_text(headline: str, detail: str) -> str:
+    lead = str(headline or "").strip() or "等待新事件"
+    tail = str(detail or "").strip()
+    return f"消息中控：{lead} | {tail}" if tail else f"消息中控：{lead}"
+
+
+def message_center_action_bar_text(event: SmartMessageEvent | None, action_hint: MessageActionHint | None = None) -> str:
+    hint = action_hint or message_event_action_hint(event)
+    if event is None:
+        return "事件动作：先选中一条事件，再决定定位焦点、看链路或标记处理。 | 处理进度：未选中"
+    return f"事件动作：{hint.summary} | 处理进度：{message_event_status_label(event)}"
+
+
+def build_message_center_event_detail(
+    event: SmartMessageEvent | None,
+    *,
+    action_hint: MessageActionHint | None = None,
+    route_label: str = "",
+    route_workspace: str = "",
+    route_widget: str = "",
+) -> str:
+    if event is None:
+        return build_message_center_snapshot([], category_filter="all")["text"]
+
+    hint = action_hint or message_event_action_hint(event)
+    symbol = str(getattr(event, "symbol", "") or "").strip()
+    detail = str(getattr(event, "detail", "") or "").strip() or "暂无附加说明"
+    lines = [
+        "事件详情",
+        f"时间：{getattr(event, 'timestamp', '') or '--:--:--'}",
+        f"分类：{message_category_label(getattr(event, 'category', 'system'))}",
+        f"事件级别：{message_level_label(getattr(event, 'level', 'INFO'))}",
+        f"处理进度：{message_event_status_label(event)}",
+        f"焦点标的：{symbol or '无'}",
+        f"终端动作：{hint.button_label}",
+        "",
+        f"标题：{getattr(event, 'title', '') or '未命名事件'}",
+        f"摘要：{detail}",
+        "",
+        f"下一步：{hint.summary}",
+        f"联动路径：{route_label or '看关联页'} -> {route_workspace or '--'}/{route_widget or '--'}",
+    ]
+    return "\n".join(lines)
+
+
 def message_event_action_hint(event: SmartMessageEvent | None) -> MessageActionHint:
     if event is None:
-        return MessageActionHint("打开推荐页", "回到推荐页查看最新焦点和推荐链路。")
+        return MessageActionHint("看机会", "去机会池看最新焦点和执行链路。")
 
     category = normalize_message_category(getattr(event, "category", "system"))
     title = str(getattr(event, "title", "") or "").strip()
@@ -115,41 +203,41 @@ def message_event_action_hint(event: SmartMessageEvent | None) -> MessageActionH
 
     if is_handled:
         if symbol:
-            return MessageActionHint("回到关联页", "这条事件已经处理完成，现在更适合回到关联股票继续跟踪。")
-        return MessageActionHint("回到推荐页", "这条事件已经处理完成，可以继续查看当前全局状态。")
+            return MessageActionHint("看关联票", "这条事件已经处理完成，去关联股票继续跟踪。")
+        return MessageActionHint("看机会", "这条事件已经处理完成，去机会池看当前主线和焦点。")
 
     if category == "trade":
         if level == "ERROR":
-            return MessageActionHint("去交易页看回执", "先看失败原因、回执和回退结果，再决定是否重试。")
-        return MessageActionHint("去交易页看回执", "先核对提交结果、成交状态和执行偏差。")
+            return MessageActionHint("去交易盯回执", "先看失败原因、回执和回退结果，再决定是否重试。")
+        return MessageActionHint("去交易盯回执", "先核对提交结果、成交状态和执行偏差。")
 
     if category == "news":
         if level == "ERROR":
-            return MessageActionHint("去配置页检查消息源", "先检查消息源配置、文件路径或网络，再重新载入。")
+            return MessageActionHint("去配置看消息源", "先查消息源配置、文件路径或网络，再重载。")
         if symbol:
-            return MessageActionHint("去推荐页复核", "结合最新消息，复核这只股票的主线、催化和执行窗口。")
-        return MessageActionHint("去配置页看消息源", "查看消息源状态和最近一次载入结果。")
+            return MessageActionHint("去机会池复核", "结合最新消息，复核这只股票的主线、催化和执行窗口。")
+        return MessageActionHint("去配置看消息源", "看消息源状态和最近一次载入结果。")
 
     if category == "ai":
         if level == "ERROR":
             if any(token in detail.lower() for token in ("api key", "unauthorized", "401", "403", "invalid_api_key")):
-                return MessageActionHint("去配置页补 Key", "先检查 API Key、模型和网络，再重新发起 AI 评测。")
-            return MessageActionHint("去推荐页重试评测", "先看失败原因，再回到推荐页重新发起 AI 评测。")
+                return MessageActionHint("去配置补 Key", "先检查 API Key、模型和网络，再重新发起 AI 评测。")
+            return MessageActionHint("去机会池重评", "先看失败原因，再去机会池重评。")
         if level == "INFO":
-            return MessageActionHint("去推荐页看进度", "当前焦点正在生成评测，先看流式内容和上下文。")
-        return MessageActionHint("去推荐页看结论", "查看 AI 评测结论、价格计划和下一步建议。")
+            return MessageActionHint("去机会池看评测", "当前焦点正在生成评测，先看流式内容和上下文。")
+        return MessageActionHint("去机会池看评测结果", "看 AI 评测结论、价格计划和下一步。")
 
     if "AI评测配置" in title:
-        return MessageActionHint("去配置页查看", "确认模型、Key 和自动重评开关是否符合当前使用方式。")
+        return MessageActionHint("去配置看设置", "确认模型、Key 和自动重评开关是否符合当前使用方式。")
 
-    if "推荐池已刷新" in title:
+    if "推荐池已刷新" in title or "机会池已刷新" in title:
         if symbol:
-            return MessageActionHint("去推荐页复核新焦点", "先看新焦点股票的主线、风险灯和催化。")
-        return MessageActionHint("去推荐页查看", "查看新的推荐池排序、主线变化和执行候选。")
+            return MessageActionHint("去机会池复核新焦点", "先看新焦点股票的主线、风险灯和催化。")
+        return MessageActionHint("去机会池看排序", "看新的机会池排序、主线变化和执行候选。")
 
     if symbol:
-        return MessageActionHint("去推荐页定位股票", "围绕这只股票继续处理推荐、复盘或执行链路。")
-    return MessageActionHint("打开推荐页", "回到推荐页查看最新状态。")
+        return MessageActionHint("去机会池定位股票", "围绕这只股票继续处理机会、复盘或执行链路。")
+    return MessageActionHint("看机会", "去机会池看最新状态。")
 
 
 def append_message_event(
@@ -300,24 +388,24 @@ def build_message_center_snapshot(
 
     lines = [
         "统一消息中心",
-        f"- 当前筛选：{_CATEGORY_LABELS.get(filter_key, '全部')}",
+        f"- 当前视角：{_CATEGORY_LABELS.get(filter_key, '全部')}",
         (
-            f"- 事件统计：全部 {counts['all']} | AI {counts['ai']} | 消息 {counts['news']} | "
-            f"交易 {counts['trade']} | 系统 {counts['system']}"
+            f"- 状态总览：待处理 {counts['open']} | 未读 {counts['unread']} | "
+            f"AI {counts['ai']} | 消息 {counts['news']} | 交易 {counts['trade']} | 系统 {counts['system']}"
         ),
-        f"- 待处理：{counts['open']} | 未读：{counts['unread']}",
     ]
     if not visible:
         lines.extend(
             [
                 "",
-                "当前还没有事件。",
-                "后续这里会汇总 AI 评测、消息源刷新、推荐池刷新和交易回执。",
+                "当前状态：等待新事件写入。",
+                "来源：AI 评测、消息源刷新、机会池刷新和交易回执会汇总到这里。",
+                "下一步：先刷新市场、机会池或交易链路，再回来看这里的最新事件。",
             ]
         )
         return {
             "headline": "等待新事件",
-            "detail": "AI / 消息 / 交易会汇总到这里",
+            "detail": "AI / 消息 / 交易写入后会汇总到这里",
             "text": "\n".join(lines),
         }
 
@@ -332,14 +420,15 @@ def build_message_center_snapshot(
         )
         detail = str(getattr(item, "detail", "") or "").strip()
         if detail:
-            lines.append(f"  {detail}")
+            lines.append(f"  摘要：{detail}")
 
     latest = visible[-1]
+    action_hint = message_event_action_hint(latest)
     headline = (
         f"{_CATEGORY_LABELS.get(normalize_message_category(latest.category), '系统')} / "
         f"{_LEVEL_LABELS.get(normalize_message_level(latest.level), '进行中')}"
     )
-    detail = str(getattr(latest, "title", "") or "最新事件")
+    detail = f"{str(getattr(latest, 'title', '') or '最新事件')} | {action_hint.button_label}"
     return {
         "headline": headline,
         "detail": detail,

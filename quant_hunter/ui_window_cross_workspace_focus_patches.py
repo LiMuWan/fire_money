@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from quant_hunter.strategy_registry import resolved_primary_strategy
+from quant_hunter.ui_workspace_runtime import focus_strip_subtitle
 
 
 def apply_cross_workspace_focus_patches(
@@ -291,7 +292,7 @@ def apply_cross_workspace_focus_patches(
                 set_label_text_fn(
                     self,
                     self.orders_focus_label,
-                    f"委托焦点：{stock_name} | 待生成委托 | 推荐 {action_text} | 主线 {signal}",
+                    f"委托焦点：{stock_name} | 待生成委托 | 推荐 {action_text} | 主线 {signal} | 审查 继续复核",
                 )
             if hasattr(self, "broker_order_focus_text"):
                 theme_name = getattr(focus_recommend, "mainline_tag", "") or getattr(focus_recommend, "theme_name", "") or "待确认"
@@ -305,6 +306,7 @@ def apply_cross_workspace_focus_patches(
                             f"推荐动作：{action_text}",
                             f"主线状态：{theme_name} / {signal}",
                             f"风险灯：{risk_flag}",
+                            "当前结论：继续复核",
                             f"下一步：{next_focus}",
                             "当前还没有委托建议，可直接点击生成委托链路继续推进。",
                         ]
@@ -402,7 +404,7 @@ def apply_cross_workspace_focus_patches(
                     f"委托建议：{self._display_action(getattr(order_intent, 'side', ''))} {getattr(order_intent, 'quantity', 0)} 股 @ {float(getattr(order_intent, 'price', 0.0) or 0.0):.2f}"
                 )
             else:
-                lines.append("委托建议：当前还没有生成，可直接去交易页生成。")
+                lines.append("委托建议：当前还没有生成，可直接去交易生成。")
             if execution_row is not None:
                 lines.append(
                     f"最近执行：{self._display_order_status(execution_row.get('order_status', ''))} / {self._display_fill_status(execution_row.get('fill_status', ''))}"
@@ -418,7 +420,7 @@ def apply_cross_workspace_focus_patches(
                 f"推荐动作：{action_text} | 下一步：{getattr(focus_recommend, 'next_focus', '') or '继续观察主线、位置和量能承接'}",
                 f"风险提示：{getattr(focus_recommend, 'mainline_risk_flag', '') or '待评估'} | 置信 {float(getattr(focus_recommend, 'confidence_score', 0.0) or 0.0):.1f}",
                 f"交易计划：{price_brief}",
-                "后续动作：可继续回推荐页比较同主线候选，或去交易页生成并确认委托。",
+                "后续动作：可继续回机会池比较同主线候选，或去交易生成并确认委托。",
             ]
             if latest_signal is not None:
                 lines.insert(1, f"最近信号：{getattr(latest_signal, 'date', '--')} | {self._display_label(getattr(latest_signal, 'label', ''))}")

@@ -403,18 +403,25 @@ class EastmoneyMarketFeed:
         cached_bars = self.cache.get_daily_bars(symbol)
         if cached_bars and self._bars_cover_range(cached_bars, start=start, end=end):
             return self._slice_bars_by_range(cached_bars, start=start, end=end)
+        normalized_symbol = normalize_symbol(symbol)
         try:
-            bars = self._fetch_daily_bars_eastmoney(symbol, start=start, end=end)
+            bars = self._fetch_daily_bars_eastmoney(normalized_symbol, start=start, end=end)
         except Exception:
-            try:
-                bars = self._fetch_daily_bars_tencent(symbol, count=self._tencent_count_for_range(start, end))
-            except Exception:
+            if normalized_symbol.startswith(("SHSE.", "SZSE.")):
+                try:
+                    bars = self._fetch_daily_bars_tencent(normalized_symbol, count=self._tencent_count_for_range(start, end))
+                except Exception:
+                    stale_bars = self.cache.get_daily_bars(symbol, allow_stale=True)
+                    if stale_bars:
+                        return self._slice_bars_by_range(stale_bars, start=start, end=end)
+                    raise
+            else:
                 stale_bars = self.cache.get_daily_bars(symbol, allow_stale=True)
                 if stale_bars:
                     return self._slice_bars_by_range(stale_bars, start=start, end=end)
                 raise
         if bars:
-            self.cache.put_daily_bars(symbol, bars)
+            self.cache.put_daily_bars(normalized_symbol, bars)
         return self._slice_bars_by_range(bars, start=start, end=end)
 
 
@@ -500,13 +507,29 @@ class EastmoneyMarketFeed:
         normalized = normalize_symbol(symbol)
         if normalized.startswith("SHSE."):
             return f"1.{extract_stock_id(normalized)}"
-        return f"0.{extract_stock_id(normalized)}"
+        if normalized.startswith("SZSE."):
+            return f"0.{extract_stock_id(normalized)}"
+        if normalized.startswith("HKSE."):
+            return f"116.{extract_stock_id(normalized)}"
+        if normalized.startswith("NASDAQ."):
+            return f"105.{extract_stock_id(normalized)}"
+        if normalized.startswith("NYSE."):
+            return f"106.{extract_stock_id(normalized)}"
+        if normalized.startswith("AMEX."):
+            return f"107.{extract_stock_id(normalized)}"
+        if normalized.startswith("US."):
+            return f"105.{extract_stock_id(normalized)}"
+        return normalized
 
     @staticmethod
     def _tencent_code(symbol: str) -> str:
         normalized = normalize_symbol(symbol)
         stock_id = extract_stock_id(normalized)
-        return f"sh{stock_id}" if normalized.startswith("SHSE.") else f"sz{stock_id}"
+        if normalized.startswith("SHSE."):
+            return f"sh{stock_id}"
+        if normalized.startswith("SZSE."):
+            return f"sz{stock_id}"
+        raise ValueError(f"Tencent fallback unsupported for symbol: {normalized}")
 
     @staticmethod
     def _safe_float(value: object, default: float = 0.0) -> float:

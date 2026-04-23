@@ -13,6 +13,8 @@ def _workspace_hero_tone(eyebrow: str, title: str) -> str:
         return "recommend"
     if any(token in combined for token in ("交易", "执行")):
         return "broker"
+    if any(token in combined for token in ("实验", "模拟")):
+        return "paper"
     if any(token in combined for token in ("复盘", "明细")):
         return "detail"
     if any(token in combined for token in ("扫描", "观察")):
@@ -28,14 +30,15 @@ def _workspace_hero_tone(eyebrow: str, title: str) -> str:
 
 def _workspace_hero_stamp(hero_tone: str) -> str:
     return {
-        "overview": "MARKET CORE",
-        "recommend": "ALPHA FLOW",
-        "broker": "EXECUTION CORE",
-        "detail": "REVIEW LAB",
-        "scanner": "LIVE SCAN",
-        "auth": "ACCESS LAYER",
-        "config": "SYSTEM LAB",
-        "board": "BOARD WATCH",
+        "overview": "MARKET DESK",
+        "recommend": "ALPHA DESK",
+        "broker": "EXEC DESK",
+        "paper": "PAPER LAB",
+        "detail": "REVIEW DESK",
+        "scanner": "SCAN DESK",
+        "auth": "ACCESS",
+        "config": "CONFIG",
+        "board": "BOARD DESK",
     }.get(hero_tone, "QH PRO")
 
 try:
@@ -216,8 +219,8 @@ def build_workspace_badge(value: str, caption: str, hero_tone: str = "default") 
     frame.setObjectName("workspaceBadge")
     frame.setProperty("heroTone", hero_tone)
     layout = QVBoxLayout(frame)
-    layout.setContentsMargins(14, 10, 14, 10)
-    layout.setSpacing(3)
+    layout.setContentsMargins(12, 8, 12, 8)
+    layout.setSpacing(2)
 
     value_label = QLabel(value)
     value_label.setObjectName("workspaceBadgeValue")
@@ -230,7 +233,7 @@ def build_workspace_badge(value: str, caption: str, hero_tone: str = "default") 
 
     layout.addWidget(value_label)
     layout.addWidget(caption_label)
-    frame.setMinimumWidth(132)
+    frame.setMinimumWidth(118)
     return frame
 
 
@@ -245,21 +248,21 @@ def build_workspace_hero(
     frame.setObjectName("workspaceHero")
     frame.setProperty("heroTone", hero_tone)
     layout = QHBoxLayout(frame)
-    layout.setContentsMargins(18, 14, 18, 14)
-    layout.setSpacing(14)
+    layout.setContentsMargins(16, 12, 16, 12)
+    layout.setSpacing(12)
 
     accent_strip = QFrame()
     accent_strip.setObjectName("workspaceHeroAccent")
     accent_strip.setProperty("heroTone", hero_tone)
-    accent_strip.setFixedWidth(4)
+    accent_strip.setFixedWidth(3)
     layout.addWidget(accent_strip)
 
     text_layout = QVBoxLayout()
-    text_layout.setSpacing(6)
+    text_layout.setSpacing(4)
 
     top_row = QHBoxLayout()
     top_row.setContentsMargins(0, 0, 0, 0)
-    top_row.setSpacing(8)
+    top_row.setSpacing(6)
 
     eyebrow_label = QLabel(eyebrow)
     eyebrow_label.setObjectName("workspaceEyebrow")
@@ -286,12 +289,12 @@ def build_workspace_hero(
     layout.addLayout(text_layout, stretch=1)
 
     if badges:
-        badge_rail = AdaptivePanelGrid(min_item_width=152, compact_item_width=132, max_columns=2)
+        badge_rail = AdaptivePanelGrid(min_item_width=124, compact_item_width=116, max_columns=3)
         badge_rail.setObjectName("workspaceBadgeRail")
         badge_rail.setProperty("heroTone", hero_tone)
-        badge_rail.set_grid_margins(6, 4, 6, 4)
-        badge_rail.set_grid_spacing(8, 8)
-        for value, caption in badges:
+        badge_rail.set_grid_margins(4, 2, 4, 2)
+        badge_rail.set_grid_spacing(6, 6)
+        for value, caption in list(badges)[:3]:
             badge_rail.add_panel(build_workspace_badge(value, caption, hero_tone))
         layout.addWidget(badge_rail, stretch=0)
 
@@ -599,7 +602,7 @@ def build_hype_logic_lines(
 
 def recommendation_focus_lines(row) -> list[str]:
     if row is None:
-        return ["等待推荐池刷新。"]
+        return ["等待机会池刷新。"]
     entry_price = float(getattr(row, "entry_price", 0.0) or getattr(row, "close", 0.0) or 0.0)
     stop_price = float(getattr(row, "stop_price", 0.0) or 0.0)
     target_price = float(getattr(row, "target_price", 0.0) or 0.0)

@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 
 from .models import HoldingRecord, RecommendationRow
 from .risk import DEFAULT_RISK_CONTROLS, RiskControls, normalize_risk_profile, resolve_risk_controls
-from .strategy_registry import get_strategy_registry, resolved_primary_strategy, strategy_score
+from .strategy_registry import get_strategy_registry, resolved_primary_strategy, strategy_buy_position_meta, strategy_execution_discipline_meta, strategy_score, strategy_sell_position_meta
 from .theme import display_mainline_role, infer_mainline_flow_signal, infer_mainline_stage
 
 
@@ -288,6 +288,8 @@ class DecisionEngine:
 
             budget_multiplier *= self._strategy_budget_multiplier(strategy_name, strategy_budget_bias_by_name)
             budget_multiplier *= self._risk_profile_budget_multiplier()
+            if strategy_name == "半仓持股法":
+                budget_multiplier = min(budget_multiplier, 0.5)
 
             confidence_source = float(strategy_score(row, "掘龙决策", float(row.total_score or 0.0)) or 0.0)
             confidence = min(max(confidence_source / 100.0, 0.0), 0.99)
@@ -309,10 +311,15 @@ class DecisionEngine:
                 rationale_parts.append(f"买点 {getattr(row, 'buy_point')}")
             if getattr(row, "sell_point", ""):
                 rationale_parts.append(f"卖点 {getattr(row, 'sell_point')}")
+            rationale_parts.append(f"买入仓位 {strategy_buy_position_meta(strategy_name)}")
+            rationale_parts.append(f"卖出仓位 {strategy_sell_position_meta(strategy_name)}")
+            rationale_parts.append(f"执行纪律 {strategy_execution_discipline_meta(strategy_name)}")
             if strategy_name == "尾盘买入法":
                 rationale_parts.append("纪律 只做尾盘确认隔夜，次日开盘优先卖，不做盘中拖仓")
             if strategy_name == "一日持股法":
                 rationale_parts.append("纪律 隔日优先兑现，不做拖仓")
+            if strategy_name == "半仓持股法":
+                rationale_parts.append("纪律 底仓不超过半仓，机动仓只做熟悉节奏里的高抛低吸")
             if row.rationale:
                 rationale_parts.append(row.rationale)
 
@@ -347,9 +354,13 @@ class DecisionEngine:
                         "只在 14:30 后确认尾盘回流和承接，隔夜后次日开盘优先兑现，弱开直接走。"
                         if strategy_name == "尾盘买入法"
                         else (
-                        "盯次日竞价强弱、开盘 5 分钟承接和冲高兑现节奏，午后不转强就离场。"
-                        if strategy_name == "一日持股法"
-                        else getattr(row, "next_focus", "")
+                            "盯次日竞价强弱、开盘 5 分钟承接和冲高兑现节奏，午后不转强就离场。"
+                            if strategy_name == "一日持股法"
+                            else (
+                                "先确认底仓不超过半仓；低吸只动机动仓，冲高先高抛机动仓，跌破防守线停止做T。"
+                                if strategy_name == "半仓持股法"
+                                else getattr(row, "next_focus", "")
+                            )
                         )
                     ),
                     mainline_flow_signal=flow_signal,
@@ -512,6 +523,18 @@ class DecisionEngine:
                 action = "REDUCE"
                 rationale = "一日持股法以隔日兑现为主，已有浮盈时优先分批落袋。"
                 confidence = 0.84
+            elif strategy_name == "半仓持股法" and pnl_pct <= -0.06:
+                action = "SELL"
+                rationale = "半仓持股法跌破核心防守后不能把机动仓补成满仓，优先退出并重新评估股性。"
+                confidence = 0.9
+            elif strategy_name == "半仓持股法" and pnl_pct <= -0.028:
+                action = "REDUCE"
+                rationale = "半仓持股法出现亏损扩大时先停止做T，机动仓撤出，底仓降到观察仓。"
+                confidence = 0.84
+            elif strategy_name == "半仓持股法" and pnl_pct >= 0.025:
+                action = "REDUCE"
+                rationale = "半仓持股法盈利靠滚动，冲高先高抛机动仓，底仓继续按趋势线观察。"
+                confidence = 0.82
             elif pnl_pct <= -0.06:
                 action = "SELL"
                 rationale = "跌破防守区，优先执行止损，控制回撤。"

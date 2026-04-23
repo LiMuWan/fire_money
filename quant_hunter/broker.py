@@ -309,7 +309,7 @@ def _build_mainline_review(order_intents: list[OrderIntent], recommendations: li
                 }
             )
             if intent.side == "BUY":
-                warnings.append(_mainline_gate_message(intent.symbol, "未命中当前推荐池，建议人工复核。"))
+                warnings.append(_mainline_gate_message(intent.symbol, "未命中当前机会池，建议人工复核。"))
             continue
 
         theme_name = getattr(recommendation, "mainline_tag", "") or getattr(recommendation, "theme_name", "") or "未分类"
@@ -1635,6 +1635,100 @@ def summarize_broker_execution(
         "portfolio_risk_review": portfolio_risk_review,
         "portfolio_fit_review": portfolio_fit_review,
         "risk_profile": normalized_risk_profile,
+    }
+
+
+def build_execution_review_snapshot(
+    execution_summary: dict[str, Any] | None,
+    *,
+    experiment_badge: str = "",
+    execution_guard: str = "",
+    guard_notes: list[str] | None = None,
+) -> dict[str, Any]:
+    summary = dict(execution_summary or {})
+    blockers = list(summary.get("blockers", []) or [])
+    warnings = list(summary.get("warnings", []) or [])
+    symbols = list(summary.get("symbols", []) or [])
+    mainline_review = dict(summary.get("mainline_review", {}) or {})
+    portfolio_risk_review = dict(summary.get("portfolio_risk_review", {}) or {})
+    portfolio_fit_review = dict(summary.get("portfolio_fit_review", {}) or {})
+    mainline_rows = list(mainline_review.get("rows", []) or [])
+    risk_rows = list(portfolio_risk_review.get("rows", []) or [])
+    fit_rows = list(portfolio_fit_review.get("rows", []) or [])
+    fit_focus = fit_rows[0] if fit_rows else {}
+    risk_focus = risk_rows[0] if risk_rows else {}
+    first_blocker = next(iter(blockers), "")
+    first_warning = next(iter(warnings), "")
+    capital_usage_ratio = float(summary.get("capital_usage_ratio", 0.0) or 0.0)
+    asset_usage_ratio = float(summary.get("asset_usage_ratio", 0.0) or 0.0)
+    total_loss_ratio = float(portfolio_risk_review.get("total_loss_ratio", 0.0) or 0.0)
+    avg_fit_score = float(portfolio_fit_review.get("avg_fit_score", 0.0) or 0.0)
+    max_concentration_penalty = float(portfolio_fit_review.get("max_concentration_penalty_score", 0.0) or 0.0)
+    if max_concentration_penalty <= 0 and fit_rows:
+        max_concentration_penalty = max(
+            float(item.get("concentration_penalty_score", 0.0) or 0.0)
+            for item in fit_rows
+        )
+
+    mainline_status = str(mainline_review.get("status", "待核对") or "待核对")
+    risk_status = str(portfolio_risk_review.get("status", "待评估") or "待评估")
+    fit_status = str(portfolio_fit_review.get("status", "待评估") or "待评估")
+    has_pending_review = not first_blocker and not first_warning and not mainline_rows and not fit_rows and not risk_rows
+    has_caution_signal = any(
+        status in {"谨慎", "待核对"}
+        for status in (mainline_status, risk_status, fit_status)
+    )
+    if first_blocker or any(status == "拦截" for status in (mainline_status, risk_status, fit_status)):
+        verdict = "禁止提交"
+        action = "先处理硬拦截项，再决定是否重新生成委托。"
+    elif has_pending_review:
+        verdict = "继续复核"
+        action = "先补齐主线、组合和风险审查，再决定是否提交。"
+    elif has_caution_signal or first_warning or guard_notes or experiment_badge in {"对照", "观察", "备选", "待校验"}:
+        verdict = "谨慎推进"
+        action = "先缩量或继续复核后再提交。"
+    else:
+        verdict = "可以提交"
+        action = "关键信号已通过，可按纪律提交。"
+
+    risk_lamp = "红灯" if blockers else ("黄灯" if warnings else "绿灯")
+    next_step = (
+        first_blocker
+        or first_warning
+        or ("先补齐主线、组合和风险审查。" if has_pending_review else "")
+        or (f"优先核对 {symbols[0]}" if symbols else "")
+        or "继续确认委托"
+    )
+    risk_summary = (
+        f"{risk_lamp} | 主线 {mainline_status} | 风险预算 {risk_status} | 适配 {fit_status} | "
+        f"现金占用 {capital_usage_ratio:.1%} | 资产占用 {asset_usage_ratio:.1%} | 止损 {total_loss_ratio:.1%}"
+    )
+    checklist_lines = [
+        "最后检查",
+        f"主线闸门：{mainline_status} | 通过 {int(mainline_review.get('pass_count', 0) or 0)} | 待核对 {int(mainline_review.get('missing_count', 0) or 0)}",
+        f"风险预算：{risk_status} | 组合止损 {total_loss_ratio:.1%} | 现金占用 {capital_usage_ratio:.1%} | 资产占用 {asset_usage_ratio:.1%}",
+        f"组合适配：{fit_status} | 均值适配 {avg_fit_score:.0f} | 最大集中惩罚 {max_concentration_penalty:.0f}",
+        f"实验纪律：{experiment_badge or '待校验'} | {execution_guard or '先把模拟盘初始化或补样本跑完整，再进入真实交易确认。'}",
+        f"重点提醒：{first_blocker or first_warning or '当前没有新增硬阻塞，按纪律复核后可继续推进。'}",
+    ]
+    if fit_focus:
+        checklist_lines.append(
+            f"适配焦点：{fit_focus.get('name', fit_focus.get('symbol', '--'))} | {fit_focus.get('detail', '')}"
+        )
+    if risk_focus:
+        checklist_lines.append(
+            f"风险焦点：{risk_focus.get('symbol', '--')} | 止损 {float(risk_focus.get('loss_ratio', 0.0) or 0.0):.1%} | 资产占用 {float(risk_focus.get('asset_usage_ratio', 0.0) or 0.0):.1%}"
+        )
+    if guard_notes:
+        checklist_lines.append(f"测试单调整：{'；'.join(str(item) for item in guard_notes[:3])}")
+
+    return {
+        "verdict": verdict,
+        "action": action,
+        "headline": f"当前结论：{verdict} | {action}",
+        "risk_summary": risk_summary,
+        "next_step": next_step,
+        "checklist_lines": checklist_lines,
     }
 
 

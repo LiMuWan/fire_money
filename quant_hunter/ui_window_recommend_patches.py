@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QLabel, QPushButton, QTextEdit
 
 from quant_hunter.models import PaperTradingState
 from quant_hunter.strategy_registry import resolved_primary_strategy
+from quant_hunter.ui_config import recommend_terminal_cta_labels
 from quant_hunter.ui_window_paper_experiment_patches import paper_strategy_experiment_bridge_v45
 
 
@@ -20,7 +21,7 @@ def recommend_workspace_stage_v37(
         return ("待建立焦点", "先从主线前排选一只焦点票，再判断是否进入成交链路。")
     action = str(getattr(current, "action", "") or "").upper()
     if execution_state == "已提交":
-        return ("交易跟踪", "已经进入交易执行，当前重点是回执、成交和偏差复核。")
+        return ("交易跟踪", "已经进入执行中控，当前重点是回执、成交和偏差复核。")
     if execution_state == "已送审":
         return ("送审复核", "已经进入送审链路，当前重点是确认结果并准备切到交易。")
     if execution_state == "提交失败":
@@ -40,27 +41,11 @@ def recommend_cta_labels_v37(
     can_open_broker: bool,
     execution_state: str,
 ) -> dict[str, str]:
-    push_label = "暂不送审"
-    broker_label = "暂不进交易"
-    if execution_state == "已提交":
-        push_label = "查看已提交"
-        broker_label = "查看交易回执"
-    elif execution_state == "已送审":
-        push_label = "查看送审中"
-        broker_label = "查看交易链路"
-    elif execution_state == "提交失败":
-        push_label = "重试前复核"
-        broker_label = "查看失败链路" if can_open_broker else "先回看复盘"
-    else:
-        if can_submit:
-            push_label = "进入送审"
-        if can_open_broker:
-            broker_label = "打开交易执行"
-    return {
-        "push": push_label,
-        "detail": "查看复盘证据",
-        "broker": broker_label,
-    }
+    return recommend_terminal_cta_labels(
+        can_submit=can_submit,
+        can_open_broker=can_open_broker,
+        execution_state=execution_state,
+    )
 
 
 def apply_recommend_workspace_patches(

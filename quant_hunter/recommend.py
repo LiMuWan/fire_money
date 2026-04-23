@@ -6,7 +6,7 @@ from datetime import date, datetime
 from .data import extract_stock_id
 from .models import DailyAnalysis, NewsCatalyst, PortfolioBacktestResult, RecommendationRow, ScanRow, StockProfile, SymbolBacktestSummary
 from .risk import DEFAULT_RISK_CONTROLS, RiskControls, normalize_risk_profile, resolve_risk_controls, risk_profile_brief
-from .strategy_registry import get_strategy_registry
+from .strategy_registry import get_strategy_registry, strategy_execution_discipline_meta
 from .theme import ThemeHeatEngine, infer_mainline_flow_signal, infer_mainline_stage, infer_theme_name
 
 
@@ -219,12 +219,32 @@ class DailyPoolBuilder:
             if focus_boost:
                 reasons.append(f"关注题材加权 +{focus_boost:.0f}")
 
+            core_strategy_fields = {
+                "leader_model_score",
+                "main_force_score",
+                "board_attack_score",
+                "value_recovery_score",
+                "tail_buy_score",
+                "one_day_hold_score",
+                "dragon_decision_score",
+            }
+            extra_strategy_parts: list[str] = []
+            for definition in self.strategy_registry.active_definitions:
+                if definition.score_field in core_strategy_fields:
+                    continue
+                current_score = float(strategy_scores.get(definition.score_field, 0.0) or 0.0)
+                if current_score <= 0.0 and definition.name != primary_strategy:
+                    continue
+                short_label = str(definition.ui_metadata.get("short_label", "") or definition.name)
+                extra_strategy_parts.append(f"{short_label} {current_score:.0f}")
+            extra_strategy_text = f" / {' / '.join(extra_strategy_parts[:4])}" if extra_strategy_parts else ""
             reasons.append(
                 f"策略 {strategy_scores['primary_strategy']} "
                 f"(龙头 {strategy_scores['leader_model_score']:.0f} / 主力 {strategy_scores['main_force_score']:.0f} / "
                 f"打板 {strategy_scores['board_attack_score']:.0f} / 低吸 {strategy_scores['value_recovery_score']:.0f} / "
-                f"尾盘 {strategy_scores['tail_buy_score']:.0f} / 一日 {strategy_scores['one_day_hold_score']:.0f} / 决策 {strategy_scores['dragon_decision_score']:.0f})"
+                f"尾盘 {strategy_scores['tail_buy_score']:.0f} / 一日 {strategy_scores['one_day_hold_score']:.0f} / 决策 {strategy_scores['dragon_decision_score']:.0f}{extra_strategy_text})"
             )
+            reasons.append(f"执行纪律 {strategy_execution_discipline_meta(primary_strategy)}")
             if strategy_execution_available and strategy_execution_label:
                 execution_reason = f"战法执行 {strategy_execution_label} {strategy_execution_score:.2f}"
                 if strategy_execution_penalty > 0:
@@ -459,6 +479,22 @@ class DailyPoolBuilder:
                 "sell_point": f"次日冲高靠近 {target_price:.2f} 优先兑现，午后仍未转强就收缩战线",
                 "risk_line": f"若次日弱开弱走或跌破 {stop_price:.2f}，直接离场，不做恋战",
             }
+        if primary_strategy == "半仓持股法":
+            defaults = self.strategy_registry.plan_defaults(primary_strategy)
+            score_field = self.strategy_registry.score_field(primary_strategy)
+            entry = row.entry_price or row.close
+            stop_price = row.stop_price or entry * (1.0 - defaults.stop_pct)
+            target_price = row.target_price or entry * (1.0 + defaults.target_pct)
+            low_buy_price = max(entry * 0.985, stop_price * 1.012)
+            t_guard_price = max(entry * 0.992, stop_price * 1.018)
+            return {
+                "stock_pool": "趋势股",
+                "pool_score": round(min(float(strategy_scores.get(score_field, 0.0) or 0.0), 99.0), 2),
+                "buy_point": f"只围绕熟悉单票做，底仓控制在半仓以内；回踩 {low_buy_price:.2f} 附近有承接再低吸机动仓",
+                "add_point": f"机动仓只在不破 {t_guard_price:.2f} 且分时承接转强时做T，不因冲高追买",
+                "sell_point": f"冲高靠近 {target_price:.2f} 或放量乏力时先高抛机动仓，底仓按趋势线继续观察",
+                "risk_line": f"若跌破 {stop_price:.2f} 或单票节奏失真，停止做T，机动仓先撤，底仓降到观察仓",
+            }
         leader_pool_score = (
             float(strategy_scores["leader_model_score"]) * 0.54
             + float(strategy_scores["board_attack_score"]) * 0.24
@@ -674,8 +710,23 @@ class DailyPoolBuilder:
 
         one_day_bias = 10.0 if any(keyword in context for keyword in ("一日持股", "隔日", "次日", "隔夜", "高开", "竞价", "首板", "转强")) else 0.0
         tail_buy_bias = 12.0 if any(keyword in context for keyword in ("尾盘", "收盘前", "14:30", "两点半", "尾盘买入", "开盘卖", "次日开盘", "尾盘回流")) else 0.0
+        half_position_bias = 0.0
+        if any(keyword in context for keyword in ("半仓", "底仓", "机动仓", "留半仓", "五成仓")):
+            half_position_bias += 10.0
+        if any(keyword in context for keyword in ("做t", "做 t", "t+0", "t0", "日内t", "滚动t", "高抛低吸", "高抛")):
+            half_position_bias += 12.0
+        if any(keyword in context for keyword in ("一只股", "单票", "专心", "熟悉", "拿好一只", "反复跟踪", "只做一只")):
+            half_position_bias += 4.0
+        half_position_bias = min(half_position_bias, 24.0)
+        if any(keyword in context for keyword in ("一只股", "单票", "专心", "熟悉", "拿好一只", "反复跟踪", "只做一只")):
+            single_stock_focus_score = 92.0
+        elif half_position_bias > 0.0 and any(keyword in context for keyword in ("持股", "底仓", "跟踪")):
+            single_stock_focus_score = 72.0
+        else:
+            single_stock_focus_score = 0.0
         next_day_window_score = max(0.0, 92.0 - abs(position_score - 76.0))
         tail_buy_window_score = max(0.0, 94.0 - abs(position_score - 72.0))
+        t_trade_window_score = min(99.0, max(0.0, 94.0 - abs(position_score - 68.0) * 1.35) + (4.0 if half_position_bias else 0.0))
         strategy_context = {
             "technical": technical_score,
             "position": position_score,
@@ -691,22 +742,21 @@ class DailyPoolBuilder:
             "tail_buy_window": tail_buy_window_score,
             "board_window": max(0.0, 90.0 - abs(position_score - 78.0)),
             "value_window": max(0.0, 88.0 - abs(technical_score - 70.0)),
+            "half_position_bias": half_position_bias,
+            "t_trade_window": t_trade_window_score,
+            "single_stock_focus": single_stock_focus_score,
         }
         adjustments = {
             strategy_name: self._strategy_rotation_bias(strategy_name)
             for strategy_name in self.strategy_registry.base_strategy_names
         }
         strategy_scores = self.strategy_registry.compute_scores(strategy_context, adjustments_by_name=adjustments)
-        return {
+        payload: dict[str, float | str] = {
             "primary_strategy": str(strategy_scores.get("primary_strategy", "") or ""),
-            "leader_model_score": round(float(strategy_scores.get("leader_model_score", 0.0) or 0.0), 2),
-            "main_force_score": round(float(strategy_scores.get("main_force_score", 0.0) or 0.0), 2),
-            "board_attack_score": round(float(strategy_scores.get("board_attack_score", 0.0) or 0.0), 2),
-            "value_recovery_score": round(float(strategy_scores.get("value_recovery_score", 0.0) or 0.0), 2),
-            "tail_buy_score": round(float(strategy_scores.get("tail_buy_score", 0.0) or 0.0), 2),
-            "one_day_hold_score": round(float(strategy_scores.get("one_day_hold_score", 0.0) or 0.0), 2),
-            "dragon_decision_score": round(float(strategy_scores.get("dragon_decision_score", 0.0) or 0.0), 2),
         }
+        for definition in self.strategy_registry.definitions:
+            payload[definition.score_field] = round(float(strategy_scores.get(definition.score_field, 0.0) or 0.0), 2)
+        return payload
 
     @staticmethod
     def _bounded_score(value: float) -> float:

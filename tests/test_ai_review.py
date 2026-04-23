@@ -185,6 +185,7 @@ class AIReviewTests(unittest.TestCase):
                 ai_review_auto_run_enabled=True,
                 ai_review_auto_run_on_news_refresh=False,
                 ai_review_auto_run_on_pool_refresh=True,
+                ui_density="watch",
             ),
         )
         self.addCleanup(lambda: state_path.unlink(missing_ok=True))
@@ -199,6 +200,7 @@ class AIReviewTests(unittest.TestCase):
         self.assertEqual(restored.ai_review_reasoning_effort, "high")
         self.assertEqual(restored.ai_review_max_output_tokens, 1200)
         self.assertEqual(restored.ai_review_timeout_seconds, 60.0)
+        self.assertEqual(restored.ui_density, "watch")
         self.assertTrue(restored.ai_review_auto_run_enabled)
         self.assertFalse(restored.ai_review_auto_run_on_news_refresh)
         self.assertTrue(restored.ai_review_auto_run_on_pool_refresh)
@@ -302,6 +304,77 @@ class AIReviewTests(unittest.TestCase):
         self.assertEqual(label.set_calls, first_calls)
         self.assertEqual(calls["status"], 2)
         self.assertEqual(calls["panel"], 2)
+
+    def test_start_ai_review_without_api_key_routes_to_config_and_refreshes_feedback(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        row = self._sample_row()
+        nav_calls: list[tuple[str, str | None]] = []
+        refresh_calls: list[str] = []
+        window = SimpleNamespace(
+            _current_ai_review_config=lambda: AIReviewConfig(api_key="", model="gpt-5.4"),
+            _navigate_to_workspace=lambda workspace_key, widget_name=None: nav_calls.append((workspace_key, widget_name)),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            config_status_banner=module.QLabel(),
+        )
+
+        with patch.object(module.QMessageBox, "information", return_value=0) as info_box:
+            result = module.QuantHunterWindow._start_ai_review_for_row(window, row, trigger="manual")
+
+        self.assertFalse(result)
+        self.assertEqual(nav_calls, [("config", "ai_review_status_text")])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("当前缺 OpenAI API Key", window.config_status_banner.text())
+        info_box.assert_called_once()
+
+    def test_start_ai_review_refreshes_summary_and_banners_when_started(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        row = self._sample_row()
+        calls = {"status": 0, "panel": 0, "summary": 0, "focus": 0}
+        window = SimpleNamespace(
+            _current_ai_review_config=lambda: AIReviewConfig(api_key="sk-test", model="gpt-5.4", reasoning_effort="high"),
+            _is_job_running=lambda job_name: False,
+            _stock_name_for_symbol=lambda symbol: row.stock_name,
+            _ai_review_signature_for_row=lambda current: "sig",
+            ai_review_completed_signature_by_symbol={},
+            ai_review_pending_signature_by_symbol={},
+            scan_rows=[],
+            universe_analyses={},
+            universe_bars={},
+            news_catalysts={},
+            _stock_profile_for_symbol=lambda symbol: None,
+            ai_review_partial_content_by_symbol={},
+            ai_review_pending_symbol="",
+            ai_review_last_symbol="",
+            ai_review_last_error="",
+            ai_review_last_trigger="",
+            _append_runtime_log=lambda text: None,
+            _append_smart_message_event=lambda **kwargs: None,
+            recommend_status_label=module.QLabel(),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+            _refresh_ai_review_status_panel=lambda: calls.__setitem__("status", calls["status"] + 1),
+            _refresh_ai_review_panel=lambda current=None: calls.__setitem__("panel", calls["panel"] + 1),
+            _refresh_live_workspace_summary_panels=lambda: calls.__setitem__("summary", calls["summary"] + 1),
+            _refresh_workspace_focus_banners=lambda: calls.__setitem__("focus", calls["focus"] + 1),
+            _apply_ai_review_result=lambda result: None,
+            _handle_ai_review_error=lambda error: None,
+            _handle_ai_review_stream_event=lambda event: None,
+            _run_background_job=lambda *args, **kwargs: True,
+        )
+
+        result = module.QuantHunterWindow._start_ai_review_for_row(window, row, trigger="manual")
+
+        self.assertTrue(result)
+        self.assertEqual(calls, {"status": 1, "panel": 1, "summary": 1, "focus": 1})
+        self.assertIn("正在请求 gpt-5.4 评测", window.recommend_status_label.text())
 
 
 if __name__ == "__main__":

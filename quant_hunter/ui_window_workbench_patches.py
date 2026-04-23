@@ -51,6 +51,20 @@ except ModuleNotFoundError:  # pragma: no cover - enables pure-logic imports wit
 
 from quant_hunter.models import PaperTradingState, RecommendationRow
 from quant_hunter.strategy_registry import resolved_primary_strategy
+from quant_hunter.ui_config import (
+    action_row_tooltip_copy,
+    contextual_entry_rename_targets,
+    workbench_banner_copy,
+    workbench_empty_panel_copy,
+)
+from quant_hunter.ui_workspace_runtime import (
+    button_route_action_key,
+    contextual_button_prefix,
+    contextual_entry_action_key,
+    contextual_entry_display_text,
+    contextual_entry_tooltip,
+    contextual_route_button_state,
+)
 from quant_hunter.ui_window_paper_experiment_patches import paper_strategy_experiment_bridge_v45
 
 
@@ -102,7 +116,7 @@ def apply_workspace_workbench_patches(window_cls: type) -> None:
         content_layout = content.layout() if content is not None else None
         if not isinstance(content_layout, QVBoxLayout):
             return
-        banner = QLabel("交易工作台：先生成委托，再确认提交，最后回看执行偏差。")
+        banner = QLabel(workbench_banner_copy("broker", "seed"))
         banner.setObjectName("workspaceFocusBanner")
         banner.setWordWrap(True)
         content_layout.insertWidget(1, banner)
@@ -182,18 +196,23 @@ def apply_workspace_workbench_patches(window_cls: type) -> None:
             if record is not None:
                 symbol = str(record.get("symbol", "") or "")
                 stock_name = self._stock_name_for_symbol(symbol) if symbol else "最新回执"
-                text = f"交易工作台：正在回看 {stock_name} 的执行反馈，继续检查成交状态、失败原因和偏差。"
+                text = workbench_banner_copy("broker", "record", stock_name=stock_name)
             elif intent is not None:
                 symbol = getattr(intent, "symbol", "") or ""
                 stock_name = self._stock_name_for_symbol(symbol) if symbol else "焦点委托"
                 experiment_badge = experiment_lines[0].replace("模拟盘实验：", "") if experiment_lines else "实验待同步"
-                text = f"交易工作台：当前聚焦 {stock_name}，下一步打开确认弹窗核对账户、价格、止损与仓位。| {experiment_badge}"
+                text = workbench_banner_copy(
+                    "broker",
+                    "focus",
+                    stock_name=stock_name,
+                    suffix=f" | {experiment_badge}" if experiment_badge else "",
+                )
             elif order_count:
-                text = f"交易工作台：已生成 {order_count} 笔待提交委托，优先选中一笔查看主线闸门和风险灯。"
+                text = workbench_banner_copy("broker", "queue", order_count=order_count)
             elif submit_count:
-                text = f"交易工作台：已有 {submit_count} 条回执记录，可继续在下方复盘执行偏差。"
+                text = workbench_banner_copy("broker", "submitted", submit_count=submit_count)
             else:
-                text = "交易工作台：先从推荐池生成委托，再进入确认提交和执行回顾。"
+                text = workbench_banner_copy("broker", "empty")
             self._set_label_text_if_changed(self.broker_workbench_banner, text)
 
         if hasattr(self, "order_result_text") and record is None and not getattr(self, "order_submission_log", []):
@@ -252,8 +271,8 @@ def apply_workspace_workbench_patches(window_cls: type) -> None:
 
     def _install_recommend_detail_workbench_banners_v28(self) -> None:
         banner_specs = [
-            ("recommend_tab", "recommend_scroll_area", "recommend_workbench_banner", "推荐工作台：先看主线前排，再做送审和交易决策。"),
-            ("detail_tab", "detail_workspace_scroll_area", "detail_workbench_banner", "复盘工作台：先看决策画像，再看执行偏差和复盘结论。"),
+            ("recommend_tab", "recommend_scroll_area", "recommend_workbench_banner", workbench_banner_copy("recommend", "seed")),
+            ("detail_tab", "detail_workspace_scroll_area", "detail_workbench_banner", workbench_banner_copy("detail", "seed")),
         ]
         for tab_name, scroll_name, attr_name, text in banner_specs:
             tab = getattr(self, tab_name, None)
@@ -280,7 +299,7 @@ def apply_workspace_workbench_patches(window_cls: type) -> None:
             ("recommend_summary_splitter", [420, 920]),
             ("recommend_recap_middle_splitter", [420, 980]),
             ("recommend_recap_bottom_splitter", [420, 980]),
-            ("recommend_review_splitter", [820, 620]),
+            ("recommend_review_splitter", [720, 720]),
         )
         for attr_name, sizes in splitter_specs:
             splitter = getattr(self, attr_name, None)
@@ -324,31 +343,21 @@ def apply_workspace_workbench_patches(window_cls: type) -> None:
         current = row or (self._current_recommend_focus() if hasattr(self, "_current_recommend_focus") else None)
         if hasattr(self, "recommend_workbench_banner"):
             if current is None:
-                text = "推荐工作台：先刷新市场和推荐池，再从前排候选里挑出今天最值得送审的标的。"
+                text = workbench_banner_copy("recommend", "empty")
             else:
                 stock_name = getattr(current, "stock_name", "") or self._stock_name_for_symbol(getattr(current, "symbol", "") or "")
                 action_text = self._display_action(getattr(current, "action", "WATCH"))
-                text = f"推荐工作台：当前聚焦 {stock_name}，先复核价位与风险，再决定是否送审并转入交易链路。"
+                text = workbench_banner_copy("recommend", "focus", stock_name=stock_name)
                 if str(getattr(current, "action", "") or "").upper() == "BUY":
-                    text = f"推荐工作台：当前聚焦 {stock_name}，属于可执行候选，下一步优先核对买点、止损和主线延续。"
+                    text = workbench_banner_copy("recommend", "buy_focus", stock_name=stock_name)
                 elif action_text:
-                    text = f"推荐工作台：当前聚焦 {stock_name}，动作偏向{action_text}，先确认主线状态再决定是否推进。"
+                    text = workbench_banner_copy("recommend", "action_focus", stock_name=stock_name, action_text=action_text)
             self._set_label_text_if_changed(self.recommend_workbench_banner, text)
 
         if current is None and hasattr(self, "recommend_decision_summary_text"):
             self._set_plain_text_if_changed(
                 self.recommend_decision_summary_text,
-                "\n".join(
-                    [
-                        "单票决策摘要",
-                        "",
-                        "当前还没有焦点股票。",
-                        "建议动作：",
-                        "1. 先刷新市场，生成每日推荐池。",
-                        "2. 从前排候选里选中一只股票，查看主线、价位和风险。",
-                        "3. 确认逻辑成立后，再决定是否送审进入交易链路。",
-                    ]
-                ),
+                workbench_empty_panel_copy("recommend_decision_summary_text"),
             )
 
     def _refresh_detail_workspace_panels_v28(self) -> None:
@@ -359,64 +368,34 @@ def apply_workspace_workbench_patches(window_cls: type) -> None:
             if symbol:
                 self._set_label_text_if_changed(
                     self.detail_workbench_banner,
-                    f"复盘工作台：当前聚焦 {stock_name}，继续核对决策逻辑、执行偏差和下一次识别点。",
+                    workbench_banner_copy("detail", "focus", stock_name=stock_name),
                 )
             else:
                 self._set_label_text_if_changed(
                     self.detail_workbench_banner,
-                    "复盘工作台：先从推荐页、交易页或扫描页联动一只股票，再查看完整复盘链路。",
+                    workbench_banner_copy("detail", "empty"),
                 )
 
         if not symbol:
             if hasattr(self, "metrics_text"):
                 self._set_plain_text_if_changed(
                     self.metrics_text,
-                    "\n".join(
-                        [
-                            "策略摘要",
-                            "",
-                            "这里会在选中股票后展示收益、回撤、胜率、阶段统计和近期信号。",
-                            "建议动作：",
-                            "1. 先从推荐页或交易页联动一只焦点股票。",
-                            "2. 再看这只票的题材位置、信号质量和最近执行情况。",
-                        ]
-                    ),
+                    workbench_empty_panel_copy("metrics_text"),
                 )
             if hasattr(self, "detail_decision_text"):
                 self._set_plain_text_if_changed(
                     self.detail_decision_text,
-                    "\n".join(
-                        [
-                            "交易决策画像",
-                            "",
-                            "这里会汇总单票的主线地位、动作建议、计划价位和核心逻辑。",
-                            "建议动作：先选中一只股票，再判断这笔交易当时该不该做。",
-                        ]
-                    ),
+                    workbench_empty_panel_copy("detail_decision_text"),
                 )
             if hasattr(self, "detail_execution_text"):
                 self._set_plain_text_if_changed(
                     self.detail_execution_text,
-                    "\n".join(
-                        [
-                            "执行状态回放",
-                            "",
-                            "这里会关联送审、委托、提交、成交和失败记录。",
-                            "建议动作：先从交易页选中一笔委托或回执，再回来定位执行偏差。",
-                        ]
-                    ),
+                    workbench_empty_panel_copy("detail_execution_text"),
                 )
             if hasattr(self, "detail_conclusion_text"):
                 self._set_plain_text_if_changed(
                     self.detail_conclusion_text,
-                    "\n".join(
-                        [
-                            "复盘结论",
-                            "",
-                            "这里会沉淀单票最值得留下来的结论、纪律得失和下一步观察点。",
-                            "建议动作：选中焦点股票后，再回看今天做对了什么、错过了什么。",
-                        ]
-                    ),
+                    workbench_empty_panel_copy("detail_conclusion_text"),
                 )
 
     def _post_build_ui_tweaks_v28(self) -> None:
@@ -437,8 +416,8 @@ def apply_workspace_workbench_patches(window_cls: type) -> None:
 
     def _install_scanner_board_workbench_banners_v29(self) -> None:
         banner_specs = [
-            ("scanner_tab", "scanner_workspace_scroll_area", "scanner_workbench_banner", "扫描工作台：先看扫描结果，再看观察池和盘中监控联动。"),
-            ("board_tab", "board_workspace_scroll_area", "board_workbench_banner", "打板工作台：先看强势候选，再看回封监控和风险灯。"),
+            ("scanner_tab", "scanner_workspace_scroll_area", "scanner_workbench_banner", workbench_banner_copy("scanner", "seed")),
+            ("board_tab", "board_workspace_scroll_area", "board_workbench_banner", workbench_banner_copy("board", "seed")),
         ]
         for tab_name, scroll_name, attr_name, text in banner_specs:
             tab = getattr(self, tab_name, None)
@@ -493,33 +472,23 @@ def apply_workspace_workbench_patches(window_cls: type) -> None:
                 stock_name = self._stock_name_for_symbol(target)
                 self._set_label_text_if_changed(
                     self.scanner_workbench_banner,
-                    f"扫描工作台：当前聚焦 {stock_name}，继续核对扫描信号、观察池状态和盘中监控联动。",
+                    workbench_banner_copy("scanner", "focus", stock_name=stock_name),
                 )
             elif scan_count:
                 self._set_label_text_if_changed(
                     self.scanner_workbench_banner,
-                    f"扫描工作台：已生成 {scan_count} 条扫描信号，下一步优先从观察池 {watch_count} 只里选中焦点票。",
+                    workbench_banner_copy("scanner", "queue", scan_count=scan_count, watch_count=watch_count),
                 )
             else:
                 self._set_label_text_if_changed(
                     self.scanner_workbench_banner,
-                    "扫描工作台：先执行扫描或载入样本数据，再查看观察池和盘中监控摘要。",
+                    workbench_banner_copy("scanner", "empty"),
                 )
 
         if not target and hasattr(self, "monitor_summary_text"):
             self._set_plain_text_if_changed(
                 self.monitor_summary_text,
-                "\n".join(
-                    [
-                        "盘中监控摘要",
-                        "",
-                        f"当前状态：扫描信号 {scan_count} 条 | 观察池 {watch_count} 只",
-                        "建议动作：",
-                        "1. 先执行扫描，或载入样本数据建立首轮股票池。",
-                        "2. 再从观察池里选中一只股票，查看信号、催化和推荐联动。",
-                        "3. 如果出现强势候选，可继续联动到打板页或交易页。",
-                    ]
-                ),
+                workbench_empty_panel_copy("monitor_summary_text"),
             )
 
     def _refresh_board_focus_panels_v29(self, symbol: str = "") -> None:
@@ -532,33 +501,23 @@ def apply_workspace_workbench_patches(window_cls: type) -> None:
                 stock_name = self._stock_name_for_symbol(target_symbol)
                 self._set_label_text_if_changed(
                     self.board_workbench_banner,
-                    f"打板工作台：当前聚焦 {stock_name}，继续核对触发方式、回封强度、炸板风险和是否值得送审。",
+                    workbench_banner_copy("board", "focus", stock_name=stock_name),
                 )
             elif candidate_count or monitor_count:
                 self._set_label_text_if_changed(
                     self.board_workbench_banner,
-                    f"打板工作台：当前有 {candidate_count} 只候选、{monitor_count} 条监控，优先查看最强回封和高风险炸板票。",
+                    workbench_banner_copy("board", "queue", candidate_count=candidate_count, monitor_count=monitor_count),
                 )
             else:
                 self._set_label_text_if_changed(
                     self.board_workbench_banner,
-                    "打板工作台：先从扫描页或推荐页联动强势候选，再看回封观察和风险灯。",
+                    workbench_banner_copy("board", "empty"),
                 )
 
         if not target_symbol and hasattr(self, "board_monitor_text"):
             self._set_plain_text_if_changed(
                 self.board_monitor_text,
-                "\n".join(
-                    [
-                        "炸板 / 回封监控",
-                        "",
-                        f"当前状态：打板候选 {candidate_count} 只 | 监控记录 {monitor_count} 条",
-                        "建议动作：",
-                        "1. 先从左侧候选或监控表里选中一只强势票。",
-                        "2. 核对触发方式、回封概率、炸板风险和动作建议。",
-                        "3. 若逻辑成立，再联动去推荐页或交易页继续推进。",
-                    ]
-                ),
+                workbench_empty_panel_copy("board_monitor_text"),
             )
 
     def _post_build_ui_tweaks_v29(self) -> None:
@@ -596,13 +555,13 @@ def apply_workspace_workbench_patches(window_cls: type) -> None:
         failed_exists = self._has_failed_recommendations_v30() if hasattr(self, "_has_failed_recommendations_v30") else False
 
         button_specs = [
-            ("recommend_to_broker_button", current_recommend is not None, "先从推荐池选中一只焦点股票，再送入交易链路。", "把当前焦点股票送入交易页，并自动生成委托候选。"),
-            ("plan_to_broker_button", bool(decisions), "需要先生成今日交易计划，才能把计划股送入交易页。", "把交易计划里的焦点股票送入交易页。"),
-            ("focus_pending_button", pending_exists, "当前没有待复核的候选，先刷新推荐池再看。", "快速定位待复核的高优先候选。"),
+            ("recommend_to_broker_button", current_recommend is not None, "先从机会池选中一只焦点股票，再送入交易链路。", "把当前焦点股票送入执行中控，并自动生成委托候选。"),
+            ("plan_to_broker_button", bool(decisions), "需要先生成今日交易计划，才能把计划股送入执行中控。", "把交易计划里的焦点股票送入执行中控。"),
+            ("focus_pending_button", pending_exists, "当前没有待复核的候选，先刷新机会池再看。", "快速定位待复核的高优先候选。"),
             ("retry_failed_button", failed_exists, "当前没有失败候选可复核。", "快速回看最近送审失败的标的。"),
-            ("push_priority_button", bool(getattr(self, "daily_pool_rows", []) or []), "需要先生成每日推荐池。", "把当前最高优先候选直接送入交易链路。"),
+            ("push_priority_button", bool(getattr(self, "daily_pool_rows", []) or []), "需要先生成机会池。", "把当前最高优先候选直接送入交易链路。"),
             ("broker_focus_blocker_button", bool(blockers), "当前没有阻塞项，先查看前排委托或继续生成委托。", "快速定位需要优先处理的阻塞委托。"),
-            ("broker_focus_priority_button", bool(order_intents), "当前还没有委托建议，先从推荐池生成委托。", "快速定位当前最高优先的委托建议。"),
+            ("broker_focus_priority_button", bool(order_intents), "当前还没有委托建议，先从机会池生成委托。", "快速定位当前最高优先的委托建议。"),
         ]
         for attr_name, enabled, disabled_tip, enabled_tip in button_specs:
             button = getattr(self, attr_name, None)
@@ -613,9 +572,9 @@ def apply_workspace_workbench_patches(window_cls: type) -> None:
 
         selected_paper_symbol = bool(getattr(self, "_selected_paper_symbol", lambda: "")())
         for attr_name, enabled, disabled_tip, enabled_tip in [
-            ("paper_to_recommend_button", selected_paper_symbol, "先在模拟盘持仓或流水里选中一只股票。", "带着当前模拟盘焦点回到推荐页。"),
+            ("paper_to_recommend_button", selected_paper_symbol, "先在模拟盘持仓或流水里选中一只股票。", "带着当前模拟盘焦点回到机会池。"),
             ("paper_to_detail_button", selected_paper_symbol, "先在模拟盘持仓或流水里选中一只股票。", "带着当前模拟盘焦点回到复盘页。"),
-            ("paper_to_broker_button", selected_paper_symbol, "先在模拟盘持仓或流水里选中一只股票。", "带着当前模拟盘焦点回到交易页。"),
+            ("paper_to_broker_button", selected_paper_symbol, "先在模拟盘持仓或流水里选中一只股票。", "带着当前模拟盘焦点回到执行中控。"),
         ]:
             button = getattr(self, attr_name, None)
             if isinstance(button, QPushButton):
@@ -630,7 +589,7 @@ def apply_workspace_workbench_patches(window_cls: type) -> None:
         route_button_specs = {
             "查看复盘": (
                 bool(focus_symbol),
-                "先在扫描页、打板页、推荐页或交易页选中一只焦点股票。",
+                "先在扫描页、涨停策略、机会池或执行中控选中一只焦点股票。",
                 "带着当前焦点股票跳到复盘页。",
             ),
             "查看复盘研究": (
@@ -641,21 +600,21 @@ def apply_workspace_workbench_patches(window_cls: type) -> None:
             "查看交易": (
                 bool(focus_symbol) or bool(order_intents),
                 "先选中一只股票，或先生成委托建议。",
-                "带着当前焦点股票跳到交易页。",
+                "带着当前焦点股票跳到执行中控。",
             ),
             "去交易页": (
                 bool(focus_symbol) or bool(order_intents) or bool(decisions),
                 "先生成焦点股票、委托建议或交易计划。",
-                "跳到交易页继续推进委托和执行。",
+                "跳到执行中控继续推进委托和执行。",
             ),
             "查看推荐": (
                 bool(focus_symbol) or bool(getattr(self, "daily_pool_rows", []) or []),
-                "先刷新推荐池，或先选中一只焦点股票。",
-                "带着当前焦点股票跳到推荐页。",
+                "先刷新机会池，或先选中一只焦点股票。",
+                "带着当前焦点股票跳到机会池。",
             ),
             "查看机会池": (
                 bool(getattr(self, "daily_pool_rows", []) or []),
-                "需要先生成每日推荐池。",
+                "需要先生成机会池。",
                 "跳到机会池并自动定位当前焦点。",
             ),
         }
@@ -664,8 +623,9 @@ def apply_workspace_workbench_patches(window_cls: type) -> None:
             if not isinstance(tab, QWidget):
                 continue
             for button in tab.findChildren(QPushButton):
+                action_key = button_route_action_key(button)
                 text = (button.text() or "").strip()
-                spec = route_button_specs.get(text)
+                spec = route_button_specs.get(action_key) or route_button_specs.get(text)
                 if spec is None:
                     continue
                 enabled, disabled_tip, enabled_tip = spec
@@ -686,14 +646,15 @@ def apply_workspace_workbench_patches(window_cls: type) -> None:
             if not isinstance(tab, QWidget):
                 continue
             for button in tab.findChildren(QPushButton):
+                action_key = button_route_action_key(button)
                 text = (button.text() or "").strip()
-                if text in {"查看复盘", "查看复盘研究"}:
+                if action_key in {"看复盘", "查看复盘", "查看复盘研究"} or text in {"查看复盘", "查看复盘研究", "看复盘"}:
                     try:
                         button.clicked.disconnect()
                     except Exception:
                         pass
                     button.clicked.connect(self.open_monitor_symbol_in_detail)
-                    button.setToolTip("带着当前焦点股票跳到复盘页，继续查看决策、执行和复盘结论。")
+                    button.setToolTip("带着当前焦点股票跳到复盘页，继续看决策、执行和复盘结论。")
 
     def _refresh_workspace_status_labels_v30(self) -> None:
         original_refresh_workspace_status_labels_v30(self)
@@ -743,46 +704,6 @@ def apply_workspace_workbench_patches(window_cls: type) -> None:
             "detailExecutionActionRow": {"前往交易执行": "执行去交易", "查看复盘": "执行看复盘"},
             "detailConclusionActionRow": {"查看机会池": "结论看机会池", "前往交易执行": "结论去交易"},
         }
-        tooltip_map = {
-            "打开推荐池": "从总览直接跳到推荐池。",
-            "打开消息线索": "从总览直接查看消息催化。",
-            "资金看推荐": "带着资金画像视角切到推荐页。",
-            "资金回总览": "回到市场总览继续看全局。",
-            "决策去交易": "从决策视角直接切到交易页。",
-            "决策看推荐": "从决策视角回到推荐池。",
-            "机会池看总览": "带着机会池上下文回看市场总览。",
-            "定位机会池": "定位到推荐池中的当前焦点。",
-            "重算交易计划": "重新生成今日交易计划。",
-            "计划去交易": "带着计划上下文跳到交易页。",
-            "计划看观察池": "跳到观察池继续筛选。",
-            "脉搏回总览": "回到总览继续看市场脉搏。",
-            "脉搏看消息": "查看消息催化与新闻线索。",
-            "持仓看风险池": "优先查看风险处理建议。",
-            "持仓去交易": "带着持仓处理上下文切到交易页。",
-            "候选看推荐": "把当前打板候选同步到推荐页。",
-            "候选看扫描": "把当前打板候选同步到扫描页。",
-            "候选看总览": "把当前打板候选同步到总览。",
-            "候选去交易": "把当前打板候选带到交易页。",
-            "刷新专项监控": "刷新打板专项监控与回封观察。",
-            "监控看推荐": "把当前监控焦点同步到推荐页。",
-            "监控看扫描": "把当前监控焦点同步到扫描页。",
-            "监控看总览": "把当前监控焦点同步到总览。",
-            "闸门定位委托": "定位到交易页里的焦点委托。",
-            "闸门看推荐": "回到推荐页核对主线和价位。",
-            "执行看委托": "查看委托建议和价格计划。",
-            "执行看成交": "查看最新提交记录和成交反馈。",
-            "执行看推荐": "回到推荐页检查原始逻辑。",
-            "回执看成交": "直接查看执行回执与成交反馈。",
-            "回执看委托": "回到委托列表继续核对。",
-            "复盘回总览": "带着当前焦点回到总览。",
-            "复盘看机会池": "带着当前焦点回到推荐池。",
-            "决策看机会池": "从决策画像跳回机会池。",
-            "决策看扫描": "从决策画像跳回扫描页。",
-            "执行去交易": "带着当前焦点跳到交易执行页。",
-            "执行看复盘": "继续查看当前焦点的复盘内容。",
-            "结论看机会池": "从复盘结论回到机会池。",
-            "结论去交易": "从复盘结论切到交易执行页。",
-        }
         for row_name, mapping in row_button_text_map.items():
             row = self.findChild(QWidget, row_name)
             if row is None:
@@ -793,8 +714,9 @@ def apply_workspace_workbench_patches(window_cls: type) -> None:
                 if target and target != text:
                     self._set_label_text_if_changed(button, target)
                 final_text = (button.text() or "").strip()
-                if final_text in tooltip_map:
-                    button.setToolTip(tooltip_map[final_text])
+                tip = action_row_tooltip_copy(final_text)
+                if tip:
+                    button.setToolTip(tip)
 
     def _post_build_ui_tweaks_v31(self) -> None:
         original_post_build_ui_tweaks_v31(self)
@@ -806,100 +728,36 @@ def apply_workspace_workbench_patches(window_cls: type) -> None:
     original_post_build_ui_tweaks_v32 = window_cls._post_build_ui_tweaks
 
     def _button_context_prefix_v32(self, button: QPushButton) -> str:
-        ancestor = button.parentWidget()
-        while ancestor is not None:
-            object_name = (ancestor.objectName() or "").strip()
-            if object_name:
-                if "Capital" in object_name:
-                    return "资金"
-                if "Decision" in object_name:
-                    return "决策"
-                if "Theme" in object_name:
-                    return "主线"
-                if "Execution" in object_name:
-                    return "执行"
-                if "Metrics" in object_name:
-                    return "指标"
-                if "Gate" in object_name:
-                    return "闸门"
-                if "Monitor" in object_name:
-                    return "监控"
-                if "Candidate" in object_name:
-                    return "候选"
-                if "Holding" in object_name:
-                    return "持仓"
-                if "Plan" in object_name:
-                    return "计划"
-                if "Pulse" in object_name:
-                    return "脉搏"
-                if "Log" in object_name:
-                    return "日志"
-                if object_name == "workspaceToolPanel":
-                    return "工具"
-                if object_name == "terminalPanel":
-                    return "面板"
-            ancestor = ancestor.parentWidget()
-        return "工作台"
+        return contextual_button_prefix(button)
 
     def _trim_duplicate_entry_buttons_v32(self) -> None:
-        rename_targets = {
-            "overview_tab": {
-                "全部": ["主线全部", "资金全部"],
-                "去看推荐": ["资金看推荐", "决策看推荐"],
-                "回到最新": ["主线回最新", "资金回最新"],
-                "查看机会池": ["资金看机会池", "决策看机会池"],
-            },
-            "scanner_tab": {
-                "查看打板": ["工具看打板", "面板看打板"],
-                "查看推荐": ["工具看推荐", "面板看推荐"],
-            },
-            "recommend_tab": {
-                "前往交易执行": ["计划去交易", "持仓去交易"],
-                "重算计划": ["轻量重算计划"],
-            },
-            "broker_tab": {
-                "刷新诊断": ["工具刷新诊断", "日志刷新诊断"],
-                "导出日志": ["工具导出日志", "日志导出日志"],
-                "查看机会池": ["闸门看机会池", "执行看机会池"],
-            },
-            "board_tab": {
-                "查看机会池": ["候选看机会池", "监控看机会池"],
-            },
-            "detail_tab": {
-                "回到市场总览": ["指标回总览", "决策回总览"],
-                "查看扫描": ["指标看扫描", "执行看扫描"],
-            },
-        }
-        tooltip_suffix = {
-            "资金": "以资金与轮动视角继续联动。",
-            "决策": "以决策推演视角继续联动。",
-            "主线": "以主线强弱视角继续联动。",
-            "执行": "以交易执行视角继续联动。",
-            "指标": "以复盘指标视角继续联动。",
-            "闸门": "以闸门审查视角继续联动。",
-            "监控": "以盘中监控视角继续联动。",
-            "候选": "以打板候选视角继续联动。",
-            "持仓": "以持仓处理视角继续联动。",
-            "计划": "以交易计划视角继续联动。",
-            "脉搏": "以市场脉搏视角继续联动。",
-            "日志": "以日志与回放视角继续联动。",
-            "工具": "从工具入口继续联动。",
-            "面板": "从内容面板继续联动。",
-            "工作台": "从当前工作台继续联动。",
-        }
-        for tab_name, mapping in rename_targets.items():
+        for tab_name in ["overview_tab", "scanner_tab", "recommend_tab", "broker_tab", "board_tab", "detail_tab"]:
+            mapping = contextual_entry_rename_targets(tab_name)
             tab = getattr(self, tab_name, None)
             if not isinstance(tab, QWidget):
                 continue
             for original_text, replacements in mapping.items():
                 buttons = [button for button in tab.findChildren(QPushButton) if (button.text() or "").strip() == original_text]
                 for index, button in enumerate(buttons):
-                    target_text = replacements[index] if index < len(replacements) else f"{self._button_context_prefix_v32(button)}{original_text}"
+                    action_key = contextual_entry_action_key(
+                        button,
+                        original_text=original_text,
+                        replacements=replacements,
+                        index=index,
+                    )
+                    target_text = contextual_entry_display_text(action_key) or action_key
+                    if hasattr(button, "property") and hasattr(button, "setProperty"):
+                        if button.property("routeActionKey") != action_key:
+                            button.setProperty("routeActionKey", action_key)
                     if (button.text() or "").strip() != target_text:
                         self._set_label_text_if_changed(button, target_text)
-                    prefix = self._button_context_prefix_v32(button)
                     if not button.toolTip():
-                        button.setToolTip(tooltip_suffix.get(prefix, tooltip_suffix["工作台"]))
+                        button.setToolTip(
+                            contextual_entry_tooltip(
+                                action_key,
+                                prefix=self._button_context_prefix_v32(button),
+                            )
+                        )
 
     def _refine_workspace_proportions_v32(self) -> None:
         text_specs = {
@@ -983,39 +841,20 @@ def apply_workspace_workbench_patches(window_cls: type) -> None:
         order_intents = list(getattr(self, "order_intents", []) or [])
         decisions = list(getattr(getattr(self, "current_trade_plan", None), "decisions", []) or [])
         selected_paper_symbol = bool(getattr(self, "_selected_paper_symbol", lambda: "")())
-
-        extended_specs = {
-            "资金看推荐": (bool(focus_symbol) or has_pool, "先刷新推荐池，或先选中一只焦点股票。", "从资金视角跳到推荐页继续联动。"),
-            "决策看推荐": (bool(focus_symbol) or has_pool, "先刷新推荐池，或先选中一只焦点股票。", "从决策视角跳到推荐页继续联动。"),
-            "工具看推荐": (bool(focus_symbol) or has_pool, "先扫描或刷新推荐池，形成可跟踪焦点。", "从工具栏带着焦点跳到推荐页。"),
-            "面板看推荐": (bool(focus_symbol) or has_pool, "先扫描或刷新推荐池，形成可跟踪焦点。", "从内容面板带着焦点跳到推荐页。"),
-            "候选看推荐": (bool(focus_symbol) or has_pool, "先生成打板候选，或先选中一只焦点股票。", "把打板候选同步到推荐页。"),
-            "监控看推荐": (bool(focus_symbol) or has_pool, "先生成盘中监控焦点，再去推荐页联动。", "把监控焦点同步到推荐页。"),
-            "计划去交易": (bool(decisions) or bool(order_intents), "需要先生成交易计划或委托建议。", "带着计划上下文跳到交易页。"),
-            "持仓去交易": (bool(focus_symbol) or bool(order_intents), "先从推荐池选中持仓处理对象，或先生成委托建议。", "带着持仓处理上下文跳到交易页。"),
-            "执行去交易": (bool(focus_symbol) or bool(order_intents), "先选中一只股票，或先生成委托建议。", "从执行画像跳到交易页。"),
-            "结论去交易": (bool(focus_symbol) or bool(order_intents), "先选中一只股票，或先生成委托建议。", "从复盘结论跳到交易页推进执行。"),
-            "候选去交易": (bool(focus_symbol) or bool(order_intents), "先选中候选股票，或先生成委托建议。", "把打板候选带到交易页。"),
-            "闸门看机会池": (has_pool, "需要先生成每日推荐池。", "从闸门审查跳回机会池核对逻辑。"),
-            "执行看机会池": (has_pool, "需要先生成每日推荐池。", "从执行区跳回机会池核对逻辑。"),
-            "候选看机会池": (has_pool, "需要先生成每日推荐池。", "从候选区跳回机会池。"),
-            "监控看机会池": (has_pool, "需要先生成每日推荐池。", "从监控区跳回机会池。"),
-            "复盘看机会池": (has_pool, "需要先生成每日推荐池。", "从复盘指标区跳回机会池。"),
-            "结论看机会池": (has_pool, "需要先生成每日推荐池。", "从复盘结论跳回机会池。"),
-            "决策看机会池": (has_pool, "需要先生成每日推荐池。", "从决策画像跳回机会池。"),
-            "指标看扫描": (bool(focus_symbol), "先在推荐页、扫描页或交易页选中一只焦点股票。", "从指标区跳回扫描页继续查看。"),
-            "执行看扫描": (bool(focus_symbol), "先在当前页面选中一只焦点股票。", "从执行区跳回扫描页继续查看。"),
-            "候选看扫描": (bool(focus_symbol), "先选中一只打板候选股票。", "把当前候选同步到扫描页。"),
-            "监控看扫描": (bool(focus_symbol), "先选中一只监控焦点股票。", "把当前监控焦点同步到扫描页。"),
-            "纸面看推荐": (selected_paper_symbol, "先在模拟盘持仓或流水里选中一只股票。", "带着模拟盘焦点跳到推荐页。"),
-        }
         for tab_name in ["scanner_tab", "board_tab", "recommend_tab", "broker_tab", "detail_tab", "overview_tab"]:
             tab = getattr(self, tab_name, None)
             if not isinstance(tab, QWidget):
                 continue
             for button in tab.findChildren(QPushButton):
-                text = (button.text() or "").strip()
-                spec = extended_specs.get(text)
+                action_key = button_route_action_key(button)
+                spec = contextual_route_button_state(
+                    action_key,
+                    focus_symbol=bool(focus_symbol),
+                    has_pool=has_pool,
+                    order_intents=bool(order_intents),
+                    decisions=bool(decisions),
+                    selected_paper_symbol=selected_paper_symbol,
+                )
                 if spec is None:
                     continue
                 enabled, disabled_tip, enabled_tip = spec
@@ -1028,17 +867,7 @@ def apply_workspace_workbench_patches(window_cls: type) -> None:
             if not current:
                 self._set_plain_text_if_changed(
                     self.runtime_log_text,
-                    "\n".join(
-                        [
-                            "运行日志",
-                            "",
-                            "这里会记录刷新市场、导出报告、生成委托、提交执行和跨页联动动作。",
-                            "建议先这样用：",
-                            "1. 先刷新市场或生成推荐池，确认今天的前排焦点。",
-                            "2. 再进入交易页生成委托，并观察最新执行回执。",
-                            "3. 收盘后回到复盘页，沉淀执行偏差与结论。",
-                        ]
-                    ),
+                    workbench_empty_panel_copy("runtime_log_text"),
                 )
 
         if hasattr(self, "paper_experiment_text") and isinstance(self.paper_experiment_text, QTextEdit):
@@ -1046,16 +875,7 @@ def apply_workspace_workbench_patches(window_cls: type) -> None:
             if not current:
                 self._set_plain_text_if_changed(
                     self.paper_experiment_text,
-                    "\n".join(
-                        [
-                            "实验记录",
-                            "",
-                            "这里会沉淀模拟盘的策略轮动、仓位变化、失败样本和可复用经验。",
-                            "建议动作：",
-                            "- 先初始化模拟盘，再运行一轮 AI 自主交易。",
-                            "- 导出报告后，把收益和回撤对照到推荐与执行页面继续校验。",
-                        ]
-                    ),
+                    workbench_empty_panel_copy("paper_experiment_text"),
                 )
 
     def _post_build_ui_tweaks_v33(self) -> None:

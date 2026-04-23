@@ -10,6 +10,7 @@ from quant_hunter.paper_trading import (
     describe_strategy_experiment,
     summarize_paper_trading_performance,
 )
+from quant_hunter.ui_config import workspace_key_from_label, workspace_statusbar_caption
 
 
 def strategy_experiment_verdict_v36(
@@ -136,7 +137,7 @@ def apply_window_tail_patches(
         if hasattr(status_bar, "setContentsMargins"):
             status_bar.setContentsMargins(8, 4, 8, 6)
 
-        self.status_breadcrumb_label = QLabel("当前页面：市场机会工作台")
+        self.status_breadcrumb_label = QLabel("当前页面：全局态势")
         self.status_breadcrumb_label.setObjectName("statusBreadcrumb")
         self.status_action_label = QLabel("最近动作：终端已就绪，等待建立市场快照。")
         self.status_action_label.setObjectName("statusAction")
@@ -149,25 +150,7 @@ def apply_window_tail_patches(
         self._qh_commercial_statusbar_ready_v35 = True
 
     def _statusbar_page_caption_v35(self, current_name: str) -> tuple[str, str]:
-        mapping = {
-            "市场机会工作台": ("市场机会工作台", "看全局结构、主线持续性与题材催化。"),
-            "总览": ("市场机会工作台", "看全局结构、主线持续性与题材催化。"),
-            "策略扫描": ("策略扫描", "筛盘中焦点、观察池与联动入口。"),
-            "扫描": ("策略扫描", "筛盘中焦点、观察池与联动入口。"),
-            "每日推荐": ("每日推荐", "推进候选排序、计划生成与送审动作。"),
-            "推荐": ("每日推荐", "推进候选排序、计划生成与送审动作。"),
-            "打板专项": ("打板专项", "跟踪候选、回封监控与专项观察。"),
-            "打板": ("打板专项", "跟踪候选、回封监控与专项观察。"),
-            "参数配置": ("参数配置", "维护策略参数、目录与运行偏好。"),
-            "配置": ("参数配置", "维护策略参数、目录与运行偏好。"),
-            "统一登录": ("统一登录", "管理账户、渠道与桥接环境。"),
-            "登录": ("统一登录", "管理账户、渠道与桥接环境。"),
-            "明细复盘": ("明细复盘", "查看单票画像、执行回放和结论沉淀。"),
-            "明细": ("明细复盘", "查看单票画像、执行回放和结论沉淀。"),
-            "交易执行": ("交易执行", "完成委托生成、确认提交与回执跟踪。"),
-            "交易": ("交易执行", "完成委托生成、确认提交与回执跟踪。"),
-        }
-        return mapping.get(current_name, ("市场机会工作台", "统一管理行情、推荐、执行与复盘。"))
+        return workspace_statusbar_caption(workspace_key_from_label(current_name))
 
     def _sync_commercial_statusbar_v35(self) -> None:
         self._install_commercial_statusbar_v35()
@@ -175,7 +158,7 @@ def apply_window_tail_patches(
         current_name = (
             self._workspace_name_for_index(current_index)
             if hasattr(self, "_workspace_name_for_index")
-            else "市场机会工作台"
+            else "全局态势"
         )
         page_title, page_caption = self._statusbar_page_caption_v35(current_name)
 

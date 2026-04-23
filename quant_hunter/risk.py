@@ -152,7 +152,7 @@ def risk_profile_snapshot_card_state(
         "flag_text": "\u5f53\u524d\u542f\u7528" if is_current else "\u70b9\u51fb\u5207\u6362",
         "button_text": "\u5f53\u524d\u6863\u4f4d" if is_current else "\u5207\u6362\u5230\u6b64\u6863",
         "tooltip": tooltip,
-        "button_tooltip": f"{tooltip} | {'\u5f53\u524d\u5df2\u542f\u7528' if is_current else '\u70b9\u51fb\u540e\u5c06\u4fdd\u5b58\u914d\u7f6e\u5e76\u5237\u65b0\u63a8\u8350\u6c60'}",
+        "button_tooltip": f"{tooltip} | {'\u5f53\u524d\u5df2\u542f\u7528' if is_current else '\u70b9\u51fb\u540e\u5c06\u4fdd\u5b58\u914d\u7f6e\u5e76\u5237\u65b0\u673a\u4f1a\u6c60'}",
         "is_current": is_current,
     }
 

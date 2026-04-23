@@ -62,10 +62,10 @@ def apply_daily_pool_rows(window, rows, summarize_themes_fn) -> None:
             window.daily_pool_text.setPlainText(
                 "\n".join(
                     [
-                        "当前还没有生成推荐池。",
+                        "当前还没有生成机会池。",
                         "- 请先扫描股票池。",
                         "- 可选：导入股票资料 CSV，补全股票名称、行业和龙头标记。",
-                        "- 可选：导入消息面 CSV，增强每日推荐排序。",
+                        "- 可选：导入消息面 CSV，增强机会排序。",
                     ]
                 )
             )
@@ -75,7 +75,7 @@ def apply_daily_pool_rows(window, rows, summarize_themes_fn) -> None:
         rejected_count = int(build_meta.get("rejected_count", 0) or 0)
         portfolio_return = float(build_meta.get("portfolio_return", 0.0) or 0.0)
         status_text = (
-            f"每日推荐池已生成：{len(window.daily_pool_rows)} 只候选，风险档位 {risk_label}，当前主线题材 {top_theme}，组合回测 {portfolio_return:.2%}，拦截 {rejected_count} 只。"
+            f"机会池已生成：{len(window.daily_pool_rows)} 只候选，风险档位 {risk_label}，当前主线题材 {top_theme}，组合回测 {portfolio_return:.2%}，拦截 {rejected_count} 只。"
         )
         strategy_execution_focus = str(build_meta.get("strategy_execution_focus", "") or "")
         if strategy_execution_focus:
@@ -87,7 +87,7 @@ def apply_daily_pool_rows(window, rows, summarize_themes_fn) -> None:
 
     rejected_count = int(build_meta.get("rejected_count", 0) or 0)
     window._append_runtime_log(
-        f"推荐池已生成：{len(window.daily_pool_rows)} 只候选，风险档位 {risk_label}，拦截 {rejected_count} 只"
+        f"机会池已生成：{len(window.daily_pool_rows)} 只候选，风险档位 {risk_label}，拦截 {rejected_count} 只"
     )
     window._refresh_trade_plan()
     if hasattr(window, "daily_pool_table") and window.daily_pool_rows and window.daily_pool_table.rowCount() > 0:
@@ -261,9 +261,9 @@ def handle_market_refresh_error(window, message, quiet, *, show_error_dialog_fn)
 
 def handle_daily_pool_error(window, message, *, show_error_dialog_fn) -> None:
     if hasattr(window, "recommend_status_label"):
-        window.recommend_status_label.setText(f"每日推荐生成失败：{message}")
-    window._append_runtime_log(f"每日推荐生成失败：{message}", "ERROR")
-    show_error_dialog_fn(window, "每日推荐失败", message)
+        window.recommend_status_label.setText(f"机会池生成失败：{message}")
+    window._append_runtime_log(f"机会池生成失败：{message}", "ERROR")
+    show_error_dialog_fn(window, "机会池生成失败", message)
 
 
 def handle_scan_error(window, message, quiet, *, show_error_dialog_fn) -> None:

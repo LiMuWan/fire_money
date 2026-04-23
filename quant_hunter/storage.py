@@ -48,6 +48,18 @@ def _safe_int(value: object, default: int) -> int:
             return default
 
 
+def _as_int_list(value: object, *, count: int | None = None) -> list[int]:
+    items: list[int] = []
+    if isinstance(value, (list, tuple)):
+        for raw in value:
+            parsed = _safe_int(raw, 0)
+            if parsed > 0:
+                items.append(parsed)
+    if count is not None and len(items) != count:
+        return []
+    return items
+
+
 def _normalize_market_strategy_annotation_mode(value: object) -> str:
     normalized = str(value or _DEFAULT_MARKET_STRATEGY_ANNOTATION_MODE).strip().upper()
     return normalized if normalized in {"FULL", "PLAN", "OFF"} else _DEFAULT_MARKET_STRATEGY_ANNOTATION_MODE
@@ -182,6 +194,7 @@ class AppState:
     selected_symbol: str = ""
     watchlist: list[str] = field(default_factory=list)
     ui_theme: str = "dark"
+    ui_density: str = "compact"
     theme_alias_path: str = ""
     news_source_provider: str = "csv"
     news_source_path: str = ""
@@ -227,6 +240,7 @@ class AppState:
     market_chart_action_note_filter_source: str = _DEFAULT_MARKET_CHART_ACTION_NOTE_FILTER_SOURCE
     market_chart_action_note_history: list[dict[str, object]] = field(default_factory=list)
     market_chart_action_note_history_index: int = 0
+    recommend_review_splitter_sizes: list[int] = field(default_factory=list)
     broker_profile: BrokerProfile = field(default_factory=BrokerProfile)
     paper_trading_state: PaperTradingState = field(default_factory=PaperTradingState)
     order_submission_log: list[str] = field(default_factory=list)
@@ -465,6 +479,7 @@ def load_app_state(path: str | Path) -> AppState:
         selected_symbol=data.get("selected_symbol", ""),
         watchlist=_as_string_list(data.get("watchlist", [])),
         ui_theme=data.get("ui_theme", "dark"),
+        ui_density=str(data.get("ui_density", "compact") or "compact"),
         theme_alias_path=data.get("theme_alias_path", ""),
         news_source_provider=str(data.get("news_source_provider", "csv") or "csv"),
         news_source_path=str(data.get("news_source_path", "") or ""),
@@ -524,6 +539,10 @@ def load_app_state(path: str | Path) -> AppState:
         market_chart_action_note_history_index=_normalize_market_chart_action_note_history_index(
             data.get("market_chart_action_note_history_index", 0),
             chart_action_note_history,
+        ),
+        recommend_review_splitter_sizes=_as_int_list(
+            data.get("recommend_review_splitter_sizes", []),
+            count=3,
         ),
         broker_profile=_decode_broker_profile(data.get("broker_profile", {})),
         paper_trading_state=_decode_paper_trading_state(data.get("paper_trading_state", {})),

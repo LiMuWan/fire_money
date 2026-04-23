@@ -5,6 +5,7 @@ import csv
 import importlib
 import json
 import os
+import tempfile
 import unittest
 from datetime import date, datetime
 from pathlib import Path
@@ -16,6 +17,7 @@ import quant_hunter.broker_status as broker_status_module
 import quant_hunter.license_policy as license_policy_module
 import quant_hunter.recommend_status as recommend_status_module
 import quant_hunter.ui_binders as ui_binders_module
+import quant_hunter.ui_config as ui_config_module
 import quant_hunter.ui_status as ui_status_module
 from quant_hunter.ui_refresh import (
     build_dashboard_metrics_snapshot,
@@ -58,6 +60,7 @@ from quant_hunter.data import (
     load_stock_profiles_from_csv,
     load_theme_aliases_from_csv,
     load_universe_from_folder,
+    normalize_symbol,
 )
 from quant_hunter.market_feed import EastmoneyMarketFeed, LocalMarketCache, MarketScreenResult, MarketSnapshot, RemoteMarketScreener
 from quant_hunter.news_sources import get_news_source_descriptor, load_news_from_source, resolve_news_source_label, NewsSourceConfig
@@ -128,6 +131,1211 @@ class StrategyWorkflowTests(unittest.TestCase):
             writer.writerows(generate_rows())
         self.addCleanup(lambda: path.unlink(missing_ok=True))
         return path
+
+    def test_terminal_density_profile_distinguishes_standard_compact_and_watch(self) -> None:
+        standard = ui_config_module.terminal_density_profile("standard", width=1920, height=1080)
+        compact = ui_config_module.terminal_density_profile("compact", width=1920, height=1080)
+        watch = ui_config_module.terminal_density_profile("watch", width=1920, height=1080)
+
+        self.assertEqual(standard["mode"], "standard")
+        self.assertFalse(bool(standard["compact_layout"]))
+        self.assertEqual(compact["mode"], "compact")
+        self.assertTrue(bool(compact["compact_layout"]))
+        self.assertEqual(watch["mode"], "watch")
+        self.assertTrue(bool(watch["watch_layout"]))
+        self.assertEqual(ui_config_module.normalize_terminal_density("focus"), "watch")
+        self.assertGreater(int(standard["hero_min_height"]), int(watch["hero_min_height"]))
+
+    def test_terminal_table_hidden_columns_follow_priority_mapping(self) -> None:
+        spec = ui_config_module.TERMINAL_TABLE_LAYOUT_SPECS["orders_table"]
+
+        standard_stage, standard_hidden, priority_map = ui_config_module.terminal_table_hidden_columns(
+            spec,
+            available_width=1600,
+            density_mode="standard",
+            column_count=13,
+        )
+        compact_stage, compact_hidden, _ = ui_config_module.terminal_table_hidden_columns(
+            spec,
+            available_width=1600,
+            density_mode="compact",
+            column_count=13,
+        )
+        watch_stage, watch_hidden, _ = ui_config_module.terminal_table_hidden_columns(
+            spec,
+            available_width=1600,
+            density_mode="watch",
+            column_count=13,
+        )
+
+        self.assertEqual(standard_stage, "standard")
+        self.assertEqual(compact_stage, "compact")
+        self.assertEqual(watch_stage, "watch")
+        self.assertEqual(priority_map[0], 3)
+        self.assertEqual(priority_map[9], 2)
+        self.assertNotIn(0, standard_hidden)
+        self.assertIn(0, compact_hidden)
+        self.assertNotIn(9, compact_hidden)
+        self.assertIn(9, watch_hidden)
+
+    def test_strategy_registry_loads_script_strategy_and_computes_score(self) -> None:
+        module = importlib.import_module("quant_hunter.strategy_registry")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            catalog_path = root / "strategy_catalog.json"
+            catalog_path.write_text(json.dumps({"strategies": []}, ensure_ascii=False), encoding="utf-8")
+            plugin_dir = root / "strategy_plugins"
+            plugin_dir.mkdir(parents=True, exist_ok=True)
+            (plugin_dir / "custom_momentum.py").write_text(
+                "\n".join(
+                    [
+                        "STRATEGY_DEFINITION = {",
+                        "    'name': '自定义动量',",
+                        "    'score_field': 'custom_momentum_score',",
+                        "    'description': '测试脚本战法',",
+                        "}",
+                        "",
+                        "def compute_score(context, *, dependency_scores=None, definition=None):",
+                        "    return float(context.get('technical', 0.0) or 0.0) * 0.6 + float(context.get('persistence', 0.0) or 0.0) * 0.4",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(module, "_catalog_path", return_value=catalog_path), patch.object(
+                module, "_strategy_plugin_directory", return_value=plugin_dir
+            ):
+                module.reload_strategy_registry()
+                registry = module.get_strategy_registry()
+                payload = registry.compute_scores({"technical": 80.0, "persistence": 70.0})
+
+                self.assertIn("自定义动量", registry.strategy_names)
+                self.assertEqual(payload["primary_strategy"], "自定义动量")
+                self.assertEqual(payload["custom_momentum_score"], 76.0)
+                self.assertEqual(module.strategy_source_meta("自定义动量")["source_type"], "script")
+                self.assertTrue(bool(module.strategy_source_meta("自定义动量")["readonly"]))
+
+        module.reload_strategy_registry()
+
+    def test_load_strategy_workspace_payload_combines_catalog_and_script_entries(self) -> None:
+        module = importlib.import_module("quant_hunter.strategy_registry")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            catalog_path = root / "strategy_catalog.json"
+            catalog_path.write_text(
+                json.dumps(
+                    {
+                        "strategies": [
+                            {
+                                "name": "目录战法",
+                                "score_field": "catalog_strategy_score",
+                                "description": "来自 JSON 目录",
+                                "formula_stage": "base",
+                                "formula_weights": {"technical": 1.0},
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            plugin_dir = root / "strategy_plugins"
+            plugin_dir.mkdir(parents=True, exist_ok=True)
+            (plugin_dir / "script_strategy.py").write_text(
+                "\n".join(
+                    [
+                        "STRATEGY_DEFINITION = {",
+                        "    'name': '脚本战法',",
+                        "    'score_field': 'script_strategy_score',",
+                        "    'description': '来自脚本目录',",
+                        "}",
+                        "",
+                        "def compute_score(context, *, dependency_scores=None, definition=None):",
+                        "    return 55.0",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(module, "_catalog_path", return_value=catalog_path), patch.object(
+                module, "_strategy_plugin_directory", return_value=plugin_dir
+            ):
+                payload = module.load_strategy_workspace_payload()
+                names = [str(item.get("name", "") or "") for item in payload["strategies"]]
+                script_item = next(item for item in payload["strategies"] if item.get("name") == "脚本战法")
+                catalog_item = next(item for item in payload["strategies"] if item.get("name") == "目录战法")
+
+                self.assertEqual(names, ["目录战法", "脚本战法"])
+                self.assertEqual(str(catalog_item.get("source_type", "")), "catalog")
+                self.assertEqual(str(script_item.get("source_type", "")), "script")
+                self.assertTrue(bool(script_item.get("readonly", False)))
+                self.assertIn("strategy_plugins", str(payload.get("plugin_dir", "")))
+
+    def test_apply_strategy_config_entry_access_marks_script_entries_readonly(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        host = SimpleNamespace(
+            strategy_config_editor=module.QTextEdit(),
+            strategy_config_save_button=module.QPushButton("保存"),
+            strategy_config_delete_button=module.QPushButton("删除"),
+        )
+
+        module.QuantHunterWindow._apply_strategy_config_entry_access(
+            host,
+            {
+                "name": "脚本战法",
+                "source_type": "script",
+                "readonly": True,
+                "source_path": "C:/tmp/strategy_plugins/script_strategy.py",
+            },
+        )
+
+        self.assertTrue(host.strategy_config_editor.isReadOnly())
+        self.assertFalse(host.strategy_config_save_button.isEnabled())
+        self.assertFalse(host.strategy_config_delete_button.isEnabled())
+        self.assertIn("脚本战法", host.strategy_config_editor.toolTip())
+
+    def test_create_strategy_plugin_script_writes_template_file(self) -> None:
+        module = importlib.import_module("quant_hunter.strategy_registry")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            plugin_dir = Path(tmp_dir) / "strategy_plugins"
+            with patch.object(module, "_strategy_plugin_directory", return_value=plugin_dir):
+                path = module.create_strategy_plugin_script("量价共振脚本")
+                content = path.read_text(encoding="utf-8")
+
+                self.assertTrue(path.exists())
+                self.assertIn("STRATEGY_DEFINITION", content)
+                self.assertIn("量价共振脚本", content)
+                self.assertIn("def compute_score", content)
+
+    def test_create_strategy_plugin_script_from_payload_preserves_formula_weights(self) -> None:
+        module = importlib.import_module("quant_hunter.strategy_registry")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            plugin_dir = Path(tmp_dir) / "strategy_plugins"
+            payload = {
+                "name": "量价脚本化",
+                "score_field": "volume_script_score",
+                "description": "从 JSON 转脚本",
+                "formula_stage": "base",
+                "formula_weights": {"technical": 0.5, "persistence": 0.5},
+            }
+            with patch.object(module, "_strategy_plugin_directory", return_value=plugin_dir):
+                path = module.create_strategy_plugin_script_from_payload(payload)
+                content = path.read_text(encoding="utf-8")
+
+                self.assertIn("'formula_weights': {'technical': 0.5, 'persistence': 0.5}", content)
+                self.assertIn("_resolve_factor_value", content)
+
+    def test_build_strategy_plugin_script_text_derives_capabilities_from_formula_weights(self) -> None:
+        module = importlib.import_module("quant_hunter.strategy_registry")
+        content = module.build_strategy_plugin_script_text(
+            "脚本量化",
+            payload={
+                "name": "脚本量化",
+                "score_field": "script_quant_score",
+                "description": "测试",
+                "formula_stage": "base",
+                "formula_weights": {"technical": 0.7, "position": 0.3},
+            },
+        )
+
+        self.assertIn("STRATEGY_CAPABILITIES", content)
+        self.assertIn("'required_context_keys': ['technical', 'position']", content)
+
+    def test_strategy_catalog_current_name_prefers_user_role_payload(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        strategy_list = module.QListWidget()
+        item = module.QListWidgetItem("[脚本] 量价突破")
+        item.setData(module.Qt.UserRole, "量价突破")
+        strategy_list.addItem(item)
+        strategy_list.setCurrentItem(item)
+        host = SimpleNamespace(strategy_config_list=strategy_list, _strategy_config_loaded_name="")
+
+        self.assertEqual(module.QuantHunterWindow._strategy_catalog_current_name(host), "量价突破")
+
+    def test_refresh_strategy_config_workspace_renders_source_badges(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        host = SimpleNamespace(
+            strategy_config_list=module.QListWidget(),
+            strategy_config_list_status_label=module.QLabel(),
+            strategy_config_editor=module.QTextEdit(),
+            strategy_config_search_input=module.QLineEdit(),
+            strategy_config_name_input=module.QLineEdit(),
+            strategy_config_score_field_input=module.QLineEdit(),
+            strategy_config_description_input=module.QLineEdit(),
+            strategy_config_aliases_input=module.QLineEdit(),
+            strategy_config_formula_stage_combo=module.QComboBox(),
+            strategy_config_enabled_checkbox=module.QCheckBox(),
+            strategy_config_short_label_input=module.QLineEdit(),
+            strategy_config_capital_style_input=module.QLineEdit(),
+            strategy_config_badge_palette_input=module.QLineEdit(),
+            strategy_config_default_risk_input=module.QLineEdit(),
+            strategy_config_low_flag_risk_input=module.QLineEdit(),
+            strategy_config_stop_pct_input=module.QLineEdit(),
+            strategy_config_target_pct_input=module.QLineEdit(),
+            strategy_config_budget_strong_input=module.QLineEdit(),
+            strategy_config_budget_normal_input=module.QLineEdit(),
+            strategy_config_budget_threshold_input=module.QLineEdit(),
+            strategy_config_formula_weights_text=module.QTextEdit(),
+            strategy_config_formula_help_text=module.QTextEdit(),
+            strategy_config_scene_input=module.QTextEdit(),
+            strategy_config_positioning_input=module.QTextEdit(),
+            strategy_config_empty_hint_input=module.QTextEdit(),
+            strategy_config_position_hint_input=module.QTextEdit(),
+            strategy_config_no_go_input=module.QTextEdit(),
+            strategy_config_applicable_market_input=module.QTextEdit(),
+            strategy_config_capacity_limit_input=module.QTextEdit(),
+            strategy_config_standard_action_buy_input=module.QTextEdit(),
+            strategy_config_standard_action_sell_input=module.QTextEdit(),
+            strategy_config_failure_sample_input=module.QTextEdit(),
+            strategy_config_status_text=module.QTextEdit(),
+            strategy_config_save_button=module.QPushButton("保存"),
+            strategy_config_delete_button=module.QPushButton("删除"),
+            strategy_config_open_source_button=module.QPushButton("看源文件"),
+            strategy_config_script_from_current_button=module.QPushButton("转脚本"),
+            _strategy_config_loaded_name="",
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (widget.setText(text), widget.setToolTip(tooltip or "")),
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+            _set_strategy_config_status=lambda headline, detail="": None,
+            _refresh_config_strategy_summary_v1=lambda: None,
+            _refresh_config_capability_overview_v1=lambda: None,
+        )
+        host.strategy_config_formula_stage_combo.addItem("基础战法", "base")
+        host.strategy_config_source_filter_combo = module.QComboBox()
+        host.strategy_config_source_filter_combo.addItem("全部来源", "all")
+        host.strategy_config_source_filter_combo.addItem("仅 JSON", "catalog")
+        host.strategy_config_source_filter_combo.addItem("仅脚本", "script")
+        host.strategy_plugin_diagnostics_label = module.QLabel()
+        host.strategy_plugin_diagnostics_list = module.QListWidget()
+        host.strategy_plugin_diagnostics_text = module.QTextEdit()
+        host.strategy_plugin_diagnostics_open_button = module.QPushButton("看报错源")
+        with patch.object(module, "load_strategy_workspace_payload", return_value={
+            "strategies": [
+                {"name": "目录战法", "score_field": "catalog_score", "source_type": "catalog", "enabled": True, "formula_stage": "base", "readonly": False},
+                {"name": "脚本战法", "score_field": "script_score", "source_type": "script", "enabled": True, "formula_stage": "base", "readonly": True, "source_path": "C:/tmp/script.py"},
+            ],
+            "diagnostics": [],
+        }), patch.object(module, "strategy_catalog_path", return_value=Path("C:/tmp/strategy_catalog.json")):
+            module.QuantHunterWindow._refresh_strategy_config_workspace(host)
+
+        self.assertEqual(host.strategy_config_list.count(), 2)
+        self.assertEqual(host.strategy_config_list.item(0).text(), "[JSON] 目录战法")
+        self.assertEqual(host.strategy_config_list.item(1).text(), "[脚本] 脚本战法")
+        self.assertEqual(host.strategy_config_list.item(1).data(module.Qt.UserRole), "脚本战法")
+        self.assertIn("JSON 1 / 脚本 1", host.strategy_config_list_status_label.text())
+        self.assertIn("当前没有脚本加载错误", host.strategy_plugin_diagnostics_text.toPlainText())
+
+    def test_refresh_strategy_config_workspace_applies_source_filter_and_diagnostics(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        host = SimpleNamespace(
+            strategy_config_list=module.QListWidget(),
+            strategy_config_list_status_label=module.QLabel(),
+            strategy_config_editor=module.QTextEdit(),
+            strategy_config_search_input=module.QLineEdit(),
+            strategy_config_name_input=module.QLineEdit(),
+            strategy_config_score_field_input=module.QLineEdit(),
+            strategy_config_description_input=module.QLineEdit(),
+            strategy_config_aliases_input=module.QLineEdit(),
+            strategy_config_formula_stage_combo=module.QComboBox(),
+            strategy_config_enabled_checkbox=module.QCheckBox(),
+            strategy_config_short_label_input=module.QLineEdit(),
+            strategy_config_capital_style_input=module.QLineEdit(),
+            strategy_config_badge_palette_input=module.QLineEdit(),
+            strategy_config_default_risk_input=module.QLineEdit(),
+            strategy_config_low_flag_risk_input=module.QLineEdit(),
+            strategy_config_stop_pct_input=module.QLineEdit(),
+            strategy_config_target_pct_input=module.QLineEdit(),
+            strategy_config_budget_strong_input=module.QLineEdit(),
+            strategy_config_budget_normal_input=module.QLineEdit(),
+            strategy_config_budget_threshold_input=module.QLineEdit(),
+            strategy_config_formula_weights_text=module.QTextEdit(),
+            strategy_config_formula_help_text=module.QTextEdit(),
+            strategy_config_scene_input=module.QTextEdit(),
+            strategy_config_positioning_input=module.QTextEdit(),
+            strategy_config_empty_hint_input=module.QTextEdit(),
+            strategy_config_position_hint_input=module.QTextEdit(),
+            strategy_config_no_go_input=module.QTextEdit(),
+            strategy_config_applicable_market_input=module.QTextEdit(),
+            strategy_config_capacity_limit_input=module.QTextEdit(),
+            strategy_config_standard_action_buy_input=module.QTextEdit(),
+            strategy_config_standard_action_sell_input=module.QTextEdit(),
+            strategy_config_failure_sample_input=module.QTextEdit(),
+            strategy_config_status_text=module.QTextEdit(),
+            strategy_config_save_button=module.QPushButton("保存"),
+            strategy_config_delete_button=module.QPushButton("删除"),
+            strategy_config_open_source_button=module.QPushButton("看源文件"),
+            strategy_config_script_from_current_button=module.QPushButton("转脚本"),
+            strategy_plugin_diagnostics_label=module.QLabel(),
+            strategy_plugin_diagnostics_list=module.QListWidget(),
+            strategy_plugin_diagnostics_text=module.QTextEdit(),
+            strategy_plugin_diagnostics_open_button=module.QPushButton("看报错源"),
+            _strategy_config_loaded_name="",
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (widget.setText(text), widget.setToolTip(tooltip or "")),
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+            _set_strategy_config_status=lambda headline, detail="": None,
+            _refresh_config_strategy_summary_v1=lambda: None,
+            _refresh_config_capability_overview_v1=lambda: None,
+        )
+        host.strategy_config_formula_stage_combo.addItem("基础战法", "base")
+        host.strategy_config_source_filter_combo = module.QComboBox()
+        host.strategy_config_source_filter_combo.addItem("全部来源", "all")
+        host.strategy_config_source_filter_combo.addItem("仅 JSON", "catalog")
+        host.strategy_config_source_filter_combo.addItem("仅脚本", "script")
+        host.strategy_config_source_filter_combo.setCurrentIndex(2)
+        with patch.object(module, "load_strategy_workspace_payload", return_value={
+            "strategies": [
+                {"name": "目录战法", "score_field": "catalog_score", "source_type": "catalog", "enabled": True, "formula_stage": "base", "readonly": False},
+                {"name": "脚本战法", "score_field": "script_score", "source_type": "script", "enabled": True, "formula_stage": "base", "readonly": True, "source_path": "C:/tmp/script.py"},
+            ],
+            "diagnostics": [{"name": "broken_strategy", "path": "C:/tmp/strategy_plugins/broken_strategy.py", "message": "脚本加载失败：语法错误"}],
+        }), patch.object(module, "strategy_catalog_path", return_value=Path("C:/tmp/strategy_catalog.json")):
+            module.QuantHunterWindow._refresh_strategy_config_workspace(host, selected_name="脚本战法")
+
+        self.assertEqual(host.strategy_config_list.count(), 1)
+        self.assertEqual(host.strategy_config_list.item(0).text(), "[脚本] 脚本战法")
+        self.assertIn("来源 仅脚本", host.strategy_config_list_status_label.text())
+        self.assertIn("脚本诊断：1 条问题", host.strategy_plugin_diagnostics_label.text())
+        self.assertIn("broken_strategy", host.strategy_plugin_diagnostics_text.toPlainText())
+        self.assertTrue(host.strategy_plugin_diagnostics_open_button.isEnabled())
+
+    def test_build_strategy_config_form_payload_includes_script_capabilities(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        formula_stage_combo = module.QComboBox()
+        formula_stage_combo.addItem("基础战法", "base")
+        host = SimpleNamespace(
+            strategy_config_name_input=module.QLineEdit("脚本战法"),
+            strategy_config_score_field_input=module.QLineEdit("script_score"),
+            strategy_config_description_input=module.QLineEdit("描述"),
+            strategy_config_aliases_input=module.QLineEdit("别名A, 别名B"),
+            strategy_config_enabled_checkbox=module.QCheckBox(),
+            strategy_config_formula_stage_combo=formula_stage_combo,
+            strategy_config_formula_weights_text=module.QTextEdit(),
+            strategy_config_stop_pct_input=module.QLineEdit("0.05"),
+            strategy_config_target_pct_input=module.QLineEdit("0.08"),
+            strategy_config_budget_strong_input=module.QLineEdit("1.0"),
+            strategy_config_budget_normal_input=module.QLineEdit("0.9"),
+            strategy_config_budget_threshold_input=module.QLineEdit("72"),
+            strategy_config_short_label_input=module.QLineEdit("脚本"),
+            strategy_config_capital_style_input=module.QLineEdit("趋势"),
+            strategy_config_badge_palette_input=module.QLineEdit("#111111, #eeeeee"),
+            strategy_config_default_risk_input=module.QLineEdit("中"),
+            strategy_config_low_flag_risk_input=module.QLineEdit("低"),
+            strategy_config_scene_input=module.QTextEdit(),
+            strategy_config_positioning_input=module.QTextEdit(),
+            strategy_config_empty_hint_input=module.QTextEdit(),
+            strategy_config_position_hint_input=module.QTextEdit(),
+            strategy_config_no_go_input=module.QTextEdit(),
+            strategy_config_applicable_market_input=module.QTextEdit(),
+            strategy_config_capacity_limit_input=module.QTextEdit(),
+            strategy_config_standard_action_buy_input=module.QTextEdit(),
+            strategy_config_standard_action_sell_input=module.QTextEdit(),
+            strategy_config_failure_sample_input=module.QTextEdit(),
+            strategy_config_script_required_context_input=module.QLineEdit("technical, position"),
+            strategy_config_script_dependency_names_input=module.QLineEdit("龙头模型"),
+            strategy_config_script_allow_dependency_scores_checkbox=module.QCheckBox(),
+            strategy_config_script_notes_input=module.QTextEdit(),
+        )
+        host.strategy_config_enabled_checkbox.setChecked(True)
+        host.strategy_config_formula_weights_text.setPlainText('{"technical": 0.6, "position": 0.4}')
+        host.strategy_config_scene_input.setPlainText("适用场景")
+        host.strategy_config_positioning_input.setPlainText("产品定位")
+        host.strategy_config_empty_hint_input.setPlainText("空态")
+        host.strategy_config_position_hint_input.setPlainText("仓位")
+        host.strategy_config_no_go_input.setPlainText("禁做")
+        host.strategy_config_applicable_market_input.setPlainText("行情")
+        host.strategy_config_capacity_limit_input.setPlainText("容量")
+        host.strategy_config_standard_action_buy_input.setPlainText("买入")
+        host.strategy_config_standard_action_sell_input.setPlainText("卖出")
+        host.strategy_config_failure_sample_input.setPlainText("失败样本")
+        host.strategy_config_script_notes_input.setPlainText("脚本备注")
+        host.strategy_config_script_allow_dependency_scores_checkbox.setChecked(True)
+
+        payload = module.QuantHunterWindow._build_strategy_config_form_payload(host)
+
+        self.assertEqual(payload["script_capabilities"]["required_context_keys"], ["technical", "position"])
+        self.assertEqual(payload["script_capabilities"]["dependency_strategy_names"], ["龙头模型"])
+        self.assertTrue(bool(payload["script_capabilities"]["allow_dependency_scores"]))
+        self.assertEqual(payload["script_capabilities"]["notes"], "脚本备注")
+
+    def test_build_strategy_config_form_payload_reads_structured_capability_lists(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        formula_stage_combo = module.QComboBox()
+        formula_stage_combo.addItem("基础战法", "base")
+        context_list = module.QListWidget()
+        for key in ("technical", "position"):
+            item = module.QListWidgetItem(key)
+            item.setData(module.Qt.UserRole, key)
+            item.setFlags(item.flags() | module.Qt.ItemIsUserCheckable)
+            item.setCheckState(module.Qt.Checked if key == "technical" else module.Qt.Unchecked)
+            context_list.addItem(item)
+        dependency_list = module.QListWidget()
+        for key in ("龙头模型", "主力雷达"):
+            item = module.QListWidgetItem(key)
+            item.setData(module.Qt.UserRole, key)
+            item.setFlags(item.flags() | module.Qt.ItemIsUserCheckable)
+            item.setCheckState(module.Qt.Checked if key == "主力雷达" else module.Qt.Unchecked)
+            dependency_list.addItem(item)
+        host = SimpleNamespace(
+            strategy_config_name_input=module.QLineEdit("结构化脚本"),
+            strategy_config_score_field_input=module.QLineEdit("structured_score"),
+            strategy_config_description_input=module.QLineEdit("描述"),
+            strategy_config_aliases_input=module.QLineEdit(),
+            strategy_config_enabled_checkbox=module.QCheckBox(),
+            strategy_config_formula_stage_combo=formula_stage_combo,
+            strategy_config_formula_weights_text=module.QTextEdit(),
+            strategy_config_stop_pct_input=module.QLineEdit(),
+            strategy_config_target_pct_input=module.QLineEdit(),
+            strategy_config_budget_strong_input=module.QLineEdit(),
+            strategy_config_budget_normal_input=module.QLineEdit(),
+            strategy_config_budget_threshold_input=module.QLineEdit(),
+            strategy_config_short_label_input=module.QLineEdit(),
+            strategy_config_capital_style_input=module.QLineEdit(),
+            strategy_config_badge_palette_input=module.QLineEdit(),
+            strategy_config_default_risk_input=module.QLineEdit(),
+            strategy_config_low_flag_risk_input=module.QLineEdit(),
+            strategy_config_scene_input=module.QTextEdit(),
+            strategy_config_positioning_input=module.QTextEdit(),
+            strategy_config_empty_hint_input=module.QTextEdit(),
+            strategy_config_position_hint_input=module.QTextEdit(),
+            strategy_config_no_go_input=module.QTextEdit(),
+            strategy_config_applicable_market_input=module.QTextEdit(),
+            strategy_config_capacity_limit_input=module.QTextEdit(),
+            strategy_config_standard_action_buy_input=module.QTextEdit(),
+            strategy_config_standard_action_sell_input=module.QTextEdit(),
+            strategy_config_failure_sample_input=module.QTextEdit(),
+            strategy_config_script_required_context_list=context_list,
+            strategy_config_script_dependency_list=dependency_list,
+            strategy_config_script_allow_dependency_scores_checkbox=module.QCheckBox(),
+            strategy_config_script_notes_input=module.QTextEdit(),
+        )
+        host.strategy_config_enabled_checkbox.setChecked(True)
+        host.strategy_config_script_allow_dependency_scores_checkbox.setChecked(True)
+
+        payload = module.QuantHunterWindow._build_strategy_config_form_payload(host)
+
+        self.assertEqual(payload["script_capabilities"]["required_context_keys"], ["technical"])
+        self.assertEqual(payload["script_capabilities"]["dependency_strategy_names"], ["主力雷达"])
+
+
+    def test_populate_strategy_config_form_populates_script_capabilities(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        formula_stage_combo = module.QComboBox()
+        formula_stage_combo.addItem("基础战法", "base")
+        host = SimpleNamespace(
+            _strategy_config_syncing=False,
+            strategy_config_name_input=module.QLineEdit(),
+            strategy_config_score_field_input=module.QLineEdit(),
+            strategy_config_description_input=module.QLineEdit(),
+            strategy_config_aliases_input=module.QLineEdit(),
+            strategy_config_formula_stage_combo=formula_stage_combo,
+            strategy_config_enabled_checkbox=module.QCheckBox(),
+            strategy_config_short_label_input=module.QLineEdit(),
+            strategy_config_capital_style_input=module.QLineEdit(),
+            strategy_config_badge_palette_input=module.QLineEdit(),
+            strategy_config_default_risk_input=module.QLineEdit(),
+            strategy_config_low_flag_risk_input=module.QLineEdit(),
+            strategy_config_stop_pct_input=module.QLineEdit(),
+            strategy_config_target_pct_input=module.QLineEdit(),
+            strategy_config_budget_strong_input=module.QLineEdit(),
+            strategy_config_budget_normal_input=module.QLineEdit(),
+            strategy_config_budget_threshold_input=module.QLineEdit(),
+            strategy_config_formula_weights_text=module.QTextEdit(),
+            strategy_config_script_required_context_input=module.QLineEdit(),
+            strategy_config_script_dependency_names_input=module.QLineEdit(),
+            strategy_config_script_allow_dependency_scores_checkbox=module.QCheckBox(),
+            strategy_config_script_notes_input=module.QTextEdit(),
+            strategy_config_scene_input=module.QTextEdit(),
+            strategy_config_positioning_input=module.QTextEdit(),
+            strategy_config_empty_hint_input=module.QTextEdit(),
+            strategy_config_position_hint_input=module.QTextEdit(),
+            strategy_config_no_go_input=module.QTextEdit(),
+            strategy_config_applicable_market_input=module.QTextEdit(),
+            strategy_config_capacity_limit_input=module.QTextEdit(),
+            strategy_config_standard_action_buy_input=module.QTextEdit(),
+            strategy_config_standard_action_sell_input=module.QTextEdit(),
+            strategy_config_failure_sample_input=module.QTextEdit(),
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+            _set_strategy_form_text=lambda widget, value: module.QuantHunterWindow._set_strategy_form_text(host, widget, value),
+        )
+        payload = {
+            "name": "脚本战法",
+            "score_field": "script_score",
+            "description": "说明",
+            "aliases": ["别名A"],
+            "enabled": True,
+            "formula_stage": "base",
+            "formula_weights": {"technical": 0.6},
+            "script_capabilities": {
+                "required_context_keys": ["technical", "position"],
+                "dependency_strategy_names": ["龙头模型"],
+                "allow_dependency_scores": True,
+                "notes": "脚本备注",
+            },
+            "plan_defaults": {},
+            "ui_metadata": {},
+        }
+
+        module.QuantHunterWindow._populate_strategy_config_form(host, payload)
+
+        self.assertEqual(host.strategy_config_script_required_context_input.text(), "technical, position")
+        self.assertEqual(host.strategy_config_script_dependency_names_input.text(), "龙头模型")
+        self.assertTrue(host.strategy_config_script_allow_dependency_scores_checkbox.isChecked())
+        self.assertEqual(host.strategy_config_script_notes_input.toPlainText(), "脚本备注")
+
+    def test_populate_strategy_config_form_sets_structured_capability_lists(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        formula_stage_combo = module.QComboBox()
+        formula_stage_combo.addItem("基础战法", "base")
+        context_list = module.QListWidget()
+        for key in ("technical", "position"):
+            item = module.QListWidgetItem(key)
+            item.setData(module.Qt.UserRole, key)
+            item.setFlags(item.flags() | module.Qt.ItemIsUserCheckable)
+            item.setCheckState(module.Qt.Unchecked)
+            context_list.addItem(item)
+        dependency_list = module.QListWidget()
+        for key in ("龙头模型", "主力雷达"):
+            item = module.QListWidgetItem(key)
+            item.setData(module.Qt.UserRole, key)
+            item.setFlags(item.flags() | module.Qt.ItemIsUserCheckable)
+            item.setCheckState(module.Qt.Unchecked)
+            dependency_list.addItem(item)
+        host = SimpleNamespace(
+            _strategy_config_syncing=False,
+            strategy_config_name_input=module.QLineEdit(),
+            strategy_config_score_field_input=module.QLineEdit(),
+            strategy_config_description_input=module.QLineEdit(),
+            strategy_config_aliases_input=module.QLineEdit(),
+            strategy_config_formula_stage_combo=formula_stage_combo,
+            strategy_config_enabled_checkbox=module.QCheckBox(),
+            strategy_config_short_label_input=module.QLineEdit(),
+            strategy_config_capital_style_input=module.QLineEdit(),
+            strategy_config_badge_palette_input=module.QLineEdit(),
+            strategy_config_default_risk_input=module.QLineEdit(),
+            strategy_config_low_flag_risk_input=module.QLineEdit(),
+            strategy_config_stop_pct_input=module.QLineEdit(),
+            strategy_config_target_pct_input=module.QLineEdit(),
+            strategy_config_budget_strong_input=module.QLineEdit(),
+            strategy_config_budget_normal_input=module.QLineEdit(),
+            strategy_config_budget_threshold_input=module.QLineEdit(),
+            strategy_config_formula_weights_text=module.QTextEdit(),
+            strategy_config_script_required_context_list=context_list,
+            strategy_config_script_dependency_list=dependency_list,
+            strategy_config_script_allow_dependency_scores_checkbox=module.QCheckBox(),
+            strategy_config_script_notes_input=module.QTextEdit(),
+            strategy_config_scene_input=module.QTextEdit(),
+            strategy_config_positioning_input=module.QTextEdit(),
+            strategy_config_empty_hint_input=module.QTextEdit(),
+            strategy_config_position_hint_input=module.QTextEdit(),
+            strategy_config_no_go_input=module.QTextEdit(),
+            strategy_config_applicable_market_input=module.QTextEdit(),
+            strategy_config_capacity_limit_input=module.QTextEdit(),
+            strategy_config_standard_action_buy_input=module.QTextEdit(),
+            strategy_config_standard_action_sell_input=module.QTextEdit(),
+            strategy_config_failure_sample_input=module.QTextEdit(),
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+            _set_strategy_form_text=lambda widget, value: module.QuantHunterWindow._set_strategy_form_text(host, widget, value),
+            _set_checkable_list_values=lambda widget, values: module.QuantHunterWindow._set_checkable_list_values(host, widget, values),
+            _refresh_strategy_script_dependency_options=lambda current_name="", selected_values=None: module.QuantHunterWindow._refresh_strategy_script_dependency_options(host, current_name=current_name, selected_values=selected_values),
+        )
+        payload = {
+            "name": "脚本战法",
+            "score_field": "script_score",
+            "description": "说明",
+            "aliases": ["别名A"],
+            "enabled": True,
+            "formula_stage": "base",
+            "formula_weights": {"technical": 0.6},
+            "script_capabilities": {
+                "required_context_keys": ["technical"],
+                "dependency_strategy_names": ["主力雷达"],
+                "allow_dependency_scores": True,
+                "notes": "脚本备注",
+            },
+            "plan_defaults": {},
+            "ui_metadata": {},
+        }
+
+        module.QuantHunterWindow._populate_strategy_config_form(host, payload)
+
+        context_states = {
+            str(context_list.item(index).data(module.Qt.UserRole) or ""): context_list.item(index).checkState()
+            for index in range(context_list.count())
+        }
+        dependency_states = {
+            str(dependency_list.item(index).data(module.Qt.UserRole) or ""): dependency_list.item(index).checkState()
+            for index in range(dependency_list.count())
+        }
+        self.assertEqual(context_states.get("technical"), module.Qt.Checked)
+        self.assertEqual(context_states.get("position"), module.Qt.Unchecked)
+        self.assertEqual(dependency_states.get("主力雷达"), module.Qt.Checked)
+
+    def test_refresh_strategy_script_dependency_options_disables_current_and_aggregate_for_base(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        dependency_list = module.QListWidget()
+        dependency_hint = module.QLabel()
+        host = SimpleNamespace(
+            strategy_config_script_dependency_list=dependency_list,
+            strategy_config_script_dependency_hint_label=dependency_hint,
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (widget.setText(text), widget.setToolTip(tooltip or "")),
+        )
+
+        module.QuantHunterWindow._refresh_strategy_script_dependency_options(
+            host,
+            current_name="龙头模型",
+            current_stage="base",
+            selected_values=["龙头模型", "掘龙决策", "主力雷达"],
+        )
+
+        states = {}
+        for index in range(dependency_list.count()):
+            item = dependency_list.item(index)
+            key = str(item.data(module.Qt.UserRole) or "")
+            states[key] = {
+                "enabled": bool(item.flags() & module.Qt.ItemIsEnabled),
+                "checked": item.checkState(),
+            }
+
+        self.assertFalse(states["龙头模型"]["enabled"])
+        self.assertFalse(states["掘龙决策"]["enabled"])
+        self.assertEqual(states["主力雷达"]["checked"], module.Qt.Checked)
+        self.assertEqual(states["龙头模型"]["checked"], module.Qt.Unchecked)
+        self.assertEqual(states["掘龙决策"]["checked"], module.Qt.Unchecked)
+        self.assertIn("禁选 /", dependency_list.item(0).text())
+        disabled_kinds = {
+            str(dependency_list.item(index).data(module.Qt.UserRole) or ""): dependency_list.item(index).data(module.Qt.UserRole + 2)
+            for index in range(dependency_list.count())
+        }
+        self.assertEqual(disabled_kinds["龙头模型"], "self")
+        self.assertEqual(disabled_kinds["掘龙决策"], "aggregate")
+        self.assertIn("基础战法不能依赖聚合战法", dependency_hint.text())
+
+    def test_derive_strategy_script_capabilities_from_formula_updates_structured_form(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        formula_stage_combo = module.QComboBox()
+        formula_stage_combo.addItem("基础战法", "base")
+        context_list = module.QListWidget()
+        for key in ("technical", "position", "news"):
+            item = module.QListWidgetItem(key)
+            item.setData(module.Qt.UserRole, key)
+            item.setFlags(item.flags() | module.Qt.ItemIsUserCheckable)
+            item.setCheckState(module.Qt.Unchecked)
+            context_list.addItem(item)
+        dependency_list = module.QListWidget()
+        for key in ("龙头模型", "主力雷达", "掘龙决策"):
+            item = module.QListWidgetItem(key)
+            item.setData(module.Qt.UserRole, key)
+            item.setFlags(item.flags() | module.Qt.ItemIsUserCheckable)
+            item.setCheckState(module.Qt.Unchecked)
+            dependency_list.addItem(item)
+        status_calls: list[tuple[str, str]] = []
+        host = SimpleNamespace(
+            strategy_config_name_input=module.QLineEdit("推导战法"),
+            strategy_config_formula_stage_combo=formula_stage_combo,
+            strategy_config_script_required_context_list=context_list,
+            strategy_config_script_dependency_list=dependency_list,
+            strategy_config_script_allow_dependency_scores_checkbox=module.QCheckBox(),
+            strategy_config_script_notes_input=module.QTextEdit(),
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+            _set_strategy_form_text=lambda widget, value: module.QuantHunterWindow._set_strategy_form_text(host, widget, value),
+            _set_checkable_list_values=lambda widget, values: module.QuantHunterWindow._set_checkable_list_values(host, widget, values),
+            _refresh_strategy_script_dependency_options=lambda current_name="", current_stage="base", selected_values=None: module.QuantHunterWindow._refresh_strategy_script_dependency_options(host, current_name=current_name, current_stage=current_stage, selected_values=selected_values),
+            _on_strategy_config_form_changed=lambda: None,
+            _set_strategy_config_status=lambda headline, detail="": status_calls.append((headline, detail)),
+        )
+        with patch.object(
+            module.QuantHunterWindow,
+            "_build_strategy_config_form_payload",
+            return_value={
+                "name": "推导战法",
+                "formula_stage": "base",
+                "formula_weights": {"technical": 0.7, "主力雷达": 0.3},
+            },
+        ):
+            module.QuantHunterWindow.derive_strategy_script_capabilities_from_formula(host)
+
+        context_states = {
+            str(context_list.item(index).data(module.Qt.UserRole) or ""): context_list.item(index).checkState()
+            for index in range(context_list.count())
+        }
+        dependency_states = {
+            str(dependency_list.item(index).data(module.Qt.UserRole) or ""): dependency_list.item(index).checkState()
+            for index in range(dependency_list.count())
+        }
+        self.assertEqual(context_states.get("technical"), module.Qt.Checked)
+        self.assertEqual(dependency_states.get("主力雷达"), module.Qt.Checked)
+        self.assertTrue(host.strategy_config_script_allow_dependency_scores_checkbox.isChecked())
+        self.assertEqual(status_calls[0][0], "已推导脚本能力声明")
+        self.assertIn("脚本上下文：technical", status_calls[0][1])
+        self.assertIn("脚本依赖：主力雷达", status_calls[0][1])
+
+    def test_refresh_config_strategy_summary_prefers_recent_derived_script_capabilities(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        cards = {
+            key: {
+                "headline": module.QLabel(),
+                "detail": module.QLabel(),
+                "meta": module.QLabel(),
+                "button": module.QPushButton(),
+            }
+            for key in ("catalog", "form", "editor", "script")
+        }
+        formula_stage_combo = module.QComboBox()
+        formula_stage_combo.addItem("基础战法", "base")
+        status_text = module.QTextEdit()
+        editor = module.QTextEdit()
+        window = SimpleNamespace(
+            config_strategy_summary_cards=cards,
+            strategy_config_search_input=module.QLineEdit(),
+            strategy_config_name_input=module.QLineEdit("推导战法"),
+            strategy_config_formula_stage_combo=formula_stage_combo,
+            strategy_config_score_field_input=module.QLineEdit("derived_score"),
+            strategy_config_enabled_checkbox=SimpleNamespace(isChecked=lambda: True),
+            strategy_config_status_text=status_text,
+            strategy_config_formula_weights_text=module.QTextEdit('{"technical": 1.0}'),
+            strategy_config_editor=editor,
+            strategy_config_source_filter_combo=SimpleNamespace(currentData=lambda: "all"),
+            _strategy_catalog_current_name=lambda: "推导战法",
+            _build_strategy_config_form_payload=lambda: {
+                "name": "推导战法",
+                "source_type": "catalog",
+                "script_capabilities": {},
+            },
+            _strategy_config_last_derived_target_v1="推导战法",
+            _strategy_config_last_derived_capabilities_v1={
+                "required_context_keys": ["technical", "position"],
+                "dependency_strategy_names": ["主力雷达"],
+            },
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+        )
+
+        with patch.object(
+            module,
+            "load_strategy_workspace_payload",
+            return_value={
+                "strategies": [{"name": "推导战法", "enabled": True, "source_type": "catalog", "formula_stage": "base"}],
+                "diagnostics": [],
+            },
+        ):
+            module.QuantHunterWindow._refresh_config_strategy_summary_v1(window)
+
+        self.assertIn("最近推导 上下文 2 / 依赖 1", cards["script"]["detail"].text())
+        self.assertIn("确认刚推导出的能力声明", cards["script"]["meta"].text())
+
+    def test_new_strategy_script_template_creates_file_and_reloads_workspace(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        calls: list[tuple[str, str]] = []
+        host = SimpleNamespace(
+            strategy_config_name_input=module.QLineEdit("量价脚本"),
+            _set_strategy_config_status=lambda headline, detail="": None,
+            _reload_strategy_catalog_runtime=lambda selected_name="", detail="": calls.append((selected_name, detail)),
+        )
+        with patch.object(module, "create_strategy_plugin_script", return_value=Path("C:/tmp/strategy_plugins/量价脚本.py")), patch.object(
+            module.QMessageBox, "information"
+        ) as info_box:
+            module.QuantHunterWindow.new_strategy_script_template(host)
+
+        self.assertEqual(calls[0][0], "量价脚本")
+        self.assertIn("脚本模板已创建", calls[0][1])
+        info_box.assert_called_once()
+
+    def test_new_strategy_script_template_prefers_profile_wizard_payload(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        calls: list[tuple[str, str]] = []
+        host = SimpleNamespace(
+            strategy_config_name_input=module.QLineEdit("旧名称"),
+            strategy_config_description_input=module.QLineEdit(),
+            _set_button_role=lambda *_args, **_kwargs: None,
+            _set_strategy_config_status=lambda headline, detail="": None,
+            _reload_strategy_catalog_runtime=lambda selected_name="", detail="": calls.append((selected_name, detail)),
+        )
+        profile = {
+            "name": "脚本龙头",
+            "formula_stage": "base",
+            "description": "说明",
+            "score_field": "script_leader_score",
+            "scene_copy": "场景",
+            "product_positioning": "定位",
+        }
+        with patch.object(module.QuantHunterWindow, "_prompt_new_strategy_config_profile", return_value=profile), patch.object(
+            module, "create_strategy_plugin_script_from_payload", return_value=Path("C:/tmp/strategy_plugins/脚本龙头.py")
+        ) as create_from_payload, patch.object(module.QMessageBox, "information") as info_box:
+            module.QuantHunterWindow.new_strategy_script_template(host)
+
+        create_from_payload.assert_called_once()
+        self.assertEqual(calls[0][0], "脚本龙头")
+        self.assertIn("已带入当前向导元数据和默认公式权重", calls[0][1])
+        info_box.assert_called_once()
+
+    def test_generate_script_from_current_strategy_config_creates_plugin_file(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        calls: list[tuple[str, str]] = []
+        host = SimpleNamespace(
+            _strategy_config_loaded_name="龙头模型",
+            _set_strategy_config_status=lambda headline, detail="": None,
+            _reload_strategy_catalog_runtime=lambda selected_name="", detail="": calls.append((selected_name, detail)),
+        )
+        with patch.object(module, "strategy_source_meta", return_value={"readonly": False}), patch.object(
+            module.QuantHunterWindow,
+            "_parse_strategy_config_editor_payload",
+            return_value={"name": "龙头模型", "score_field": "leader_model_score", "description": "说明", "formula_stage": "base", "formula_weights": {"technical": 1.0}},
+        ), patch.object(
+            module, "create_strategy_plugin_script_from_payload", return_value=Path("C:/tmp/strategy_plugins/龙头模型.py")
+        ) as create_script, patch.object(module.QMessageBox, "information") as info_box:
+            module.QuantHunterWindow.generate_script_from_current_strategy_config(host)
+
+        create_script.assert_called_once()
+        self.assertEqual(calls[0][0], "龙头模型")
+        self.assertIn("已根据当前 JSON 草稿生成脚本模板", calls[0][1])
+        info_box.assert_called_once()
+
+    def test_open_selected_strategy_source_opens_script_file(self) -> None:
+        module = importlib.import_module("app_qt")
+        status_calls: list[tuple[str, str]] = []
+        host = SimpleNamespace(
+            _strategy_catalog_current_name=lambda: "脚本战法",
+            _set_strategy_config_status=lambda headline, detail="": status_calls.append((headline, detail)),
+        )
+        with patch.object(module, "strategy_source_meta", return_value={"source_type": "script", "source_path": "C:/tmp/strategy_plugins/script.py"}), patch.object(
+            module.QDesktopServices, "openUrl", return_value=True
+        ) as open_url:
+            module.QuantHunterWindow.open_selected_strategy_source(host)
+
+        open_url.assert_called_once()
+        self.assertEqual(status_calls[0][0], "已打开战法来源")
+        self.assertIn("脚本文件", status_calls[0][1])
+        self.assertIn("script.py", status_calls[0][1])
+
+    def test_refresh_strategy_plugin_diagnostics_panel_groups_by_level(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        host = SimpleNamespace(
+            strategy_plugin_diagnostics_label=module.QLabel(),
+            strategy_plugin_diagnostics_list=module.QListWidget(),
+            strategy_plugin_diagnostics_text=module.QTextEdit(),
+            strategy_plugin_diagnostics_open_button=module.QPushButton("看报错源"),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (widget.setText(text), widget.setToolTip(tooltip or "")),
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+        )
+        diagnostics = [
+            {"level": "error", "name": "broken_a", "path": "C:/tmp/a.py", "message": "语法错误"},
+            {"level": "warning", "name": "warn_b", "path": "C:/tmp/b.py", "message": "缺少描述"},
+        ]
+
+        module.QuantHunterWindow._refresh_strategy_plugin_diagnostics_panel(host, diagnostics)
+
+        self.assertIn("error 1", host.strategy_plugin_diagnostics_label.text())
+        self.assertIn("warning 1", host.strategy_plugin_diagnostics_label.text())
+        self.assertIn("脚本诊断 / 错误", host.strategy_plugin_diagnostics_text.toPlainText())
+        self.assertEqual(host.strategy_plugin_diagnostics_list.count(), 2)
+        self.assertIn("[错误] broken_a", host.strategy_plugin_diagnostics_list.item(0).text())
+        self.assertIn("[警告] warn_b", host.strategy_plugin_diagnostics_list.item(1).text())
+        self.assertTrue(host.strategy_plugin_diagnostics_open_button.isEnabled())
+
+    def test_refresh_strategy_plugin_diagnostics_panel_applies_level_filter(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        filter_combo = module.QComboBox()
+        filter_combo.addItem("全部级别", "all")
+        filter_combo.addItem("仅错误", "error")
+        filter_combo.addItem("仅警告", "warning")
+        filter_combo.addItem("仅信息", "info")
+        filter_combo.setCurrentIndex(2)
+        host = SimpleNamespace(
+            strategy_plugin_diagnostics_label=module.QLabel(),
+            strategy_plugin_diagnostics_filter_combo=filter_combo,
+            strategy_plugin_diagnostics_list=module.QListWidget(),
+            strategy_plugin_diagnostics_text=module.QTextEdit(),
+            strategy_plugin_diagnostics_open_button=module.QPushButton("看报错源"),
+            strategy_plugin_diagnostics_copy_button=module.QPushButton("复制诊断"),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (widget.setText(text), widget.setToolTip(tooltip or "")),
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+        )
+        diagnostics = [
+            {"level": "error", "name": "broken_a", "path": "C:/tmp/a.py", "message": "语法错误"},
+            {"level": "warning", "name": "warn_b", "path": "C:/tmp/b.py", "message": "缺少描述"},
+        ]
+
+        module.QuantHunterWindow._refresh_strategy_plugin_diagnostics_panel(host, diagnostics)
+
+        self.assertEqual(host.strategy_plugin_diagnostics_list.count(), 1)
+        self.assertIn("[警告] warn_b", host.strategy_plugin_diagnostics_list.item(0).text())
+        self.assertIn("warn_b", host.strategy_plugin_diagnostics_text.toPlainText())
+
+    def test_copy_strategy_plugin_diagnostic_detail_copies_current_text(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        text_widget = module.QTextEdit()
+        text_widget.setPlainText("脚本诊断 / 错误\n\n详情：示例")
+        calls: list[tuple[str, str]] = []
+        host = SimpleNamespace(
+            strategy_plugin_diagnostics_text=text_widget,
+            _set_strategy_config_status=lambda headline, detail="": calls.append((headline, detail)),
+        )
+
+        module.QuantHunterWindow.copy_strategy_plugin_diagnostic_detail(host)
+
+        self.assertEqual(module.QApplication.clipboard().text(), "脚本诊断 / 错误\n\n详情：示例")
+        self.assertEqual(calls[0][0], "已复制脚本诊断")
+
+    def test_open_strategy_plugin_diagnostic_source_opens_selected_path(self) -> None:
+        module = importlib.import_module("app_qt")
+        status_calls: list[tuple[str, str]] = []
+        diagnostic_list = module.QListWidget()
+        first = module.QListWidgetItem("[错误] broken_a")
+        first.setData(module.Qt.UserRole, {"level": "error", "name": "broken_a", "path": "C:/tmp/a.py", "message": "语法错误"})
+        second = module.QListWidgetItem("[警告] warn_b")
+        second.setData(module.Qt.UserRole, {"level": "warning", "name": "warn_b", "path": "C:/tmp/b.py", "message": "缺少描述"})
+        diagnostic_list.addItem(first)
+        diagnostic_list.addItem(second)
+        diagnostic_list.setCurrentItem(second)
+        host = SimpleNamespace(
+            _strategy_plugin_diagnostic_items_v1=[
+                {"level": "error", "name": "broken_a", "path": "C:/tmp/a.py", "message": "语法错误"},
+                {"level": "warning", "name": "warn_b", "path": "C:/tmp/b.py", "message": "缺少描述"},
+            ],
+            strategy_plugin_diagnostics_list=diagnostic_list,
+            _set_strategy_config_status=lambda headline, detail="": status_calls.append((headline, detail)),
+        )
+        with patch.object(module.QDesktopServices, "openUrl", return_value=True) as open_url:
+            module.QuantHunterWindow.open_strategy_plugin_diagnostic_source(host)
+
+        open_url.assert_called_once()
+        self.assertEqual(status_calls[0][0], "已打开脚本诊断来源")
+        self.assertIn("b.py", status_calls[0][1])
+
+    def test_strategy_registry_reports_script_capability_errors(self) -> None:
+        module = importlib.import_module("quant_hunter.strategy_registry")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            catalog_path = root / "strategy_catalog.json"
+            catalog_path.write_text(
+                json.dumps(
+                    {
+                        "strategies": [
+                            {
+                                "name": "聚合战法样本",
+                                "score_field": "aggregate_demo_score",
+                                "description": "聚合样本",
+                                "formula_stage": "aggregate",
+                                "formula_weights": {"technical": 1.0},
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            plugin_dir = root / "strategy_plugins"
+            plugin_dir.mkdir(parents=True, exist_ok=True)
+            (plugin_dir / "broken_caps.py").write_text(
+                "\n".join(
+                    [
+                        "STRATEGY_DEFINITION = {",
+                        "    'name': '能力异常脚本',",
+                        "    'score_field': 'broken_caps_score',",
+                        "    'description': '测试脚本能力声明',",
+                        "}",
+                        "STRATEGY_CAPABILITIES = {",
+                        "    'required_context_keys': ['unknown_factor'],",
+                        "    'dependency_strategy_names': ['聚合战法样本'],",
+                        "    'allow_dependency_scores': True,",
+                        "}",
+                        "def compute_score(context, *, dependency_scores=None, definition=None):",
+                        "    return 50.0",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(module, "_catalog_path", return_value=catalog_path), patch.object(
+                module, "_strategy_plugin_directory", return_value=plugin_dir
+            ):
+                module.reload_strategy_registry()
+                diagnostics = module.strategy_registry_diagnostics()
+
+                self.assertTrue(any("未知上下文键" in str(item.get("message", "")) for item in diagnostics))
+                self.assertTrue(any("基础脚本战法不能声明聚合依赖" in str(item.get("message", "")) for item in diagnostics))
+
+    def test_strategy_registry_blocks_disallowed_imports_in_script_plugin(self) -> None:
+        module = importlib.import_module("quant_hunter.strategy_registry")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            catalog_path = root / "strategy_catalog.json"
+            catalog_path.write_text(json.dumps({"strategies": []}, ensure_ascii=False), encoding="utf-8")
+            plugin_dir = root / "strategy_plugins"
+            plugin_dir.mkdir(parents=True, exist_ok=True)
+            (plugin_dir / "bad_import.py").write_text(
+                "\n".join(
+                    [
+                        "import os",
+                        "STRATEGY_DEFINITION = {",
+                        "    'name': '非法导入脚本',",
+                        "    'score_field': 'bad_import_score',",
+                        "    'description': '测试非法导入',",
+                        "}",
+                        "def compute_score(context, *, dependency_scores=None, definition=None):",
+                        "    return 50.0",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(module, "_catalog_path", return_value=catalog_path), patch.object(
+                module, "_strategy_plugin_directory", return_value=plugin_dir
+            ):
+                module.reload_strategy_registry()
+                diagnostics = module.strategy_registry_diagnostics()
+                registry = module.get_strategy_registry()
+
+                self.assertTrue(any("不允许导入模块：os" in str(item.get("message", "")) for item in diagnostics))
+                self.assertNotIn("非法导入脚本", registry.strategy_names)
+
+        module.reload_strategy_registry()
+
+    def test_validate_strategy_definition_payload_reports_script_capability_errors(self) -> None:
+        module = importlib.import_module("quant_hunter.strategy_registry")
+        report = module.validate_strategy_definition_payload(
+            {
+                "name": "能力校验战法",
+                "score_field": "capability_validation_score",
+                "description": "测试",
+                "formula_stage": "base",
+                "formula_weights": {"technical": 1.0},
+                "script_capabilities": {
+                    "required_context_keys": ["unknown_factor"],
+                    "dependency_strategy_names": ["掘龙决策"],
+                    "allow_dependency_scores": True,
+                },
+            }
+        )
+
+        self.assertTrue(any("脚本上下文字段未识别" in item for item in report["errors"]))
+        self.assertTrue(any("基础战法不能在脚本依赖里引用聚合战法" in item for item in report["errors"]))
+
+    def test_on_strategy_config_form_changed_surfaces_blocked_verdict_for_script_capabilities(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        formula_stage_combo = module.QComboBox()
+        formula_stage_combo.addItem("基础战法", "base")
+        context_list = module.QListWidget()
+        for key in ("technical", "position"):
+            item = module.QListWidgetItem(key)
+            item.setData(module.Qt.UserRole, key)
+            item.setFlags(item.flags() | module.Qt.ItemIsUserCheckable)
+            item.setCheckState(module.Qt.Checked if key == "technical" else module.Qt.Unchecked)
+            context_list.addItem(item)
+        dependency_list = module.QListWidget()
+        for key in ("掘龙决策", "龙头模型"):
+            item = module.QListWidgetItem(key)
+            item.setData(module.Qt.UserRole, key)
+            item.setFlags(item.flags() | module.Qt.ItemIsUserCheckable)
+            item.setCheckState(module.Qt.Checked if key == "掘龙决策" else module.Qt.Unchecked)
+            dependency_list.addItem(item)
+        status_text = module.QTextEdit()
+        config_status_banner = module.QLabel()
+        host = SimpleNamespace(
+            _strategy_config_syncing=False,
+            _strategy_config_loaded_name="",
+            strategy_config_name_input=module.QLineEdit("能力异常战法"),
+            strategy_config_score_field_input=module.QLineEdit("capability_error_score"),
+            strategy_config_description_input=module.QLineEdit("说明"),
+            strategy_config_aliases_input=module.QLineEdit(),
+            strategy_config_formula_stage_combo=formula_stage_combo,
+            strategy_config_enabled_checkbox=module.QCheckBox(),
+            strategy_config_short_label_input=module.QLineEdit(),
+            strategy_config_capital_style_input=module.QLineEdit(),
+            strategy_config_badge_palette_input=module.QLineEdit(),
+            strategy_config_default_risk_input=module.QLineEdit(),
+            strategy_config_low_flag_risk_input=module.QLineEdit(),
+            strategy_config_stop_pct_input=module.QLineEdit(),
+            strategy_config_target_pct_input=module.QLineEdit(),
+            strategy_config_budget_strong_input=module.QLineEdit(),
+            strategy_config_budget_normal_input=module.QLineEdit(),
+            strategy_config_budget_threshold_input=module.QLineEdit(),
+            strategy_config_formula_weights_text=module.QTextEdit(),
+            strategy_config_script_required_context_list=context_list,
+            strategy_config_script_dependency_list=dependency_list,
+            strategy_config_script_allow_dependency_scores_checkbox=module.QCheckBox(),
+            strategy_config_script_notes_input=module.QTextEdit(),
+            strategy_config_scene_input=module.QTextEdit(),
+            strategy_config_positioning_input=module.QTextEdit(),
+            strategy_config_empty_hint_input=module.QTextEdit(),
+            strategy_config_position_hint_input=module.QTextEdit(),
+            strategy_config_no_go_input=module.QTextEdit(),
+            strategy_config_applicable_market_input=module.QTextEdit(),
+            strategy_config_capacity_limit_input=module.QTextEdit(),
+            strategy_config_standard_action_buy_input=module.QTextEdit(),
+            strategy_config_standard_action_sell_input=module.QTextEdit(),
+            strategy_config_failure_sample_input=module.QTextEdit(),
+            strategy_config_editor=module.QTextEdit(),
+            strategy_config_status_text=status_text,
+            strategy_config_formula_help_text=module.QTextEdit(),
+            config_status_banner=config_status_banner,
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (widget.setText(text), widget.setToolTip(tooltip or "")),
+            _set_strategy_config_status=lambda headline, detail="": module.QuantHunterWindow._set_strategy_config_status(host, headline, detail),
+            _refresh_config_strategy_summary_v1=lambda: None,
+        )
+        host.strategy_config_enabled_checkbox.setChecked(True)
+        host.strategy_config_formula_weights_text.setPlainText('{"technical": 1.0}')
+        host.strategy_config_script_allow_dependency_scores_checkbox.setChecked(True)
+
+        module.QuantHunterWindow._on_strategy_config_form_changed(host)
+
+        self.assertIn("表单草稿待修正", status_text.toPlainText())
+        self.assertIn("阻塞待处理", config_status_banner.text())
+        self.assertIn("脚本依赖", config_status_banner.toolTip())
+
+    def test_refresh_strategy_script_capability_hints_surfaces_context_and_dependency_feedback(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        host = SimpleNamespace(
+            strategy_config_script_required_context_hint_label=module.QLabel(),
+            strategy_config_script_dependency_hint_label=module.QLabel(),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (widget.setText(text), widget.setToolTip(tooltip or "")),
+        )
+        report = {
+            "script_required_context_keys": ["technical"],
+            "script_dependency_names": ["龙头模型"],
+            "script_capability_errors": ["脚本上下文字段未识别：unknown_factor。"],
+            "script_capability_warnings": ["已声明脚本依赖战法，但未开启“允许读取依赖得分”，运行时不会按依赖声明读取这些得分。"],
+        }
+
+        module.QuantHunterWindow._refresh_strategy_script_capability_hints(host, report)
+
+        self.assertIn("阻塞待处理", host.strategy_config_script_required_context_hint_label.text())
+        self.assertIn("unknown_factor", host.strategy_config_script_required_context_hint_label.text())
+        self.assertIn("继续复核", host.strategy_config_script_dependency_hint_label.text())
+        self.assertIn("允许读取依赖得分", host.strategy_config_script_dependency_hint_label.text())
 
     def test_csv_loader_and_strategy_generate_reclaim_signal(self) -> None:
         path = self._write_demo_csv("loader_demo.csv")
@@ -3431,6 +4639,275 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertTrue(descriptor.available)
         self.assertIn("巨潮资讯", descriptor.description)
 
+    def test_news_source_registry_exposes_eastmoney_adapter(self) -> None:
+        descriptor = get_news_source_descriptor("eastmoney_api")
+
+        self.assertTrue(descriptor.available)
+        self.assertIn("东方财富", descriptor.description)
+
+    def test_news_source_registry_exposes_eastmoney_fast_adapter(self) -> None:
+        descriptor = get_news_source_descriptor("eastmoney_fast_api")
+
+        self.assertTrue(descriptor.available)
+        self.assertIn("快讯", descriptor.description)
+
+    def test_news_source_registry_loads_eastmoney_fast_news(self) -> None:
+        fast_payload = {
+            "result": {
+                "cmsArticleWebFast": [
+                    {
+                        "date": "2026-04-23 10:01:09",
+                        "commentNum": 22,
+                        "code": "202604233999888777",
+                        "docuReader": "【龙头样本：机器人主线继续强化】资金继续围绕机器人主线扩散。",
+                        "title": "龙头样本：机器人主线继续强化",
+                        "uniqueUrl": "http://finance.eastmoney.com/a/202604233999888777.html",
+                        "relationStockTags": ["0.300001", "90.BK0473"],
+                    },
+                    {
+                        "date": "2026-04-23 09:12:00",
+                        "commentNum": 5,
+                        "code": "202604233999000111",
+                        "docuReader": "其他股票消息",
+                        "title": "其他股票消息",
+                        "uniqueUrl": "http://finance.eastmoney.com/a/202604233999000111.html",
+                        "relationStockTags": ["1.600000"],
+                    },
+                ]
+            },
+            "code": 0,
+        }
+
+        class _FakeResponse:
+            def __init__(self, payload: str):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return self.payload.encode("utf-8")
+
+        def _fake_urlopen(request, timeout=0):
+            url = request.full_url if hasattr(request, "full_url") else str(request)
+            self.assertIn("search-api-web.eastmoney.com/search/jsonp", url)
+            return _FakeResponse("jQuery1123(" + json.dumps(fast_payload, ensure_ascii=False) + ")")
+
+        with patch("quant_hunter.news_sources.urllib.request.urlopen", side_effect=_fake_urlopen):
+            result = load_news_from_source(
+                NewsSourceConfig(
+                    provider="eastmoney_fast_api",
+                    symbols=("SZSE.300001",),
+                    symbol_names={"SZSE.300001": "龙头样本"},
+                    limit_per_symbol=2,
+                )
+            )
+
+        item = result.news_map["SZSE.300001"][0]
+        self.assertEqual(item.source, "东方财富快讯")
+        self.assertEqual(item.title, "龙头样本：机器人主线继续强化")
+        self.assertIn("机器人主线继续强化", item.summary)
+        self.assertEqual(item.url, "http://finance.eastmoney.com/a/202604233999888777.html")
+        self.assertEqual(item.published_at, "2026-04-23 10:01:09")
+
+    def test_news_source_registry_eastmoney_fast_news_humanizes_code_only_titles(self) -> None:
+        fast_payload = {
+            "result": {
+                "cmsArticleWebFast": [
+                    {
+                        "date": "2026-04-23 10:05:09",
+                        "commentNum": 8,
+                        "code": "202604233999888999",
+                        "docuReader": "",
+                        "title": "<em>300059</em>，A股第一！成交额超400亿",
+                        "uniqueUrl": "http://finance.eastmoney.com/a/202604233999888999.html",
+                        "relationStockTags": ["0.300059"],
+                    }
+                ]
+            },
+            "code": 0,
+        }
+
+        class _FakeResponse:
+            def __init__(self, payload: str):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return self.payload.encode("utf-8")
+
+        def _fake_urlopen(request, timeout=0):
+            return _FakeResponse("jQuery1123(" + json.dumps(fast_payload, ensure_ascii=False) + ")")
+
+        with patch("quant_hunter.news_sources.urllib.request.urlopen", side_effect=_fake_urlopen):
+            result = load_news_from_source(
+                NewsSourceConfig(
+                    provider="eastmoney_fast_api",
+                    symbols=("SZSE.300059",),
+                    symbol_names={"SZSE.300059": "东方财富"},
+                    limit_per_symbol=1,
+                )
+            )
+
+        item = result.news_map["SZSE.300059"][0]
+        self.assertEqual(item.title, "东方财富(300059)，A股第一！成交额超400亿")
+        self.assertIn("东方财富(300059)", item.summary)
+
+    def test_news_source_registry_loads_eastmoney_announcements(self) -> None:
+        list_payload = {
+            "data": {
+                "list": [
+                    {
+                        "art_code": "AN202604231234567890",
+                        "title": "龙头样本:2025年度利润分配方案公告",
+                        "notice_date": "2026-04-23 00:00:00",
+                        "display_time": "2026-04-23 09:31:11:000",
+                        "columns": [{"column_name": "分红送配"}],
+                    }
+                ]
+            },
+            "success": 1,
+        }
+        content_payload = {
+            "data": {
+                "notice_title": "龙头样本:2025年度利润分配方案公告",
+                "notice_content": "利润分配方案明确，每10股派现并强调现金分红政策稳定。",
+                "notice_date": "2026-04-23 00:00:00",
+                "attach_url_web": "https://pdf.dfcfw.com/pdf/H2_AN202604231234567890_1.pdf",
+                "attach_type": "0",
+            },
+            "success": 1,
+        }
+
+        class _FakeResponse:
+            def __init__(self, payload: str):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return self.payload.encode("utf-8")
+
+        def _fake_urlopen(request, timeout=0):
+            url = request.full_url if hasattr(request, "full_url") else str(request)
+            if "api/security/ann" in url:
+                return _FakeResponse("jQuery1123(" + json.dumps(list_payload, ensure_ascii=False) + ")")
+            if "api/content/ann" in url:
+                return _FakeResponse("jQuery1123(" + json.dumps(content_payload, ensure_ascii=False) + ")")
+            raise AssertionError(url)
+
+        with patch("quant_hunter.news_sources.urllib.request.urlopen", side_effect=_fake_urlopen):
+            result = load_news_from_source(
+                NewsSourceConfig(
+                    provider="eastmoney_api",
+                    symbols=("SZSE.300001",),
+                    symbol_names={"SZSE.300001": "龙头样本"},
+                    limit_per_symbol=1,
+                )
+            )
+
+        item = result.news_map["SZSE.300001"][0]
+        self.assertEqual(item.source, "东方财富公告")
+        self.assertEqual(item.title, "2025年度利润分配方案公告")
+        self.assertIn("分红送配", item.summary)
+        self.assertIn("偏稳健催化", item.summary)
+        self.assertEqual(item.url, "https://pdf.dfcfw.com/pdf/H2_AN202604231234567890_1.pdf")
+        self.assertEqual(item.published_at, "2026-04-23 09:31:11")
+
+    def test_news_source_registry_eastmoney_announcements_downweights_neutral_notices(self) -> None:
+        list_payload = {
+            "data": {
+                "list": [
+                    {
+                        "art_code": "AN202604231111111111",
+                        "title": "龙头样本:中信证券股份有限公司关于龙头样本持续督导保荐总结报告书",
+                        "notice_date": "2026-04-23 00:00:00",
+                        "display_time": "2026-04-23 09:31:11:000",
+                        "columns": [{"column_name": "保荐/核查意见"}],
+                    },
+                    {
+                        "art_code": "AN202604231222222222",
+                        "title": "龙头样本:2025年度利润分配方案公告",
+                        "notice_date": "2026-04-23 00:00:00",
+                        "display_time": "2026-04-23 09:32:11:000",
+                        "columns": [{"column_name": "分红送配"}],
+                    },
+                ]
+            },
+            "success": 1,
+        }
+        content_payloads = {
+            "AN202604231111111111": {
+                "data": {
+                    "notice_title": "龙头样本:中信证券股份有限公司关于龙头样本持续督导保荐总结报告书",
+                    "notice_content": "持续督导总结文件。",
+                    "notice_date": "2026-04-23 00:00:00",
+                    "attach_url_web": "https://pdf.dfcfw.com/pdf/H2_AN202604231111111111_1.pdf",
+                    "attach_type": "0",
+                },
+                "success": 1,
+            },
+            "AN202604231222222222": {
+                "data": {
+                    "notice_title": "龙头样本:2025年度利润分配方案公告",
+                    "notice_content": "利润分配方案明确，每10股派现并强调现金分红政策稳定。",
+                    "notice_date": "2026-04-23 00:00:00",
+                    "attach_url_web": "https://pdf.dfcfw.com/pdf/H2_AN202604231222222222_1.pdf",
+                    "attach_type": "0",
+                },
+                "success": 1,
+            },
+        }
+
+        class _FakeResponse:
+            def __init__(self, payload: str):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return self.payload.encode("utf-8")
+
+        def _fake_urlopen(request, timeout=0):
+            url = request.full_url if hasattr(request, "full_url") else str(request)
+            if "api/security/ann" in url:
+                return _FakeResponse("jQuery1123(" + json.dumps(list_payload, ensure_ascii=False) + ")")
+            for art_code, payload in content_payloads.items():
+                if art_code in url:
+                    return _FakeResponse("jQuery1123(" + json.dumps(payload, ensure_ascii=False) + ")")
+            raise AssertionError(url)
+
+        with patch("quant_hunter.news_sources.urllib.request.urlopen", side_effect=_fake_urlopen):
+            result = load_news_from_source(
+                NewsSourceConfig(
+                    provider="eastmoney_api",
+                    symbols=("SZSE.300001",),
+                    symbol_names={"SZSE.300001": "龙头样本"},
+                    limit_per_symbol=2,
+                )
+            )
+
+        items = result.news_map["SZSE.300001"]
+        self.assertEqual(items[0].title, "2025年度利润分配方案公告")
+        self.assertIn("分红预案", items[0].summary)
+        self.assertIn("持续督导", items[1].title)
+
     def test_news_source_registry_loads_cninfo_announcements(self) -> None:
         top_search_payload = [
             {
@@ -3658,6 +5135,134 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertTrue(any(item.title == "浦发银行媒体追踪" for item in items))
         self.assertEqual(sum(1 for item in items if "利润分配方案公告" in item.title), 1)
 
+    def test_auto_fetch_default_news_for_symbol_falls_back_to_cninfo_when_local_news_missing(self) -> None:
+        module = importlib.import_module("app_qt")
+        item = SimpleNamespace(
+            symbol="SZSE.300001",
+            title="订单催化公告",
+            summary="订单催化 | 适合看题材扩散和业绩映射。",
+            published_at="2026-04-23 09:31:00",
+            source="东方财富快讯",
+            url="http://finance.eastmoney.com/a/202604233999888777.html",
+            sentiment_score=0.0,
+            heat=6.2,
+        )
+        result = SimpleNamespace(
+            provider="eastmoney_fast_api",
+            label="东方财富快讯适配器",
+            news_map={"SZSE.300001": [item]},
+            source_path="https://search-api-web.eastmoney.com/search/jsonp",
+            summary="东方财富快讯适配器 已载入 1 条消息",
+        )
+        window = SimpleNamespace(
+            news_catalysts={},
+            news_source_provider_key="csv",
+            news_source_path="",
+            _auto_news_fetch_state_v1={},
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol == "SZSE.300001" else symbol,
+        )
+        window._default_news_provider_key = lambda: module.QuantHunterWindow._default_news_provider_key(window)
+
+        with patch.object(module, "load_news_from_source", return_value=result) as loader:
+            items = module.QuantHunterWindow._auto_fetch_default_news_for_symbol(window, "SZSE.300001")
+            digest_lines = module.QuantHunterWindow._news_digest_lines_for_symbol(
+                SimpleNamespace(
+                    news_catalysts=window.news_catalysts,
+                    _news_items_for_symbol=lambda symbol, limit=None, auto_fetch=True: module.QuantHunterWindow._news_items_for_symbol(
+                        window,
+                        symbol,
+                        limit=limit,
+                        auto_fetch=auto_fetch,
+                    ),
+                ),
+                "SZSE.300001",
+                limit=1,
+            )
+
+        self.assertEqual(items[0].source, "东方财富快讯")
+        self.assertEqual(window.news_catalysts["SZSE.300001"][0].title, "订单催化公告")
+        config = loader.call_args.args[0]
+        self.assertEqual(config.provider, "eastmoney_fast_api")
+        self.assertEqual(config.symbols, ("SZSE.300001",))
+        self.assertIn("东方财富快讯", digest_lines[0])
+        self.assertIn("订单催化公告", digest_lines[0])
+
+        with patch.object(module, "load_news_from_source", return_value=result) as loader_again:
+            cached_items = module.QuantHunterWindow._auto_fetch_default_news_for_symbol(window, "SZSE.300001")
+
+        self.assertEqual(cached_items[0].title, "订单催化公告")
+        loader_again.assert_not_called()
+
+    def test_auto_fetch_default_news_for_symbol_falls_back_to_notice_then_cninfo_after_fast_failure(self) -> None:
+        module = importlib.import_module("app_qt")
+        fast_error = RuntimeError("eastmoney fast timeout")
+        notice_item = SimpleNamespace(
+            symbol="SZSE.300001",
+            title="董事会决议公告",
+            summary="治理动作 | 治理/资本动作催化，需看是否配套分红、回购或融资安排。",
+            published_at="2026-04-23 09:33:00",
+            source="东方财富公告",
+            url="https://pdf.dfcfw.com/pdf/H2_AN202604231111111111_1.pdf",
+            sentiment_score=0.0,
+            heat=4.8,
+        )
+        notice_result = SimpleNamespace(
+            provider="eastmoney_api",
+            label="东方财富公告适配器",
+            news_map={"SZSE.300001": [notice_item]},
+            source_path="https://np-anotice-stock.eastmoney.com/api/security/ann",
+            summary="东方财富公告适配器 已载入 1 条公告",
+        )
+        fallback_item = SimpleNamespace(
+            symbol="SZSE.300001",
+            title="利润分配方案公告",
+            summary="分红预案 | 偏稳健催化，适合看高股息、防御线和资金回流。",
+            published_at="2026-04-23 09:35:00",
+            source="巨潮资讯",
+            url="https://static.cninfo.com.cn/finalpage/2026-04-23/notice.PDF",
+            sentiment_score=0.0,
+            heat=5.4,
+        )
+        fallback_result = SimpleNamespace(
+            provider="cninfo_api",
+            label="巨潮公告适配器",
+            news_map={"SZSE.300001": [fallback_item]},
+            source_path="https://www.cninfo.com.cn/new/hisAnnouncement/query",
+            summary="巨潮公告适配器 已载入 1 条公告",
+        )
+        window = SimpleNamespace(
+            news_catalysts={},
+            news_source_provider_key="csv",
+            news_source_path="",
+            _auto_news_fetch_state_v1={},
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol == "SZSE.300001" else symbol,
+        )
+        window._default_news_provider_key = lambda: module.QuantHunterWindow._default_news_provider_key(window)
+
+        with patch.object(module, "load_news_from_source", side_effect=[fast_error, notice_result]) as loader:
+            items = module.QuantHunterWindow._auto_fetch_default_news_for_symbol(window, "SZSE.300001")
+
+        self.assertEqual(items[0].source, "东方财富公告")
+        self.assertEqual(loader.call_count, 2)
+        first_config = loader.call_args_list[0].args[0]
+        second_config = loader.call_args_list[1].args[0]
+        self.assertEqual(first_config.provider, "eastmoney_fast_api")
+        self.assertEqual(second_config.provider, "eastmoney_api")
+
+        window.news_catalysts = {}
+        window._auto_news_fetch_state_v1 = {}
+        with patch.object(module, "load_news_from_source", side_effect=[fast_error, RuntimeError("eastmoney notice timeout"), fallback_result]) as loader:
+            items = module.QuantHunterWindow._auto_fetch_default_news_for_symbol(window, "SZSE.300001")
+
+        self.assertEqual(items[0].source, "巨潮资讯")
+        self.assertEqual(loader.call_count, 3)
+        first_config = loader.call_args_list[0].args[0]
+        second_config = loader.call_args_list[1].args[0]
+        third_config = loader.call_args_list[2].args[0]
+        self.assertEqual(first_config.provider, "eastmoney_fast_api")
+        self.assertEqual(second_config.provider, "eastmoney_api")
+        self.assertEqual(third_config.provider, "cninfo_api")
+
     def test_open_news_item_url_opens_browser_when_url_exists(self) -> None:
         module = importlib.import_module("app_qt")
         window = SimpleNamespace()
@@ -3706,11 +5311,11 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         module.QuantHunterWindow._update_news_action_button(window, button, item)
 
-        self.assertEqual(button.text(), "查看公告原文")
+        self.assertEqual(button.text(), "看公告原文")
         self.assertTrue(button.isEnabled())
         self.assertIn("分层：已公告", button.toolTip())
-        self.assertIn("可直接打开原文链接", button.toolTip())
-        self.assertIn("建议：先看推荐页", button.toolTip())
+        self.assertIn("可直接看原文链接", button.toolTip())
+        self.assertIn("建议：先看机会池", button.toolTip())
         self.assertEqual(button.role, "accent")
 
         media_button = module.QPushButton()
@@ -3722,7 +5327,7 @@ class StrategyWorkflowTests(unittest.TestCase):
             url="https://example.com/media",
         )
         module.QuantHunterWindow._update_news_action_button(window, media_button, media_item)
-        self.assertEqual(media_button.text(), "查看媒体原文")
+        self.assertEqual(media_button.text(), "看媒体原文")
         self.assertEqual(media_button.role, "tonal")
 
     def test_update_news_detail_button_reflects_news_tier_and_tooltip(self) -> None:
@@ -3745,11 +5350,11 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         module.QuantHunterWindow._update_news_detail_button(window, button, item)
 
-        self.assertEqual(button.text(), "查看公告详情")
+        self.assertEqual(button.text(), "看公告详情")
         self.assertTrue(button.isEnabled())
         self.assertIn("分层：已公告", button.toolTip())
-        self.assertIn("建议：先看推荐页", button.toolTip())
-        self.assertIn("点击查看详情弹窗", button.toolTip())
+        self.assertIn("建议：先看机会池", button.toolTip())
+        self.assertIn("点击看详情。", button.toolTip())
         self.assertEqual(button.role, "tonal")
 
         media_button = module.QPushButton()
@@ -3761,7 +5366,7 @@ class StrategyWorkflowTests(unittest.TestCase):
             url="https://example.com/media",
         )
         module.QuantHunterWindow._update_news_detail_button(window, media_button, media_item)
-        self.assertEqual(media_button.text(), "查看媒体详情")
+        self.assertEqual(media_button.text(), "看媒体详情")
         self.assertEqual(media_button.role, "ghost")
 
     def test_news_detail_lines_include_source_time_summary_and_url(self) -> None:
@@ -3805,6 +5410,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(detail_target[0], "detail")
         self.assertEqual(broker_target[0], "broker")
         self.assertEqual(overview_target[0], "overview")
+        self.assertEqual(detail_target[1], "先看复盘")
 
     def test_news_workflow_snapshot_lines_surface_current_focus_news(self) -> None:
         module = importlib.import_module("app_qt")
@@ -3830,7 +5436,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn("当前焦点：龙头样本 (300001 / SZSE.300001)", lines[0])
         self.assertIn("当前消息：媒体催化 | 机器人主线继续扩散", lines[1])
         self.assertIn("建议动作：先看总览 -> 总览", lines[2])
-        self.assertIn("原文状态：可打开原文", lines[3])
+        self.assertIn("原文状态：可看原文", lines[3])
 
     def test_news_action_brief_returns_short_recommended_action(self) -> None:
         module = importlib.import_module("app_qt")
@@ -3869,6 +5475,37 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(feedback_calls, [("SZSE.300001", "recommend")])
         self.assertEqual(window.last_news_focus_context["target"], "recommend")
 
+    def test_route_news_item_to_workspace_surfaces_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        focus_calls: list[tuple[str, str]] = []
+        recommend_calls: list[str] = []
+        refresh_calls: list[str] = []
+        window = SimpleNamespace(
+            _set_news_focus_context=lambda item, target="": setattr(window, "last_news_focus_context", {"symbol": item.symbol, "title": item.title, "source": item.source, "target": target}),
+            _trigger_news_navigation_feedback=lambda item, target="": None,
+            _focus_symbol_everywhere=lambda symbol, origin="": focus_calls.append((symbol, origin)),
+            _focus_symbol_in_recommend_workspace=lambda symbol: recommend_calls.append(symbol),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            recommend_status_label=module.QLabel(),
+        )
+        item = SimpleNamespace(symbol="SZSE.300001", stock_name="龙头样本", title="机器人主线继续扩散", source="财联社")
+
+        module.QuantHunterWindow._route_news_item_to_workspace(window, item, "recommend")
+
+        self.assertEqual(focus_calls, [("SZSE.300001", "news")])
+        self.assertEqual(recommend_calls, ["SZSE.300001"])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("已根据新闻带着 龙头样本", window.recommend_status_label.text())
+        self.assertIn("当前结论：继续复核", window.recommend_status_label.text())
+        self.assertIn("主线、计划和送审理由", window.recommend_status_label.text())
+
     def test_route_news_item_to_workspace_shows_hint_when_symbol_missing(self) -> None:
         module = importlib.import_module("app_qt")
         window = SimpleNamespace()
@@ -3878,6 +5515,169 @@ class StrategyWorkflowTests(unittest.TestCase):
             module.QuantHunterWindow._route_news_item_to_workspace(window, item, "recommend")
 
         info_box.assert_called_once()
+
+    def test_open_selected_recommend_message_event_surfaces_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        refresh_calls: list[str] = []
+        recommend_calls: list[str] = []
+        focus_calls: list[tuple[str, str]] = []
+        update_calls: list[tuple[str, bool]] = []
+        event = module.SmartMessageEvent(
+            timestamp="10:00:00",
+            category="news",
+            title="龙头公告跟进",
+            detail="需要回到机会池确认主线和计划",
+            symbol="SZSE.300001",
+            level="INFO",
+        )
+        window = SimpleNamespace(
+            _selected_recommend_message_event=lambda: event,
+            _update_smart_message_event=lambda signature, is_read=False, **_kwargs: update_calls.append((signature, bool(is_read))),
+            _message_event_route=lambda current: module.QuantHunterWindow._message_event_route(window, current),
+            _focus_symbol_in_recommend_workspace=lambda symbol: recommend_calls.append(symbol),
+            _focus_symbol_everywhere=lambda symbol, origin="": focus_calls.append((symbol, origin)),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            recommend_status_label=module.QLabel(),
+        )
+
+        module.QuantHunterWindow.open_selected_recommend_message_event(window)
+
+        self.assertEqual(recommend_calls, ["SZSE.300001"])
+        self.assertEqual(focus_calls, [("SZSE.300001", "message")])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertEqual(len(update_calls), 1)
+        self.assertIn("已根据消息中心带着 SZSE.300001 回到机会池", window.recommend_status_label.text())
+        self.assertIn("当前结论：继续复核", window.recommend_status_label.text())
+        self.assertIn("核对主线、计划和待处理事项", window.recommend_status_label.text())
+
+    def test_focus_selected_recommend_message_symbol_surfaces_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        refresh_calls: list[str] = []
+        focus_calls: list[tuple[str, str]] = []
+        update_calls: list[tuple[str, bool]] = []
+        event = module.SmartMessageEvent(
+            timestamp="10:00:00",
+            category="news",
+            title="龙头公告跟进",
+            detail="需要回到机会池确认主线和计划",
+            symbol="SZSE.300001",
+            level="INFO",
+        )
+        window = SimpleNamespace(
+            _selected_recommend_message_event=lambda: event,
+            _update_smart_message_event=lambda signature, is_read=False, **_kwargs: update_calls.append((signature, bool(is_read))),
+            _focus_symbol_everywhere=lambda symbol, origin="": focus_calls.append((symbol, origin)),
+            _append_runtime_log=lambda _text: None,
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            recommend_status_label=module.QLabel(),
+        )
+
+        module.QuantHunterWindow.focus_selected_recommend_message_symbol(window)
+
+        self.assertEqual(focus_calls, [("SZSE.300001", "recommend")])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertEqual(len(update_calls), 1)
+        self.assertIn("已根据消息中心定位 SZSE.300001", window.recommend_status_label.text())
+        self.assertIn("核对主线、计划和待处理事项", window.recommend_status_label.text())
+
+    def test_news_openers_surface_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        refresh_calls: list[str] = []
+        item = SimpleNamespace(symbol="SZSE.300001", stock_name="龙头样本", title="机器人主线继续扩散", source="财联社", url="https://example.com/news")
+
+        overview_window = SimpleNamespace(
+            active_symbol="SZSE.300001",
+            _latest_news_item_for_symbol=lambda symbol: item if symbol == "SZSE.300001" else None,
+            _open_news_item_url=lambda current, empty_title="提示": True,
+            _set_news_focus_context=lambda current, target="": setattr(overview_window, "last_news_focus_context", {"symbol": current.symbol, "target": target}),
+            _trigger_news_navigation_feedback=lambda current, target="": None,
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            market_status_label=module.QLabel(),
+        )
+
+        module.QuantHunterWindow.open_overview_focus_news_source(overview_window)
+
+        self.assertEqual(overview_window.last_news_focus_context["target"], "overview")
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("已打开原文", overview_window.market_status_label.text())
+        self.assertIn("当前结论：继续复核", overview_window.market_status_label.text())
+        self.assertIn("回总览核对市场位置", overview_window.market_status_label.text())
+
+        refresh_calls.clear()
+        recommend_window = SimpleNamespace(
+            active_symbol="",
+            _selected_daily_pool_recommendation=lambda: SimpleNamespace(symbol="SZSE.300001"),
+            _latest_news_item_for_symbol=lambda symbol: item if symbol == "SZSE.300001" else None,
+            _show_news_detail_dialog=lambda current, title="": None,
+            _set_news_focus_context=lambda current, target="": setattr(recommend_window, "last_news_focus_context", {"symbol": current.symbol, "target": target}),
+            _trigger_news_navigation_feedback=lambda current, target="": None,
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            recommend_status_label=module.QLabel(),
+        )
+
+        module.QuantHunterWindow.open_selected_recommend_news_detail(recommend_window)
+
+        self.assertEqual(recommend_window.last_news_focus_context["target"], "recommend")
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("已查看详情", recommend_window.recommend_status_label.text())
+        self.assertIn("当前结论：继续复核", recommend_window.recommend_status_label.text())
+        self.assertIn("回机会池核对主线、计划和送审理由", recommend_window.recommend_status_label.text())
+
+    def test_open_runtime_to_broker_logs_surfaces_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        refresh_calls: list[str] = []
+        nav_calls: list[tuple[str, str | None, str | None]] = []
+        window = SimpleNamespace(
+            active_symbol="SZSE.300001",
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: nav_calls.append((workspace_key, widget_name, select_row)),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            _emit_action_feedback_v11=lambda *_args, **_kwargs: None,
+            broker_status_banner=module.QLabel(),
+        )
+
+        module.QuantHunterWindow.open_runtime_to_broker_logs(window)
+
+        self.assertEqual(nav_calls, [("broker", "runtime_log_text", None)])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("已从运行页带着 龙头样本 (300001) 定位到交易日志", window.broker_status_banner.text())
+        self.assertIn("当前结论：继续复核", window.broker_status_banner.text())
+        self.assertIn("先看最新异常、回执和执行事件", window.broker_status_banner.text())
 
     def test_news_focus_context_helpers_return_suffix_and_tooltip(self) -> None:
         module = importlib.import_module("app_qt")
@@ -3892,7 +5692,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(suffix, " | 【消息驱动】刚由消息定位")
         self.assertIn("来自消息驱动：已公告", tooltip)
         self.assertIn("利润分配方案公告", tooltip)
-        self.assertIn("交易页", tooltip)
+        self.assertIn("执行中控", tooltip)
 
     def test_render_text_with_news_badge_wraps_focus_text_in_html(self) -> None:
         module = importlib.import_module("app_qt")
@@ -5846,6 +7646,9 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertTrue(hasattr(ui_status, "signal_badge_palette"))
         self.assertTrue(hasattr(ui_status, "board_risk_colors"))
         self.assertTrue(hasattr(ui_status, "board_monitor_colors"))
+        self.assertTrue(hasattr(ui_status, "terminal_semantic_color"))
+        self.assertTrue(hasattr(ui_status, "chart_semantic_color"))
+        self.assertTrue(hasattr(ui_status, "chart_annotation_tone_color"))
         self.assertTrue(hasattr(ui_status, "market_mode_label"))
         self.assertTrue(hasattr(ui_status, "market_source_mode_label"))
         self.assertTrue(hasattr(broker_status, "build_broker_execution_summary"))
@@ -5861,42 +7664,140 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertTrue(hasattr(ui_helpers, "create_metric_card"))
         self.assertTrue(hasattr(ui_helpers, "build_badge_strip"))
         self.assertTrue(hasattr(ui_helpers, "create_shell_chip"))
-        self.assertTrue(hasattr(ui_helpers, "set_shell_chip"))
-        self.assertTrue(hasattr(ui_helpers, "style_dark_chart"))
-        self.assertTrue(hasattr(ui_helpers, "configure_splitter"))
-        self.assertTrue(hasattr(ui_helpers, "enable_smooth_scroll"))
-        self.assertTrue(hasattr(ui_helpers, "select_first_row"))
-        self.assertTrue(hasattr(ui_helpers, "focus_widget_later"))
-        self.assertTrue(hasattr(ui_helpers, "stock_profile_for_symbol"))
-        self.assertTrue(hasattr(ui_helpers, "stock_name_for_symbol"))
-        self.assertTrue(hasattr(ui_helpers, "stock_id_for_symbol"))
-        self.assertTrue(hasattr(cross_focus_patches, "apply_cross_workspace_focus_patches"))
-        self.assertTrue(hasattr(focus_bridge_patches, "apply_focus_bridge_patches"))
-        self.assertTrue(hasattr(ui_refresh, "refresh_priority_cards"))
-        self.assertTrue(hasattr(ui_refresh, "render_leaderboard_cards"))
-        self.assertTrue(hasattr(ui_refresh, "refresh_theme_heat_panels"))
-        self.assertTrue(hasattr(ui_refresh, "apply_market_filters"))
-        self.assertTrue(hasattr(ui_refresh, "build_overview_command_snapshot"))
-        self.assertTrue(hasattr(ui_refresh, "build_dashboard_metrics_snapshot"))
-        self.assertTrue(hasattr(ui_refresh, "fill_scan_rows"))
-        self.assertTrue(hasattr(ui_refresh, "refresh_intraday_monitor"))
-        self.assertTrue(hasattr(ui_refresh, "refresh_trade_recap"))
-        self.assertTrue(hasattr(ui_refresh, "refresh_broker_execution_panel"))
-        self.assertTrue(hasattr(ui_refresh, "refresh_broker_status"))
-        self.assertTrue(hasattr(ui_refresh, "fill_holdings_table"))
-        self.assertTrue(hasattr(ui_runtime, "review_output_dir"))
-        self.assertTrue(hasattr(ui_runtime, "daily_plan_output_dir"))
-        self.assertTrue(hasattr(ui_runtime, "current_strategy_runtime_config"))
-        self.assertTrue(hasattr(ui_runtime, "current_report_template_config"))
-        self.assertTrue(hasattr(ui_runtime, "parse_focus_themes_text"))
-        self.assertTrue(hasattr(ui_refresh, "fill_order_intents_table"))
-        self.assertTrue(hasattr(ui_refresh, "refresh_submission_table"))
-        self.assertTrue(hasattr(workspace_builders, "build_auth_workspace"))
-        self.assertTrue(hasattr(workspace_builders, "build_board_workspace"))
-        self.assertTrue(hasattr(workspace_builders, "build_broker_workspace"))
-        self.assertTrue(hasattr(workspace_builders, "build_config_workspace"))
-        self.assertTrue(hasattr(workspace_builders, "build_overview_workspace"))
-        self.assertTrue(hasattr(workspace_builders, "build_recommend_workspace"))
+
+    def test_ui_runtime_append_runtime_log_prefers_incremental_append_until_trim(self) -> None:
+        ui_runtime = importlib.import_module("quant_hunter.ui_runtime")
+
+        class _FakeNow:
+            def strftime(self, _fmt: str) -> str:
+                return "10:08:00"
+
+        class _FakeDateTime:
+            @staticmethod
+            def now() -> _FakeNow:
+                return _FakeNow()
+
+        class _FakeCursor:
+            class MoveOperation:
+                End = "end"
+
+            def __init__(self, widget) -> None:
+                self.widget = widget
+                self.insert_calls = 0
+
+            def movePosition(self, _operation) -> None:
+                return None
+
+            def insertText(self, text: str) -> None:
+                self.insert_calls += 1
+                self.widget._text += text
+
+        class _FakeTextWidget:
+            def __init__(self) -> None:
+                self._text = ""
+                self.set_calls = 0
+                self.cursor = _FakeCursor(self)
+
+            def setPlainText(self, value: str) -> None:
+                self._text = value
+                self.set_calls += 1
+
+            def toPlainText(self) -> str:
+                return self._text
+
+            def textCursor(self):
+                return self.cursor
+
+            def setTextCursor(self, cursor) -> None:
+                self.cursor = cursor
+
+        widget = _FakeTextWidget()
+        window = SimpleNamespace(runtime_events=[], runtime_log_text=widget)
+
+        ui_runtime.append_runtime_log(window, "首条日志", datetime_cls=_FakeDateTime, level="INFO")
+        self.assertEqual(widget.cursor.insert_calls, 1)
+        self.assertIn("首条日志", widget.toPlainText())
+
+        ui_runtime.append_runtime_log(window, "第二条日志", datetime_cls=_FakeDateTime, level="INFO")
+        self.assertEqual(widget.set_calls, 0)
+        self.assertEqual(widget.cursor.insert_calls, 2)
+        self.assertIn("第二条日志", widget.toPlainText())
+
+        existing_lines = [f"line {index}" for index in range(200)]
+        widget._text = "\n".join(existing_lines) + "\n"
+        window.runtime_events = list(existing_lines)
+        window._runtime_log_rendered_payload_v1 = widget._text
+        previous_set_calls = widget.set_calls
+
+        ui_runtime.append_runtime_log(window, "触发裁剪", datetime_cls=_FakeDateTime, level="WARN")
+
+        self.assertEqual(len(window.runtime_events), 200)
+        self.assertGreater(widget.set_calls, previous_set_calls)
+        self.assertNotIn("line 0\n", widget.toPlainText())
+        self.assertIn("触发裁剪", widget.toPlainText())
+
+    def test_ui_refresh_configure_terminal_tables_deduplicates_same_layout_signature(self) -> None:
+        ui_refresh = importlib.import_module("quant_hunter.ui_refresh")
+
+        class _FakeTable:
+            def __init__(self, column_count: int, width: int, height: int) -> None:
+                self._column_count = column_count
+                self._width = width
+                self._height = height
+
+            def columnCount(self) -> int:
+                return self._column_count
+
+            def width(self) -> int:
+                return self._width
+
+            def height(self) -> int:
+                return self._height
+
+        configure_calls: list[str] = []
+        window = SimpleNamespace(
+            density_mode="standard",
+            state=SimpleNamespace(terminal_density="standard"),
+            daily_pool_table=_FakeTable(24, 1080, 320),
+            orders_table=_FakeTable(13, 1080, 260),
+            execution_table=_FakeTable(9, 1080, 260),
+            theme_heat_table=_FakeTable(5, 520, 220),
+            leader_table=_FakeTable(5, 520, 220),
+            position_advice_table=_FakeTable(11, 1080, 220),
+            width=lambda: 1440,
+            height=lambda: 900,
+            _configure_terminal_tables=lambda: configure_calls.append("configured"),
+        )
+
+        ui_refresh._configure_terminal_tables_if_needed(window)
+        ui_refresh._configure_terminal_tables_if_needed(window)
+        self.assertEqual(configure_calls, ["configured"])
+
+        window.orders_table._width = 980
+        ui_refresh._configure_terminal_tables_if_needed(window)
+        self.assertEqual(configure_calls, ["configured", "configured"])
+
+    def test_ui_status_separates_system_status_from_market_chart_semantics(self) -> None:
+        def _color_value(color) -> str:
+            if hasattr(color, "name"):
+                try:
+                    return str(color.name()).lower()
+                except Exception:
+                    pass
+            return str(getattr(color, "value", "") or "").lower()
+
+        signal_background, signal_foreground = ui_status_module.signal_colors("BUY", "RECLAIM_LONG")
+        market_background, market_foreground = ui_status_module.market_pool_colors(
+            SimpleNamespace(pct_change=9.0, main_inflow=0.0, turnover=0.0)
+        )
+
+        self.assertEqual(_color_value(ui_status_module.terminal_semantic_color("market_up")), "#e25555")
+        self.assertEqual(_color_value(ui_status_module.chart_semantic_color("plan_entry")), "#69c3ff")
+        self.assertEqual(_color_value(ui_status_module.chart_semantic_color("plan_stop")), "#e45b5b")
+        self.assertEqual(_color_value(ui_status_module.chart_semantic_color("plan_target")), "#d8a94a")
+        self.assertNotEqual(_color_value(signal_foreground), _color_value(market_foreground))
+        self.assertEqual(_color_value(market_foreground), "#e25555")
+        self.assertEqual(_color_value(signal_foreground), "#4d8dff")
 
     def test_workspace_builder_module_has_no_duplicate_workspace_functions(self) -> None:
         path = Path(__file__).resolve().parents[1] / "quant_hunter" / "workspace_builders.py"
@@ -5991,7 +7892,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertTrue(window.risk_snapshot_cards["conservative"]["button"].enabled)
         self.assertEqual(window.risk_snapshot_cards["conservative"]["button"].role, "tonal")
         self.assertFalse(window.risk_snapshot_cards["conservative"]["card"].props["riskActive"])
-        self.assertIn("点击后将保存配置并刷新推荐池", window.risk_snapshot_cards["conservative"]["button"].tooltip)
+        self.assertIn("点击后将保存配置并刷新机会池", window.risk_snapshot_cards["conservative"]["button"].tooltip)
         self.assertIn("推荐 12 只", window.risk_snapshot_cards["standard"]["metrics"].value)
 
     def test_qt_window_smoke_boot(self) -> None:
@@ -6002,83 +7903,105 @@ class StrategyWorkflowTests(unittest.TestCase):
 
             module = importlib.import_module("app_qt")
             app = QApplication.instance() or QApplication([])
-            window = module.QuantHunterWindow()
-            try:
-                app.processEvents()
-                self.assertIsNotNone(window.tabs)
-                self.assertGreaterEqual(window.tabs.count(), 6)
-                self.assertTrue(hasattr(window, "paper_trading_focus_label"))
-                self.assertTrue(hasattr(window, "paper_to_recommend_button"))
-                self.assertTrue(hasattr(window, "recommend_decision_summary_text"))
-                self.assertTrue(hasattr(window, "recommend_push_focus_button"))
-                self.assertTrue(hasattr(window, "recommend_controls_toggle_button"))
-                self.assertTrue(hasattr(window, "recommend_controls_drawer"))
-                self.assertTrue(hasattr(window, "right_intel_tabs"))
-                self.assertEqual(window.right_intel_tabs.count(), 3)
-                self.assertTrue(hasattr(window, "recommend_action_more_button"))
-                self.assertTrue(hasattr(window, "board_tool_more_button"))
-                self.assertTrue(hasattr(window, "board_controls_toggle_button"))
-                self.assertTrue(hasattr(window, "board_controls_drawer"))
-                self.assertTrue(hasattr(window, "left_signal_tabs"))
-                self.assertEqual(window.left_signal_tabs.count(), 3)
-                self.assertTrue(hasattr(window, "overview_chart_controls_tabs"))
-                self.assertEqual(window.overview_chart_controls_tabs.count(), 2)
-                self.assertTrue(hasattr(window, "overview_primary_chart_tabs"))
-                self.assertEqual(window.overview_primary_chart_tabs.count(), 2)
-                self.assertTrue(hasattr(window, "overview_mini_chart_tabs"))
-                self.assertEqual(window.overview_mini_chart_tabs.count(), 3)
-                self.assertTrue(hasattr(window, "overview_right_panel"))
-                self.assertTrue(hasattr(window, "market_leaderboard_cards"))
-                self.assertEqual(len(window.market_leaderboard_cards), 3)
-                self.assertTrue(hasattr(window, "overview_summary_cards"))
-                self.assertEqual(set(window.overview_summary_cards.keys()), {"theme", "source", "capital", "decision"})
-                self.assertTrue(hasattr(window, "overview_cockpit_action_buttons"))
-                self.assertEqual(len(window.overview_cockpit_action_buttons), 3)
-                self.assertTrue(hasattr(window, "overview_cockpit_more_button"))
-                self.assertTrue(hasattr(window, "overview_playbook_action_buttons"))
-                self.assertEqual(len(window.overview_playbook_action_buttons), 3)
-                self.assertTrue(hasattr(window, "overview_playbook_more_button"))
-                self.assertTrue(hasattr(window, "broker_summary_metric_cards"))
-                self.assertEqual(set(window.broker_summary_metric_cards.keys()), {"stage", "gate", "queue", "receipt"})
-                self.assertTrue(hasattr(window, "broker_execution_summary_metric_cards"))
-                self.assertEqual(set(window.broker_execution_summary_metric_cards.keys()), {"blocker", "mainline", "action", "portfolio"})
-                self.assertTrue(hasattr(window, "broker_result_metric_cards"))
-                self.assertEqual(set(window.broker_result_metric_cards.keys()), {"stage", "status", "risk", "next"})
-                self.assertTrue(hasattr(window, "broker_replay_event_cards"))
-                self.assertEqual(set(window.broker_replay_event_cards.keys()), {"current", "previous", "exception"})
-                self.assertTrue(hasattr(window, "broker_replay_action_buttons"))
-                self.assertEqual(set(window.broker_replay_action_buttons.keys()), {"current", "previous", "exception"})
-                self.assertTrue(hasattr(window, "broker_recap_metric_cards"))
-                self.assertEqual(set(window.broker_recap_metric_cards.keys()), {"verdict", "mainline", "quality", "action"})
-                self.assertTrue(hasattr(window, "detail_summary_metric_cards"))
-                self.assertEqual(set(window.detail_summary_metric_cards.keys()), {"theme", "execution", "risk", "next"})
-                self.assertEqual(window.execution_table.horizontalHeaderItem(0).text(), "节点 / 时间")
-                self.assertNotEqual(window.broker_summary_metric_labels["stage"].text(), "--")
-                self.assertNotEqual(window.broker_execution_summary_metric_labels["blocker"].text(), "--")
-                self.assertNotEqual(window.broker_execution_summary_metric_labels["mainline"].text(), "--")
-                self.assertNotEqual(window.broker_execution_summary_metric_labels["action"].text(), "--")
-                self.assertNotEqual(window.broker_execution_summary_metric_labels["portfolio"].text(), "--")
-                self.assertNotEqual(window.broker_result_metric_labels["stage"].text(), "--")
-                self.assertNotEqual(window.broker_replay_event_labels["current"].text(), "--")
-                self.assertNotEqual(window.broker_recap_metric_labels["verdict"].text(), "--")
-                self.assertNotEqual(window.detail_summary_metric_labels["theme"].text(), "--")
-                self.assertIn("下一步", window.broker_gate_summary_text.toPlainText())
-                self.assertTrue(hasattr(window, "market_focus_metric_cards"))
-                self.assertEqual(set(window.market_focus_metric_cards.keys()), {"structure", "zone", "momentum", "flow"})
-                self.assertNotEqual(window.market_focus_metric_labels["structure"].text(), "--")
-                self.assertTrue(hasattr(window, "overview_root_layout"))
-                self.assertTrue(hasattr(window, "dashboard_metrics_box"))
-                self.assertTrue(hasattr(window, "overview_priority_box"))
-                self.assertTrue(hasattr(window, "overview_cockpit_box"))
-                self.assertTrue(hasattr(window, "overview_playbook_box"))
-                self.assertEqual(
-                    set(getattr(window, "market_overlay_buttons", {}).keys()),
-                    {"MA", "BOLL", "HIGHLOW", "BREAK"},
-                )
-                self.assertEqual(window.market_overlay_modes, {"MA", "BOLL", "HIGHLOW"})
-            finally:
-                window.close()
-                app.processEvents()
+            state_file = Path("tests/.tmp/test_qt_window_smoke_boot_state.json")
+            if state_file.exists():
+                state_file.unlink()
+            with patch.object(module, "STATE_FILE", state_file):
+                window = module.QuantHunterWindow()
+                window.save_state = lambda: None
+                window.refresh_remote_market = lambda *args, **kwargs: None
+                def _safe_close() -> None:
+                    for timer in window.findChildren(module.QTimer):
+                        timer.stop()
+                        timer.deleteLater()
+                    window.deleteLater()
+
+                window.close = _safe_close
+                try:
+                    for timer in window.findChildren(module.QTimer):
+                        timer.stop()
+                    self.assertIsNotNone(window.tabs)
+                    self.assertGreaterEqual(window.tabs.count(), 6)
+                    self.assertTrue(hasattr(window, "paper_trading_focus_label"))
+                    self.assertTrue(hasattr(window, "paper_to_recommend_button"))
+                    self.assertTrue(hasattr(window, "recommend_decision_summary_text"))
+                    self.assertTrue(hasattr(window, "recommend_push_focus_button"))
+                    self.assertTrue(hasattr(window, "recommend_controls_toggle_button"))
+                    self.assertTrue(hasattr(window, "recommend_controls_drawer"))
+                    self.assertTrue(hasattr(window, "right_intel_tabs"))
+                    self.assertEqual(window.right_intel_tabs.count(), 3)
+                    self.assertTrue(hasattr(window, "recommend_action_more_button"))
+                    self.assertTrue(hasattr(window, "board_tool_more_button"))
+                    self.assertTrue(hasattr(window, "board_controls_toggle_button"))
+                    self.assertTrue(hasattr(window, "board_controls_drawer"))
+                    self.assertTrue(hasattr(window, "overview_signal_summary_column"))
+                    self.assertEqual(set(window.overview_signal_summary_boxes.keys()), {"buy", "risk", "verify"})
+                    self.assertIsNone(getattr(window, "left_signal_tabs", None))
+                    self.assertEqual(window.market_buy_text.property("signalSummaryRole"), "buy")
+                    self.assertEqual(window.market_sell_text.property("signalSummaryRole"), "risk")
+                    self.assertEqual(window.market_breadth_text.property("signalSummaryRole"), "verify")
+                    self.assertTrue(hasattr(window, "overview_top_news_text"))
+                    self.assertTrue(hasattr(window, "overview_top_ai_text"))
+                    self.assertEqual(window.overview_top_ai_run_button.text(), "评测当前焦点")
+                    self.assertEqual(window.overview_top_ai_panel_button.text(), "AI设置")
+                    self.assertTrue(hasattr(window, "overview_chart_controls_tabs"))
+                    self.assertEqual(window.overview_chart_controls_tabs.count(), 2)
+                    self.assertTrue(hasattr(window, "overview_primary_chart_tabs"))
+                    self.assertEqual(window.overview_primary_chart_tabs.count(), 2)
+                    self.assertTrue(hasattr(window, "overview_mini_chart_tabs"))
+                    self.assertEqual(window.overview_mini_chart_tabs.count(), 3)
+                    self.assertTrue(hasattr(window, "overview_right_panel"))
+                    self.assertTrue(hasattr(window, "market_leaderboard_cards"))
+                    self.assertEqual(len(window.market_leaderboard_cards), 3)
+                    self.assertTrue(hasattr(window, "overview_summary_cards"))
+                    self.assertEqual(set(window.overview_summary_cards.keys()), {"theme", "source", "capital", "decision"})
+                    self.assertTrue(hasattr(window, "overview_cockpit_action_buttons"))
+                    self.assertEqual(len(window.overview_cockpit_action_buttons), 3)
+                    self.assertTrue(hasattr(window, "overview_cockpit_more_button"))
+                    self.assertTrue(hasattr(window, "overview_playbook_action_buttons"))
+                    self.assertEqual(len(window.overview_playbook_action_buttons), 3)
+                    self.assertTrue(hasattr(window, "overview_playbook_more_button"))
+                    self.assertTrue(hasattr(window, "broker_summary_metric_cards"))
+                    self.assertEqual(set(window.broker_summary_metric_cards.keys()), {"stage", "gate", "queue", "receipt"})
+                    self.assertTrue(hasattr(window, "broker_execution_summary_metric_cards"))
+                    self.assertEqual(set(window.broker_execution_summary_metric_cards.keys()), {"blocker", "mainline", "action", "portfolio"})
+                    self.assertTrue(hasattr(window, "broker_result_metric_cards"))
+                    self.assertEqual(set(window.broker_result_metric_cards.keys()), {"stage", "status", "risk", "next"})
+                    self.assertTrue(hasattr(window, "broker_replay_event_cards"))
+                    self.assertEqual(set(window.broker_replay_event_cards.keys()), {"current", "previous", "exception"})
+                    self.assertTrue(hasattr(window, "broker_replay_action_buttons"))
+                    self.assertEqual(set(window.broker_replay_action_buttons.keys()), {"current", "previous", "exception"})
+                    self.assertTrue(hasattr(window, "broker_recap_metric_cards"))
+                    self.assertEqual(set(window.broker_recap_metric_cards.keys()), {"verdict", "mainline", "quality", "action"})
+                    self.assertTrue(hasattr(window, "detail_summary_metric_cards"))
+                    self.assertEqual(set(window.detail_summary_metric_cards.keys()), {"theme", "execution", "risk", "next"})
+                    self.assertEqual(window.execution_table.horizontalHeaderItem(0).text(), "节点 / 时间")
+                    self.assertNotEqual(window.broker_summary_metric_labels["stage"].text(), "--")
+                    self.assertNotEqual(window.broker_execution_summary_metric_labels["blocker"].text(), "--")
+                    self.assertNotEqual(window.broker_execution_summary_metric_labels["mainline"].text(), "--")
+                    self.assertNotEqual(window.broker_execution_summary_metric_labels["action"].text(), "--")
+                    self.assertNotEqual(window.broker_execution_summary_metric_labels["portfolio"].text(), "--")
+                    self.assertNotEqual(window.broker_result_metric_labels["stage"].text(), "--")
+                    self.assertNotEqual(window.broker_replay_event_labels["current"].text(), "--")
+                    self.assertNotEqual(window.broker_recap_metric_labels["verdict"].text(), "--")
+                    self.assertNotEqual(window.detail_summary_metric_labels["theme"].text(), "--")
+                    self.assertIn("下一步", window.broker_gate_summary_text.toPlainText())
+                    self.assertTrue(hasattr(window, "market_focus_metric_cards"))
+                    self.assertEqual(set(window.market_focus_metric_cards.keys()), {"structure", "zone", "momentum", "flow"})
+                    self.assertNotEqual(window.market_focus_metric_labels["structure"].text(), "--")
+                    self.assertTrue(hasattr(window, "overview_root_layout"))
+                    self.assertTrue(hasattr(window, "dashboard_metrics_box"))
+                    self.assertTrue(hasattr(window, "overview_priority_box"))
+                    self.assertTrue(hasattr(window, "overview_cockpit_box"))
+                    self.assertTrue(hasattr(window, "overview_playbook_box"))
+                    self.assertEqual(
+                        set(getattr(window, "market_overlay_buttons", {}).keys()),
+                        {"MA", "BOLL", "HIGHLOW", "BREAK"},
+                    )
+                    self.assertEqual(window.market_overlay_modes, {"MA", "BOLL", "HIGHLOW"})
+                finally:
+                    window.close()
+                    app.processEvents()
 
     def test_qt_window_submission_table_uses_timeline_marker_and_risk_badge(self) -> None:
         if importlib.util.find_spec("PySide6") is None:
@@ -6216,6 +8139,33 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(calls[0], ("row", 1))
         self.assertEqual(calls[1], ("nav", ("broker", "execution_table", "execution_table")))
 
+    def test_replay_event_card_previous_click_surfaces_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        calls: list[tuple[str, object]] = []
+        refresh_calls: list[str] = []
+        window = SimpleNamespace(
+            order_submission_records=[{"symbol": "A"}, {"symbol": "B"}, {"symbol": "C"}],
+            execution_table=SimpleNamespace(currentRow=lambda: 2),
+            _select_execution_row_by_index_v1=lambda index: calls.append(("row", index)) or True,
+            _navigate_to_workspace=lambda workspace, widget=None, select_row=None: calls.append(("nav", (workspace, widget, select_row))),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            broker_status_banner=module.QLabel(),
+        )
+
+        module._qh_on_replay_event_card_clicked_v1(window, "previous")
+
+        self.assertEqual(calls[0], ("row", 1))
+        self.assertEqual(calls[1], ("nav", ("broker", "execution_table", "execution_table")))
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("已定位上一条回执", window.broker_status_banner.text())
+
     def test_replay_event_card_exception_click_prefers_latest_exception_record(self) -> None:
         module = importlib.import_module("app_qt")
         calls: list[tuple[str, object]] = []
@@ -6234,6 +8184,38 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         self.assertEqual(calls[0], ("row", 1))
         self.assertEqual(calls[1], ("nav", ("broker", "execution_table", "execution_table")))
+
+    def test_replay_event_card_exception_click_surfaces_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        calls: list[tuple[str, object]] = []
+        refresh_calls: list[str] = []
+        window = SimpleNamespace(
+            order_submission_records=[
+                {"symbol": "A", "failure_reason": "", "order_status": "SUBMITTED", "fill_status": "PENDING"},
+                {"symbol": "B", "failure_reason": "价格越界", "order_status": "FAILED", "fill_status": "REJECTED"},
+            ],
+            execution_table=SimpleNamespace(currentRow=lambda: 1),
+            _select_execution_row_by_index_v1=lambda index: calls.append(("row", index)) or True,
+            _navigate_to_workspace=lambda workspace, widget=None, select_row=None: calls.append(("nav", (workspace, widget, select_row))),
+            focus_first_broker_blocker=lambda: calls.append(("blocker", None)),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            broker_status_banner=module.QLabel(),
+        )
+
+        module._qh_on_replay_event_card_clicked_v1(window, "exception")
+
+        self.assertEqual(calls[0], ("row", 1))
+        self.assertEqual(calls[1], ("nav", ("broker", "execution_table", "execution_table")))
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("已定位异常回执", window.broker_status_banner.text())
+        self.assertIn("确认失败原因", window.broker_status_banner.text())
 
     def test_load_universe_folder_runs_local_scan(self) -> None:
         module = importlib.import_module("app_qt")
@@ -6258,8 +8240,12 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(window.state.universe_dir, selected_dir)
         self.assertEqual(save_calls, ["saved"])
         self.assertEqual(scan_calls, [(Path(selected_dir), False, True)])
-        self.assertIn("正在载入股票目录", window.scan_summary_label.text())
-        self.assertIn("等待本地扫描结果回流", window.recommend_status_label.text())
+        self.assertIn("扫描状态：载入中", window.scan_summary_label.text())
+        self.assertIn("当前结论：继续复核", window.scan_summary_label.text())
+        self.assertIn("等待扫描完成", window.scan_summary_label.text())
+        self.assertIn("推荐状态：等待回流", window.recommend_status_label.text())
+        self.assertIn("当前结论：继续复核", window.recommend_status_label.text())
+        self.assertIn("本地扫描结果待写回", window.recommend_status_label.text())
 
     def test_load_sample_universe_uses_sample_dir_and_reference_data(self) -> None:
         module = importlib.import_module("app_qt")
@@ -6292,6 +8278,8 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(window.state.universe_dir, str(module.SAMPLE_DIR))
         self.assertEqual(warning_calls, [])
         self.assertIn("样例股票池与参考资料", window.recommend_empty_meta.text())
+        self.assertIn("当前结论：继续复核", window.scan_summary_label.text())
+        self.assertIn("当前结论：继续复核", window.recommend_status_label.text())
 
     def test_rescan_universe_reuses_saved_local_directory(self) -> None:
         module = importlib.import_module("app_qt")
@@ -6319,7 +8307,105 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(scan_calls, [(module.SAMPLE_DIR, False, True)])
         self.assertEqual(fallback_calls, [])
         self.assertEqual(warning_calls, [])
-        self.assertIn("正在重新扫描", window.scan_summary_label.text())
+        self.assertIn("重扫中", window.scan_summary_label.text())
+        self.assertIn("当前结论：继续复核", window.scan_summary_label.text())
+        self.assertIn("当前结论：继续复核", window.recommend_status_label.text())
+
+    def test_default_workspace_status_copy_uses_review_language(self) -> None:
+        from quant_hunter import ui_config
+
+        self.assertIn("当前结论：继续复核", ui_config.RECOMMEND_DEFAULT_STATUS_TEXT)
+        self.assertIn("当前结论：继续复核", ui_config.SCANNER_DEFAULT_STATUS_TEXT)
+        self.assertIn("当前结论：继续复核", ui_config.OVERVIEW_DEFAULT_STATUS_TEXT)
+        self.assertIn("当前结论：继续复核", ui_config.RECOMMEND_DEFAULT_FOCUS_TEXT)
+        self.assertIn("当前结论：继续复核", ui_config.TRADE_PLAN_DEFAULT_FOCUS_TEXT)
+
+    def test_build_shell_status_snapshot_adds_review_verdict_to_pulse(self) -> None:
+        from quant_hunter.header_summary import build_shell_status_snapshot
+
+        neutral = build_shell_status_snapshot(
+            market_data_source="unknown",
+            last_market_success_at="",
+            last_market_error="",
+            dashboard_auto=False,
+            scanner_auto=False,
+            market_refresh_running=False,
+            scan_running=False,
+            last_job_status="idle",
+            last_job_name="",
+            trade_decisions_count=2,
+            pending_orders=1,
+            submitted_orders=0,
+            pool_count=3,
+            blockers=[],
+            warnings=[],
+            last_job_finished_at="",
+        )
+        blocked = build_shell_status_snapshot(
+            market_data_source="unknown",
+            last_market_success_at="",
+            last_market_error="",
+            dashboard_auto=False,
+            scanner_auto=False,
+            market_refresh_running=False,
+            scan_running=False,
+            last_job_status="idle",
+            last_job_name="",
+            trade_decisions_count=0,
+            pending_orders=0,
+            submitted_orders=0,
+            pool_count=0,
+            blockers=["风控阻塞"],
+            warnings=[],
+            last_job_finished_at="",
+        )
+
+        self.assertIn("系统脉冲：继续复核", neutral["pulse_headline"])
+        self.assertIn("系统脉冲：禁止提交", blocked["pulse_headline"])
+
+    def test_build_focus_summary_parts_empty_state_uses_review_language(self) -> None:
+        from quant_hunter.focus_summary import build_focus_summary_parts
+
+        parts = build_focus_summary_parts(
+            page="recommend",
+            symbol="",
+            recommendation=None,
+            intent=None,
+            execution_row=None,
+            scan_row=None,
+            stock_name="",
+            stock_id="--",
+            tone="idle",
+            badge="观察中",
+            stage="等待联动",
+            stage_key="watching",
+            display_action=lambda value: value,
+        )
+
+        self.assertIn("继续复核", str(parts["plain_text"]))
+        self.assertEqual(parts["aux_text"], "审查 继续复核")
+        self.assertIn("同步当前标的", str(parts["next_step"]))
+
+    def test_shell_focus_chip_empty_state_uses_review_language(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        tone, html, tooltip = module._qh_shell_focus_chip_html_v46(
+            SimpleNamespace(),
+            "recommend",
+            focus_context=("", None, None, None),
+        )
+
+        self.assertEqual(tone, "idle")
+        self.assertIn("继续复核", html)
+        self.assertIn("当前结论：继续复核", tooltip)
+        self.assertIn("等待从推荐、交易或复盘链路同步当前标的", tooltip)
+
+    def test_focus_banner_empty_status_copy_uses_review_language(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        text = module._qh_focus_banner_status_copy_v41({"symbol": ""})
+
+        self.assertIn("继续复核", text)
 
     def test_qt_window_open_focus_symbol_in_detail_preserves_symbol_context(self) -> None:
         if importlib.util.find_spec("PySide6") is None:
@@ -6338,8 +8424,57 @@ class StrategyWorkflowTests(unittest.TestCase):
                 self.assertIs(window.tabs.currentWidget(), window.detail_tab)
                 self.assertEqual(window.active_symbol, "SZSE.300001")
             finally:
-                window.close()
+                window.deleteLater()
                 app.processEvents()
+
+    def test_open_focus_symbol_in_detail_without_symbol_refreshes_summary_and_banners(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        calls: list[tuple[str, str | None, str | None] | str] = []
+        window = SimpleNamespace(
+            active_symbol="",
+            _selected_symbol_from_watchlist=lambda: "",
+            _selected_board_symbol=lambda: "",
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: calls.append((workspace_key, widget_name, select_row)),
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+            _refresh_live_workspace_summary_panels=lambda: calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: calls.append("focus"),
+            detail_conclusion_text=module.QTextEdit(),
+        )
+
+        module.QuantHunterWindow.open_focus_symbol_in_detail(window)
+
+        self.assertEqual(calls, [("detail", "metrics_text", None), "summary", "focus"])
+        self.assertIn("请先从信号扫描、机会池、涨停策略或执行中控选中一只股票", window.detail_conclusion_text.toPlainText())
+
+    def test_focus_trade_from_chart_annotation_refreshes_summary_and_hint(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        refresh_calls: list[str] = []
+        table = module.QTableWidget()
+        table.setRowCount(1)
+        window = SimpleNamespace(
+            last_backtest_result=SimpleNamespace(trades=[SimpleNamespace(entry_date="2026-04-21", entry_price=10.0, exit_price=10.8)]),
+            _match_trade_index_from_chart_annotation=lambda payload, trades: 0,
+            trades_table=table,
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: None,
+            _refresh_detail_workspace_panels=lambda: None,
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            detail_hint_title_label=module.QLabel(),
+        )
+
+        result = module.QuantHunterWindow._focus_trade_from_chart_annotation(window, {"action": "trade_exit"})
+
+        self.assertTrue(result)
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("已从图表标注定位到对应成交记录", window.detail_hint_title_label.text())
 
     def test_qt_window_prioritizes_overview_stage_before_support_panels(self) -> None:
         if importlib.util.find_spec("PySide6") is None:
@@ -6352,9 +8487,10 @@ class StrategyWorkflowTests(unittest.TestCase):
             window = module.QuantHunterWindow()
             try:
                 app.processEvents()
-                layout = window.overview_root_layout
+                layout = window.overview_desk_summary_frame.parentWidget().layout()
                 self.assertLess(layout.indexOf(window.market_focus_summary_box), layout.indexOf(window.dashboard_metrics_box))
-                self.assertLess(layout.indexOf(window.overview_summary_box), layout.indexOf(window.dashboard_metrics_box))
+                self.assertLess(layout.indexOf(window.overview_desk_summary_frame), layout.indexOf(window.overview_capability_box))
+                self.assertLess(layout.indexOf(window.overview_capability_box), layout.indexOf(window.dashboard_metrics_box))
                 self.assertLess(layout.indexOf(window.overview_stage_container), layout.indexOf(window.overview_cockpit_box))
                 self.assertLess(layout.indexOf(window.overview_stage_container), layout.indexOf(window.overview_playbook_box))
             finally:
@@ -6376,7 +8512,7 @@ class StrategyWorkflowTests(unittest.TestCase):
                 target = getattr(window, "broker_setup_drawer", window.broker_control_splitter)
                 self.assertLess(broker_layout.indexOf(window.broker_workbench_splitter), broker_layout.indexOf(target))
             finally:
-                window.close()
+                window.deleteLater()
                 app.processEvents()
 
     def test_qt_window_broker_workspace_uses_cockpit_workbench_posttrade_flow(self) -> None:
@@ -6391,11 +8527,55 @@ class StrategyWorkflowTests(unittest.TestCase):
             try:
                 window.tabs.setCurrentWidget(window.broker_tab)
                 app.processEvents()
-                broker_layout = window.broker_scroll_area.widget().layout()
-                self.assertLess(broker_layout.indexOf(window.broker_cockpit_section), broker_layout.indexOf(window.broker_workbench_splitter))
-                self.assertLess(broker_layout.indexOf(window.broker_workbench_splitter), broker_layout.indexOf(window.broker_posttrade_section))
                 self.assertEqual(window.broker_workbench_splitter.count(), 2)
                 self.assertEqual(window.broker_workbench_splitter.widget(1), window.broker_middle_splitter)
+                cockpit_layout = window.broker_cockpit_section.layout()
+                self.assertLess(cockpit_layout.indexOf(window.broker_summary_box), cockpit_layout.indexOf(window.broker_capability_box))
+                self.assertLess(cockpit_layout.indexOf(window.broker_metrics_box), cockpit_layout.indexOf(window.broker_capability_box))
+            finally:
+                window.deleteLater()
+                app.processEvents()
+
+    def test_qt_window_detail_capability_precedes_recap_content(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                app.processEvents()
+                overview_layout = window.detail_capability_box.parentWidget().layout()
+                self.assertLess(overview_layout.indexOf(window.detail_capability_box), overview_layout.indexOf(window.detail_recap_splitter))
+                self.assertLess(overview_layout.indexOf(window.detail_capability_box), overview_layout.indexOf(window.detail_metrics_box))
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_stage_capability_boxes_precede_primary_stage_content(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                app.processEvents()
+                recommend_layout = window.recommend_capability_box.parentWidget().layout()
+                self.assertLess(recommend_layout.indexOf(window.recommend_capability_box), recommend_layout.indexOf(window.recommend_pool_box))
+
+                board_layout = window.board_capability_box.parentWidget().layout()
+                self.assertLess(board_layout.indexOf(window.board_capability_box), board_layout.indexOf(window.board_table.parentWidget()))
+
+                paper_layout = window.paper_capability_box.parentWidget().layout()
+                self.assertLess(paper_layout.indexOf(window.paper_overview_box), paper_layout.indexOf(window.paper_capability_box))
+
+                config_layout = window.config_capability_box.parentWidget().layout()
+                self.assertLess(config_layout.indexOf(window.config_risk_snapshot_box), config_layout.indexOf(window.config_capability_box))
             finally:
                 window.close()
                 app.processEvents()
@@ -6417,7 +8597,7 @@ class StrategyWorkflowTests(unittest.TestCase):
                 window.close()
                 app.processEvents()
 
-    def test_qt_window_hides_broker_setup_by_default(self) -> None:
+    def test_qt_window_shows_broker_setup_by_default(self) -> None:
         if importlib.util.find_spec("PySide6") is None:
             self.skipTest("PySide6 is not installed in the current interpreter")
         with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
@@ -6429,8 +8609,8 @@ class StrategyWorkflowTests(unittest.TestCase):
             try:
                 window.tabs.setCurrentWidget(window.broker_tab)
                 app.processEvents()
-                self.assertTrue(window.broker_control_splitter.isHidden())
-                self.assertEqual(window.broker_setup_toggle_button.text(), "展开账户与通道设置")
+                self.assertFalse(window.broker_control_splitter.isHidden())
+                self.assertEqual(window.broker_setup_toggle_button.text(), "收起账户与通道设置")
             finally:
                 window.close()
                 app.processEvents()
@@ -6470,11 +8650,15 @@ class StrategyWorkflowTests(unittest.TestCase):
                 window.tabs.setCurrentWidget(window.recommend_tab)
                 app.processEvents()
                 layout = window.recommend_scroll_area.widget().layout()
+                self.assertLess(layout.indexOf(window.recommend_message_toast_label), layout.indexOf(window.recommend_desk_summary_frame))
+                self.assertLess(layout.indexOf(window.recommend_desk_summary_frame), layout.indexOf(window.recommend_focus_cards_box))
                 self.assertLess(layout.indexOf(window.recommend_focus_cards_box), layout.indexOf(window.recommend_decision_summary_box))
-                self.assertLess(layout.indexOf(window.recommend_decision_summary_box), layout.indexOf(window.recommend_pool_box))
-                self.assertLess(layout.indexOf(window.recommend_pool_box), layout.indexOf(window.recommend_controls_section))
-                self.assertLess(layout.indexOf(window.recommend_controls_section), layout.indexOf(window.recommend_dispatch_splitter))
-                self.assertLess(layout.indexOf(window.recommend_decision_summary_box), layout.indexOf(window.recommend_summary_splitter))
+                self.assertLess(layout.indexOf(window.recommend_decision_summary_box), layout.indexOf(window.recommend_stage_summary_frame))
+                self.assertLess(layout.indexOf(window.recommend_stage_summary_frame), layout.indexOf(window.recommend_workflow_tabs))
+                self.assertEqual(window.recommend_workflow_tabs.count(), 3)
+                self.assertEqual(window.recommend_workflow_tabs.tabText(0), "机会总览")
+                self.assertEqual(window.recommend_workflow_tabs.tabText(1), "执行审查")
+                self.assertEqual(window.recommend_workflow_tabs.tabText(2), "深度洞察")
             finally:
                 window.close()
                 app.processEvents()
@@ -6586,7 +8770,7 @@ class StrategyWorkflowTests(unittest.TestCase):
                 window.close()
                 app.processEvents()
 
-    def test_qt_window_detail_recap_precedes_metrics_box(self) -> None:
+    def test_qt_window_detail_workspace_splits_into_stage_tabs(self) -> None:
         if importlib.util.find_spec("PySide6") is None:
             self.skipTest("PySide6 is not installed in the current interpreter")
         with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
@@ -6598,18 +8782,129 @@ class StrategyWorkflowTests(unittest.TestCase):
             try:
                 window.tabs.setCurrentWidget(window.detail_tab)
                 app.processEvents()
-                layout = window.detail_workspace_scroll_area.widget().layout()
-                self.assertLess(layout.indexOf(window.detail_recap_splitter), layout.indexOf(window.detail_metrics_box))
+                self.assertTrue(hasattr(window, "detail_stage_tabs"))
+                self.assertEqual(window.detail_stage_tabs.count(), 3)
+                self.assertEqual(window.detail_stage_tabs.tabText(0), "单票总览")
+                self.assertEqual(window.detail_stage_tabs.tabText(1), "信号与交易")
+                self.assertEqual(window.detail_stage_tabs.tabText(2), "历史战法")
             finally:
                 window.close()
                 app.processEvents()
 
-    def test_qt_window_board_candidate_and_monitor_share_horizontal_splitter(self) -> None:
+    def test_qt_window_detail_workspace_places_summary_before_tabs_and_tools(self) -> None:
         if importlib.util.find_spec("PySide6") is None:
             self.skipTest("PySide6 is not installed in the current interpreter")
         with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
             from PySide6.QtWidgets import QApplication
-            from PySide6.QtCore import Qt
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.tabs.setCurrentWidget(window.detail_tab)
+                app.processEvents()
+                scroll = getattr(window, "detail_workspace_scroll_area", None)
+                layout = scroll.widget().layout() if scroll is not None and scroll.widget() is not None else window.detail_tab.layout()
+                self.assertLess(layout.indexOf(window.detail_desk_summary_frame), layout.indexOf(window.detail_summary_box))
+                self.assertLess(layout.indexOf(window.detail_summary_box), layout.indexOf(window.detail_stage_tabs))
+                self.assertLess(layout.indexOf(window.detail_stage_tabs), layout.indexOf(window.detail_tool_panel))
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_scanner_workspace_splits_into_stage_tabs(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.tabs.setCurrentWidget(window.scanner_tab)
+                app.processEvents()
+                self.assertTrue(hasattr(window, "scanner_stage_tabs"))
+                self.assertEqual(window.scanner_stage_tabs.count(), 3)
+                self.assertEqual(window.scanner_stage_tabs.tabText(0), "扫描榜")
+                self.assertEqual(window.scanner_stage_tabs.tabText(1), "观察池")
+                self.assertEqual(window.scanner_stage_tabs.tabText(2), "盘中监控")
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_paper_workspace_splits_into_stage_tabs(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.tabs.setCurrentWidget(window.paper_tab)
+                app.processEvents()
+                self.assertTrue(hasattr(window, "paper_stage_tabs"))
+                self.assertEqual(window.paper_stage_tabs.count(), 3)
+                self.assertEqual(window.paper_stage_tabs.tabText(0), "实验总览")
+                self.assertEqual(window.paper_stage_tabs.tabText(1), "持仓与交割")
+                self.assertEqual(window.paper_stage_tabs.tabText(2), "战法与巡航")
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_recommend_stage_summary_tracks_current_subview(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.tabs.setCurrentWidget(window.recommend_tab)
+                app.processEvents()
+                self.assertEqual(window.recommend_stage_summary_title.text(), "机会总览")
+                window.recommend_workflow_tabs.setCurrentIndex(2)
+                app.processEvents()
+                self.assertEqual(window.recommend_stage_summary_title.text(), "深度洞察")
+                self.assertIn("主线", window.recommend_stage_summary_subtitle.text())
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_broker_workspace_splits_into_stage_tabs(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.tabs.setCurrentWidget(window.broker_tab)
+                app.processEvents()
+                layout = window.broker_scroll_area.widget().layout()
+                self.assertTrue(hasattr(window, "broker_stage_tabs"))
+                self.assertLess(layout.indexOf(window.broker_stage_label), layout.indexOf(window.broker_stage_summary_frame))
+                self.assertLess(layout.indexOf(window.broker_stage_summary_frame), layout.indexOf(window.broker_stage_tabs))
+                self.assertEqual(window.broker_stage_tabs.count(), 4)
+                self.assertEqual(window.broker_stage_tabs.tabText(0), "执行总览")
+                self.assertEqual(window.broker_stage_tabs.tabText(1), "委托提交")
+                self.assertEqual(window.broker_stage_tabs.tabText(2), "回执复盘")
+                self.assertEqual(window.broker_stage_tabs.tabText(3), "接入维护")
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_board_workspace_splits_into_stage_tabs(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
 
             module = importlib.import_module("app_qt")
             app = QApplication.instance() or QApplication([])
@@ -6617,9 +8912,507 @@ class StrategyWorkflowTests(unittest.TestCase):
             try:
                 window.tabs.setCurrentWidget(window.board_tab)
                 app.processEvents()
-                self.assertTrue(hasattr(window, "board_workspace_splitter"))
-                self.assertEqual(window.board_workspace_splitter.orientation(), Qt.Horizontal)
-                self.assertEqual(window.board_workspace_splitter.count(), 2)
+                self.assertTrue(hasattr(window, "board_stage_tabs"))
+                self.assertEqual(window.board_stage_tabs.count(), 2)
+                self.assertEqual(window.board_stage_tabs.tabText(0), "候选总览")
+                self.assertEqual(window.board_stage_tabs.tabText(1), "回封监控")
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_broker_stage_summary_tracks_current_subview(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.tabs.setCurrentWidget(window.broker_tab)
+                app.processEvents()
+                self.assertEqual(window.broker_stage_summary_title.text(), "执行总览")
+                window.broker_stage_tabs.setCurrentIndex(3)
+                app.processEvents()
+                self.assertEqual(window.broker_stage_summary_title.text(), "接入维护")
+                self.assertIn("接入", window.broker_stage_summary_subtitle.text())
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_overview_primary_flow_follows_configured_order(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.tabs.setCurrentWidget(window.overview_tab)
+                app.processEvents()
+                layout = window.overview_scroll_area.widget().layout()
+                self.assertLess(layout.indexOf(window.market_focus_summary_box), layout.indexOf(window.dashboard_metrics_box))
+                self.assertLess(layout.indexOf(window.overview_summary_box), layout.indexOf(window.overview_desk_summary_frame))
+                self.assertLess(layout.indexOf(window.overview_desk_summary_frame), layout.indexOf(window.dashboard_metrics_box))
+                self.assertLess(layout.indexOf(window.dashboard_metrics_box), layout.indexOf(window.overview_stage_container))
+                self.assertLess(layout.indexOf(window.overview_stage_container), layout.indexOf(window.overview_cockpit_box))
+                self.assertLess(layout.indexOf(window.overview_cockpit_box), layout.indexOf(window.overview_playbook_box))
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_shell_header_copy_uses_compact_terminal_language(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                self.assertEqual(window.shell_product_eyebrow.text(), "A-SHARE TRADING DESK")
+                self.assertEqual(window.shell_product_subtitle.text(), "结构 / 主线 / 温度")
+                self.assertIn("状态", window.shell_pulse_meta.text())
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_workspace_status_banners_use_terminal_pattern(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                terminal_texts = [
+                    window.auth_status_banner.text(),
+                    window.paper_status_banner.text(),
+                    window.detail_status_banner.text(),
+                    window.broker_status_banner.text(),
+                    window.recommend_status_label.text(),
+                    window.scanner_status_banner.text(),
+                    window.board_status_banner.text(),
+                    window.config_status_banner.text(),
+                ]
+                for text in terminal_texts:
+                    self.assertIn("下一步", text)
+                self.assertIn("总览状态", window.market_status_label.text())
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_monitor_summary_seed_copy_uses_review_language(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                self.assertIn("当前结论：继续复核", window.monitor_summary_text.toPlainText())
+                self.assertIn("下一步：", window.monitor_summary_text.toPlainText())
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_recommend_seed_copy_uses_review_language(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                self.assertIn("当前结论：继续复核", window.daily_pool_text.toPlainText())
+                self.assertIn("当前结论：继续复核", window.strategy_path_text.toPlainText())
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_recommend_decision_summary_box_reserves_space_for_cta_row(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.resize(956, 271)
+                window.tabs.setCurrentWidget(window.recommend_tab)
+                window.recommend_decision_summary_text.setPlainText(
+                    "\n".join(
+                        [
+                            "单票：亨通光电 (600487 / SHSE.600487)",
+                            "",
+                            "决策快照：进入观察名单 | 只观察 | 风险 待评估",
+                            "执行提示：先盯确认信号，不急着送审或下动作。（原动作为 观察 | 链路 待观察）",
+                            "关键价位：买点 15.18 | 止损 14.42 | 目标 16.39",
+                            "价格计划：买点 15.18 止损 14.42 目标 16.39 | 上行 8.0% | 盈亏比 1.60",
+                            "逻辑 / 题材：龙头模型 | 主力净流入 / 主力净额 16.9... -> 龙头模型 -> 技术面 45 | 位置 72 | 持续性 60...",
+                            "失效条件：跌破 14.65 或高位爆量转弱立即退守",
+                        ]
+                    )
+                )
+                app.processEvents()
+
+                button_budget = max(
+                    button.height()
+                    for button in (
+                        window.recommend_push_focus_button,
+                        window.recommend_detail_focus_button,
+                        window.recommend_broker_focus_button,
+                    )
+                )
+                content_budget = (
+                    window.recommend_decision_summary_text.height()
+                    + window.recommend_decision_summary_label.height()
+                    + button_budget
+                    + 36
+                )
+
+                self.assertGreaterEqual(
+                    window.recommend_decision_summary_box.maximumHeight(),
+                    window.recommend_decision_summary_box.minimumHeight(),
+                )
+                self.assertGreaterEqual(window.recommend_decision_summary_box.height(), content_budget)
+                self.assertEqual(
+                    window.recommend_decision_summary_box.maximumHeight(),
+                    window.recommend_decision_summary_box.height(),
+                )
+                self.assertEqual(window.recommend_decision_summary_text.maximumHeight(), window.recommend_decision_summary_text.height())
+                self.assertLess(window.recommend_decision_summary_box.height(), 400)
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_recommend_focus_review_box_reserves_space_for_action_row(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtTest import QTest
+            from PySide6.QtWidgets import QApplication, QGroupBox
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.resize(956, 271)
+                window.tabs.setCurrentWidget(window.recommend_tab)
+                window.recommend_focus_review_text.setPlainText(
+                    "\n".join(
+                        [
+                            "首选动作：先看确认信号 | 等待主线与价格计划同步",
+                            "辅助消息面：",
+                            "逻辑 / 题材：龙头模型 | 主线延续但执行准备未达标",
+                            "近期消息：暂无已接入的消息催化，先保留主线逻辑与下一步动作。",
+                            "补充：这是一段更长的说明，用来模拟消息面、逻辑面和下一步合并后在窄宽度下的真实占用。",
+                        ]
+                    )
+                )
+                if hasattr(window, "_sync_recommend_focus_review_geometry_v77"):
+                    window._sync_recommend_focus_review_geometry_v77()
+                QTest.qWait(260)
+                app.processEvents()
+
+                focus_box = window.recommend_focus_review_text.parentWidget()
+                while focus_box is not None and not isinstance(focus_box, QGroupBox):
+                    focus_box = focus_box.parentWidget()
+
+                self.assertIsNotNone(focus_box)
+                self.assertEqual(window.recommend_focus_review_text.maximumHeight(), window.recommend_focus_review_text.height())
+                self.assertGreaterEqual(window.recommend_focus_review_text.height(), 176)
+                self.assertEqual(focus_box.maximumHeight(), focus_box.height())
+                self.assertGreaterEqual(
+                    focus_box.height(),
+                    window.recommend_focus_review_text.height() + window.recommend_news_source_button.height() + 40,
+                )
+                self.assertLess(focus_box.height(), 380)
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_prime_recommend_workspace_defaults_uses_review_language(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+
+        class DummyCard:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, str]] = []
+
+            def set_data(self, headline: str, detail: str) -> None:
+                self.calls.append((headline, detail))
+
+        summary_cards = {key: DummyCard() for key in ("logic", "plan", "pulse", "holding")}
+        focus_labels = {key: module.QLabel() for key in ("symbol", "theme", "action", "execution")}
+        focus_accents = {key: module.QLabel() for key in ("symbol", "theme", "action", "execution")}
+        window = SimpleNamespace(
+            recommend_status_label=module.QLabel(),
+            recommend_focus_metric_labels=focus_labels,
+            recommend_focus_metric_accents=focus_accents,
+            recommend_summary_cards=summary_cards,
+            _set_label_text_if_changed=lambda widget, text: widget.setText(text) if widget.text() != text else None,
+        )
+
+        module.QuantHunterWindow._prime_recommend_workspace_defaults(window)
+
+        self.assertIn("继续复核", focus_accents["theme"].text())
+        self.assertIn("继续复核", focus_accents["action"].text())
+        self.assertIn("继续复核", focus_accents["execution"].text())
+        for card in summary_cards.values():
+            self.assertTrue(card.calls)
+            self.assertIn("当前结论：继续复核", card.calls[-1][1])
+
+    def test_prime_broker_workspace_defaults_uses_review_language(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+
+        class DummyCard:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, str]] = []
+
+            def set_data(self, headline: str, detail: str) -> None:
+                self.calls.append((headline, detail))
+
+        broker_labels = {key: module.QLabel() for key in ("readiness", "capital", "risk_reward", "risk_budget")}
+        broker_accents = {key: module.QLabel() for key in ("readiness", "capital", "risk_reward", "risk_budget")}
+        order_labels = {key: module.QLabel() for key in ("symbol", "gate", "risk", "position")}
+        order_accents = {key: module.QLabel() for key in ("symbol", "gate", "risk", "position")}
+        overview_cards = {key: DummyCard() for key in ("theme", "source", "capital", "decision")}
+        window = SimpleNamespace(
+            broker_metric_labels=broker_labels,
+            broker_metric_accents=broker_accents,
+            broker_order_metric_labels=order_labels,
+            broker_order_metric_accents=order_accents,
+            overview_summary_cards=overview_cards,
+            _set_label_text_if_changed=lambda widget, text: widget.setText(text) if widget.text() != text else None,
+        )
+
+        module.QuantHunterWindow._prime_broker_workspace_defaults(window)
+
+        self.assertIn("继续复核", broker_accents["readiness"].text())
+        self.assertIn("继续复核", broker_accents["risk_budget"].text())
+        self.assertIn("继续复核", order_accents["gate"].text())
+        self.assertIn("继续复核", order_accents["risk"].text())
+        for card in overview_cards.values():
+            self.assertTrue(card.calls)
+            self.assertIn("当前结论：继续复核", card.calls[-1][1])
+
+    def test_qt_window_terminal_table_governance_uses_alignment_delegate_and_dense_rows(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.current_density = "compact"
+                window._set_density_combo_value("compact")
+                window._sync_terminal_density_ui()
+                window._apply_layout_polish_v19()
+                app.processEvents()
+                self.assertIsInstance(window.market_pool_table, module.TerminalTableWidget)
+                self.assertIsInstance(window.daily_pool_table, module.TerminalTableWidget)
+                self.assertIsInstance(window.orders_table, module.TerminalTableWidget)
+                self.assertIsInstance(window.execution_table, module.TerminalTableWidget)
+                self.assertIsInstance(window.scan_table, module.TerminalTableWidget)
+                self.assertIsInstance(window.board_table, module.TerminalTableWidget)
+                self.assertIsInstance(window.market_pool_table.itemDelegate(), module.TerminalColumnAlignmentDelegate)
+                self.assertIsInstance(window.daily_pool_table.itemDelegate(), module.TerminalColumnAlignmentDelegate)
+                self.assertIsInstance(window.orders_table.itemDelegate(), module.TerminalColumnAlignmentDelegate)
+                self.assertIsInstance(window.execution_table.itemDelegate(), module.TerminalColumnAlignmentDelegate)
+                self.assertIsInstance(window.scan_table.itemDelegate(), module.TerminalColumnAlignmentDelegate)
+                self.assertIsInstance(window.board_table.itemDelegate(), module.TerminalColumnAlignmentDelegate)
+                self.assertEqual(window.market_pool_table.property("pageTone"), "overview")
+                self.assertEqual(window.market_pool_table.empty_state_title(), "等待市场快照")
+                self.assertEqual(window.leader_table.property("pageTone"), "overview")
+                window.tabs.setCurrentWidget(window.recommend_tab)
+                app.processEvents()
+                self.assertEqual(window.daily_pool_table.property("pageTone"), "recommend")
+                self.assertEqual(window.daily_pool_table.empty_state_title(), "等待机会池")
+                window.tabs.setCurrentWidget(window.broker_tab)
+                app.processEvents()
+                self.assertEqual(window.orders_table.property("pageTone"), "broker")
+                self.assertEqual(window.execution_table.property("pageTone"), "broker")
+                self.assertIn("委托", window.orders_table.empty_state_hint())
+                self.assertIn("回执", window.execution_table.empty_state_title())
+                window.tabs.setCurrentWidget(window.scanner_tab)
+                app.processEvents()
+                self.assertEqual(window.scan_table.property("pageTone"), "scanner")
+                self.assertEqual(window.summary_table.property("pageTone"), "scanner")
+                self.assertEqual(window.monitor_table.property("pageTone"), "scanner")
+                window.tabs.setCurrentWidget(window.board_tab)
+                app.processEvents()
+                self.assertEqual(window.board_table.property("pageTone"), "board")
+                self.assertEqual(window.board_monitor_table.property("pageTone"), "board")
+                self.assertEqual(window.market_pool_table.verticalHeader().defaultSectionSize(), 56)
+                self.assertEqual(window.daily_pool_table.verticalHeader().defaultSectionSize(), 58)
+                self.assertEqual(window.orders_table.verticalHeader().defaultSectionSize(), 42)
+                self.assertEqual(window.execution_table.verticalHeader().defaultSectionSize(), 42)
+                self.assertEqual(window.scan_table.verticalHeader().defaultSectionSize(), 42)
+                self.assertEqual(window.board_table.verticalHeader().defaultSectionSize(), 42)
+                self.assertEqual(window.market_pool_table.horizontalHeaderItem(5).textAlignment(), int(module.Qt.AlignRight | module.Qt.AlignVCenter))
+                self.assertEqual(window.daily_pool_table.horizontalHeaderItem(4).textAlignment(), int(module.Qt.AlignLeft | module.Qt.AlignVCenter))
+                self.assertEqual(window.orders_table.horizontalHeaderItem(12).textAlignment(), int(module.Qt.AlignCenter))
+                self.assertEqual(window.scan_table.horizontalHeaderItem(8).textAlignment(), int(module.Qt.AlignRight | module.Qt.AlignVCenter))
+                self.assertEqual(window.board_table.horizontalHeaderItem(8).textAlignment(), int(module.Qt.AlignCenter))
+                self.assertIn("主线", window.daily_pool_table.horizontalHeaderItem(4).toolTip())
+                self.assertIn("风险灯", window.orders_table.horizontalHeaderItem(12).toolTip())
+                self.assertIn(5, window.market_pool_table._qh_terminal_alignment_delegate_v79._primary_numeric_columns)
+                self.assertIn(23, window.daily_pool_table._qh_terminal_alignment_delegate_v79._primary_numeric_columns)
+                self.assertIn(3, window.orders_table._qh_terminal_alignment_delegate_v79._primary_numeric_columns)
+                self.assertIn(5, window.execution_table._qh_terminal_alignment_delegate_v79._primary_numeric_columns)
+                self.assertIn(8, window.scan_table._qh_terminal_alignment_delegate_v79._primary_numeric_columns)
+                self.assertIn(9, window.board_table._qh_terminal_alignment_delegate_v79._primary_numeric_columns)
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_terminal_table_governance_hides_secondary_columns_on_compact_width(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.resize(1120, 820)
+                window.current_density = "compact"
+                window._set_density_combo_value("compact")
+                window._sync_terminal_density_ui()
+                window.tabs.setCurrentWidget(window.recommend_tab)
+                window._apply_layout_polish_v19()
+                app.processEvents()
+                self.assertTrue(window.daily_pool_table.isColumnHidden(10))
+                self.assertEqual(window.daily_pool_table.horizontalHeaderItem(23).text(), "价格")
+                window.tabs.setCurrentWidget(window.broker_tab)
+                window._apply_layout_polish_v19()
+                app.processEvents()
+                self.assertTrue(window.orders_table.isColumnHidden(0))
+                self.assertEqual(window.orders_table.horizontalHeaderItem(11).text(), "原因")
+                window.tabs.setCurrentWidget(window.scanner_tab)
+                window._apply_layout_polish_v19()
+                app.processEvents()
+                self.assertTrue(window.scan_table.isColumnHidden(2))
+                self.assertIn(window.scan_table._qh_visibility_stage_v80, {"compact", "ultra"})
+                self.assertIn(window.scan_table.horizontalHeaderItem(8).text(), {"买点", "买"})
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_terminal_table_governance_uses_watch_density_priority_mapping(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.resize(1600, 900)
+                window.current_density = "watch"
+                window._set_density_combo_value("watch")
+                window._sync_terminal_density_ui()
+                window.tabs.setCurrentWidget(window.recommend_tab)
+                window._apply_layout_polish_v19()
+                app.processEvents()
+                self.assertIn(window.daily_pool_table._qh_visibility_stage_v80, {"watch", "ultra"})
+                self.assertTrue(window.daily_pool_table.isColumnHidden(9))
+                self.assertTrue(window.daily_pool_table.isColumnHidden(21))
+                window.tabs.setCurrentWidget(window.broker_tab)
+                window._apply_layout_polish_v19()
+                app.processEvents()
+                self.assertIn(window.orders_table._qh_visibility_stage_v80, {"watch", "ultra"})
+                self.assertTrue(window.orders_table.isColumnHidden(9))
+                self.assertEqual(window.orders_table.horizontalHeaderItem(11).text(), "原因")
+                window.tabs.setCurrentWidget(window.board_tab)
+                window._apply_layout_polish_v19()
+                app.processEvents()
+                self.assertIn(window.board_table._qh_visibility_stage_v80, {"watch", "ultra"})
+                self.assertTrue(window.board_table.isColumnHidden(3))
+                self.assertEqual(window.board_table.horizontalHeaderItem(9).text(), "买")
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_broker_desk_summary_sits_between_stage_banner_and_stage_tabs(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.tabs.setCurrentWidget(window.broker_tab)
+                app.processEvents()
+                layout = window.broker_scroll_area.widget().layout()
+                self.assertLess(layout.indexOf(window.broker_stage_label), layout.indexOf(window.broker_desk_summary_frame))
+                self.assertLess(layout.indexOf(window.broker_desk_summary_frame), layout.indexOf(window.broker_stage_summary_frame))
+                self.assertLess(layout.indexOf(window.broker_stage_summary_frame), layout.indexOf(window.broker_stage_tabs))
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_broker_primary_flow_places_setup_after_execution_core(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.tabs.setCurrentWidget(window.broker_tab)
+                app.processEvents()
+                layout = window.broker_scroll_area.widget().layout()
+                self.assertLess(layout.indexOf(window.broker_workspace_hero), layout.indexOf(window.broker_status_banner))
+                self.assertLess(layout.indexOf(window.broker_status_banner), layout.indexOf(window.broker_stage_label))
+                self.assertLess(layout.indexOf(window.broker_stage_label), layout.indexOf(window.broker_cockpit_section))
+                self.assertLess(layout.indexOf(window.broker_cockpit_section), layout.indexOf(window.broker_workbench_splitter))
+                self.assertLess(layout.indexOf(window.broker_workbench_splitter), layout.indexOf(window.broker_posttrade_section))
+                self.assertLess(layout.indexOf(window.broker_posttrade_section), layout.indexOf(window.broker_setup_drawer))
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_board_stage_summary_precedes_stage_tabs(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.tabs.setCurrentWidget(window.board_tab)
+                app.processEvents()
+                parent = window.board_stage_summary_frame.parentWidget()
+                layout = parent.layout() if parent is not None else None
+                self.assertIsNotNone(layout)
+                self.assertLess(layout.indexOf(window.board_stage_summary_frame), layout.indexOf(window.board_stage_tabs))
             finally:
                 window.close()
                 app.processEvents()
@@ -6636,7 +9429,7 @@ class StrategyWorkflowTests(unittest.TestCase):
             try:
                 app.processEvents()
                 tab_labels = [window.tabs.tabText(index) for index in range(window.tabs.count())]
-                self.assertEqual(tab_labels[:4], ["市场机会工作台", "统一登录", "每日推荐", "交易执行"])
+                self.assertEqual(tab_labels[:4], ["全局态势", "接入中心", "机会池", "执行中控"])
             finally:
                 window.close()
                 app.processEvents()
@@ -6655,10 +9448,204 @@ class StrategyWorkflowTests(unittest.TestCase):
                 self.assertIn("account_name", window.login_inputs)
                 self.assertIn("sdk_module", window.login_inputs)
                 self.assertIn("sdk_python_path", window.login_inputs)
+                self.assertTrue(hasattr(window, "auth_status_banner"))
+                self.assertTrue(hasattr(window, "auth_desk_summary_frame"))
+                self.assertTrue(hasattr(window, "auth_summary_box"))
+                self.assertTrue(hasattr(window, "auth_summary_metric_labels"))
                 auth_buttons = {button.text() for button in window.auth_tab.findChildren(module.QPushButton)}
                 self.assertIn("校验接入", auth_buttons)
-                self.assertIn("前往交易执行", auth_buttons)
+                self.assertIn("去交易", auth_buttons)
+                self.assertIn("看机会", auth_buttons)
                 self.assertNotIn("保存配置", auth_buttons)
+                auth_layout = window.auth_summary_box.parentWidget().layout()
+                self.assertLess(auth_layout.indexOf(window.auth_summary_box), auth_layout.indexOf(window.auth_capability_box))
+                self.assertLess(auth_layout.indexOf(window.auth_capability_box), auth_layout.indexOf(window.auth_form_box))
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_capability_boxes_share_metric_band_and_section_role(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                app.processEvents()
+                capability_boxes = [
+                    window.auth_capability_box,
+                    window.overview_capability_box,
+                    window.recommend_capability_box,
+                    window.broker_capability_box,
+                    window.scanner_capability_box,
+                    window.board_capability_box,
+                    window.detail_capability_box,
+                    window.paper_capability_box,
+                    window.config_capability_box,
+                ]
+                for box in capability_boxes:
+                    self.assertEqual(box.property("surfaceRole"), "metric-band")
+                    self.assertEqual(box.property("sectionRole"), "capability")
+
+                capability_maps = [
+                    window.auth_capability_cards,
+                    window.overview_capability_cards,
+                    window.recommend_capability_cards,
+                    window.broker_capability_cards,
+                    window.scanner_capability_cards,
+                    window.board_capability_cards,
+                    window.detail_capability_cards,
+                    window.paper_capability_cards,
+                    window.config_capability_cards,
+                ]
+                for capability_map in capability_maps:
+                    self.assertTrue(capability_map)
+                    first_card = next(iter(capability_map.values()))["card"]
+                    self.assertTrue(first_card.property("capabilityCard"))
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_qt_window_capability_box_buttons_use_short_terminal_verbs(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                app.processEvents()
+                button_texts = [
+                    next(iter(window.auth_capability_cards.values()))["button"].text(),
+                    next(iter(window.overview_capability_cards.values()))["button"].text(),
+                    next(iter(window.recommend_capability_cards.values()))["button"].text(),
+                    next(iter(window.broker_capability_cards.values()))["button"].text(),
+                    next(iter(window.scanner_capability_cards.values()))["button"].text(),
+                    next(iter(window.board_capability_cards.values()))["button"].text(),
+                    next(iter(window.detail_capability_cards.values()))["button"].text(),
+                    next(iter(window.paper_capability_cards.values()))["button"].text(),
+                    next(iter(window.config_capability_cards.values()))["button"].text(),
+                ]
+                for text in button_texts:
+                    self.assertTrue(text.startswith("看") or text.startswith("去"))
+                    self.assertFalse(text.startswith("打开"))
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_inject_scanner_action_row_uses_short_terminal_verbs(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        parent = module.QGroupBox()
+        layout = module.QVBoxLayout(parent)
+        scan_table = module.QTableWidget()
+        layout.addWidget(scan_table)
+        window = SimpleNamespace(
+            scan_table=scan_table,
+            open_monitor_symbol_in_overview=lambda: None,
+            open_monitor_symbol_in_recommend=lambda: None,
+            open_focus_symbol_in_detail=lambda: None,
+            _set_button_role=lambda button, role="ghost": setattr(button, "role", role),
+        )
+
+        module.QuantHunterWindow._inject_scanner_action_row(window)
+
+        row = parent.findChild(module.QFrame, "scannerTopActionRow")
+        self.assertIsNotNone(row)
+        row_buttons = row.findChildren(module.QPushButton)
+        buttons = [button.text() for button in row_buttons]
+        self.assertEqual(buttons, ["看总览", "看机会", "看复盘"])
+        self.assertEqual(row_buttons[1].property("routeActionKey"), "工具看推荐")
+
+    def test_set_capability_card_copy_applies_card_and_button_tooltips(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        card_widget = module.QFrame()
+        title = module.QLabel("测试")
+        headline = module.QLabel()
+        detail = module.QLabel()
+        meta = module.QLabel()
+        button = module.QPushButton()
+        cards = {
+            "demo": {
+                "card": card_widget,
+                "title": title,
+                "headline": headline,
+                "detail": detail,
+                "meta": meta,
+                "button": button,
+            }
+        }
+        window = SimpleNamespace(
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (widget.setText(text), widget.setToolTip(tooltip or "")),
+        )
+
+        module.QuantHunterWindow._set_capability_card_copy_v1(
+            window,
+            cards,
+            "demo",
+            headline="当前状态：已联动",
+            detail="焦点：龙头样本",
+            meta="入口：机会池 | 下一步：先核对主线",
+            button_text="看机会",
+        )
+
+        self.assertEqual(headline.text(), "当前状态：已联动")
+        self.assertIn("焦点：龙头样本", card_widget.toolTip())
+        self.assertIn("下一步：先核对主线", card_widget.toolTip())
+        self.assertIn("跳转到机会池", button.toolTip())
+        self.assertIn("入口：机会池", button.toolTip())
+
+    def test_message_event_route_uses_short_terminal_route_labels(self) -> None:
+        module = importlib.import_module("app_qt")
+        window = SimpleNamespace()
+
+        self.assertEqual(module.QuantHunterWindow._message_event_route(window, None), ("recommend", "daily_pool_table", "看机会"))
+        self.assertEqual(
+            module.QuantHunterWindow._message_event_route(window, module.SmartMessageEvent(timestamp="10:00:00", category="trade", title="交易回执", detail="", symbol="SZSE.300001", level="INFO")),
+            ("broker", "execution_table", "去交易"),
+        )
+        self.assertEqual(
+            module.QuantHunterWindow._message_event_route(window, module.SmartMessageEvent(timestamp="10:00:00", category="news", title="消息", detail="", symbol="", level="INFO")),
+            ("config", "news_source_status_text", "去配置"),
+        )
+
+    def test_qt_window_secondary_workspaces_add_judgment_strip_after_hero(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                app.processEvents()
+                self.assertTrue(hasattr(window, "paper_desk_summary_frame"))
+                self.assertTrue(hasattr(window, "detail_desk_summary_frame"))
+                self.assertTrue(hasattr(window, "board_desk_summary_frame"))
+                self.assertTrue(hasattr(window, "scanner_desk_summary_frame"))
+                self.assertTrue(hasattr(window, "scanner_status_banner"))
+                self.assertTrue(hasattr(window, "paper_summary_box"))
+                self.assertTrue(hasattr(window, "paper_summary_metric_labels"))
+                self.assertTrue(hasattr(window, "scanner_summary_box"))
+                self.assertTrue(hasattr(window, "scanner_summary_metric_labels"))
+                self.assertTrue(hasattr(window, "board_summary_box"))
+                self.assertTrue(hasattr(window, "board_summary_metric_labels"))
+                self.assertTrue(hasattr(window, "config_status_banner"))
+                self.assertTrue(hasattr(window, "config_desk_summary_frame"))
+                self.assertIn("实验判断", window.paper_desk_summary_title.text())
+                self.assertIn("复盘判断", window.detail_desk_summary_title.text())
+                self.assertIn("专项判断", window.board_desk_summary_title.text())
+                self.assertIn("扫描判断", window.scanner_desk_summary_title.text())
+                self.assertIn("配置判断", window.config_desk_summary_title.text())
             finally:
                 window.close()
                 app.processEvents()
@@ -6807,6 +9794,9 @@ class StrategyWorkflowTests(unittest.TestCase):
             window = module.QuantHunterWindow()
             try:
                 window.resize(1600, 900)
+                window.current_density = "compact"
+                window._set_density_combo_value("compact")
+                window._sync_terminal_density_ui()
                 window._apply_layout_polish_v19()
                 app.processEvents()
                 self.assertLessEqual(window.shell_header.maximumHeight(), 108)
@@ -6816,8 +9806,8 @@ class StrategyWorkflowTests(unittest.TestCase):
                 self.assertLessEqual(window.overview_command_text.maximumHeight(), 170)
                 self.assertLessEqual(window.overview_execution_text.maximumHeight(), 170)
                 self.assertLessEqual(window.overview_playbook_text.maximumHeight(), 130)
-                self.assertGreaterEqual(window.left_signal_tabs.maximumHeight(), 220)
-                self.assertLessEqual(window.left_signal_tabs.maximumHeight(), 280)
+                self.assertGreaterEqual(window.overview_signal_summary_column.maximumHeight(), 440)
+                self.assertLessEqual(window.overview_signal_summary_column.maximumHeight(), 520)
                 self.assertGreaterEqual(window.right_intel_tabs.maximumHeight(), 270)
                 self.assertLessEqual(window.right_intel_tabs.maximumHeight(), 340)
                 self.assertLessEqual(window.overview_chart_controls_tabs.maximumHeight(), 160)
@@ -6934,10 +9924,10 @@ class StrategyWorkflowTests(unittest.TestCase):
                 full_playbook = "\n".join(
                     [
                         "今天先做什么",
-                        "1. 先补齐登录配置：登录账号, 账户 ID, 策略 ID, SDK Token",
-                        "2. 再刷新市场和推荐池，确认主线与机会分层。",
-                        "3. 最后进入交易执行页复核委托、风险灯和仓位。",
-                        "4. 收盘后回到复盘页记录结论。",
+                        "1. 先补齐接入信息：登录账号, 账户 ID, 策略 ID, SDK Token",
+                        "2. 再刷新市场和机会池，确认主线与机会分层。",
+                        "3. 最后进入执行中控复核委托、风险灯和仓位。",
+                        "4. 收盘后去复盘页记录结论。",
                     ]
                 )
                 window._set_plain_text_if_changed(window.overview_command_text, full_command)
@@ -7037,7 +10027,6 @@ class StrategyWorkflowTests(unittest.TestCase):
                 window._apply_overview_tab_priority_v60(compact=True)
                 app.processEvents()
 
-                self.assertEqual(window.left_signal_tabs.currentIndex(), 0)
                 self.assertEqual(window.right_intel_tabs.currentIndex(), 2)
                 self.assertEqual(window.overview_primary_chart_tabs.currentIndex(), 1)
                 self.assertEqual(window.overview_mini_chart_tabs.currentIndex(), 1)
@@ -7325,8 +10314,12 @@ class StrategyWorkflowTests(unittest.TestCase):
                 self.assertIn("详情", window.recommend_news_detail_button.text())
                 self.assertIn("SZSE.300001", window.recommend_focus_banner.text())
                 self.assertIn("先看总览", window.recommend_focus_banner.text())
+                self.assertIn("当前状态", window.recommend_focus_banner.text())
+                self.assertIn("下一步", window.recommend_focus_banner.text())
                 self.assertIn("SZSE.300001", window.detail_focus_banner.text())
                 self.assertIn("先看总览", window.detail_focus_banner.text())
+                self.assertIn("当前状态", window.detail_focus_banner.text())
+                self.assertIn("下一步", window.detail_focus_banner.text())
             finally:
                 window.close()
                 app.processEvents()
@@ -7337,10 +10330,15 @@ class StrategyWorkflowTests(unittest.TestCase):
         _ = app
         window = SimpleNamespace(
             active_symbol="SZSE.300001",
+            market_pool_table=SimpleNamespace(rowCount=lambda: 4),
             daily_pool_table=SimpleNamespace(rowCount=lambda: 5),
+            board_table=SimpleNamespace(rowCount=lambda: 2),
+            board_monitor_table=SimpleNamespace(rowCount=lambda: 1),
             signal_table=SimpleNamespace(rowCount=lambda: 3),
             trades_table=SimpleNamespace(rowCount=lambda: 2),
+            overview_focus_banner=module.QLabel(),
             recommend_focus_banner=module.QLabel(),
+            board_focus_banner=module.QLabel(),
             detail_focus_banner=module.QLabel(),
             daily_pool_rows=[SimpleNamespace(symbol="SZSE.300001", primary_strategy="龙头模型", action="BUY")],
             scan_rows=[],
@@ -7351,7 +10349,7 @@ class StrategyWorkflowTests(unittest.TestCase):
             _focus_banner_tone=lambda symbol="", recommendation=None, scan_row=None: "buy",
             _display_action=lambda value: {"BUY": "买入", "WATCH": "观察", "SELL": "卖出"}.get(value, value),
             _news_focus_context_suffix=lambda symbol: " | 【消息驱动】",
-            _news_action_brief=lambda symbol="": "消息建议：先看推荐页",
+            _news_action_brief=lambda symbol="": "消息建议：先看机会池",
             _set_focus_banner_state=lambda banner, tone, text: banner.setText(text),
             _set_label_text_if_changed=lambda widget, text, tooltip=None: (
                 widget.setText(text),
@@ -7361,8 +10359,20 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         module.QuantHunterWindow._refresh_workspace_focus_banners(window)
 
-        self.assertIn("先看推荐页", window.recommend_focus_banner.text())
-        self.assertIn("先看推荐页", window.detail_focus_banner.text())
+        self.assertIn("下一步", window.overview_focus_banner.text())
+        self.assertIn("先看机会池", window.recommend_focus_banner.text())
+        self.assertIn("下一步", window.recommend_focus_banner.text())
+        self.assertIn("继续复核", window.board_focus_banner.text())
+        self.assertIn("先看机会池", window.detail_focus_banner.text())
+        self.assertIn("下一步", window.detail_focus_banner.text())
+        self.assertIn("当前状态：", window.recommend_focus_banner.toolTip())
+        self.assertIn("焦点：", window.recommend_focus_banner.toolTip())
+        self.assertIn("下一步：先看机会池", window.recommend_focus_banner.toolTip())
+        self.assertIn("交互：", window.recommend_focus_banner.toolTip())
+        self.assertIn("当前状态：", window.detail_focus_banner.toolTip())
+        self.assertIn("焦点：", window.detail_focus_banner.toolTip())
+        self.assertIn("下一步：先看机会池", window.detail_focus_banner.toolTip())
+        self.assertIn("交互：", window.detail_focus_banner.toolTip())
 
     def test_market_multi_timeframe_summary_helper(self) -> None:
         if importlib.util.find_spec("PySide6") is None:
@@ -7450,12 +10460,13 @@ class StrategyWorkflowTests(unittest.TestCase):
                 self.assertTrue(hasattr(window, "startup_loading_meta"))
                 self.assertFalse(window.startup_loading_frame.isHidden())
                 self.assertGreaterEqual(window.startup_loading_progress.value(), 0)
+                self.assertFalse(window.startup_loading_progress.isTextVisible())
                 self.assertNotEqual(window.startup_loading_label.text().strip(), "")
                 self.assertEqual(len(getattr(window, "startup_loading_skeletons", [])), 3)
                 window._set_startup_progress(77, "正在验证启动进度")
                 self.assertEqual(window.startup_loading_progress.value(), 77)
                 self.assertIn("启动进度", window.startup_loading_label.text())
-                self.assertIn("启动阶段", window.startup_loading_meta.text())
+                self.assertEqual(window.startup_loading_meta.text(), "启动阶段 3 / 4")
             finally:
                 window.close()
 
@@ -7474,11 +10485,11 @@ class StrategyWorkflowTests(unittest.TestCase):
                 self.assertEqual(splash.startup_loading_progress.minimum(), 0)
                 self.assertEqual(splash.startup_loading_progress.maximum(), 100)
                 self.assertGreaterEqual(splash.startup_loading_progress.value(), 0)
-                self.assertIn("%", splash.startup_loading_meta.text())
+                self.assertFalse(splash.startup_loading_progress.isTextVisible())
+                self.assertEqual(splash.startup_loading_meta.text(), "启动阶段 1 / 4")
                 splash.set_progress(63, "正在恢复启动进度条")
                 self.assertEqual(splash.startup_loading_progress.value(), 63)
-                self.assertIn("启动阶段", splash.startup_loading_meta.text())
-                self.assertIn("63%", splash.startup_loading_meta.text())
+                self.assertEqual(splash.startup_loading_meta.text(), "启动阶段 3 / 4")
                 self.assertIn("恢复启动进度条", splash.startup_loading_label.text())
             finally:
                 splash.close()
@@ -7547,9 +10558,10 @@ class StrategyWorkflowTests(unittest.TestCase):
                 app.processEvents()
                 splash.set_progress(63, "正在连接远程行情资源")
                 self.assertEqual(splash.startup_loading_progress.value(), 63)
+                self.assertFalse(splash.startup_loading_progress.isTextVisible())
                 self.assertEqual(splash.startup_loading_percent.text(), "63%")
                 self.assertIn("远程行情资源", splash.startup_loading_label.text())
-                self.assertIn("启动阶段", splash.startup_loading_meta.text())
+                self.assertEqual(splash.startup_loading_meta.text(), "启动阶段 3 / 4")
                 self.assertEqual(len(getattr(splash, "startup_loading_skeletons", [])), 3)
                 self.assertFalse(splash.startup_loading_logo.pixmap().isNull())
                 self.assertEqual(len(getattr(splash, "startup_stage_cards", [])), 4)
@@ -7795,18 +10807,18 @@ class StrategyWorkflowTests(unittest.TestCase):
         module.QuantHunterWindow._emit_action_feedback_v11(
             window,
             "机会池",
-            "复盘页 -> 机会池",
+            "复盘 -> 机会池",
             recommend_text="推荐状态：已同步焦点。",
-            broker_text="交易台：等待复核。",
+            broker_text="交易状态：继续复核。",
             scan_text="扫描状态：继续观察。",
         )
 
-        self.assertEqual(runtime_logs, ["页面联动：机会池 | 复盘页 -> 机会池"])
+        self.assertEqual(runtime_logs, ["页面联动：机会池 | 复盘 -> 机会池"])
         self.assertEqual(window.recommend_status_label.text(), "推荐状态：已同步焦点。")
-        self.assertEqual(window.broker_status_banner.text(), "交易台：等待复核。")
+        self.assertEqual(window.broker_status_banner.text(), "交易状态：继续复核。")
         self.assertEqual(window.scan_summary_label.text(), "扫描状态：继续观察。")
-        self.assertEqual(status_messages, [("最近动作：机会池 | 复盘页 -> 机会池", 5000)])
-        self.assertEqual(window._qh_last_action_feedback_v35, "最近动作：机会池 | 复盘页 -> 机会池")
+        self.assertEqual(status_messages, [("最近动作：机会池 | 复盘 -> 机会池", 5000)])
+        self.assertEqual(window._qh_last_action_feedback_v35, "最近动作：机会池 | 复盘 -> 机会池")
         self.assertEqual(refresh_calls, ["refresh", "statusbar"])
 
     def test_sync_pipeline_panels_updates_summary_counts(self) -> None:
@@ -7836,8 +10848,8 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(window.recommend_live_summary_headline.text(), "推荐态势")
         self.assertIn("已生成 1 只机会候选", window.recommend_live_summary_detail.text())
         self.assertEqual(window.broker_live_summary_headline.text(), "交易态势")
-        self.assertEqual(window.broker_live_summary_detail.text(), "委托建议 3 笔，提交记录 1 笔。")
-        self.assertEqual(window.broker_live_summary_meta.text(), "下一步：复核委托后再确认提交。")
+        self.assertEqual(window.broker_live_summary_detail.text(), "委托建议 3 笔，提交记录 1 笔 | 审查 继续复核。")
+        self.assertEqual(window.broker_live_summary_meta.text(), "当前结论：继续复核 | 下一步：复核委托后再进确认弹窗提交。")
 
     def test_board_mode_engine_builds_candidates(self) -> None:
         sample_dir = self._temp_dir() / "board_universe_v2"
@@ -9022,6 +12034,7 @@ class StrategyWorkflowTests(unittest.TestCase):
                     }
                 ],
                 market_chart_action_note_history_index=0,
+                recommend_review_splitter_sizes=[420, 420, 620],
             ),
         )
         self.addCleanup(lambda: state_path.unlink(missing_ok=True))
@@ -9047,6 +12060,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(len(restored.market_chart_action_note_history), 1)
         self.assertEqual(restored.market_chart_action_note_history[0]["history_summary"], "买点")
         self.assertEqual(restored.market_chart_action_note_history_index, 0)
+        self.assertEqual(restored.recommend_review_splitter_sizes, [420, 420, 620])
 
     def test_load_app_state_normalizes_risk_profile(self) -> None:
         state_path = self._temp_dir() / "app_state_risk_profile.json"
@@ -10488,20 +13502,46 @@ class StrategyWorkflowTests(unittest.TestCase):
             market_capital_text=module.QTextEdit(),
             market_decision_text=module.QTextEdit(),
             market_open_news_button=module.QPushButton(),
+            overview_top_news_text=module.QTextEdit(),
+            overview_top_ai_text=module.QTextEdit(),
+            overview_top_news_source_button=module.QPushButton(),
+            overview_top_news_detail_button=module.QPushButton(),
+            overview_top_ai_run_button=module.QPushButton(),
+            overview_top_ai_panel_button=module.QPushButton(),
             news_catalysts={"SZSE.300001": [news_item]},
             _stock_name_for_symbol=lambda symbol: "龙头样本",
             _stock_profile_for_symbol=lambda symbol: SimpleNamespace(notes="公告驱动后转成主线博弈"),
             _news_digest_lines_for_symbol=lambda symbol, limit=2: [f"- {news_item.title} (财联社 / 可信度 B级)"],
+            _latest_news_item_for_symbol=lambda symbol: news_item if symbol == "SZSE.300001" else None,
+            ai_review_results_by_symbol={"SZSE.300001": SimpleNamespace(summary="继续跟踪，但别追高。")},
+            ai_review_pending_symbol="",
+            ai_review_last_symbol="SZSE.300001",
+            ai_review_last_error="",
+            _current_ai_review_config=lambda: SimpleNamespace(model="gpt-5.4", api_key="secret"),
             _update_news_action_button=lambda button, item: module.QuantHunterWindow._update_news_action_button(
                 SimpleNamespace(
+                    _set_button_role=lambda target, role="ghost": setattr(target, "role", role),
                     _news_action_label=lambda current: module.QuantHunterWindow._news_action_label(SimpleNamespace(), current),
                     _news_item_tooltip=lambda current: module.QuantHunterWindow._news_item_tooltip(SimpleNamespace(), current),
                 ),
                 button,
                 item,
             ),
+            _update_news_detail_button=lambda button, item: module.QuantHunterWindow._update_news_detail_button(
+                SimpleNamespace(
+                    _set_button_role=lambda target, role="ghost": setattr(target, "role", role),
+                    _news_detail_label=lambda current: module.QuantHunterWindow._news_detail_label(SimpleNamespace(), current),
+                    _news_item_tooltip=lambda current: module.QuantHunterWindow._news_item_tooltip(SimpleNamespace(), current),
+                ),
+                button,
+                item,
+            ),
             _set_note_panel_tone_v5=lambda widget, tone: None,
+            _set_note_panel_content_if_changed=lambda widget, text, highlight_text="", highlight_title="", highlight_tone="watch": widget.setPlainText(text),
             _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+        )
+        window._refresh_overview_left_intel_cards = lambda symbol, snapshot, recommendation: module.QuantHunterWindow._refresh_overview_left_intel_cards(
+            window, symbol, snapshot, recommendation
         )
 
         module.QuantHunterWindow._update_market_text_panels(window, "SZSE.300001", None, row)
@@ -10512,8 +13552,12 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn("消息层级：媒体催化", window.market_capital_text.toPlainText())
         self.assertIn("财联社", window.market_capital_text.toPlainText())
         self.assertIn("炒作逻辑", window.market_decision_text.toPlainText())
-        self.assertEqual(window.market_open_news_button.text(), "查看媒体原文")
+        self.assertEqual(window.market_open_news_button.text(), "看媒体原文")
         self.assertIn("分层：媒体催化", window.market_open_news_button.toolTip())
+        self.assertIn("结论：媒体催化 | 可信度 B级", window.overview_top_news_text.toPlainText())
+        self.assertIn("来源：财联社 | 2026-04-16 09:31", window.overview_top_news_text.toPlainText())
+        self.assertIn("结论：最近已评测 龙头样本", window.overview_top_ai_text.toPlainText())
+        self.assertIn("继续跟踪，但别追高。", window.overview_top_ai_text.toPlainText())
 
     def test_update_market_text_panels_v5_skips_repeated_same_signature(self) -> None:
         module = importlib.import_module("app_qt")
@@ -10626,7 +13670,7 @@ class StrategyWorkflowTests(unittest.TestCase):
                 "decision": DummyCard("decision"),
             },
             _display_mainline_role=lambda role: "核心龙头",
-            _news_recommended_action=lambda item: ("recommend", "先看推荐页", "这类催化更适合先看机会分层"),
+            _news_recommended_action=lambda item: ("recommend", "先看机会池", "这类催化更适合先看机会分层"),
             _prepend_card_badge=lambda label, symbol: f"[badge]{label}",
         )
 
@@ -10695,7 +13739,7 @@ class StrategyWorkflowTests(unittest.TestCase):
             market_breadth_text=module.QTextEdit(),
             news_catalysts={"SHSE.600000": [news_item]},
             _set_note_panel_tone_v5=lambda widget, tone: None,
-            _news_recommended_action=lambda item: ("recommend", "先看推荐页", "这类催化更适合先看机会分层"),
+            _news_recommended_action=lambda item: ("recommend", "先看机会池", "这类催化更适合先看机会分层"),
             _news_digest_lines_for_symbol=lambda symbol, limit=2: [f"- [已公告] {news_item.title}"],
             _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
         )
@@ -10703,9 +13747,43 @@ class StrategyWorkflowTests(unittest.TestCase):
         module._qh_populate_market_depth_texts_v5(window, [top_row])
 
         text = window.market_breadth_text.toPlainText()
-        self.assertIn("建议：先看推荐页 | 这类催化更适合先看机会分层", text)
-        self.assertIn("结论：已公告 | 可信度 A级", text)
-        self.assertIn("焦点：浦发银行", text)
+        self.assertIn("消息分层/可信度：已公告 | 可信度 A级", text)
+        self.assertIn("炒作逻辑：利润分配预案 -> 银行修复 -> 分红稳住预期，资金回流", text)
+        self.assertIn("验证焦点：分红预案 | 偏稳健催化 | 盯承接和量能", text)
+
+    def test_populate_market_depth_texts_v5_surfaces_hype_logic_when_latest_news_missing(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        top_row = SimpleNamespace(
+            symbol="SZSE.300001",
+            stock_name="龙头样本",
+            mainline_tag="机器人",
+            theme_name="机器人",
+            strategy_tag="龙头模型",
+            catalyst="订单催化强化",
+            rationale="辨识度和承接都在前排",
+            next_focus="盯换手和回封质量",
+            mainline_risk_flag="中",
+            pct_change=6.2,
+        )
+        window = SimpleNamespace(
+            market_buy_text=module.QTextEdit(),
+            market_sell_text=module.QTextEdit(),
+            market_breadth_text=module.QTextEdit(),
+            news_catalysts={},
+            _set_note_panel_tone_v5=lambda widget, tone: None,
+            _news_recommended_action=lambda item: ("recommend", "先看盘口承接", "当前还没有可靠消息源，先按盘口和主线验证"),
+            _news_digest_lines_for_symbol=lambda symbol, limit=2: [],
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+        )
+
+        module._qh_populate_market_depth_texts_v5(window, [top_row])
+
+        text = window.market_breadth_text.toPlainText()
+        self.assertIn("消息分层/可信度：消息线索 | 可信度 待确认", text)
+        self.assertIn("炒作逻辑：订单催化强化 -> 机器人 -> 辨识度和承接都在前排", text)
+        self.assertIn("验证焦点：暂无已接入的最近消息，先按 龙头样本 的主线逻辑复核。 | 盯换手和回封质量", text)
 
     def test_populate_market_depth_texts_v5_skips_repeated_same_signature(self) -> None:
         module = importlib.import_module("app_qt")
@@ -10741,7 +13819,7 @@ class StrategyWorkflowTests(unittest.TestCase):
             market_breadth_text=module.QTextEdit(),
             news_catalysts={"SHSE.600000": [news_item]},
             _set_note_panel_tone_v5=lambda widget, tone: None,
-            _news_recommended_action=lambda item: ("recommend", "先看推荐页", "这类催化更适合先看机会分层"),
+            _news_recommended_action=lambda item: ("recommend", "先看机会池", "这类催化更适合先看机会分层"),
             _news_digest_lines_for_symbol=lambda symbol, limit=2: [f"- [已公告] {news_item.title}"],
             _set_plain_text_if_changed=record_set,
         )
@@ -10811,8 +13889,8 @@ class StrategyWorkflowTests(unittest.TestCase):
             _news_workflow_snapshot_lines=lambda symbol="": [
                 "- 当前焦点：龙头样本 (300001 / SZSE.300001)",
                 "- 当前消息：已公告 | 利润分配方案公告",
-                "- 建议动作：先看推荐页 -> 推荐页",
-                "- 原文状态：可打开原文",
+                "- 建议动作：先看机会池 -> 机会池",
+            "- 原文状态：可看原文",
             ],
             _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
         )
@@ -10825,7 +13903,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn("已载入股票：2 只", text)
         self.assertIn("当前状态：示例消息源已载入 4 条消息", text)
         self.assertIn("当前消息工作流", text)
-        self.assertIn("建议动作：先看推荐页 -> 推荐页", text)
+        self.assertIn("建议动作：先看机会池 -> 机会池", text)
         self.assertIn("iteration-84-message-workflow-manual-checklist.md", text)
 
     def test_candidate_symbols_for_news_source_prioritizes_focus_and_watchlist(self) -> None:
@@ -12410,13 +15488,14 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn("结论：Risk Demo | 卖出 | 先改数量", focus_window.broker_order_focus_text.text)
         self.assertIn("风险：主线 延续偏强 / 加速 | 继续跟", focus_window.broker_order_focus_text.text)
         self.assertIn("下一步：卖出数量超过可卖仓位，先改数量再提交。", focus_window.broker_order_focus_text.text)
+        self.assertIn("审查结论：谨慎推进", focus_window.broker_order_focus_text.text)
         self.assertIn("组合影响：预计释放 1,200 资金 | 可卖 40", focus_window.broker_order_focus_text.text)
         self.assertIn("缓解动作：优先确认这是止盈或风控动作", focus_window.broker_order_focus_text.text)
         self.assertIn("阻塞项：卖出数量超过可卖仓位", focus_window.broker_order_focus_text.text)
         self.assertIn("可卖信息：可卖 40", focus_window.broker_order_focus_text.text)
         self.assertIn("委托焦点", focus_window.orders_focus_label.text)
         self.assertIn("状态 继续跟", focus_window.orders_focus_label.text)
-        self.assertIn("下一步 优先退出", focus_window.orders_focus_label.text)
+        self.assertIn("审查 谨慎推进", focus_window.orders_focus_label.text)
 
     def test_refresh_broker_execution_panel_surfaces_portfolio_fit_review(self) -> None:
         from quant_hunter import ui_refresh
@@ -12496,6 +15575,7 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         ui_refresh.refresh_broker_execution_panel(window, summary)
 
+        self.assertIn("当前结论：谨慎推进", window.broker_gate_summary_text.value)
         self.assertIn("适配 谨慎", window.broker_gate_summary_text.value)
         self.assertIn("组合适配：通过 0 | 谨慎 1 | 拦截 0", window.broker_execution_text.value)
         self.assertIn("均值适配 52", window.broker_execution_summary_metric_accents["portfolio"].value)
@@ -12668,14 +15748,15 @@ class StrategyWorkflowTests(unittest.TestCase):
         submitted = module._qh_recommend_cta_labels_v37(can_submit=False, can_open_broker=True, execution_state="已提交")
         blocked = module._qh_recommend_cta_labels_v37(can_submit=False, can_open_broker=False, execution_state="待观察")
 
-        self.assertEqual(ready["push"], "进入送审")
-        self.assertEqual(ready["broker"], "打开交易执行")
-        self.assertEqual(reviewing["push"], "查看送审中")
-        self.assertEqual(reviewing["broker"], "查看交易链路")
-        self.assertEqual(submitted["push"], "查看已提交")
-        self.assertEqual(submitted["broker"], "查看交易回执")
-        self.assertEqual(blocked["push"], "暂不送审")
-        self.assertEqual(blocked["broker"], "暂不进交易")
+        self.assertEqual(ready["push"], "送审")
+        self.assertEqual(ready["detail"], "看复盘")
+        self.assertEqual(ready["broker"], "进交易")
+        self.assertEqual(reviewing["push"], "看送审")
+        self.assertEqual(reviewing["broker"], "看交易")
+        self.assertEqual(submitted["push"], "看已提")
+        self.assertEqual(submitted["broker"], "看回执")
+        self.assertEqual(blocked["push"], "暂缓送审")
+        self.assertEqual(blocked["broker"], "暂缓进交易")
 
     def test_broker_link_copy_distinguishes_review_submit_and_failure(self) -> None:
         module = importlib.import_module("app_qt")
@@ -12792,11 +15873,11 @@ class StrategyWorkflowTests(unittest.TestCase):
             has_intent=False,
         )
 
-        self.assertEqual(blocked["headline"], "回推荐页复核")
+        self.assertEqual(blocked["headline"], "回机会池复核")
         self.assertIn("主线", blocked["detail"])
-        self.assertEqual(pending["route"], "交易页")
+        self.assertEqual(pending["route"], "执行中控")
         self.assertIn("盯回执", pending["headline"])
-        self.assertEqual(filled["route"], "复盘页")
+        self.assertEqual(filled["route"], "复盘")
         self.assertIn("执行偏差", filled["detail"])
 
     def test_broker_repair_hint_distinguishes_capital_risk_and_channel_blockers(self) -> None:
@@ -12908,9 +15989,9 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         self.assertEqual(channel["target"], "账户配置")
         self.assertIn("东方财富", channel["detail"])
-        self.assertEqual(recommend["target"], "推荐页")
+        self.assertEqual(recommend["target"], "机会池")
         self.assertIn("重生成委托", recommend["detail"])
-        self.assertEqual(review["target"], "复盘页")
+        self.assertEqual(review["target"], "复盘")
         self.assertIn("复盘", review["detail"])
 
     def test_broker_terminal_brief_compresses_visible_status_copy(self) -> None:
@@ -12922,13 +16003,13 @@ class StrategyWorkflowTests(unittest.TestCase):
             stage="待成交跟踪",
             mainline_signal="继续跟",
             parameter_headline="买点偏高",
-            resolution_target="推荐页",
+            resolution_target="机会池",
         )
 
-        self.assertEqual(brief["status"], "交易状态：宁德时代 300750 | 待成交跟踪 | 去推荐页")
+        self.assertEqual(brief["status"], "交易状态：宁德时代 300750 | 待成交跟踪 | 去机会池")
         self.assertIn("主线 继续跟", brief["workbench"])
-        self.assertEqual(brief["stage"], "执行阶段：待成交跟踪 | 主线 继续跟 | 去推荐页")
-        self.assertEqual(brief["focus"], "执行焦点：宁德时代 | 买点偏高 | 去推荐页")
+        self.assertEqual(brief["stage"], "执行阶段：待成交跟踪 | 主线 继续跟 | 去机会池")
+        self.assertEqual(brief["focus"], "执行焦点：宁德时代 | 买点偏高 | 去机会池")
 
     def test_broker_panel_conclusion_surfaces_stage_and_resolution_in_one_line(self) -> None:
         module = importlib.import_module("app_qt")
@@ -12956,7 +16037,7 @@ class StrategyWorkflowTests(unittest.TestCase):
             stage="待成交跟踪",
             parameter_headline="买点偏高",
             repair_headline="先收缩仓位",
-            resolution_target="推荐页",
+            resolution_target="机会池",
         )
 
         self.assertEqual(deck["symbol_value"], "宁德时代")
@@ -12965,9 +16046,9 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(deck["gate_accent"], "继续跟 / 强化中")
         self.assertEqual(deck["risk_value"], "买点偏高")
         self.assertEqual(deck["risk_accent"], "先收缩仓位")
-        self.assertEqual(deck["position_value"], "去推荐页")
+        self.assertEqual(deck["position_value"], "去机会池")
         self.assertEqual(deck["position_accent"], "买入 2400 @ 182.50")
-        self.assertEqual(deck["headline"], "执行动作面板：宁德时代 | 待成交跟踪 | 去推荐页")
+        self.assertEqual(deck["headline"], "执行动作面板：宁德时代 | 待成交跟踪 | 去机会池")
 
     def test_broker_focus_shortcuts_sync_blocker_and_priority_tooltips(self) -> None:
         module = importlib.import_module("app_qt")
@@ -12986,7 +16067,7 @@ class StrategyWorkflowTests(unittest.TestCase):
             blocker_present=False,
             blocker_hint="先复核参数",
             parameter_headline="买点偏高",
-            resolution_target="推荐页",
+            resolution_target="机会池",
         )
 
         self.assertIn("阻塞优先", blocked["blocker_tooltip"])
@@ -12994,7 +16075,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn("前排暂缓", blocked["priority_tooltip"])
         self.assertIn("待成交跟踪", tracking["blocker_tooltip"])
         self.assertIn("买点偏高", tracking["priority_tooltip"])
-        self.assertIn("推荐页", tracking["priority_tooltip"])
+        self.assertIn("机会池", tracking["priority_tooltip"])
 
     def test_broker_action_strip_labels_follow_execution_stage(self) -> None:
         module = importlib.import_module("app_qt")
@@ -13055,14 +16136,14 @@ class StrategyWorkflowTests(unittest.TestCase):
             has_focus_symbol=True,
         )
 
-        self.assertEqual(cold["generate_text"], "生成委托链路")
-        self.assertEqual(cold["confirm_text"], "确认并提交委托")
-        self.assertEqual(ready["generate_text"], "重算委托链路")
-        self.assertEqual(ready["confirm_text"], "核对后提交 (3)")
-        self.assertEqual(blocked["generate_text"], "按阻塞重生成")
+        self.assertEqual(cold["generate_text"], "生成委托")
+        self.assertEqual(cold["confirm_text"], "确认提交")
+        self.assertEqual(ready["generate_text"], "重算委托")
+        self.assertEqual(ready["confirm_text"], "复核后提交 (3)")
+        self.assertEqual(blocked["generate_text"], "按阻塞重算")
         self.assertEqual(blocked["confirm_text"], "修正后提交 (2)")
-        self.assertEqual(in_flight["generate_text"], "围绕焦点重生成")
-        self.assertEqual(in_flight["confirm_text"], "核对后提交 (1)")
+        self.assertEqual(in_flight["generate_text"], "围绕焦点重算")
+        self.assertEqual(in_flight["confirm_text"], "复核后提交 (1)")
 
     def test_broker_primary_cta_tooltips_follow_stage_and_focus(self) -> None:
         module = importlib.import_module("app_qt")
@@ -13086,12 +16167,12 @@ class StrategyWorkflowTests(unittest.TestCase):
             stock_name="宁德时代",
         )
 
-        self.assertIn("自动生成委托建议", cold["generate_tooltip"])
-        self.assertIn("请先从推荐池生成委托建议", cold["confirm_tooltip"])
-        self.assertIn("按最新阻塞项重生成", blocked["generate_tooltip"])
+        self.assertIn("第一批委托链路", cold["generate_tooltip"])
+        self.assertIn("请先从机会池生成委托链路", cold["confirm_tooltip"])
+        self.assertIn("按最新阻塞项重算委托链路", blocked["generate_tooltip"])
         self.assertIn("请先修正阻塞项", blocked["confirm_tooltip"])
         self.assertIn("宁德时代", in_flight["generate_tooltip"])
-        self.assertIn("再次核对后提交", in_flight["confirm_tooltip"])
+        self.assertIn("再次复核后提交", in_flight["confirm_tooltip"])
 
     def test_broker_submission_focus_signature_captures_record_and_context(self) -> None:
         module = importlib.import_module("app_qt")
@@ -13171,16 +16252,16 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         module._qh_update_broker_action_flow_v26(window)
 
-        self.assertEqual(window.broker_focus_blocker_button.text(), "定位阻塞")
-        self.assertEqual(window.broker_focus_priority_button.text(), "定位高优先")
+        self.assertEqual(window.broker_focus_blocker_button.text(), "定位阻塞项")
+        self.assertEqual(window.broker_focus_priority_button.text(), "定位优先委托")
         self.assertEqual(window.generate_order_suggestions_button.text(), "生成委托链路")
         self.assertEqual(window.confirm_submit_orders_button.text(), "确认并提交委托")
         self.assertEqual(window.generate_order_suggestions_button.role, "accent")
         self.assertEqual(window.confirm_submit_orders_button.role, "ghost")
         self.assertIn("当前没有阻塞项", window.broker_focus_blocker_button.toolTip())
-        self.assertIn("当前没有高优先委托", window.broker_focus_priority_button.toolTip())
-        self.assertIn("自动生成委托建议", window.generate_order_suggestions_button.toolTip())
-        self.assertIn("请先从推荐池生成委托建议", window.confirm_submit_orders_button.toolTip())
+        self.assertIn("当前没有优先委托", window.broker_focus_priority_button.toolTip())
+        self.assertIn("第一批委托链路", window.generate_order_suggestions_button.toolTip())
+        self.assertIn("请先从机会池生成委托链路", window.confirm_submit_orders_button.toolTip())
 
     def test_update_broker_action_flow_promotes_generate_when_focus_symbol_synced(self) -> None:
         module = importlib.import_module("app_qt")
@@ -13227,10 +16308,12 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         module._qh_update_broker_action_flow_v26(window)
 
-        self.assertEqual(window.generate_order_suggestions_button.text(), "为焦点生成委托")
+        self.assertIn("焦点", window.generate_order_suggestions_button.text())
+        self.assertIn("委托", window.generate_order_suggestions_button.text())
         self.assertEqual(window.generate_order_suggestions_button.role, "accent")
         self.assertEqual(window.confirm_submit_orders_button.role, "ghost")
         self.assertIn("龙头样本", window.generate_order_suggestions_button.toolTip())
+        self.assertIn("当前结论：继续复核", window.generate_order_suggestions_button.toolTip())
         self.assertIn("已同步 龙头样本", window.broker_status_banner.text())
         self.assertIn("已同步 龙头样本", window.broker_execution_text.toPlainText())
         self.assertIn("围绕 龙头样本 生成委托链路", window.broker_detail_status_label.text())
@@ -13325,6 +16408,8 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(calls["refresh_focus"], 1)
         self.assertEqual(calls["refresh_submission"], 1)
         self.assertIn("优先关注 龙头样本", window.orders_focus_label.text())
+        self.assertIn("审查 继续复核", window.orders_focus_label.text())
+        self.assertIn("当前结论：继续复核", calls["status_extra"])
         self.assertIn("已围绕 龙头样本 生成 2 笔委托建议", calls["status_extra"])
 
     def test_update_broker_action_flow_personalizes_confirm_tooltip_with_focus_impact(self) -> None:
@@ -13379,6 +16464,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(window.confirm_submit_orders_button.role, "accent")
         self.assertIn("当前焦点：龙头样本", window.confirm_submit_orders_button.toolTip())
         self.assertIn("单笔资金占用 20.0%/25.0%", window.confirm_submit_orders_button.toolTip())
+        self.assertIn("当前结论：谨慎推进", window.confirm_submit_orders_button.toolTip())
         self.assertIn("优先复核 龙头样本", window.broker_status_banner.text())
 
     def test_update_broker_action_flow_gates_sync_and_validate_buttons(self) -> None:
@@ -13494,6 +16580,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         ui_refresh.refresh_trade_recap(window)
 
         self.assertIn("优先复核龙头样本回执", window.broker_recap_text.toPlainText())
+        self.assertIn("当前结论：继续复核", window.broker_recap_text.toPlainText())
 
     def test_refresh_trade_recap_updates_summary_cards_when_present(self) -> None:
         from quant_hunter import ui_refresh
@@ -13540,7 +16627,7 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         ui_refresh.refresh_trade_recap(window)
 
-        self.assertEqual(window.broker_recap_metric_labels["verdict"].text(), "待复盘")
+        self.assertEqual(window.broker_recap_metric_labels["verdict"].text(), "继续复核")
         self.assertIn("延续偏强", window.broker_recap_metric_labels["mainline"].text())
         self.assertIn("龙头样本", window.broker_recap_metric_accents["action"].text())
 
@@ -13640,17 +16727,17 @@ class StrategyWorkflowTests(unittest.TestCase):
                 "tooltip": "待成交跟踪",
             },
         ), patch.object(
-            module, "_qh_broker_execution_followup_v42", return_value={"headline": "盯回执", "detail": "继续跟踪", "route": "交易页"}
+            module, "_qh_broker_execution_followup_v42", return_value={"headline": "盯回执", "detail": "继续跟踪", "route": "执行中控"}
         ), patch.object(
             module, "_qh_broker_repair_hint_v43", return_value={"headline": "先跟踪", "detail": "继续观察", "checkpoint": "等待回执"}
         ), patch.object(
             module, "_qh_broker_parameter_alignment_v46", return_value={"headline": "价格贴合计划", "detail": "继续执行", "checkpoint": "核对价格"}
         ), patch.object(
-            module, "_qh_broker_resolution_action_v47", return_value={"target": "交易页", "detail": "继续跟踪回执"}
+            module, "_qh_broker_resolution_action_v47", return_value={"target": "执行中控", "detail": "继续跟踪回执"}
         ), patch.object(
             module, "_qh_broker_terminal_brief_v48", return_value={"stage": "执行阶段：待成交跟踪", "focus": "执行焦点：龙头样本", "status": "交易状态：龙头样本"}
         ), patch.object(
-            module, "_qh_broker_panel_conclusion_v49", return_value="结论：待成交跟踪 / 价格贴合计划 / 去交易页"
+            module, "_qh_broker_panel_conclusion_v49", return_value="结论：待成交跟踪 / 价格贴合计划 / 去交易"
         ), patch.object(
             module,
             "_qh_broker_execution_deck_v50",
@@ -13673,8 +16760,10 @@ class StrategyWorkflowTests(unittest.TestCase):
             module._qh_refresh_submission_focus_v26(window)
 
         self.assertIn("执行回放 / 说明", window.order_result_text.toPlainText())
+        self.assertIn("当前结论：继续复核", window.order_result_text.toPlainText())
         self.assertIn("下一步：继续盯回执", window.order_result_text.toPlainText())
         self.assertIn("龙头样本 | 待成交跟踪", window.broker_replay_event_labels["current"].text())
+        self.assertIn("结论 继续复核", window.broker_replay_event_accents["current"].text())
         self.assertIn("下一步 继续盯回执", window.broker_replay_event_accents["current"].text())
         self.assertIn("跟随样本", window.broker_replay_event_labels["previous"].text())
         self.assertTrue(window.broker_replay_action_buttons["current"].isEnabled())
@@ -13683,6 +16772,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertTrue(window.broker_replay_event_cards["current"].property("replaySelected"))
         self.assertEqual(window.broker_replay_event_cards["current"].property("spotlight"), "watch")
         self.assertIn("龙头样本", window.broker_recap_text.toPlainText())
+        self.assertIn("当前结论：继续复核", window.broker_recap_text.toPlainText())
         self.assertIn("数量较计划减少 200", window.broker_recap_text.toPlainText())
 
     def test_refresh_detail_workspace_panels_prefers_order_focus_symbol(self) -> None:
@@ -13771,6 +16861,177 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn("下一步：SUBMITTED / PENDING", window.detail_execution_text.toPlainText())
         self.assertIn("复盘结论", window.detail_conclusion_text.toPlainText())
 
+    def test_refresh_detail_workspace_panels_content_signal_only_state_guides_back_to_recommendation(self) -> None:
+        runtime = importlib.import_module("quant_hunter.ui_workspace_runtime")
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        latest_signal = SimpleNamespace(
+            date="2026-04-18",
+            label="RECLAIM_LONG",
+            score=87.0,
+            reason="量价共振，等待主线和计划位确认",
+        )
+        window = SimpleNamespace(
+            metrics_text=module.QTextEdit(),
+            detail_summary_metric_labels={key: module.QLabel("--") for key in ("theme", "execution", "risk", "next")},
+            detail_summary_metric_accents={key: module.QLabel("--") for key in ("theme", "execution", "risk", "next")},
+            detail_decision_text=module.QTextEdit(),
+            detail_execution_text=module.QTextEdit(),
+            detail_conclusion_text=module.QTextEdit(),
+            _display_action=lambda value: {"BUY": "买入", "WATCH": "观察", "SELL": "卖出"}.get(value, value),
+            _display_label=lambda value: {"RECLAIM_LONG": "回踩转强"}.get(value, value),
+            _display_order_status=lambda value: value,
+            _display_fill_status=lambda value: value,
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip) if tooltip is not None and hasattr(widget, "setToolTip") else None,
+            ),
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+        )
+
+        runtime.refresh_detail_workspace_panels_content(
+            window,
+            symbol="SZSE.300001",
+            stock_name="龙头样本",
+            stock_id="300001",
+            recommendation=None,
+            latest_signal=latest_signal,
+            selected_signal=None,
+            selected_trade=None,
+            selected_strategy_name="",
+            selected_strategy_trade=None,
+            order_intent=None,
+            execution_row=None,
+            strategy_history_summary=None,
+            compare_rows=[],
+            chart_action_note={},
+            recommendation_strategy_name_fn=lambda recommendation: "主策略",
+        )
+
+        self.assertIn("当前状态：已同步信号，但计划与主线决策还没完全形成。", window.detail_decision_text.toPlainText())
+        self.assertIn("下一步：先回机会池确认主线、计划价位和动作建议，再决定是否值得推进。", window.detail_decision_text.toPlainText())
+        self.assertIn("当前状态：先有信号，复盘结论还没形成闭环。", window.detail_conclusion_text.toPlainText())
+        self.assertIn("下一步：先回机会池确认主线与计划，再判断这笔票到底该不该做。", window.detail_conclusion_text.toPlainText())
+        self.assertIn("当前状态：已同步信号，但计划与执行链路还没完全挂回。", window.metrics_text.toPlainText())
+
+    def test_refresh_detail_workspace_panels_content_order_intent_without_execution_guides_to_broker(self) -> None:
+        runtime = importlib.import_module("quant_hunter.ui_workspace_runtime")
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        order_intent = OrderIntent(
+            symbol="SZSE.300001",
+            side="BUY",
+            price=10.0,
+            quantity=1000,
+            stop_price=9.6,
+            target_price=10.8,
+            signal_date="2026-04-18",
+            reason="focus",
+        )
+        window = SimpleNamespace(
+            metrics_text=module.QTextEdit(),
+            detail_summary_metric_labels={key: module.QLabel("--") for key in ("theme", "execution", "risk", "next")},
+            detail_summary_metric_accents={key: module.QLabel("--") for key in ("theme", "execution", "risk", "next")},
+            detail_decision_text=module.QTextEdit(),
+            detail_execution_text=module.QTextEdit(),
+            detail_conclusion_text=module.QTextEdit(),
+            _display_action=lambda value: {"BUY": "买入", "WATCH": "观察", "SELL": "卖出"}.get(value, value),
+            _display_label=lambda value: value,
+            _display_order_status=lambda value: value,
+            _display_fill_status=lambda value: value,
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip) if tooltip is not None and hasattr(widget, "setToolTip") else None,
+            ),
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+        )
+
+        runtime.refresh_detail_workspace_panels_content(
+            window,
+            symbol="SZSE.300001",
+            stock_name="龙头样本",
+            stock_id="300001",
+            recommendation=None,
+            latest_signal=None,
+            selected_signal=None,
+            selected_trade=None,
+            selected_strategy_name="",
+            selected_strategy_trade=None,
+            order_intent=order_intent,
+            execution_row=None,
+            strategy_history_summary=None,
+            compare_rows=[],
+            chart_action_note={},
+            recommendation_strategy_name_fn=lambda recommendation: "主策略",
+        )
+
+        self.assertIn("当前状态：委托建议已生成，但提交与回执还没同步。", window.detail_execution_text.toPlainText())
+        self.assertIn("下一步：去交易核对价格、数量和风控，再决定是否送审或提交。", window.detail_execution_text.toPlainText())
+
+    def test_refresh_detail_workspace_panels_content_history_only_state_guides_to_fill_today_chain(self) -> None:
+        runtime = importlib.import_module("quant_hunter.ui_workspace_runtime")
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        history_summary = SimpleNamespace(
+            strategy_name="主升策略",
+            total_return=0.21,
+            win_rate=0.58,
+            max_drawdown=0.09,
+            filled_ratio=0.67,
+            avg_hold_days=3.2,
+            profit_factor=1.6,
+            payoff_ratio=1.3,
+            max_consecutive_wins=4,
+            max_consecutive_losses=2,
+            execution_quality_label="中性",
+            execution_quality_score=0.91,
+            execution_review_summary="更适合等承接确认后再推进。",
+        )
+        window = SimpleNamespace(
+            metrics_text=module.QTextEdit(),
+            detail_summary_metric_labels={key: module.QLabel("--") for key in ("theme", "execution", "risk", "next")},
+            detail_summary_metric_accents={key: module.QLabel("--") for key in ("theme", "execution", "risk", "next")},
+            detail_decision_text=module.QTextEdit(),
+            detail_execution_text=module.QTextEdit(),
+            detail_conclusion_text=module.QTextEdit(),
+            _display_action=lambda value: {"BUY": "买入", "WATCH": "观察", "SELL": "卖出"}.get(value, value),
+            _display_label=lambda value: value,
+            _display_order_status=lambda value: value,
+            _display_fill_status=lambda value: value,
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip) if tooltip is not None and hasattr(widget, "setToolTip") else None,
+            ),
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+        )
+
+        runtime.refresh_detail_workspace_panels_content(
+            window,
+            symbol="SZSE.300001",
+            stock_name="龙头样本",
+            stock_id="300001",
+            recommendation=None,
+            latest_signal=None,
+            selected_signal=None,
+            selected_trade=None,
+            selected_strategy_name="",
+            selected_strategy_trade=None,
+            order_intent=None,
+            execution_row=None,
+            strategy_history_summary=history_summary,
+            compare_rows=[],
+            chart_action_note={},
+            recommendation_strategy_name_fn=lambda recommendation: "主策略",
+        )
+
+        self.assertIn("当前状态：历史画像已就绪，但今天这只票的信号、计划和执行还没完全联动。", window.metrics_text.toPlainText())
+        self.assertIn("当前状态：只有历史画像，今天这只票的决策链路还没补齐。", window.detail_decision_text.toPlainText())
+        self.assertIn("当前状态：历史画像已就绪，但今天这只票的实时链路还没完全补齐。", window.detail_conclusion_text.toPlainText())
+        self.assertIn("下一步：先用历史画像校准预期，再补齐今天的信号、计划和执行链路。", window.detail_conclusion_text.toPlainText())
+
     def test_refresh_detail_workspace_panels_skips_repeated_same_signature(self) -> None:
         module = importlib.import_module("app_qt")
         app = module.QApplication.instance() or module.QApplication([])
@@ -13857,6 +17118,45 @@ class StrategyWorkflowTests(unittest.TestCase):
         module._qh_refresh_detail_workspace_panels(window)
 
         self.assertEqual(calls, first_counts)
+
+    def test_refresh_detail_workspace_panels_resets_empty_state_when_no_focus(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        calls = {"summary": 0, "focus": 0}
+        window = SimpleNamespace(
+            metrics_text=module.QTextEdit(),
+            detail_summary_metric_labels={key: module.QLabel("stale") for key in ("theme", "execution", "risk", "next")},
+            detail_summary_metric_accents={key: module.QLabel("stale") for key in ("theme", "execution", "risk", "next")},
+            detail_decision_text=module.QTextEdit(),
+            detail_execution_text=module.QTextEdit(),
+            detail_conclusion_text=module.QTextEdit(),
+            active_symbol="",
+            order_intents=[],
+            _selected_order_intent=lambda: None,
+            _explicit_recommendation_focus=lambda: None,
+            _refresh_live_workspace_summary_panels=lambda: calls.__setitem__("summary", calls["summary"] + 1),
+            _refresh_workspace_focus_banners=lambda: calls.__setitem__("focus", calls["focus"] + 1),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text) if hasattr(widget, "text") and widget.text() != text else None,
+                widget.setToolTip(tooltip) if tooltip is not None and hasattr(widget, "setToolTip") and widget.toolTip() != tooltip else None,
+            ),
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text) if widget.toPlainText() != text else None,
+        )
+        window.metrics_text.setPlainText("stale metrics")
+        window.detail_decision_text.setPlainText("stale decision")
+        window.detail_execution_text.setPlainText("stale execution")
+        window.detail_conclusion_text.setPlainText("stale conclusion")
+
+        module.QuantHunterWindow._refresh_detail_workspace_panels(window)
+
+        self.assertIn("状态：待同步焦点", window.metrics_text.toPlainText())
+        self.assertIn("状态：待同步焦点", window.detail_decision_text.toPlainText())
+        self.assertIn("当前结论：继续复核", window.detail_execution_text.toPlainText())
+        self.assertIn("当前结论：待复盘", window.detail_conclusion_text.toPlainText())
+        self.assertEqual(window.detail_summary_metric_labels["theme"].text(), "待同步")
+        self.assertEqual(window.detail_summary_metric_labels["execution"].text(), "待执行")
+        self.assertEqual(calls, {"summary": 1, "focus": 1})
 
     def test_workspace_focus_capsule_uses_same_stage_copy_across_pages(self) -> None:
         module = importlib.import_module("app_qt")
@@ -14142,9 +17442,9 @@ class StrategyWorkflowTests(unittest.TestCase):
             paper_trading_state=PaperTradingState(enabled=False),
             last_scan_warnings=[],
             last_broker_execution_summary={},
-            _qh_last_action_feedback_v35="最近动作：机会池 | 复盘页 -> 机会池",
+            _qh_last_action_feedback_v35="最近动作：机会池 | 复盘 -> 机会池",
             _qh_shell_focus_preferred_actions_v51={},
-            _workspace_name_for_index=lambda index: "每日推荐",
+            _workspace_name_for_index=lambda index: "机会池",
             _is_job_running=lambda name: False,
             _selected_order_intent=lambda: focus_intent,
             _explicit_recommendation_focus=lambda: focus_row,
@@ -14173,16 +17473,16 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         self.assertIn("龙头样本", shell_focus_chip["value"].text())
         self.assertIn("待提交", shell_focus_chip["value"].text())
-        self.assertIn("动作 机会池 | 复盘页 ->", shell_focus_chip["value"].text())
+        self.assertIn("动作 机会池 | 复盘 ->", shell_focus_chip["value"].text())
         self.assertIn("推荐焦点：龙头样本", shell_focus_chip["value"].toolTip())
         self.assertIn("价格计划", shell_focus_chip["value"].toolTip())
         self.assertIn("委托建议", shell_focus_chip["value"].toolTip())
         self.assertIn("入场 10.00 | 止损 9.60 | 目标 10.80", shell_focus_chip["value"].toolTip())
         self.assertIn("委托建议：买入 1000 股 @ 10.00", shell_focus_chip["value"].toolTip())
-        self.assertIn("最近动作：机会池 | 复盘页 -> 机会池", shell_focus_chip["value"].toolTip())
+        self.assertIn("最近动作：机会池 | 复盘 -> 机会池", shell_focus_chip["value"].toolTip())
         self.assertIn("焦点状态：龙头样本", shell_focus_hover_content.text())
         self.assertIn("价格计划", shell_focus_hover_content.text())
-        self.assertEqual(shell_focus_hover_recommend_button.text(), "看推荐")
+        self.assertEqual(shell_focus_hover_recommend_button.text(), "看机会")
         self.assertTrue(shell_focus_hover_recommend_button.isEnabled())
         self.assertIn("围绕当前焦点继续处理", shell_focus_hover_recommend_button.toolTip())
         self.assertEqual(shell_focus_hover_recommend_button.role, "accent")
@@ -14234,7 +17534,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         )
         calls: list[tuple[str, str]] = []
         window = SimpleNamespace(
-            _qh_last_action_feedback_v35="最近动作：交易页 | 复盘页 -> 交易执行",
+            _qh_last_action_feedback_v35="最近动作：执行中控 | 复盘 -> 执行中控",
             _selected_order_intent=lambda: None,
             _explicit_recommendation_focus=lambda: focus_row,
             _selected_symbol_from_watchlist=lambda: "",
@@ -14248,6 +17548,57 @@ class StrategyWorkflowTests(unittest.TestCase):
         module._qh_on_shell_chip_clicked_v47(window, "shell_focus_chip")
 
         self.assertEqual(calls, [("broker", "SZSE.300001")])
+
+    def test_shell_focus_chip_click_surfaces_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        focus_row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-15",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.6,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=77.0,
+            persistence_score=82.0,
+            news_score=73.0,
+            leader_score=90.0,
+            total_score=88.0,
+        )
+        refresh_calls: list[str] = []
+        window = SimpleNamespace(
+            _qh_last_action_feedback_v35="最近动作：机会池 | 复盘 -> 机会池",
+            _selected_order_intent=lambda: None,
+            _explicit_recommendation_focus=lambda: focus_row,
+            _selected_symbol_from_watchlist=lambda: "",
+            _selected_board_symbol=lambda: "",
+            daily_pool_rows=[focus_row],
+            order_intents=[],
+            order_submission_records=[],
+            _focus_symbol_in_recommend_workspace=lambda symbol: None,
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            recommend_status_label=module.QLabel(),
+        )
+
+        module._qh_on_shell_chip_clicked_v47(window, "shell_focus_chip")
+
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("已根据shell 焦点定位 龙头样本 (300001)", window.recommend_status_label.text())
+        self.assertIn("当前结论：继续复核", window.recommend_status_label.text())
+        self.assertIn("核对主线、计划和消息", window.recommend_status_label.text())
 
     def test_focus_banner_click_routes_to_expected_workspace_focus(self) -> None:
         module = importlib.import_module("app_qt")
@@ -14290,6 +17641,71 @@ class StrategyWorkflowTests(unittest.TestCase):
             [("recommend", "SZSE.300001"), ("broker", "SZSE.300001"), ("detail", "SZSE.300001")],
         )
 
+    def test_focus_banner_click_surfaces_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        focus_row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-15",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.6,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=77.0,
+            persistence_score=82.0,
+            news_score=73.0,
+            leader_score=90.0,
+            total_score=88.0,
+        )
+        refresh_calls: list[str] = []
+        window = SimpleNamespace(
+            active_symbol="",
+            daily_pool_rows=[focus_row],
+            order_intents=[],
+            order_submission_records=[],
+            _selected_order_intent=lambda: None,
+            _explicit_recommendation_focus=lambda: focus_row,
+            _selected_symbol_from_watchlist=lambda: "",
+            _selected_board_symbol=lambda: "",
+            _focus_symbol_in_recommend_workspace=lambda symbol: None,
+            _focus_symbol_in_broker_workspace=lambda symbol: None,
+            open_focus_symbol_in_detail=lambda: None,
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            recommend_status_label=module.QLabel(),
+            broker_status_banner=module.QLabel(),
+            detail_hint_title_label=module.QLabel(),
+        )
+
+        module._qh_on_focus_banner_clicked_v41(window, "overview_focus_banner")
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("已根据焦点横条定位 龙头样本 (300001)", window.recommend_status_label.text())
+        self.assertIn("当前结论：继续复核", window.recommend_status_label.text())
+
+        refresh_calls.clear()
+        module._qh_on_focus_banner_clicked_v41(window, "recommend_focus_banner")
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("已根据焦点横条定位 龙头样本 (300001)", window.broker_status_banner.text())
+        self.assertIn("当前结论：继续复核", window.broker_status_banner.text())
+
+        refresh_calls.clear()
+        module._qh_on_focus_banner_clicked_v41(window, "detail_focus_banner")
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("已根据焦点横条定位 龙头样本 (300001)", window.detail_hint_title_label.text())
+        self.assertIn("当前结论：继续复核", window.detail_hint_title_label.text())
+
     def test_focus_banner_menu_actions_include_execution_when_record_exists(self) -> None:
         module = importlib.import_module("app_qt")
         focus_row = RecommendationRow(
@@ -14321,10 +17737,10 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         actions = module._qh_focus_banner_menu_actions_v42(window, "recommend_focus_banner")
 
-        self.assertIn(("查看推荐焦点", "recommend"), actions)
-        self.assertIn(("查看交易焦点", "broker"), actions)
-        self.assertIn(("查看复盘焦点", "detail"), actions)
-        self.assertIn(("查看提交回执", "execution"), actions)
+        self.assertIn(("看机会焦点", "recommend"), actions)
+        self.assertIn(("看交易焦点", "broker"), actions)
+        self.assertIn(("看复盘焦点", "detail"), actions)
+        self.assertIn(("看提交回执", "execution"), actions)
 
     def test_run_focus_banner_action_execution_routes_to_submission_table(self) -> None:
         module = importlib.import_module("app_qt")
@@ -14366,6 +17782,55 @@ class StrategyWorkflowTests(unittest.TestCase):
             [("broker", "SZSE.300001"), ("execution", "SZSE.300001"), ("broker", "execution_table")],
         )
 
+    def test_run_focus_banner_action_surfaces_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        focus_row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-15",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.6,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=77.0,
+            persistence_score=82.0,
+            news_score=73.0,
+            leader_score=90.0,
+            total_score=88.0,
+        )
+        window = SimpleNamespace(
+            active_symbol="",
+            daily_pool_rows=[focus_row],
+            order_intents=[],
+            order_submission_records=[{"symbol": "SZSE.300001"}],
+            _selected_order_intent=lambda: None,
+            _explicit_recommendation_focus=lambda: focus_row,
+            _selected_symbol_from_watchlist=lambda: "",
+            _selected_board_symbol=lambda: "",
+            _focus_symbol_in_broker_workspace=lambda symbol: None,
+            _select_execution_row_for_symbol=lambda symbol: True,
+            _navigate_to_workspace=lambda workspace, widget=None, select_row=None: None,
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            broker_status_banner=module.QLabel(),
+        )
+
+        module._qh_run_focus_banner_action_v42(window, "execution")
+
+        self.assertIn("已根据焦点菜单定位到回执区", window.broker_status_banner.text())
+        self.assertIn("当前结论：继续复核", window.broker_status_banner.text())
+        self.assertIn("继续看回执、成交和执行偏差", window.broker_status_banner.text())
+
     def test_set_aux_stage_visibility_updates_toggle_and_status(self) -> None:
         module = importlib.import_module("app_qt")
         app = module.QApplication.instance() or module.QApplication([])
@@ -14404,11 +17869,11 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         module.QuantHunterWindow._refresh_recommend_decision_summary(window, None)
 
-        self.assertEqual(window.recommend_push_focus_button.text(), "暂不送审")
+        self.assertEqual(window.recommend_push_focus_button.text(), "暂缓送审")
         self.assertFalse(window.recommend_push_focus_button.isEnabled())
-        self.assertEqual(window.recommend_detail_focus_button.text(), "查看复盘证据")
+        self.assertEqual(window.recommend_detail_focus_button.text(), "看复盘")
         self.assertFalse(window.recommend_detail_focus_button.isEnabled())
-        self.assertEqual(window.recommend_broker_focus_button.text(), "暂不进交易")
+        self.assertEqual(window.recommend_broker_focus_button.text(), "暂缓进交易")
         self.assertFalse(window.recommend_broker_focus_button.isEnabled())
 
     def test_update_paper_trading_focus_hint_toggles_label_and_buttons(self) -> None:
@@ -14473,6 +17938,456 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(window.active_symbol, "SZSE.300001")
         self.assertEqual(broker_calls, ["SZSE.300001"])
         self.assertEqual(focus_calls, [("SZSE.300001", "recommend")])
+
+    def test_focus_symbol_everywhere_sets_active_symbol_without_market_bars(self) -> None:
+        module = importlib.import_module("app_qt")
+        window = SimpleNamespace(
+            active_symbol="",
+            universe_bars={},
+            _sync_symbol_across_workspaces=lambda symbol, origin="": setattr(window, "synced", (symbol, origin)),
+            _refresh_monitor_summary=lambda symbol="": setattr(window, "monitor", symbol),
+            _refresh_scanner_focus_status=lambda symbol="": setattr(window, "scan_status", symbol),
+            _refresh_scanner_focus_cards=lambda symbol="": setattr(window, "scan_cards", symbol),
+            _refresh_scanner_summary_cards=lambda symbol="": setattr(window, "scan_summary", symbol),
+            _refresh_board_focus_panels=lambda symbol="": setattr(window, "board", symbol),
+            _refresh_broker_order_focus=lambda: setattr(window, "broker_focus", True),
+            _refresh_submission_focus=lambda: setattr(window, "submission_focus", True),
+            _refresh_detail_workspace_panels=lambda: setattr(window, "detail_focus", True),
+            _refresh_live_workspace_summary_panels=lambda: setattr(window, "live_focus", True),
+            _refresh_workspace_focus_banners=lambda: setattr(window, "banner_focus", True),
+        )
+
+        module.QuantHunterWindow._focus_symbol_everywhere(window, "SZSE.300001", origin="recommend")
+
+        self.assertEqual(window.active_symbol, "SZSE.300001")
+        self.assertEqual(window.synced, ("SZSE.300001", "recommend"))
+        self.assertEqual(window.monitor, "SZSE.300001")
+        self.assertEqual(window.scan_status, "SZSE.300001")
+        self.assertEqual(window.board, "SZSE.300001")
+        self.assertTrue(window.broker_focus)
+        self.assertTrue(window.submission_focus)
+        self.assertTrue(window.detail_focus)
+        self.assertTrue(window.live_focus)
+        self.assertTrue(window.banner_focus)
+
+    def test_focus_symbol_in_recommend_workspace_refreshes_summary_and_banners(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-14",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.6,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=77.0,
+            persistence_score=82.0,
+            news_score=73.0,
+            leader_score=90.0,
+            total_score=88.0,
+        )
+        refresh_calls: list[str] = []
+        window = SimpleNamespace(
+            daily_pool_rows=[row],
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: None,
+            _select_daily_pool_row_by_stock_id=lambda stock_id: row if stock_id == "300001" else None,
+            _select_trade_plan_row_by_stock_id=lambda stock_id: True,
+            _select_position_advice_row_by_stock_id=lambda stock_id: True,
+            _refresh_recommendation_focus_panels=lambda selected: None,
+            _refresh_strategy_focus_detail=lambda: None,
+            _news_focus_context_suffix=lambda symbol: "",
+            _news_focus_context_tooltip=lambda symbol: "",
+            _render_text_with_news_badge=lambda text, symbol: text,
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            daily_pool_focus_label=module.QLabel(),
+        )
+
+        module.QuantHunterWindow._focus_symbol_in_recommend_workspace(window, "SZSE.300001")
+
+        self.assertGreaterEqual(refresh_calls.count("summary"), 1)
+        self.assertIn("focus", refresh_calls)
+        self.assertIn("龙头样本", window.daily_pool_focus_label.text())
+
+    def test_open_selected_recommend_in_broker_surfaces_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-14",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.6,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=77.0,
+            persistence_score=82.0,
+            news_score=73.0,
+            leader_score=90.0,
+            total_score=88.0,
+        )
+        broker_calls: list[str] = []
+        focus_calls: list[tuple[str, str]] = []
+        refresh_calls: list[str] = []
+        window = SimpleNamespace(
+            active_symbol="",
+            order_intents=[],
+            order_submission_records=[],
+            _current_recommend_focus=lambda: row,
+            _focus_symbol_in_broker_workspace=lambda symbol: broker_calls.append(symbol),
+            _focus_symbol_everywhere=lambda symbol, origin="": focus_calls.append((symbol, origin)),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _emit_action_feedback_v11=lambda *_args, **_kwargs: None,
+            broker_status_banner=module.QLabel(),
+        )
+
+        module.QuantHunterWindow.open_selected_recommend_in_broker(window)
+
+        self.assertEqual(window.active_symbol, "SZSE.300001")
+        self.assertEqual(broker_calls, ["SZSE.300001"])
+        self.assertEqual(focus_calls, [("SZSE.300001", "recommend")])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("机会池计划已同步", window.broker_status_banner.text())
+        self.assertIn("当前结论：继续复核", window.broker_status_banner.text())
+        self.assertIn("先把计划补成委托建议", window.broker_status_banner.text())
+
+    def test_push_recommendation_routes_surface_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-14",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.6,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=77.0,
+            persistence_score=82.0,
+            news_score=73.0,
+            leader_score=90.0,
+            total_score=88.0,
+        )
+        order_intent = OrderIntent(
+            symbol="SZSE.300001",
+            side="BUY",
+            price=10.0,
+            quantity=1000,
+            stop_price=9.6,
+            target_price=10.8,
+            signal_date="2026-04-22",
+            reason="focus",
+        )
+        calls: list[tuple[str, str | None, str | None]] = []
+        refresh_calls: list[str] = []
+        queued: list[str] = []
+        generated: list[str] = []
+        window = SimpleNamespace(
+            active_symbol="",
+            daily_pool_rows=[row],
+            order_intents=[order_intent],
+            order_submission_records=[],
+            _selected_daily_pool_recommendation=lambda: row,
+            _selected_trade_plan_decision=lambda: SimpleNamespace(symbol="SZSE.300001", stock_name="龙头样本"),
+            _queue_symbol_to_watchlist=lambda symbol: queued.append(symbol),
+            generate_order_suggestions=lambda: generated.append("generated"),
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: calls.append((workspace_key, widget_name, select_row)),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _emit_action_feedback_v11=lambda *_args, **_kwargs: None,
+            broker_status_banner=module.QLabel(),
+            current_trade_plan=SimpleNamespace(decisions=[SimpleNamespace(symbol="SZSE.300001", stock_name="龙头样本")]),
+        )
+
+        module.QuantHunterWindow.push_selected_recommendation_to_broker(window)
+        self.assertEqual(queued, ["SZSE.300001"])
+        self.assertEqual(generated, ["generated"])
+        self.assertEqual(calls, [("broker", "orders_table", None)])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("当前推荐", window.broker_status_banner.text())
+        self.assertIn("委托建议已生成", window.broker_status_banner.text())
+        self.assertIn("当前结论：继续复核", window.broker_status_banner.text())
+
+        queued.clear()
+        generated.clear()
+        calls.clear()
+        refresh_calls.clear()
+        module.QuantHunterWindow.push_selected_trade_plan_to_broker(window)
+        self.assertEqual(queued, ["SZSE.300001"])
+        self.assertEqual(generated, ["generated"])
+        self.assertEqual(calls, [("broker", "orders_table", None)])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("交易计划", window.broker_status_banner.text())
+        self.assertIn("委托建议已生成", window.broker_status_banner.text())
+        self.assertIn("当前结论：继续复核", window.broker_status_banner.text())
+
+    def test_recommendation_followup_actions_surface_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        calls: list[tuple[str, str | None, str | None]] = []
+        refresh_calls: list[str] = []
+        window = SimpleNamespace(
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: calls.append((workspace_key, widget_name, select_row)),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _emit_action_feedback_v11=lambda *_args, **_kwargs: None,
+            broker_status_banner=module.QLabel(),
+            recommend_status_label=module.QLabel(),
+        )
+
+        module.QuantHunterWindow.review_failed_recommendation(window)
+        self.assertEqual(calls, [("broker", "execution_table", None)])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("失败回执区", window.broker_status_banner.text())
+        self.assertIn("先确认为什么失败", window.broker_status_banner.text())
+
+        calls.clear()
+        refresh_calls.clear()
+        module.QuantHunterWindow.focus_next_pending_recommendation(window)
+        self.assertEqual(calls, [("recommend", "daily_pool_table", "daily_pool_table")])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("下一只待处理机会", window.recommend_status_label.text())
+        self.assertIn("核对主线、计划和消息", window.recommend_status_label.text())
+
+    def test_recommend_bucket_actions_surface_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-14",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.6,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=77.0,
+            persistence_score=82.0,
+            news_score=73.0,
+            leader_score=90.0,
+            total_score=88.0,
+        )
+        order_intent = OrderIntent(
+            symbol="SZSE.300001",
+            side="BUY",
+            price=10.0,
+            quantity=1000,
+            stop_price=9.6,
+            target_price=10.8,
+            signal_date="2026-04-22",
+            reason="focus",
+        )
+        calls: list[tuple[str, str | None, str | None]] = []
+        refresh_calls: list[str] = []
+        order_focus_calls: list[str] = []
+        window = SimpleNamespace(
+            active_symbol="SZSE.300001",
+            daily_pool_rows=[row],
+            order_intents=[order_intent],
+            order_submission_records=[],
+            _selected_daily_pool_recommendation=lambda: row,
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: calls.append((workspace_key, widget_name, select_row)),
+            _refresh_broker_order_focus=lambda: order_focus_calls.append("orders"),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _emit_action_feedback_v11=lambda *_args, **_kwargs: None,
+            recommend_status_label=module.QLabel(),
+            scan_summary_label=module.QLabel(),
+            broker_status_banner=module.QLabel(),
+            orders_focus_label=module.QLabel(),
+        )
+
+        module.QuantHunterWindow.show_core_execution_bucket(window)
+        self.assertEqual(calls, [("recommend", "trade_plan_table", None)])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("高优先池", window.recommend_status_label.text())
+        self.assertIn("委托建议已生成", window.recommend_status_label.text())
+        self.assertIn("当前结论：继续复核", window.recommend_status_label.text())
+
+        calls.clear()
+        refresh_calls.clear()
+        module.QuantHunterWindow.show_watch_bucket(window)
+        self.assertEqual(calls, [("scanner", "watchlist_widget", None)])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("观察池", window.scan_summary_label.text())
+        self.assertIn("委托建议已生成", window.scan_summary_label.text())
+        self.assertIn("当前结论：继续复核", window.scan_summary_label.text())
+
+        calls.clear()
+        refresh_calls.clear()
+        module.QuantHunterWindow.show_risk_bucket(window)
+        self.assertEqual(calls, [("recommend", "position_advice_table", None)])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("风险池", window.recommend_status_label.text())
+        self.assertIn("委托建议已生成", window.recommend_status_label.text())
+        self.assertIn("当前结论：继续复核", window.recommend_status_label.text())
+
+        calls.clear()
+        refresh_calls.clear()
+        module.QuantHunterWindow.focus_first_broker_blocker(window)
+        self.assertEqual(calls, [("broker", "broker_status_text", None)])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("阻塞项", window.broker_status_banner.text())
+        self.assertIn("禁止提交", window.broker_status_banner.text())
+
+        calls.clear()
+        refresh_calls.clear()
+        module.QuantHunterWindow.focus_priority_broker_order(window)
+        self.assertEqual(calls, [("broker", "orders_table", "orders_table")])
+        self.assertEqual(order_focus_calls, ["orders"])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("优先委托", window.orders_focus_label.text())
+        self.assertIn("继续复核", window.orders_focus_label.text())
+
+    def test_open_selected_recommend_in_detail_surfaces_contextual_conclusion(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-14",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.6,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=77.0,
+            persistence_score=82.0,
+            news_score=73.0,
+            leader_score=90.0,
+            total_score=88.0,
+        )
+        calls: list[tuple[str, str]] = []
+        refresh_calls: list[str] = []
+        window = SimpleNamespace(
+            active_symbol="",
+            order_intents=[],
+            order_submission_records=[],
+            _current_recommend_focus=lambda: row,
+            open_focus_symbol_in_detail=lambda: calls.append(("detail", "open")),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+            _emit_action_feedback_v11=lambda *_args, **_kwargs: None,
+            detail_conclusion_text=module.QTextEdit(),
+        )
+
+        module.QuantHunterWindow.open_selected_recommend_in_detail(window)
+
+        self.assertEqual(window.active_symbol, "SZSE.300001")
+        self.assertEqual(calls, [("detail", "open")])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("已从机会池带着这只票进入复盘，主线与计划已同步。", window.detail_conclusion_text.toPlainText())
+        self.assertIn("先对照机会池计划", window.detail_conclusion_text.toPlainText())
+
+    def test_open_trade_plan_routes_surface_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        decision = SimpleNamespace(symbol="SZSE.300001", stock_name="龙头样本")
+        order_intent = OrderIntent(
+            symbol="SZSE.300001",
+            side="BUY",
+            price=10.0,
+            quantity=1000,
+            stop_price=9.6,
+            target_price=10.8,
+            signal_date="2026-04-22",
+            reason="focus",
+        )
+        calls: list[tuple[str, str | None, str | None]] = []
+        refresh_calls: list[str] = []
+        window = SimpleNamespace(
+            active_symbol="",
+            current_trade_plan=SimpleNamespace(decisions=[decision]),
+            order_intents=[order_intent],
+            order_submission_records=[],
+            _selected_trade_plan_decision=lambda: decision,
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: calls.append((workspace_key, widget_name, select_row)),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _emit_action_feedback_v11=lambda *_args, **_kwargs: None,
+            trade_plan_focus_label=module.QLabel(),
+            scan_summary_label=module.QLabel(),
+            broker_status_banner=module.QLabel(),
+        )
+
+        module.QuantHunterWindow.open_trade_plan_watch_bucket(window)
+        self.assertEqual(calls, [("scanner", "watchlist_widget", None)])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("已跳转观察池", window.trade_plan_focus_label.text())
+        self.assertIn("当前结论：继续复核", window.trade_plan_focus_label.text())
+        self.assertIn("委托建议已生成", window.scan_summary_label.text())
+        self.assertIn("当前结论：继续复核", window.scan_summary_label.text())
+
+        calls.clear()
+        refresh_calls.clear()
+        module.QuantHunterWindow.open_trade_plan_broker_workspace(window)
+        self.assertEqual(calls, [("broker", "orders_table", None)])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("已跳转交易", window.trade_plan_focus_label.text())
+        self.assertIn("当前结论：继续复核", window.trade_plan_focus_label.text())
+        self.assertIn("委托建议已生成", window.broker_status_banner.text())
+        self.assertIn("当前结论：继续复核", window.broker_status_banner.text())
+        self.assertIn("核对价格、数量和风控", window.broker_status_banner.text())
 
     def test_refresh_recommendation_focus_panels_renders_queue_and_review_copy(self) -> None:
         module = importlib.import_module("app_qt")
@@ -14581,6 +18496,7 @@ class StrategyWorkflowTests(unittest.TestCase):
             _refresh_recommend_focus_cards=lambda current=None: None,
             _refresh_recommend_decision_summary=lambda current=None: None,
             _refresh_action_button_states_v30=lambda: None,
+            _sync_recommend_focus_review_geometry_v77=lambda: None,
             _set_label_text_if_changed=lambda widget, text, tooltip=None: (
                 widget.setText(text),
                 widget.setToolTip(tooltip) if tooltip is not None and hasattr(widget, "setToolTip") else None,
@@ -14597,11 +18513,12 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn("机器人 | 主升", window.recommend_focus_review_text.toPlainText())
         self.assertIn("战法执行：执行承压 0.56", window.recommend_focus_review_text.toPlainText())
         self.assertIn("当前优先：排队样本", window.recommend_queue_text.toPlainText())
-        self.assertEqual(window.recommend_news_source_button.text(), "查看公告原文")
+        self.assertEqual(window.recommend_news_source_button.text(), "看公告原文")
         self.assertIn("分层：已公告", window.recommend_news_source_button.toolTip())
-        self.assertEqual(window.recommend_news_detail_button.text(), "查看公告详情")
-        self.assertIn("点击查看详情弹窗", window.recommend_news_detail_button.toolTip())
+        self.assertEqual(window.recommend_news_detail_button.text(), "看公告详情")
+        self.assertIn("点击看详情。", window.recommend_news_detail_button.toolTip())
         self.assertIn("消息驱动", window.daily_pool_focus_label.text())
+        self.assertIn("审查", window.daily_pool_focus_label.text())
 
     def test_refresh_recommendation_focus_panels_v38_skips_repeated_same_signature(self) -> None:
         module = importlib.import_module("app_qt")
@@ -14655,6 +18572,7 @@ class StrategyWorkflowTests(unittest.TestCase):
             _render_text_with_news_badge=lambda text, symbol, compact=False: calls.__setitem__("render", calls["render"] + 1) or text,
             _update_news_action_button=lambda button, item: calls.__setitem__("news_action", calls["news_action"] + 1),
             _update_news_detail_button=lambda button, item: calls.__setitem__("news_detail", calls["news_detail"] + 1),
+            _sync_recommend_focus_review_geometry_v77=lambda: None,
             _set_label_text_if_changed=lambda widget, text, tooltip=None: (
                 calls.__setitem__("set_text", calls["set_text"] + 1),
                 widget.setText(text),
@@ -14818,9 +18736,254 @@ class StrategyWorkflowTests(unittest.TestCase):
             module.QuantHunterWindow._refresh_broker_order_focus(window)
 
         self.assertIn("龙头样本 | 待生成委托", window.orders_focus_label.text())
+        self.assertIn("审查 继续复核", window.orders_focus_label.text())
         self.assertIn("当前还没有委托建议", window.broker_order_focus_text.toPlainText())
+        self.assertIn("当前结论：继续复核", window.broker_order_focus_text.toPlainText())
         self.assertIn(window.broker_order_metric_labels["gate"].text(), {"继续跟", "只观察"})
-        self.assertEqual(window.broker_order_metric_accents["risk"].text(), "等待生成委托")
+        self.assertEqual(window.broker_order_metric_accents["risk"].text(), "继续复核 | 等待生成委托")
+
+    def test_workspace_focus_banner_seed_copy_uses_review_language(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        overview_parent = module.QWidget()
+        overview_layout = module.QVBoxLayout(overview_parent)
+        market_pool_table = module.QWidget()
+        overview_layout.addWidget(market_pool_table)
+        window = SimpleNamespace(
+            overview_tab=overview_parent,
+            market_pool_table=market_pool_table,
+            recommend_tab=None,
+            scanner_tab=None,
+            board_tab=None,
+            detail_tab=None,
+            overview_focus_banner=None,
+            recommend_focus_banner=None,
+            scanner_focus_banner=None,
+            board_focus_banner=None,
+            detail_focus_banner=None,
+        )
+
+        module.QuantHunterWindow._inject_workspace_focus_banners(window)
+
+        self.assertIn("继续复核 / 待联动", window.overview_focus_banner.text())
+
+    def test_populate_existing_views_from_market_uses_review_language(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-15",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.6,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=77.0,
+            persistence_score=82.0,
+            news_score=73.0,
+            leader_score=90.0,
+            total_score=88.0,
+            mainline_tag="机器人",
+            opportunity_tier="优先处理",
+        )
+        window = SimpleNamespace(
+            scan_table=object(),
+            summary_table=object(),
+            daily_pool_table=object(),
+            daily_pool_rows=[row],
+            recommend_status_label=module.QLabel(),
+            daily_pool_focus_label=module.QLabel(),
+            _fill_scan_rows=lambda: None,
+            _fill_backtest_summaries=lambda: None,
+            _populate_daily_pool_table=lambda: None,
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+            _refresh_scanner_capability_overview_v1=lambda: None,
+            _refresh_trade_plan=lambda: None,
+            _refresh_board_mode=lambda: None,
+            _refresh_intraday_monitor=lambda: None,
+            _refresh_scanner_focus_status=lambda: None,
+            _refresh_recommend_focus_status=lambda: None,
+        )
+
+        module.QuantHunterWindow._populate_existing_views_from_market(window)
+
+        self.assertIn("当前结论：继续复核", window.recommend_status_label.text())
+        self.assertIn("审查 继续复核", window.daily_pool_focus_label.text())
+
+    def test_populate_existing_views_from_market_empty_daily_pool_uses_review_language(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        window = SimpleNamespace(
+            daily_pool_rows=[],
+            daily_pool_text=module.QTextEdit(),
+            _refresh_trade_plan=lambda: None,
+            _refresh_board_mode=lambda: None,
+            _refresh_intraday_monitor=lambda: None,
+            _refresh_scanner_focus_status=lambda: None,
+            _refresh_recommend_focus_status=lambda: None,
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+        )
+
+        module.QuantHunterWindow._populate_existing_views_from_market(window)
+
+        self.assertIn("当前结论：继续复核", window.daily_pool_text.toPlainText())
+        self.assertIn("重算机会池", window.daily_pool_text.toPlainText())
+
+    def test_runtime_refresh_recommend_focus_status_uses_review_language_when_only_candidates_exist(self) -> None:
+        runtime = importlib.import_module("quant_hunter.ui_workspace_runtime")
+
+        class _Sink:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def text(self) -> str:
+                return self.value
+
+            def setText(self, value: str) -> None:
+                self.value = value
+
+        window = SimpleNamespace(
+            recommend_status_label=_Sink(),
+            daily_pool_focus_label=_Sink(),
+            daily_pool_rows=[object(), object()],
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+            _refresh_workspace_status_labels=lambda: None,
+        )
+
+        runtime.refresh_recommend_focus_status(
+            window,
+            None,
+            recommend_default_status_text="推荐状态：待生成",
+            recommend_default_focus_text="机会焦点：待同步",
+        )
+
+        self.assertIn("当前结论：继续复核", window.recommend_status_label.text())
+        self.assertIn("计划待生成", window.recommend_status_label.text())
+
+    def test_runtime_refresh_recommend_story_panels_empty_state_uses_review_language(self) -> None:
+        runtime = importlib.import_module("quant_hunter.ui_workspace_runtime")
+
+        class _TextSink:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def toPlainText(self) -> str:
+                return self.value
+
+            def setPlainText(self, value: str) -> None:
+                self.value = value
+
+        window = SimpleNamespace(
+            daily_pool_text=_TextSink(),
+            strategy_path_text=_TextSink(),
+            recommend_watch_bucket_text=_TextSink(),
+            recommend_risk_bucket_text=_TextSink(),
+            daily_pool_rows=[],
+            current_trade_plan=None,
+            current_position_advice=[],
+            _selected_daily_pool_recommendation=lambda: None,
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+            _refresh_recommend_bucket_panels=lambda current=None: runtime.refresh_recommend_bucket_panels(window, current),
+        )
+
+        runtime.refresh_recommend_story_panels(window, None)
+
+        self.assertIn("当前结论：继续复核", window.daily_pool_text.toPlainText())
+        self.assertIn("当前结论：继续复核", window.strategy_path_text.toPlainText())
+        self.assertIn("当前结论：继续复核", window.recommend_watch_bucket_text.toPlainText())
+        self.assertIn("当前结论：继续复核", window.recommend_risk_bucket_text.toPlainText())
+
+    def test_runtime_refresh_recommend_focus_status_focus_label_uses_review_language(self) -> None:
+        runtime = importlib.import_module("quant_hunter.ui_workspace_runtime")
+
+        class _Sink:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def text(self) -> str:
+                return self.value
+
+            def setText(self, value: str) -> None:
+                self.value = value
+
+        row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-15",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.6,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=77.0,
+            persistence_score=82.0,
+            news_score=73.0,
+            leader_score=90.0,
+            total_score=88.0,
+            mainline_tag="机器人",
+            mainline_role="CORE",
+            opportunity_tier="优先处理",
+        )
+        window = SimpleNamespace(
+            recommend_status_label=_Sink(),
+            daily_pool_focus_label=_Sink(),
+            daily_pool_rows=[row],
+            execution_status_by_symbol={"SZSE.300001": "待观察"},
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+            _display_action=lambda value: {"BUY": "买入", "WATCH": "观察", "SELL": "卖出"}.get(value, value),
+            _display_mainline_role=lambda value: {"CORE": "核心龙头"}.get(value, value or "待确认"),
+            _refresh_workspace_status_labels=lambda: None,
+        )
+
+        runtime.refresh_recommend_focus_status(
+            window,
+            row,
+            recommend_default_status_text="推荐状态：待生成",
+            recommend_default_focus_text="机会焦点：待同步",
+        )
+
+        self.assertIn("当前结论：继续复核", window.recommend_status_label.text())
+        self.assertIn("主线 机器人", window.recommend_status_label.text())
+        self.assertIn("审查 继续复核", window.daily_pool_focus_label.text())
+        self.assertIn("龙头样本", window.daily_pool_focus_label.text())
+
+    def test_refresh_recommend_story_panels_empty_state_uses_review_language(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        class _TextSink:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def toPlainText(self) -> str:
+                return self.value
+
+            def setPlainText(self, value: str) -> None:
+                self.value = value
+
+        window = SimpleNamespace(
+            daily_pool_text=_TextSink(),
+            strategy_path_text=_TextSink(),
+            _selected_daily_pool_recommendation=lambda: None,
+            _set_note_panel_tone_v5=lambda widget, tone: None,
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+            _refresh_recommend_bucket_panels=lambda current=None: None,
+            _sync_signal_panel_tones_v6=lambda: None,
+        )
+
+        module._qh_refresh_recommend_story_panels_v7(window)
+
+        self.assertIn("当前结论：继续复核", window.daily_pool_text.toPlainText())
+        self.assertIn("当前结论：继续复核", window.strategy_path_text.toPlainText())
 
     def test_toggle_recommend_auxiliary_stage_flips_state(self) -> None:
         module = importlib.import_module("app_qt")
@@ -14899,11 +19062,11 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         self.assertEqual(
             module._qh_broker_workspace_stage_v40(0, 0, 0),
-            ("待生成委托", "先从推荐页或交易计划生成第一批可执行委托。"),
+            ("待生成委托", "先从机会池或交易计划生成第一批可执行委托。"),
         )
         self.assertEqual(
             module._qh_broker_workspace_stage_v40(2, 0, 0),
-            ("待确认提交", "委托已经生成，下一步打开确认弹窗核对后提交。"),
+            ("待确认提交", "委托已经生成，下一步进确认弹窗核对后提交。"),
         )
         self.assertEqual(
             module._qh_broker_workspace_stage_v40(0, 1, 0),
@@ -14923,7 +19086,7 @@ class StrategyWorkflowTests(unittest.TestCase):
             return_value={
                 "title": "主测 | 龙头模型 | 继续主测",
                 "detail": "样本 7 | 胜率 62.0% | 平均持有 1.8 天 | 预算 x1.18",
-                "cta": "推荐页优先筛同战法前排，交易页按主测纪律推进。",
+                "cta": "机会池优先筛同战法前排，执行中控按主测纪律推进，但先别因为单票强弱临时改打法。",
             },
         ):
             lines = broker_patches.broker_experiment_review_lines_v47(
@@ -14933,7 +19096,7 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         self.assertEqual(lines[0], "模拟盘实验：主测 | 龙头模型 | 继续主测")
         self.assertEqual(lines[1], "实验纪律：样本 7 | 胜率 62.0% | 平均持有 1.8 天 | 预算 x1.18")
-        self.assertEqual(lines[2], "交易约束：推荐页优先筛同战法前排，交易页按主测纪律推进。")
+        self.assertEqual(lines[2], "交易约束：机会池优先筛同战法前排，执行中控按主测纪律推进，但先别因为单票强弱临时改打法。")
 
     def test_broker_workspace_patch_appends_paper_experiment_summary_to_submission_focus(self) -> None:
         broker_patches = importlib.import_module("quant_hunter.ui_window_broker_patches")
@@ -14974,13 +19137,13 @@ class StrategyWorkflowTests(unittest.TestCase):
             return_value=[
                 "模拟盘实验：主测 | 龙头模型 | 继续主测",
                 "实验纪律：样本 7 | 胜率 62.0% | 平均持有 1.8 天 | 预算 x1.18",
-                "交易约束：推荐页优先筛同战法前排，交易页按主测纪律推进。",
+                "交易约束：机会池优先筛同战法前排，执行中控按主测纪律推进，但先别因为单票强弱临时改打法。",
             ],
         ):
             window._refresh_submission_focus()
 
         self.assertIn("模拟盘实验：主测 | 龙头模型 | 继续主测", window.broker_mainline_review_text.toPlainText())
-        self.assertIn("交易约束：推荐页优先筛同战法前排，交易页按主测纪律推进。", window.broker_mainline_review_text.toPlainText())
+        self.assertIn("交易约束：机会池优先筛同战法前排，执行中控按主测纪律推进，但先别因为单票强弱临时改打法。", window.broker_mainline_review_text.toPlainText())
         self.assertIn("模拟盘实验：主测 | 龙头模型 | 继续主测", window.broker_execution_text.toPlainText())
 
     def test_broker_pre_submit_experiment_lines_surface_bridge_summary(self) -> None:
@@ -14992,7 +19155,7 @@ class StrategyWorkflowTests(unittest.TestCase):
             return_value={
                 "title": "主测 | 龙头模型 | 继续主测",
                 "detail": "样本 7 | 胜率 62.0% | 平均持有 1.8 天 | 预算 x1.18",
-                "cta": "推荐页优先筛同战法前排，交易页按主测纪律推进。",
+                "cta": "机会池优先筛同战法前排，执行中控按主测纪律推进，但先别因为单票强弱临时改打法。",
             },
         ):
             lines = workbench_patches.broker_pre_submit_experiment_lines_v48(
@@ -15002,7 +19165,7 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         self.assertEqual(lines[0], "模拟盘实验：主测 | 龙头模型 | 继续主测")
         self.assertEqual(lines[1], "实验纪律：样本 7 | 胜率 62.0% | 平均持有 1.8 天 | 预算 x1.18")
-        self.assertEqual(lines[2], "提交前提示：推荐页优先筛同战法前排，交易页按主测纪律推进。")
+        self.assertEqual(lines[2], "提交前提示：机会池优先筛同战法前排，执行中控按主测纪律推进，但先别因为单票强弱临时改打法。")
 
     def test_merge_broker_experiment_lines_replaces_old_block(self) -> None:
         workbench_patches = importlib.import_module("quant_hunter.ui_window_workbench_patches")
@@ -15012,7 +19175,7 @@ class StrategyWorkflowTests(unittest.TestCase):
             [
                 "模拟盘实验：主测 | 龙头模型 | 继续主测",
                 "实验纪律：样本 7 | 胜率 62.0% | 平均持有 1.8 天 | 预算 x1.18",
-                "提交前提示：推荐页优先筛同战法前排，交易页按主测纪律推进。",
+                "提交前提示：机会池优先筛同战法前排，执行中控按主测纪律推进，但先别因为单票强弱临时改打法。",
             ],
         )
 
@@ -15020,7 +19183,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(merged.count("模拟盘实验："), 1)
         self.assertEqual(merged.count("实验纪律："), 1)
         self.assertIn("模拟盘实验：主测 | 龙头模型 | 继续主测", merged)
-        self.assertIn("提交前提示：推荐页优先筛同战法前排，交易页按主测纪律推进。", merged)
+        self.assertIn("提交前提示：机会池优先筛同战法前排，执行中控按主测纪律推进，但先别因为单票强弱临时改打法。", merged)
 
     def test_shell_pipeline_story_summarizes_daily_workflow(self) -> None:
         module = importlib.import_module("app_qt")
@@ -15226,6 +19389,64 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(window.board_refresh_button.property("ctaPriority"), "primary")
         self.assertIn("主操作", window.board_refresh_button.toolTip())
 
+    def test_refresh_action_button_states_prefers_route_action_key_over_button_text(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+
+        overview_tab = module.QWidget()
+        overview_layout = module.QVBoxLayout(overview_tab)
+        compact_button = module.QPushButton("看机会")
+        compact_button.setProperty("routeActionKey", "资金看推荐")
+        overview_layout.addWidget(compact_button)
+
+        window = SimpleNamespace(
+            recommend_to_broker_button=module.QPushButton(),
+            plan_to_broker_button=module.QPushButton(),
+            focus_pending_button=module.QPushButton(),
+            retry_failed_button=module.QPushButton(),
+            push_priority_button=module.QPushButton(),
+            broker_focus_blocker_button=module.QPushButton(),
+            broker_focus_priority_button=module.QPushButton(),
+            paper_to_recommend_button=module.QPushButton(),
+            paper_to_detail_button=module.QPushButton(),
+            paper_to_broker_button=module.QPushButton(),
+            scanner_tab=module.QWidget(),
+            board_tab=module.QWidget(),
+            recommend_tab=module.QWidget(),
+            broker_tab=module.QWidget(),
+            detail_tab=module.QWidget(),
+            overview_tab=overview_tab,
+            recommend_status_label=module.QLabel(),
+            current_trade_plan=SimpleNamespace(decisions=[]),
+            order_intents=[],
+            daily_pool_rows=[],
+            active_symbol="",
+            last_broker_execution_summary={},
+            _selected_daily_pool_recommendation=lambda: None,
+            _has_pending_recommendations_v30=lambda: False,
+            _has_failed_recommendations_v30=lambda: False,
+            _selected_paper_symbol=lambda: "",
+            _selected_symbol_from_watchlist=lambda: "",
+            _selected_board_symbol=lambda: "",
+            _set_button_role=lambda button, role="ghost": setattr(button, "role", role),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text) if hasattr(widget, "text") and widget.text() != text else None,
+                widget.setToolTip(tooltip) if tooltip is not None and hasattr(widget, "setToolTip") and widget.toolTip() != tooltip else None,
+            ),
+        )
+
+        module.QuantHunterWindow._refresh_action_button_states_v30(window)
+        self.assertFalse(compact_button.isEnabled())
+        self.assertEqual(compact_button.text(), "看机会")
+
+        window.daily_pool_rows = [SimpleNamespace(execution_status="待观察")]
+        module.QuantHunterWindow._refresh_action_button_states_v30(window)
+
+        self.assertTrue(compact_button.isEnabled())
+        self.assertEqual(compact_button.text(), "看机会")
+        self.assertIn("资金视角", compact_button.toolTip())
+
     def test_configure_priority_more_menu_prefers_primary_and_secondary_buttons(self) -> None:
         module = importlib.import_module("app_qt")
         app = module.QApplication.instance() or module.QApplication([])
@@ -15251,7 +19472,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         app = module.QApplication.instance() or module.QApplication([])
         _ = app
 
-        buttons = [module.QPushButton(label) for label in ("刷新打板池", "导出盘前计划", "导出收盘复盘")]
+        buttons = [module.QPushButton(label) for label in ("刷新候选", "导出计划", "导出复盘")]
         for button, priority in zip(buttons, ("primary", "secondary", "tertiary")):
             button.setProperty("ctaPriority", priority)
         more_button = module.QPushButton()
@@ -15262,8 +19483,8 @@ class StrategyWorkflowTests(unittest.TestCase):
             more_button,
             max_visible=1,
             groups={
-                "导出盘前计划": "计划导出",
-                "导出收盘复盘": "复盘导出",
+                "导出计划": "计划导出",
+                "导出复盘": "复盘导出",
             },
         )
 
@@ -15271,6 +19492,32 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(more_button.text(), "更多导出")
         self.assertTrue(any(action.text() == "计划导出" for action in actions))
         self.assertTrue(any(action.text() == "复盘导出" for action in actions))
+
+    def test_configure_priority_more_menu_prefers_full_label_properties_for_hidden_actions(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+
+        primary_button = module.QPushButton("刷新候选")
+        primary_button.setProperty("ctaPriority", "primary")
+        hidden_button = module.QPushButton("导出…")
+        hidden_button.setProperty("ctaPriority", "secondary")
+        hidden_button.setProperty("_qh_full_text_action_v64", "导出计划")
+        hidden_button.setToolTip("导出完整计划。")
+        more_button = module.QPushButton()
+
+        module._qh_configure_priority_more_menu_v67(
+            SimpleNamespace(),
+            [primary_button, hidden_button],
+            more_button,
+            max_visible=1,
+            groups={"导出计划": "计划导出"},
+        )
+
+        actions = more_button.menu().actions()
+        self.assertEqual(more_button.text(), "更多导出")
+        self.assertTrue(any(action.text() == "导出计划" for action in actions))
+        self.assertTrue(any(action.text() == "计划导出" for action in actions))
 
     def test_hydrate_runtime_empty_states_populates_default_copy(self) -> None:
         module = importlib.import_module("app_qt")
@@ -15286,6 +19533,8 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         self.assertIn("运行日志", window.runtime_log_text.toPlainText())
         self.assertIn("实验记录", window.paper_experiment_text.toPlainText())
+        self.assertIn("当前状态：", window.runtime_log_text.toPlainText())
+        self.assertIn("下一步：", window.paper_experiment_text.toPlainText())
 
     def test_shell_workflow_stage_specs_switch_targets_and_statuses(self) -> None:
         module = importlib.import_module("app_qt")
@@ -15325,7 +19574,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(review_specs[2]["role"], "accent")
         self.assertEqual(review_specs[3]["widget"], "paper_positions_table")
         self.assertEqual(review_specs[3]["button_text"], "实验 · 可复盘")
-        self.assertEqual(review_specs[2]["note"], "复核闸门后确认提交")
+        self.assertEqual(review_specs[2]["note"], "复核闸门后进确认弹窗")
 
     def test_open_shell_workflow_stage_uses_dynamic_routes(self) -> None:
         module = importlib.import_module("app_qt")
@@ -15352,7 +19601,51 @@ class StrategyWorkflowTests(unittest.TestCase):
         module.QuantHunterWindow._open_shell_workflow_stage(window, "experiment")
 
         self.assertEqual(calls[0], ("recommend", "trade_plan_table", None))
-        self.assertEqual(calls[1], ("broker", "paper_positions_table", None))
+        self.assertEqual(calls[1], ("paper", "paper_positions_table", None))
+
+    def test_open_shell_workflow_stage_surfaces_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+
+        class DummyTabs:
+            def currentIndex(self) -> int:
+                return 2
+
+        nav_calls: list[tuple[str, str | None, str | None]] = []
+        refresh_calls: list[str] = []
+        window = SimpleNamespace(
+            tabs=DummyTabs(),
+            daily_pool_rows=[object()],
+            current_trade_plan=SimpleNamespace(decisions=[object()]),
+            order_intents=[],
+            order_submission_records=[object()],
+            paper_trading_state=PaperTradingState(
+                enabled=True,
+                positions=[PaperPosition(symbol="300001", stock_name="样本股", stock_id="300001", strategy_name="龙头模型")],
+            ),
+            _navigate_to_workspace=lambda workspace, widget=None, select_row=None: nav_calls.append((workspace, widget, select_row)),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            recommend_status_label=module.QLabel(),
+            paper_trading_focus_label=module.QLabel(),
+            _emit_action_feedback_v11=lambda *_args, **_kwargs: None,
+        )
+
+        module.QuantHunterWindow._open_shell_workflow_stage(window, "recommend")
+        self.assertEqual(nav_calls[0], ("recommend", "trade_plan_table", None))
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("流程条定位到交易计划区", window.recommend_status_label.text())
+
+        refresh_calls.clear()
+        module.QuantHunterWindow._open_shell_workflow_stage(window, "experiment")
+        self.assertEqual(nav_calls[1], ("paper", "paper_positions_table", None))
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("流程条定位到实验持仓区", window.paper_trading_focus_label.text())
 
     def test_set_broker_execution_detail_visibility_updates_controls(self) -> None:
         module = importlib.import_module("app_qt")
@@ -15532,6 +19825,5342 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertTrue(window.recommend_empty_box.isVisible())
         self.assertTrue(window.recommend_section_hint.isVisible())
         self.assertTrue(window.broker_recap_box.isVisible())
+
+    def test_focus_strip_subtitle_orders_status_focus_and_next_step(self) -> None:
+        module = importlib.import_module("quant_hunter.ui_workspace_runtime")
+        self.assertEqual(
+            module.focus_strip_subtitle("主链已联动", "龙头样本", "继续核对执行动作"),
+            "当前状态：主链已联动 | 当前结论：继续复核 | 焦点：龙头样本 | 下一步：继续核对执行动作",
+        )
+
+    def test_focus_strip_subtitle_uses_blocked_verdict_when_status_is_blocked(self) -> None:
+        module = importlib.import_module("quant_hunter.ui_workspace_runtime")
+        self.assertEqual(
+            module.focus_strip_subtitle("阻塞待处理", "龙头样本", "先处理阻塞项"),
+            "当前状态：阻塞待处理 | 当前结论：禁止提交 | 焦点：龙头样本 | 下一步：先处理阻塞项",
+        )
+
+    def test_focus_banner_tooltip_orders_status_focus_and_next_step(self) -> None:
+        module = importlib.import_module("app_qt")
+        tooltip = module._qh_focus_banner_tooltip_v41(
+            {
+                "symbol": "SZSE.300001",
+                "stock_name": "龙头样本",
+                "stock_id": "300001",
+                "stage": "已提交 / 待成交",
+                "aux_text": "风险 LOW",
+                "next_step": "继续核对委托与回执",
+                "next_brief": "核对委托与回执",
+                "news_brief": "消息建议：先看总览",
+                "prefix": "推荐焦点",
+            },
+            "左键跳到执行中控焦点，右键查看更多跳转",
+        )
+        lines = tooltip.splitlines()
+        self.assertEqual(lines[0], "当前状态：已提交 / 待成交 | 风险 LOW")
+        self.assertEqual(lines[1], "焦点：龙头样本 (300001 / SZSE.300001)")
+        self.assertEqual(lines[2], "下一步：先看总览")
+        self.assertEqual(lines[3], "交互：左键跳到执行中控焦点，右键查看更多跳转")
+
+    def test_open_config_capability_routes_to_expected_widgets(self) -> None:
+        module = importlib.import_module("app_qt")
+        calls: list[tuple[str, str | None]] = []
+        window = SimpleNamespace(_navigate_to_workspace=lambda workspace_key, widget_name=None: calls.append((workspace_key, widget_name)))
+
+        module.QuantHunterWindow._open_config_capability_v1(window, "risk")
+        module.QuantHunterWindow._open_config_capability_v1(window, "strategy")
+        module.QuantHunterWindow._open_config_capability_v1(window, "news")
+        module.QuantHunterWindow._open_config_capability_v1(window, "ai")
+
+        self.assertEqual(
+            calls,
+            [
+                ("config", "configStrategyBox"),
+                ("config", "strategy_config_list"),
+                ("config", "news_source_status_text"),
+                ("config", "ai_review_status_text"),
+            ],
+        )
+
+    def test_open_config_routes_surface_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        calls: list[tuple[str, str | None]] = []
+        refresh_calls: list[str] = []
+        window = SimpleNamespace(
+            state=SimpleNamespace(strategy_risk_profile="standard", news_source_provider="csv", ai_review_api_key="secret"),
+            strategy_risk_profile_combo=SimpleNamespace(currentIndex=lambda: -1, currentData=lambda: "standard"),
+            news_source_provider_key="csv",
+            news_source_status="可直接载入",
+            _current_ai_review_config=lambda: SimpleNamespace(model="gpt-5.4", api_key="secret"),
+            _strategy_catalog_current_name=lambda: "龙头模型",
+            _navigate_to_workspace=lambda workspace_key, widget_name=None: calls.append((workspace_key, widget_name)),
+            config_status_banner=module.QLabel(),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _emit_action_feedback_v11=lambda *_args, **_kwargs: None,
+        )
+
+        module.QuantHunterWindow._open_config_capability_v1(window, "ai")
+        self.assertEqual(calls, [("config", "ai_review_status_text")])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("AI 评测区", window.config_status_banner.text())
+        self.assertIn("当前结论：继续复核", window.config_status_banner.text())
+        self.assertIn("模型 gpt-5.4", window.config_status_banner.text())
+
+        calls.clear()
+        refresh_calls.clear()
+        module.QuantHunterWindow._open_config_strategy_summary_v1(window, "editor")
+        self.assertEqual(calls, [("config", "strategy_config_editor")])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("JSON 编辑区", window.config_status_banner.text())
+        self.assertIn("当前结论：继续复核", window.config_status_banner.text())
+        self.assertIn("当前 龙头模型", window.config_status_banner.text())
+
+    def test_open_strategy_config_directory_surfaces_guidance_for_success_and_fallback(self) -> None:
+        module = importlib.import_module("app_qt")
+        success_dir = Path("tests/.tmp/strategy_config_directory_success")
+        fallback_dir = Path("tests/.tmp/strategy_config_directory_fallback")
+        success_catalog = success_dir / "strategy_catalog.json"
+        fallback_catalog = fallback_dir / "strategy_catalog.json"
+        success_calls: list[tuple[str, str]] = []
+        fallback_calls: list[tuple[str, str]] = []
+        success_window = SimpleNamespace(_set_strategy_config_status=lambda headline, detail="": success_calls.append((headline, detail)))
+        fallback_window = SimpleNamespace(_set_strategy_config_status=lambda headline, detail="": fallback_calls.append((headline, detail)))
+
+        with patch.object(module, "strategy_catalog_path", return_value=success_catalog), patch.object(
+            module.QDesktopServices,
+            "openUrl",
+            return_value=True,
+        ) as open_success:
+            module.QuantHunterWindow.open_strategy_config_directory(success_window)
+
+        self.assertTrue(success_dir.exists())
+        self.assertEqual(success_calls[0][0], "已打开策略目录")
+        self.assertIn(str(success_dir), success_calls[0][1])
+        self.assertIn("strategy_catalog.json", success_calls[0][1])
+        self.assertIn("重新加载配置", success_calls[0][1])
+        open_success.assert_called_once()
+
+        with patch.object(module, "strategy_catalog_path", return_value=fallback_catalog), patch.object(
+            module.QDesktopServices,
+            "openUrl",
+            return_value=False,
+        ), patch.object(module.QMessageBox, "information") as info_box:
+            module.QuantHunterWindow.open_strategy_config_directory(fallback_window)
+
+        self.assertTrue(fallback_dir.exists())
+        self.assertEqual(fallback_calls[0][0], "未能自动打开策略目录")
+        self.assertIn(str(fallback_dir), fallback_calls[0][1])
+        self.assertIn("手动打开", fallback_calls[0][1])
+        self.assertIn("重新加载配置", fallback_calls[0][1])
+        info_box.assert_called_once()
+
+    def test_strategy_config_profile_intro_and_status_text_surface_context(self) -> None:
+        module = importlib.import_module("app_qt")
+        context = SimpleNamespace(
+            strategy_total=6,
+            current_strategy="龙头模板",
+            risk_label="进攻",
+            target_dir="tests/.tmp/strategy_catalog",
+        )
+
+        intro = module._qh_strategy_config_profile_intro_text_v1(context)
+        self.assertIn("当前目录已有 6 套战法", intro)
+        self.assertIn("当前选中：龙头模板", intro)
+        self.assertIn("风险档位：进攻", intro)
+
+        tip = module._qh_strategy_config_profile_tip_text_v1(context)
+        self.assertIn("tests/.tmp/strategy_catalog", tip)
+        self.assertIn("验证推荐链路", tip)
+
+        headline, detail = module._qh_strategy_config_action_status_text_v1(
+            context,
+            action="export_all",
+            strategy_name="战法目录",
+            path="tests/.tmp/strategy_export.json",
+            count=6,
+        )
+        self.assertEqual(headline, "已导出全部战法")
+        self.assertIn("当前目录 6 套", detail)
+        self.assertIn("本次 6 套", detail)
+        self.assertIn("strategy_export.json", detail)
+        self.assertIn("下一步", detail)
+
+    def test_prompt_new_strategy_config_profile_surfaces_contextual_intro(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or module.QApplication([])
+
+            class _StrategyPromptHost(module.QWidget):
+                pass
+
+            host = _StrategyPromptHost()
+            host.state = SimpleNamespace(strategy_risk_profile="aggressive", news_source_provider="csv")
+            host.strategy_risk_profile_combo = SimpleNamespace(currentIndex=lambda: -1, currentData=lambda: "aggressive")
+            host.news_source_provider_key = "csv"
+            host.news_source_status = "可直接载入"
+            host._current_ai_review_config = lambda: SimpleNamespace(model="gpt-5.4", api_key="")
+            host._strategy_catalog_current_name = lambda: "龙头模板"
+            host.strategy_config_name_input = module.QLineEdit("盘中龙头")
+            host._set_button_role = lambda *_args, **_kwargs: None
+
+            captured: dict[str, str] = {}
+
+            def _fake_exec(dialog) -> int:
+                for label in dialog.findChildren(module.QLabel):
+                    if label.accessibleName():
+                        captured[label.accessibleName()] = label.text()
+                return 0
+
+            try:
+                with patch.object(module.QDialog, "exec", new=_fake_exec):
+                    result = module.QuantHunterWindow._prompt_new_strategy_config_profile(host)
+                self.assertIsNone(result)
+                self.assertIn("当前目录已有", captured["strategyConfigProfilePromptIntro"])
+                self.assertIn("龙头模板", captured["strategyConfigProfilePromptIntro"])
+                self.assertIn("风险档位", captured["strategyConfigProfilePromptIntro"])
+            finally:
+                host.deleteLater()
+                app.processEvents()
+
+    def test_strategy_config_wizard_and_actions_call_contextual_status_helper(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+
+            class _StrategyHost(module.QWidget):
+                pass
+
+            host = _StrategyHost()
+            export_path = Path("tests/.tmp/strategy_action_export.json")
+            import_path = Path("tests/.tmp/strategy_action_import.json")
+            export_path.parent.mkdir(parents=True, exist_ok=True)
+            if export_path.exists():
+                export_path.unlink()
+            import_path.write_text(json.dumps({"strategies": [{"name": "导入战法"}]}, ensure_ascii=False), encoding="utf-8")
+
+            host.strategy_config_editor = module.QTextEdit()
+            host.strategy_config_name_input = module.QLineEdit("龙头模板")
+            host._set_plain_text_if_changed = lambda widget, text: widget.setPlainText(text)
+            host._strategy_catalog_current_name = lambda: "龙头模板"
+            host._reload_strategy_catalog_runtime = lambda selected_name="", detail="": None
+            host._set_strategy_config_status = lambda headline, detail="": None
+            host._stock_name_for_symbol = lambda symbol: "--"
+            host._stock_id_for_symbol = lambda symbol: "--"
+            host.state = SimpleNamespace(strategy_risk_profile="aggressive", news_source_provider="csv")
+            host.strategy_risk_profile_combo = SimpleNamespace(currentIndex=lambda: -1, currentData=lambda: "aggressive")
+            host.news_source_provider_key = "csv"
+            host.news_source_status = "可直接载入"
+            host._current_ai_review_config = lambda: SimpleNamespace(model="gpt-5.4", api_key="")
+
+            status_calls: list[dict[str, object]] = []
+            strategy_payload = {"name": "龙头模板", "enabled": True, "formula_stage": "base"}
+
+            try:
+                with patch.object(
+                    module,
+                    "_qh_apply_strategy_config_action_status_v1",
+                    side_effect=lambda _self, **kwargs: status_calls.append(dict(kwargs)) or ("", ""),
+                ), patch.object(
+                    module.QuantHunterWindow,
+                    "_prompt_new_strategy_config_profile",
+                    return_value={"name": "盘中龙头", "formula_stage": "base", "default_risk_level": "中"},
+                ), patch.object(
+                    module,
+                    "_qh_apply_new_strategy_config_profile_v1",
+                    side_effect=lambda _self, profile: status_calls.append({"action": "draft", "strategy_name": profile.get("name", "")}),
+                ), patch.object(
+                    module.QuantHunterWindow,
+                    "_parse_strategy_config_editor_payload",
+                    return_value=dict(strategy_payload),
+                ), patch.object(
+                    module.QuantHunterWindow,
+                    "_populate_strategy_config_form",
+                    return_value=None,
+                ), patch.object(
+                    module.QuantHunterWindow,
+                    "_refresh_strategy_formula_help",
+                    return_value=None,
+                ), patch.object(
+                    module,
+                    "load_strategy_catalog_payload",
+                    return_value={"strategies": [{"name": "龙头模板"}, {"name": "套利模板"}]},
+                ), patch.object(
+                    module,
+                    "import_strategy_payloads",
+                    return_value={"strategies": [{"name": "龙头模板"}, {"name": "导入战法"}]},
+                ), patch.object(
+                    module.QFileDialog,
+                    "getSaveFileName",
+                    side_effect=[(str(export_path), ""), (str(export_path), "")],
+                ), patch.object(
+                    module.QFileDialog,
+                    "getOpenFileName",
+                    return_value=(str(import_path), ""),
+                ), patch.object(
+                    module.QMessageBox,
+                    "information",
+                    return_value=module.QMessageBox.Ok,
+                ):
+                    module.QuantHunterWindow.new_strategy_config_wizard(host)
+                    self.assertEqual(status_calls[-1]["action"], "draft")
+
+                    module.QuantHunterWindow.duplicate_current_strategy_config(host)
+                    self.assertEqual(status_calls[-1]["action"], "duplicate")
+
+                    module.QuantHunterWindow.export_current_strategy_config(host)
+                    self.assertEqual(status_calls[-1]["action"], "export_current")
+
+                    module.QuantHunterWindow.export_all_strategy_configs(host)
+                    self.assertEqual(status_calls[-1]["action"], "export_all")
+
+                    module.QuantHunterWindow.import_strategy_config_file(host)
+                    self.assertEqual(status_calls[-1]["action"], "import")
+
+                self.assertTrue(export_path.exists())
+            finally:
+                host.deleteLater()
+                app.processEvents()
+
+    def test_strategy_config_sync_and_validate_status_texts_surface_next_step(self) -> None:
+        module = importlib.import_module("app_qt")
+        context = SimpleNamespace(
+            strategy_total=6,
+            current_strategy="龙头模板",
+            risk_label="进攻",
+            target_dir="tests/.tmp/strategy_catalog",
+        )
+
+        headline, detail = module._qh_strategy_config_action_status_text_v1(
+            context,
+            action="sync_form",
+            strategy_name="龙头模板",
+            detail="名称：龙头模板 | 阶段：base",
+        )
+        self.assertEqual(headline, "表单已生成 JSON")
+        self.assertIn("当前目录 6 套", detail)
+        self.assertIn("名称：龙头模板 | 阶段：base", detail)
+        self.assertIn("核对名称、公式和风险字段", detail)
+
+        headline, detail = module._qh_strategy_config_action_status_text_v1(
+            context,
+            action="validate_warn",
+            strategy_name="龙头模板",
+            detail="提示：缺少产品定位",
+        )
+        self.assertEqual(headline, "战法配置校验通过")
+        self.assertIn("提示：缺少产品定位", detail)
+        self.assertIn("先处理提示项", detail)
+
+    def test_strategy_config_sync_and_validate_actions_call_contextual_status_helper(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            module = importlib.import_module("app_qt")
+            app = module.QApplication.instance() or module.QApplication([])
+            _ = app
+
+            host = SimpleNamespace(
+                strategy_config_editor=module.QTextEdit(),
+                strategy_config_name_input=module.QLineEdit(),
+                _strategy_config_loaded_name="龙头模板",
+                _strategy_catalog_current_name=lambda: "龙头模板",
+                _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+                _set_strategy_config_status=lambda headline, detail="": None,
+            )
+            status_calls: list[dict[str, object]] = []
+            report_ok = {"normalized": {"name": "龙头模板"}, "errors": [], "warnings": []}
+            report_warn = {"normalized": {"name": "龙头模板"}, "errors": [], "warnings": ["缺少产品定位"]}
+
+            with patch.object(module, "_qh_apply_strategy_config_action_status_v1", side_effect=lambda _self, **kwargs: status_calls.append(dict(kwargs)) or ("", "")), patch.object(
+                module.QuantHunterWindow,
+                "_build_strategy_config_form_payload",
+                return_value={"name": "龙头模板"},
+            ), patch.object(
+                module,
+                "validate_strategy_definition_payload",
+                side_effect=[report_ok, report_ok, report_warn],
+            ), patch.object(
+                module.QuantHunterWindow,
+                "_parse_strategy_config_editor_payload",
+                return_value={"name": "龙头模板"},
+            ), patch.object(
+                module.QuantHunterWindow,
+                "_populate_strategy_config_form",
+                return_value=None,
+            ), patch.object(
+                module.QuantHunterWindow,
+                "_refresh_strategy_formula_help",
+                return_value=None,
+            ), patch.object(
+                module.QuantHunterWindow,
+                "_strategy_config_validation_lines",
+                return_value=["名称：龙头模板"],
+            ), patch.object(
+                module.QMessageBox,
+                "information",
+                return_value=module.QMessageBox.Ok,
+            ):
+                module.QuantHunterWindow.sync_strategy_config_form_to_editor(host)
+                self.assertEqual(status_calls[-1]["action"], "sync_form")
+                module.QuantHunterWindow.sync_strategy_config_editor_to_form(host)
+                self.assertEqual(status_calls[-1]["action"], "sync_editor")
+                module.QuantHunterWindow.validate_strategy_config_editor(host)
+                self.assertEqual(status_calls[-1]["action"], "validate_warn")
+
+    def test_reference_data_import_status_text_surfaces_next_step(self) -> None:
+        module = importlib.import_module("app_qt")
+        context = SimpleNamespace(
+            symbol="SZSE.300001",
+            stock_name="龙头样本",
+            stock_id="300001",
+        )
+
+        stock_text = module._qh_reference_data_import_status_text_v1(
+            context,
+            action="stock_profiles",
+            path="tests/.tmp/profiles.csv",
+            count=12,
+        )
+        self.assertIn("已导入股票资料", stock_text)
+        self.assertIn("profiles.csv", stock_text)
+        self.assertIn("机会池和扫描页", stock_text)
+
+        news_text = module._qh_reference_data_import_status_text_v1(
+            context,
+            action="news_source",
+            path="tests/.tmp/news.csv",
+            count=2,
+            total=5,
+            summary="本地 CSV 已载入 5 条消息",
+        )
+        self.assertIn("已载入消息源", news_text)
+        self.assertIn("覆盖 2 只股票 / 5 条消息", news_text)
+        self.assertIn("消息催化和机会池", news_text)
+
+        cash_text = module._qh_reference_data_import_status_text_v1(
+            context,
+            action="cash",
+            path="tests/.tmp/cash.csv",
+            snapshot=module.CashSnapshot(available_cash=100000.0, total_assets=160000.0),
+        )
+        self.assertIn("已导入资金快照", cash_text)
+        self.assertIn("100,000", cash_text)
+        self.assertIn("160,000", cash_text)
+        self.assertIn("预算和委托建议", cash_text)
+
+    def test_import_reference_and_broker_csvs_surface_contextual_status(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            module = importlib.import_module("app_qt")
+            app = module.QApplication.instance() or module.QApplication([])
+            _ = app
+
+            stock_calls: list[str] = []
+            stock_window = SimpleNamespace(
+                recommend_status_label=module.QLabel(),
+                stock_profiles={},
+                active_symbol="SZSE.300001",
+                _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+                _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+                _fill_scan_rows=lambda: stock_calls.append("scan"),
+                _fill_backtest_summaries=lambda: stock_calls.append("backtest"),
+                _refresh_intraday_monitor=lambda: stock_calls.append("monitor"),
+                refresh_daily_pool=lambda: stock_calls.append("pool"),
+                _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                    widget.setText(text),
+                    widget.setToolTip(tooltip or ""),
+                ),
+            )
+            with patch.object(module.QFileDialog, "getOpenFileName", return_value=("tests/.tmp/profiles.csv", "")), patch.object(
+                module,
+                "load_stock_profiles_from_csv",
+                return_value={"SZSE.300001": module.StockProfile(symbol="SZSE.300001", stock_id="300001", name="龙头样本")},
+            ):
+                module.QuantHunterWindow.import_stock_profiles_csv(stock_window)
+            self.assertEqual(stock_calls, ["scan", "backtest", "monitor", "pool"])
+            self.assertIn("已导入股票资料", stock_window.recommend_status_label.text())
+            self.assertIn("profiles.csv", stock_window.recommend_status_label.text())
+            self.assertIn("机会池和扫描页", stock_window.recommend_status_label.text())
+
+            market_window = SimpleNamespace(
+                universe_bars={},
+                universe_analyses={},
+                paths_by_symbol={},
+                market_status_label=module.QLabel(),
+                active_symbol="SZSE.300001",
+                strategy_params=lambda: {},
+                select_symbol=lambda symbol: setattr(market_window, "selected_symbol", symbol),
+                _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+                _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+                _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                    widget.setText(text),
+                    widget.setToolTip(tooltip or ""),
+                ),
+            )
+            bars = [SimpleNamespace(symbol="SZSE.300001")]
+            analyses = [SimpleNamespace(label="BUY"), SimpleNamespace(label="NONE")]
+            with patch.object(module.QFileDialog, "getOpenFileName", return_value=("tests/.tmp/single.csv", "")), patch.object(
+                module,
+                "load_bars_from_csv",
+                return_value=bars,
+            ), patch.object(
+                module,
+                "AntiHarvestStrategy",
+            ) as strategy_cls:
+                strategy_cls.return_value.analyze.return_value = analyses
+                module.QuantHunterWindow.load_single_csv(market_window)
+            self.assertEqual(market_window.selected_symbol, "SZSE.300001")
+            self.assertIn("已载入单票行情", market_window.market_status_label.text())
+            self.assertIn("single.csv", market_window.market_status_label.text())
+            self.assertIn("有效信号 1 条", market_window.market_status_label.text())
+
+            broker_calls: list[str] = []
+            broker_window = SimpleNamespace(
+                broker_status_banner=module.QLabel(),
+                active_symbol="SZSE.300001",
+                holdings=[],
+                cash_snapshot=None,
+                _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+                _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+                _fill_holdings=lambda: broker_calls.append("holdings"),
+                _refresh_broker_status=lambda: broker_calls.append("broker"),
+                _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                    widget.setText(text),
+                    widget.setToolTip(tooltip or ""),
+                ),
+            )
+            with patch.object(module.QFileDialog, "getOpenFileName", side_effect=[("tests/.tmp/holdings.csv", ""), ("tests/.tmp/cash.csv", "")]), patch.object(
+                module,
+                "load_holdings_from_csv",
+                return_value=[SimpleNamespace(symbol="SZSE.300001")],
+            ), patch.object(
+                module,
+                "load_cash_snapshot_from_csv",
+                return_value=module.CashSnapshot(available_cash=80000.0, total_assets=120000.0),
+            ):
+                module.QuantHunterWindow.import_holdings_csv(broker_window)
+                self.assertIn("已导入持仓", broker_window.broker_status_banner.text())
+                self.assertIn("holdings.csv", broker_window.broker_status_banner.text())
+                self.assertIn("持仓 1 条", broker_window.broker_status_banner.text())
+                module.QuantHunterWindow.import_cash_csv(broker_window)
+            self.assertIn("已导入资金快照", broker_window.broker_status_banner.text())
+            self.assertIn("cash.csv", broker_window.broker_status_banner.text())
+            self.assertIn("80,000", broker_window.broker_status_banner.text())
+            self.assertEqual(broker_calls, ["holdings", "broker", "broker"])
+
+    def test_load_news_source_surfaces_contextual_status(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            module = importlib.import_module("app_qt")
+            app = module.QApplication.instance() or module.QApplication([])
+            _ = app
+
+            calls: list[str] = []
+            events: list[dict[str, object]] = []
+            window = SimpleNamespace(
+                news_source_provider_key="csv",
+                news_source_path="",
+                news_source_last_loaded_at="",
+                news_source_status="",
+                news_catalysts={},
+                active_symbol="SZSE.300001",
+                state=SimpleNamespace(news_source_provider="", news_source_path="", news_source_last_loaded_at="", news_source_status=""),
+                config_status_banner=module.QLabel(),
+                recommend_status_label=module.QLabel(),
+                _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+                _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+                _sync_news_source_controls=lambda: calls.append("sync"),
+                _append_smart_message_event=lambda **kwargs: events.append(dict(kwargs)),
+                _current_ai_review_symbol_hint=lambda: "",
+                save_state=lambda: calls.append("save"),
+                refresh_daily_pool=lambda: calls.append("pool"),
+                _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                    widget.setText(text),
+                    widget.setToolTip(tooltip or ""),
+                ),
+            )
+            result = SimpleNamespace(
+                news_map={"SZSE.300001": [1, 2], "SHSE.600000": [3]},
+                provider="csv",
+                source_path="tests/.tmp/news.csv",
+                summary="本地 CSV 已载入 3 条消息",
+            )
+            with patch.object(module.QFileDialog, "getOpenFileName", return_value=("tests/.tmp/news.csv", "")), patch.object(
+                module,
+                "load_news_from_source",
+                return_value=result,
+            ):
+                loaded = module.QuantHunterWindow._load_news_source(window, "csv")
+            self.assertTrue(loaded)
+            self.assertEqual(calls, ["sync", "save", "pool"])
+            self.assertIn("已载入消息源", window.config_status_banner.text())
+            self.assertIn("news.csv", window.config_status_banner.text())
+            self.assertIn("覆盖 2 只股票 / 3 条消息", window.config_status_banner.text())
+            self.assertIn("消息催化和机会池", window.config_status_banner.text())
+            self.assertIn("已载入消息源", window.recommend_status_label.text())
+            self.assertEqual(events[-1]["level"], "SUCCESS")
+
+    def test_export_and_broker_action_status_text_surface_next_step(self) -> None:
+        module = importlib.import_module("app_qt")
+        artifacts = SimpleNamespace(
+            markdown_path="tests/.tmp/report.md",
+            csv_path="tests/.tmp/report.csv",
+            json_path="tests/.tmp/report.json",
+        )
+        detail_text = module._qh_history_export_status_text_v1(strategy_name="龙头模型", artifacts=artifacts)
+        self.assertIn("已导出历史战法报表", detail_text)
+        self.assertIn("report.md", detail_text)
+        self.assertIn("收益、回撤和逐笔明细", detail_text)
+
+        scan_text = module._qh_workspace_report_status_text_v1(scan_count=18, artifacts=artifacts)
+        self.assertIn("已导出工作台报告", scan_text)
+        self.assertIn("当前扫描 18 条", scan_text)
+        self.assertIn("候选排序、回测摘要", scan_text)
+
+        broker_context = SimpleNamespace(
+            symbol="SZSE.300001",
+            stock_name="龙头样本",
+            stock_id="300001",
+            mode_text="导出模式",
+            export_dir="tests/.tmp/exports",
+            account_id="demo-account",
+        )
+        broker_text = module._qh_broker_action_status_text_v1(
+            broker_context,
+            action="export_order_plan",
+            path="tests/.tmp/exports/order_plan.csv",
+        )
+        self.assertIn("已导出委托计划", broker_text)
+        self.assertIn("demo-account / 导出模式", broker_text)
+        self.assertIn("order_plan.csv", broker_text)
+        self.assertIn("价格、数量和风险提示", broker_text)
+
+        generate_text = module._qh_broker_action_status_text_v1(
+            broker_context,
+            action="generate_orders",
+            detail="已围绕 龙头样本 生成 2 笔委托建议",
+            count=2,
+        )
+        self.assertIn("委托建议已生成", generate_text)
+        self.assertIn("已围绕 龙头样本 生成 2 笔委托建议", generate_text)
+        self.assertIn("导出、送审或提交", generate_text)
+
+        script_text = module._qh_broker_action_status_text_v1(
+            broker_context,
+            action="generate_gm_script",
+            path="tests/.tmp/exports/gm_strategy.py",
+        )
+        self.assertIn("已生成 GM 实盘脚本", script_text)
+        self.assertIn("gm_strategy.py", script_text)
+        self.assertIn("部署到桥接环境", script_text)
+
+    def test_review_export_status_text_surfaces_product_and_next_step(self) -> None:
+        module = importlib.import_module("app_qt")
+        artifacts = SimpleNamespace(
+            markdown_path="tests/.tmp/review.md",
+            csv_path="tests/.tmp/review.csv",
+            json_path="tests/.tmp/review.json",
+        )
+        end_text = module._qh_review_export_status_text_v1(
+            action="end_of_day",
+            artifacts=artifacts,
+            scan_count=15,
+            pool_count=6,
+        )
+        self.assertIn("已导出收盘复盘日报", end_text)
+        self.assertIn("当前扫描 15 条 / 机会池 6 条", end_text)
+        self.assertIn("主线扩散、炸板回封和执行回执", end_text)
+
+        plan_text = module._qh_review_export_status_text_v1(
+            action="daily_plan",
+            artifacts=artifacts,
+            pool_count=8,
+            plan_count=3,
+            template_name="主线优先",
+            focus_only=True,
+        )
+        self.assertIn("已导出盘前交易计划", plan_text)
+        self.assertIn("当前候选 8 条 / 计划 3 条", plan_text)
+        self.assertIn("模板 主线优先 / 仅焦点主题", plan_text)
+        self.assertIn("买点、仓位、风控和盘中优先级", plan_text)
+
+    def test_export_reports_and_broker_actions_surface_contextual_status(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            module = importlib.import_module("app_qt")
+            app = module.QApplication.instance() or module.QApplication([])
+            _ = app
+
+            artifacts = SimpleNamespace(
+                markdown_path="tests/.tmp/report.md",
+                csv_path="tests/.tmp/report.csv",
+                json_path="tests/.tmp/report.json",
+            )
+            history_window = SimpleNamespace(
+                strategy_history_report=object(),
+                strategy_history_compare_rows=[],
+                strategy_history_leaderboard_rows=[],
+                metrics_text=module.QTextEdit(),
+                detail_hint_title_label=module.QLabel(),
+                current_broker_profile=lambda: SimpleNamespace(export_dir="tests/.tmp/exports"),
+                _strategy_history_output_dir=lambda: Path("tests/.tmp/exports"),
+                _selected_strategy_history_name=lambda: "龙头模型",
+                _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+                _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                    widget.setText(text),
+                    widget.setToolTip(tooltip or ""),
+                ),
+            )
+            with patch.object(module, "export_strategy_history_report", return_value=artifacts):
+                returned = module.QuantHunterWindow.export_strategy_history_report_from_ui(history_window, show_dialog=False)
+            self.assertIs(returned, artifacts)
+            self.assertIn("report.md", history_window.metrics_text.toPlainText())
+            self.assertIn("已导出历史战法报表", history_window.detail_hint_title_label.text())
+
+            workspace_window = SimpleNamespace(
+                scan_rows=[SimpleNamespace(symbol="SZSE.300001"), SimpleNamespace(symbol="SHSE.600000")],
+                backtest_summaries=[],
+                optimization_text=module.QTextEdit(),
+                scan_summary_label=module.QLabel(),
+                _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+                _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                    widget.setText(text),
+                    widget.setToolTip(tooltip or ""),
+                ),
+            )
+            with patch.object(module, "export_workspace_report", return_value=artifacts):
+                module.QuantHunterWindow.export_workspace_report_from_ui(workspace_window)
+            self.assertIn("工作台报告已导出", workspace_window.optimization_text.toPlainText())
+            self.assertIn("已导出工作台报告", workspace_window.scan_summary_label.text())
+
+            broker_calls: list[str] = []
+            broker_window = SimpleNamespace(
+                broker_status_banner=module.QLabel(),
+                order_submission_log=[],
+                order_result_text=module.QTextEdit(),
+                broker_inputs={"export_dir": module.QLineEdit()},
+                state=SimpleNamespace(broker_profile=None),
+                active_symbol="SZSE.300001",
+                order_intents=[SimpleNamespace(symbol="SZSE.300001")],
+                order_submission_records=[{"symbol": "SZSE.300001"}],
+                daily_pool_rows=[],
+                last_broker_execution_summary={},
+                _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+                _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+                _display_mode=lambda value: "导出模式" if value == "export" else value,
+                current_broker_profile=lambda: SimpleNamespace(account_id="demo-account", mode="export", export_dir="tests/.tmp/exports"),
+                _sync_shared_broker_fields=lambda *_args, **_kwargs: broker_calls.append("sync"),
+                save_state=lambda: broker_calls.append("save"),
+                _refresh_broker_status=lambda extra="": broker_calls.append(f"status:{extra}" if extra else "status"),
+                _refresh_login_status=lambda: broker_calls.append("login"),
+                _append_order_result=lambda line: broker_calls.append(f"log:{line}"),
+                _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                    widget.setText(text),
+                    widget.setToolTip(tooltip or ""),
+                ),
+            )
+            with patch.object(module.QFileDialog, "getExistingDirectory", return_value="tests/.tmp/exports"), patch.object(
+                module.QMessageBox,
+                "information",
+                return_value=module.QMessageBox.Ok,
+            ), patch.object(
+                module.EastmoneyBrokerAdapter,
+                "create_templates",
+                return_value=["tests/.tmp/exports/orders.csv", "tests/.tmp/exports/holdings.csv"],
+            ), patch.object(
+                module.EastmoneyBrokerAdapter,
+                "export_order_plan",
+                return_value="tests/.tmp/exports/order_plan.csv",
+            ), patch.object(
+                module.EastmoneyBrokerAdapter,
+                "export_submission_records",
+                return_value="tests/.tmp/exports/order_result.csv",
+            ):
+                module.QuantHunterWindow.choose_export_dir(broker_window)
+                self.assertIn("已切换导出目录", broker_window.broker_status_banner.text())
+                module.QuantHunterWindow.save_profile(broker_window)
+                self.assertIn("账户配置已保存", broker_window.broker_status_banner.text())
+                module.QuantHunterWindow.create_broker_templates(broker_window)
+                self.assertIn("已生成执行模板", broker_window.broker_status_banner.text())
+                module.QuantHunterWindow.export_order_plan(broker_window)
+                self.assertIn("已导出委托计划", broker_window.broker_status_banner.text())
+                module.QuantHunterWindow.export_order_result_log(broker_window)
+            self.assertIn("已导出提交日志", broker_window.broker_status_banner.text())
+            self.assertIn("order_result.csv", broker_window.broker_status_banner.text())
+            self.assertIn("demo-account / 导出模式", broker_window.broker_status_banner.text())
+
+            gen_window = SimpleNamespace(
+                broker_status_banner=module.QLabel(),
+                orders_focus_label=module.QLabel(),
+                scan_rows=[SimpleNamespace(symbol="SZSE.300001")],
+                state=SimpleNamespace(watchlist=[]),
+                per_trade_budget_input=module.QLineEdit("30000"),
+                order_intents=[],
+                _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+                _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+                _display_mode=lambda value: "导出模式" if value == "export" else value,
+                current_broker_profile=lambda: SimpleNamespace(account_id="demo-account", mode="export", export_dir="tests/.tmp/exports", token="demo-token", strategy_id="demo-strategy"),
+                _fill_orders=lambda: None,
+                _refresh_broker_order_focus=lambda: None,
+                _refresh_submission_focus=lambda: None,
+                _refresh_broker_status=lambda extra="": None,
+                _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                    widget.setText(text),
+                    widget.setToolTip(tooltip or ""),
+                ),
+            )
+            intent = module.OrderIntent(
+                symbol="SZSE.300001",
+                side="BUY",
+                price=10.0,
+                quantity=1000,
+                stop_price=9.6,
+                target_price=10.8,
+                signal_date="2026-04-23",
+                reason="focus",
+            )
+            with patch.object(module.EastmoneyBrokerAdapter, "build_order_intents", return_value=[intent]), patch.object(
+                module.EastmoneyBrokerAdapter,
+                "generate_gm_strategy_script",
+                return_value="tests/.tmp/exports/gm_strategy.py",
+            ):
+                module.QuantHunterWindow.generate_order_suggestions(gen_window)
+                self.assertIn("委托建议已生成", gen_window.broker_status_banner.text())
+                self.assertIn("龙头样本", gen_window.broker_status_banner.text())
+                module.QuantHunterWindow.generate_sdk_strategy_script(gen_window)
+            self.assertIn("已生成 GM 实盘脚本", gen_window.broker_status_banner.text())
+            self.assertIn("gm_strategy.py", gen_window.broker_status_banner.text())
+
+            review_window = SimpleNamespace(
+                scan_rows=[SimpleNamespace(symbol="SZSE.300001"), SimpleNamespace(symbol="SHSE.600000")],
+                daily_pool_rows=[SimpleNamespace(symbol="SZSE.300001")],
+                holdings=[],
+                cash_snapshot=None,
+                order_submission_records=[],
+                order_intents=[],
+                order_submission_log=[],
+                state=SimpleNamespace(focus_themes=["机器人"], license_plan="PRO"),
+                board_monitor_text=module.QTextEdit(),
+                board_status_banner=module.QLabel(),
+                _current_trade_plan_cached=lambda: SimpleNamespace(decisions=[SimpleNamespace(symbol="SZSE.300001")]),
+                _current_board_plan_cached=lambda top_n=5: SimpleNamespace(notes=[]),
+                _review_output_dir=lambda: Path("tests/.tmp/review_exports"),
+                _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+                _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                    widget.setText(text),
+                    widget.setToolTip(tooltip or ""),
+                ),
+            )
+            with patch.object(module, "export_end_of_day_review", return_value=artifacts), patch.object(
+                module.QuantHunterWindow,
+                "_current_trade_plan_cached",
+                return_value=SimpleNamespace(decisions=[SimpleNamespace(symbol="SZSE.300001")]),
+            ), patch.object(
+                module.QuantHunterWindow,
+                "_current_board_plan_cached",
+                return_value=SimpleNamespace(notes=[]),
+            ):
+                result = module.QuantHunterWindow.export_end_of_day_review_from_ui(review_window, show_dialog=False)
+            self.assertIs(result, artifacts)
+            self.assertIn("收盘复盘日报已导出", review_window.board_monitor_text.toPlainText())
+            self.assertIn("已导出收盘复盘日报", review_window.board_status_banner.text())
+
+            plan_window = SimpleNamespace(
+                scan_rows=[SimpleNamespace(symbol="SZSE.300001"), SimpleNamespace(symbol="SHSE.600000")],
+                daily_pool_rows=[SimpleNamespace(symbol="SZSE.300001"), SimpleNamespace(symbol="SHSE.600000")],
+                holdings=[],
+                state=SimpleNamespace(focus_themes=["机器人"], license_plan="PRO"),
+                trade_plan_text=module.QTextEdit(),
+                trade_plan_focus_label=module.QLabel(),
+                _license_capabilities=lambda: {"daily_plan_export_limit": 20, "auto_daily_plan_export": True},
+                _current_trade_plan_cached=lambda: SimpleNamespace(decisions=[SimpleNamespace(symbol="SZSE.300001"), SimpleNamespace(symbol="SHSE.600000")]),
+                _current_report_template_config=lambda: ("主线优先", True, 10),
+                _daily_plan_output_dir=lambda: Path("tests/.tmp/daily_plan_exports"),
+                _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+                _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                    widget.setText(text),
+                    widget.setToolTip(tooltip or ""),
+                ),
+            )
+            with patch.object(module, "export_daily_trade_plan", return_value=artifacts), patch.object(
+                module.QuantHunterWindow,
+                "_current_trade_plan_cached",
+                return_value=SimpleNamespace(decisions=[SimpleNamespace(symbol="SZSE.300001"), SimpleNamespace(symbol="SHSE.600000")]),
+            ):
+                result = module.QuantHunterWindow.export_daily_trade_plan_from_ui(plan_window, show_dialog=False)
+            self.assertIs(result, artifacts)
+            self.assertIn("盘前交易计划已导出", plan_window.trade_plan_text.toPlainText())
+            self.assertIn("已导出盘前交易计划", plan_window.trade_plan_focus_label.text())
+
+    def test_ai_sample_and_runtime_status_texts_surface_next_step(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        ai_text = module._qh_ai_review_preferences_status_text_v1(
+            model="gpt-5.4",
+            reasoning_effort="high",
+            auto_enabled=True,
+            auto_on_news=True,
+            auto_on_pool=False,
+            key_ready=True,
+        )
+        self.assertIn("AI评测配置已保存", ai_text)
+        self.assertIn("模型 gpt-5.4 / 推理 high", ai_text)
+        self.assertIn("自动 仅消息刷新", ai_text)
+        self.assertIn("手动跑一轮", ai_text)
+
+        sample_text = module._qh_sample_reference_status_text_v1(
+            loaded_parts=["股票资料 20 条", "消息源 示例消息源", "题材词典 6 个主题"],
+            scan_ready=False,
+        )
+        self.assertIn("已载入示例资料", sample_text)
+        self.assertIn("股票资料 20 条", sample_text)
+        self.assertIn("先加载样例股票池或扫描本地目录", sample_text)
+
+        runtime_text = module._qh_runtime_export_status_text_v1("tests/.tmp/runtime_log_20260423_120000.txt")
+        self.assertIn("runtime_log_20260423_120000.txt", runtime_text)
+        self.assertIn("状态摘要、最近任务和事件流水", runtime_text)
+
+    def test_save_ai_preferences_and_load_sample_reference_data_surface_contextual_status(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            module = importlib.import_module("app_qt")
+            app = module.QApplication.instance() or module.QApplication([])
+            _ = app
+
+            ai_calls: list[str] = []
+            ai_window = SimpleNamespace(
+                state=SimpleNamespace(),
+                config_status_banner=module.QLabel(),
+                recommend_status_label=module.QLabel(),
+                _current_ai_review_config=lambda: SimpleNamespace(
+                    base_url="https://api.example.com",
+                    api_key="secret",
+                    model="gpt-5.4",
+                    reasoning_effort="high",
+                    max_output_tokens=900,
+                    timeout_seconds=45.0,
+                ),
+                _current_ai_review_automation_settings=lambda: (True, True, False),
+                save_state=lambda: ai_calls.append("save"),
+                _append_smart_message_event=lambda **kwargs: ai_calls.append(f"event:{kwargs.get('title')}"),
+                _refresh_ai_review_status_panel=lambda: ai_calls.append("status_panel"),
+                _refresh_ai_review_panel=lambda: ai_calls.append("panel"),
+                _append_runtime_log=lambda message: ai_calls.append(f"log:{message}"),
+                _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                    widget.setText(text),
+                    widget.setToolTip(tooltip or ""),
+                ),
+            )
+            with patch.object(module.QMessageBox, "information", return_value=module.QMessageBox.Ok):
+                module.QuantHunterWindow.save_ai_review_preferences(ai_window)
+            self.assertIn("AI评测配置已保存", ai_window.config_status_banner.text())
+            self.assertIn("模型 gpt-5.4 / 推理 high", ai_window.config_status_banner.text())
+            self.assertIn("自动 仅消息刷新", ai_window.config_status_banner.text())
+            self.assertIn("AI评测配置已保存", ai_window.recommend_status_label.text())
+            self.assertIn("save", ai_calls)
+
+            sample_calls: list[str] = []
+            sample_window = SimpleNamespace(
+                stock_profiles={},
+                theme_aliases={},
+                theme_alias_path="",
+                scan_rows=[],
+                universe_bars={},
+                recommend_status_label=module.QLabel(),
+                _emit_action_feedback_v11=lambda *_args, **_kwargs: None,
+                _sync_pipeline_panels_v12=lambda: None,
+                _sample_reference_status_text_v1=module._qh_sample_reference_status_text_v1,
+                _load_news_source=lambda provider_key, refresh_after_load=False: sample_calls.append(f"news:{provider_key}") or True,
+                _fill_scan_rows=lambda: sample_calls.append("scan"),
+                _fill_backtest_summaries=lambda: sample_calls.append("backtest"),
+                _refresh_intraday_monitor=lambda: sample_calls.append("monitor"),
+                refresh_daily_pool=lambda async_mode=False: sample_calls.append(f"pool:{async_mode}"),
+                _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                    widget.setText(text),
+                    widget.setToolTip(tooltip or ""),
+                ),
+            )
+            with patch.object(module, "load_stock_profiles_from_csv", return_value={"SZSE.300001": module.StockProfile(symbol="SZSE.300001", stock_id="300001", name="龙头样本")}), patch.object(
+                module,
+                "load_theme_aliases_from_csv",
+                return_value={"机器人": ("机器人", "自动化")},
+            ):
+                module.QuantHunterWindow.load_sample_reference_data(sample_window)
+            self.assertIn("已载入示例资料", sample_window.recommend_status_label.text())
+            self.assertIn("股票资料 1 条", sample_window.recommend_status_label.text())
+            self.assertIn("题材词典 1 个主题", sample_window.recommend_status_label.text())
+            self.assertIn("先加载样例股票池或扫描本地目录", sample_window.recommend_status_label.text())
+            self.assertEqual(sample_calls, ["news:sample", "scan", "backtest", "monitor"])
+
+    def test_export_runtime_log_surfaces_contextual_status(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            module = importlib.import_module("app_qt")
+            app = module.QApplication.instance() or module.QApplication([])
+            _ = app
+
+            window = SimpleNamespace(
+                broker_inputs={"export_dir": module.QLineEdit("tests/.tmp/exports")},
+                runtime_status_text=module.QTextEdit(),
+                _runtime_overview_text=lambda: "运行中枢：活跃 0 | 累计 12\n日志导出：runtime_log_old.txt",
+                _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+                _append_runtime_log=lambda message: None,
+                _emit_action_feedback_v11=lambda *_args, **_kwargs: None,
+                last_runtime_export_path="",
+                runtime_events=[],
+            )
+            with patch.object(module, "export_runtime_log_runtime", side_effect=lambda *args, **kwargs: setattr(window, "last_runtime_export_path", "tests/.tmp/runtime_log_20260423_120000.txt")):
+                module.QuantHunterWindow.export_runtime_log(window)
+            self.assertIn("runtime_log_20260423_120000.txt", window.runtime_status_text.toPlainText())
+            self.assertIn("状态摘要、最近任务和事件流水", window.runtime_status_text.toPlainText())
+
+    def test_broker_validation_and_cache_clear_status_texts_surface_next_step(self) -> None:
+        module = importlib.import_module("app_qt")
+        broker_context = SimpleNamespace(
+            symbol="SZSE.300001",
+            stock_name="龙头样本",
+            stock_id="300001",
+            mode_text="SDK 模式",
+            export_dir="tests/.tmp/exports",
+            account_id="demo-account",
+        )
+        ready_text = module._qh_broker_validation_status_text_v1(
+            broker_context,
+            ready=True,
+            test_submit_only=True,
+            whitelist="SHSE.600000",
+        )
+        self.assertIn("接入校验通过", ready_text)
+        self.assertIn("白名单 SHSE.600000", ready_text)
+        self.assertIn("生成模板或委托建议", ready_text)
+
+        failed_text = module._qh_broker_validation_status_text_v1(
+            broker_context,
+            ready=False,
+            test_submit_only=True,
+            whitelist="",
+        )
+        self.assertIn("接入校验未通过", failed_text)
+        self.assertIn("白名单 未填写", failed_text)
+        self.assertIn("补齐缺失字段和桥接环境", failed_text)
+
+        cache_text = module._qh_runtime_cache_clear_status_text_v1("已清理 8 个文件 / 120.0 KB")
+        self.assertIn("已清理 8 个文件 / 120.0 KB", cache_text)
+        self.assertIn("刷新运行诊断和市场总览", cache_text)
+
+    def test_validate_broker_connection_and_clear_cache_surface_contextual_status(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            module = importlib.import_module("app_qt")
+            app = module.QApplication.instance() or module.QApplication([])
+            _ = app
+
+            broker_window = SimpleNamespace(
+                broker_status_banner=module.QLabel(),
+                active_symbol="SZSE.300001",
+                _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+                _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+                _display_mode=lambda value: "SDK 模式" if value == "sdk" else value,
+                current_broker_profile=lambda: SimpleNamespace(
+                    account_id="demo-account",
+                    mode="sdk",
+                    export_dir="tests/.tmp/exports",
+                    test_submit_only=True,
+                    test_submit_symbol_whitelist="SHSE.600000",
+                ),
+                _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                    widget.setText(text),
+                    widget.setToolTip(tooltip or ""),
+                ),
+            )
+            with patch.object(module, "validate_broker_connection_controller", return_value=True):
+                module.QuantHunterWindow.validate_broker_connection(broker_window)
+            self.assertIn("接入校验通过", broker_window.broker_status_banner.text())
+            self.assertIn("白名单 SHSE.600000", broker_window.broker_status_banner.text())
+
+            runtime_window = SimpleNamespace(
+                runtime_status_text=module.QTextEdit(),
+                _runtime_overview_text=lambda: "运行中枢：活跃 0 | 累计 12\n缓存维护：无",
+                _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+                last_cache_purge_summary="",
+            )
+            with patch.object(
+                module,
+                "clear_market_cache_runtime",
+                side_effect=lambda *_args, **_kwargs: setattr(runtime_window, "last_cache_purge_summary", "已清理 8 个文件 / 120.0 KB"),
+            ):
+                module.QuantHunterWindow.clear_market_cache(runtime_window)
+            self.assertIn("已清理 8 个文件 / 120.0 KB", runtime_window.runtime_status_text.toPlainText())
+            self.assertIn("刷新运行诊断和市场总览", runtime_window.runtime_status_text.toPlainText())
+
+    def test_backtest_and_sdk_sync_status_texts_surface_next_step(self) -> None:
+        module = importlib.import_module("app_qt")
+        backtest_text = module._qh_detail_backtest_status_text_v1(
+            stock_name="龙头样本",
+            stock_id="300001",
+            signal_label="2026-04-23 | 回踩做多",
+            trade_count=3,
+            source_path="tests/.tmp/single.csv",
+        )
+        self.assertIn("已完成单票回测", backtest_text)
+        self.assertIn("成交 3 笔", backtest_text)
+        self.assertIn("single.csv", backtest_text)
+        self.assertIn("收益、回撤和逐笔成交", backtest_text)
+
+        broker_context = SimpleNamespace(
+            symbol="SZSE.300001",
+            stock_name="龙头样本",
+            stock_id="300001",
+            mode_text="SDK 模式",
+            export_dir="tests/.tmp/exports",
+            account_id="demo-account",
+        )
+        sync_text = module._qh_broker_action_status_text_v1(
+            broker_context,
+            action="sync_sdk",
+            detail="持仓 1 条 | 可用资金 88,000 | 回执修正 1 条",
+        )
+        self.assertIn("已完成 SDK 同步", sync_text)
+        self.assertIn("持仓 1 条", sync_text)
+        self.assertIn("回执修正 1 条", sync_text)
+        self.assertIn("持仓、资金和回执差异", sync_text)
+
+    def test_run_backtest_and_sync_sdk_surface_contextual_status(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            module = importlib.import_module("app_qt")
+            app = module.QApplication.instance() or module.QApplication([])
+            _ = app
+
+            backtest_window = SimpleNamespace(
+                bars=[SimpleNamespace(symbol="SZSE.300001")],
+                analyses=[SimpleNamespace(date="2026-04-23", label="BUY", score=88, reason="量价共振")],
+                active_symbol="SZSE.300001",
+                paths_by_symbol={"SZSE.300001": Path("tests/.tmp/single.csv")},
+                metrics_text=module.QTextEdit(),
+                detail_hint_title_label=module.QLabel(),
+                trades_table=module.QTableWidget(),
+                _selected_detail_trade_snapshot=lambda: None,
+                _display_label=lambda value: "回踩做多" if value == "BUY" else value,
+                _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+                _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+                strategy_params=lambda: {},
+                _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+                _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                    widget.setText(text),
+                    widget.setToolTip(tooltip or ""),
+                ),
+                _refresh_detail_workspace_panels=lambda: None,
+            )
+            backtest_window.trades_table.setColumnCount(7)
+            trade = SimpleNamespace(
+                entry_date="2026-04-23",
+                exit_date="2026-04-24",
+                entry_price=10.0,
+                exit_price=10.8,
+                shares=1000,
+                pnl=800.0,
+                exit_reason="止盈",
+            )
+            with patch.object(module.Backtester, "run", return_value=SimpleNamespace(trades=[trade])), patch.object(
+                module,
+                "format_result",
+                return_value="收益 8.0% | 回撤 0.0%",
+            ):
+                module.QuantHunterWindow.run_backtest_for_active(backtest_window)
+            self.assertIn("收益 8.0%", backtest_window.metrics_text.toPlainText())
+            self.assertIn("已完成单票回测", backtest_window.detail_hint_title_label.text())
+            self.assertIn("single.csv", backtest_window.detail_hint_title_label.text())
+
+            sdk_logs: list[str] = []
+            sdk_calls: list[str] = []
+            sdk_window = SimpleNamespace(
+                active_symbol="SZSE.300001",
+                holdings=[],
+                cash_snapshot=None,
+                order_submission_records=[{"symbol": "SZSE.300001", "order_status": "SUBMITTED", "fill_status": "PENDING"}],
+                execution_status_by_symbol={},
+                current_broker_profile=lambda: SimpleNamespace(account_id="demo-account", mode="sdk", export_dir="tests/.tmp/exports"),
+                _display_mode=lambda value: "SDK 模式" if value == "sdk" else value,
+                _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+                _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+                broker_status_banner=module.QLabel(),
+                _fill_holdings=lambda: sdk_calls.append("holdings"),
+                _refresh_submission_table=lambda: sdk_calls.append("table"),
+                _append_order_result=lambda line: sdk_logs.append(line),
+                _refresh_broker_status=lambda extra="": sdk_calls.append(f"status:{extra}"),
+                _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                    widget.setText(text),
+                    widget.setToolTip(tooltip or ""),
+                ),
+            )
+            cash = module.CashSnapshot(available_cash=88000.0, total_assets=100000.0)
+            holdings = [SimpleNamespace(symbol="SZSE.300001")]
+            with patch.object(module.EastmoneyBrokerAdapter, "sync_account_via_sdk", return_value=(cash, holdings)), patch.object(
+                module.EastmoneyBrokerAdapter,
+                "sync_execution_records_via_sdk",
+                return_value=[],
+            ), patch.object(
+                module,
+                "reconcile_submission_records_with_holdings",
+                return_value=([{"symbol": "SZSE.300001", "order_status": "SUBMITTED", "fill_status": "FILLED"}], ["SDK持仓同步推断已成交 800"]),
+            ):
+                module.QuantHunterWindow.sync_broker_via_sdk(sdk_window, quiet=True)
+            self.assertIn("已完成 SDK 同步", sdk_window.broker_status_banner.text())
+            self.assertIn("持仓 1 条", sdk_window.broker_status_banner.text())
+            self.assertIn("88,000", sdk_window.broker_status_banner.text())
+            self.assertTrue(any("SDK持仓同步推断已成交" in line for line in sdk_logs))
+
+    def test_submit_outcome_status_texts_surface_next_step(self) -> None:
+        module = importlib.import_module("app_qt")
+        success_text = module._qh_submission_outcome_status_text_v1(stock_name="龙头样本", outcome="success")
+        self.assertIn("提交完成", success_text)
+        self.assertIn("最新执行回执", success_text)
+        self.assertIn("回执、成交和执行偏差", success_text)
+
+        failed_text = module._qh_submission_outcome_status_text_v1(stock_name="龙头样本", outcome="failed")
+        self.assertIn("提交失败", failed_text)
+        self.assertIn("回退导出 CSV", failed_text)
+
+        cancelled_text = module._qh_submission_outcome_status_text_v1(stock_name="龙头样本", outcome="cancelled")
+        self.assertIn("本次提交已取消", cancelled_text)
+        self.assertIn("继续复核价格、数量和风控", cancelled_text)
+
+    def test_confirm_and_submit_orders_surfaces_cancel_and_failure_context(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            module = importlib.import_module("app_qt")
+            app = module.QApplication.instance() or module.QApplication([])
+            _ = app
+
+            cancel_refresh_calls: list[str] = []
+            cancel_window = SimpleNamespace(
+                order_submission_records=[],
+                order_intents=[SimpleNamespace(symbol="SZSE.300001")],
+                execution_table=SimpleNamespace(rowCount=lambda: 0, selectRow=lambda row: None),
+                _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: None,
+                _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+                _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                    widget.setText(text),
+                    widget.setToolTip(tooltip or ""),
+                ),
+                _update_broker_action_flow_v26=lambda: None,
+                _refresh_live_workspace_summary_panels=lambda: cancel_refresh_calls.append("summary"),
+                _refresh_workspace_focus_banners=lambda: cancel_refresh_calls.append("focus"),
+                broker_status_banner=module.QLabel("本次提交已取消，仍保留委托建议供你继续复核。"),
+            )
+            with patch.object(module, "confirm_and_submit_orders_controller", return_value=None):
+                module.QuantHunterWindow.confirm_and_submit_orders(cancel_window)
+            self.assertIn("本次提交已取消", cancel_window.broker_status_banner.text())
+            self.assertIn("继续复核价格、数量和风控", cancel_window.broker_status_banner.text())
+            self.assertEqual(cancel_refresh_calls, ["summary", "focus"])
+
+            fail_refresh_calls: list[str] = []
+            fail_window = SimpleNamespace(
+                order_submission_records=[],
+                order_intents=[SimpleNamespace(symbol="SZSE.300001")],
+                execution_table=SimpleNamespace(rowCount=lambda: 1, selectRow=lambda row: None),
+                _on_execution_selection_changed=lambda: None,
+                _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: None,
+                _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+                _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                    widget.setText(text),
+                    widget.setToolTip(tooltip or ""),
+                ),
+                _update_broker_action_flow_v26=lambda: None,
+                _refresh_live_workspace_summary_panels=lambda: fail_refresh_calls.append("summary"),
+                _refresh_workspace_focus_banners=lambda: fail_refresh_calls.append("focus"),
+                broker_status_banner=module.QLabel(),
+            )
+
+            def _fake_failure(_window, **_kwargs):
+                _window.order_submission_records.append(
+                    {"symbol": "SZSE.300001", "order_status": "FAILED", "fill_status": "REJECTED"}
+                )
+
+            with patch.object(module, "confirm_and_submit_orders_controller", _fake_failure):
+                module.QuantHunterWindow.confirm_and_submit_orders(fail_window)
+            self.assertIn("提交失败", fail_window.broker_status_banner.text())
+            self.assertNotIn("提交完成", fail_window.broker_status_banner.text())
+            self.assertIn("回退导出 CSV", fail_window.broker_status_banner.text())
+            self.assertEqual(fail_refresh_calls, ["summary", "focus"])
+
+    def test_paper_action_status_texts_surface_next_step(self) -> None:
+        module = importlib.import_module("app_qt")
+        state = PaperTradingState(
+            enabled=True,
+            auto_run=True,
+            initial_cash=100000.0,
+            cash=98000.0,
+            total_equity=101500.0,
+            positions=[PaperPosition(symbol="SZSE.300001")],
+            ledger=[PaperOrderRecord(order_id="SIM001", timestamp="2026-04-23 10:00:00", symbol="SZSE.300001", stock_id="300001", stock_name="龙头样本", side="BUY", price=10.0, quantity=100, amount=1000.0)],
+            last_strategy_note="新开 1 笔 | 主测继续领先",
+        )
+        init_text = module._qh_paper_action_status_text_v1(action="initialize", state=state)
+        self.assertIn("模拟盘已初始化", init_text)
+        self.assertIn("101,500", init_text)
+        self.assertIn("执行一轮模拟盘", init_text)
+
+        run_text = module._qh_paper_action_status_text_v1(action="run", state=state)
+        self.assertIn("已完成一轮执行", run_text)
+        self.assertIn("新开 1 笔", run_text)
+        self.assertIn("持仓、交割和实验洞察", run_text)
+
+        artifacts = SimpleNamespace(markdown_path="tests/.tmp/paper.md", csv_path="tests/.tmp/paper.csv", json_path="tests/.tmp/paper.json")
+        export_text = module._qh_paper_action_status_text_v1(action="export", state=state, artifacts=artifacts)
+        self.assertIn("已导出模拟盘报告", export_text)
+        self.assertIn("paper.md", export_text)
+        self.assertIn("收益、交割和执行画像", export_text)
+
+    def test_paper_trading_actions_surface_contextual_status(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            module = importlib.import_module("app_qt")
+            app = module.QApplication.instance() or module.QApplication([])
+            _ = app
+
+            state = PaperTradingState(
+                enabled=True,
+                auto_run=True,
+                initial_cash=100000.0,
+                cash=98000.0,
+                total_equity=101500.0,
+                positions=[PaperPosition(symbol="SZSE.300001")],
+                ledger=[PaperOrderRecord(order_id="SIM001", timestamp="2026-04-23 10:00:00", symbol="SZSE.300001", stock_id="300001", stock_name="龙头样本", side="BUY", price=10.0, quantity=100, amount=1000.0)],
+                last_strategy_note="新开 1 笔 | 主测继续领先",
+            )
+            window = SimpleNamespace(
+                paper_trading_state=PaperTradingState(),
+                paper_trading_focus_label=module.QLabel(),
+                paper_trading_status_label=module.QLabel(),
+                paper_trading_text=module.QTextEdit(),
+                broker_status_banner=module.QLabel(),
+                daily_pool_rows=[SimpleNamespace(symbol="SZSE.300001")],
+                state=SimpleNamespace(strategy_risk_profile="standard"),
+                _update_paper_trading_focus_hint=lambda: None,
+                _paper_trading_config=lambda: (100000.0, 0.25, True, 5.0),
+                _current_strategy_runtime_config=lambda: (3, 0.6, True),
+                _paper_trading_output_dir=lambda: Path("tests/.tmp/paper_exports"),
+                _cached_paper_analytics_bundle_v1=lambda: {"execution_profile": {}, "execution_recap": {}},
+                _refresh_paper_trading_panels=lambda: None,
+                save_state=lambda: None,
+                _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                    widget.setText(text),
+                    widget.setToolTip(tooltip or ""),
+                ),
+                _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+                current_broker_profile=lambda: SimpleNamespace(export_dir="tests/.tmp/paper_exports"),
+            )
+            artifacts = SimpleNamespace(markdown_path="tests/.tmp/paper.md", csv_path="tests/.tmp/paper.csv", json_path="tests/.tmp/paper.json")
+
+            with patch.object(module.PaperTradingEngine, "initialize_state", return_value=state), patch.object(
+                module.QMessageBox, "information", return_value=module.QMessageBox.Ok
+            ), patch.object(module.QMessageBox, "question", return_value=module.QMessageBox.Yes), patch.object(
+                module.PaperTradingEngine, "run_cycle", return_value=state
+            ), patch.object(module, "export_paper_trading_report", return_value=artifacts):
+                module.QuantHunterWindow.initialize_paper_trading(window)
+                self.assertIn("模拟盘已初始化", window.paper_trading_focus_label.text())
+                module.QuantHunterWindow.reset_paper_trading(window)
+                self.assertIn("模拟盘已重置", window.paper_trading_focus_label.text())
+                module.QuantHunterWindow.run_ai_paper_trading_cycle(window)
+                self.assertIn("已完成一轮执行", window.paper_trading_focus_label.text())
+                self.assertIn("新开 1 笔", window.paper_trading_focus_label.text())
+                module.QuantHunterWindow.export_paper_trading_report(window)
+            self.assertIn("已导出模拟盘报告", window.paper_trading_focus_label.text())
+            self.assertIn("paper.md", window.paper_trading_focus_label.text())
+
+    def test_login_validation_status_text_surfaces_next_step(self) -> None:
+        module = importlib.import_module("app_qt")
+        text = module._qh_login_validation_status_text_v1(
+            channel_text="GM",
+            mode_text="SDK 模式",
+            account_id="demo-account",
+            key_ready=True,
+            sdk_python_ready=False,
+        )
+        self.assertIn("登录联调已同步", text)
+        self.assertIn("GM / SDK 模式", text)
+        self.assertIn("账户 demo-account", text)
+        self.assertIn("Key 已齐 / Bridge 待补", text)
+        self.assertIn("执行接入校验", text)
+
+    def test_strategy_preferences_and_license_status_texts_surface_next_step(self) -> None:
+        module = importlib.import_module("app_qt")
+        pref_text = module._qh_strategy_preferences_status_text_v1(
+            risk_label="进攻",
+            top_theme_limit=4,
+            max_total_exposure=0.65,
+            focus_themes=["机器人", "算力"],
+            template_name="focus",
+            focus_only=True,
+            candidate_limit=10,
+        )
+        self.assertIn("策略偏好已保存", pref_text)
+        self.assertIn("风险档位 进攻", pref_text)
+        self.assertIn("关注题材 机器人、算力", pref_text)
+        self.assertIn("盘前模板 focus / 仅焦点主题 / 上限 10", pref_text)
+        self.assertIn("机会池和盘前计划", pref_text)
+
+        plan_text = module._qh_license_plan_status_text_v1(
+            plan_label="专业版",
+            auto_daily_plan_export=True,
+            theme_panel_size=8,
+            market_history_limit=12,
+        )
+        self.assertIn("许可证已切换到 专业版", plan_text)
+        self.assertIn("自动盘前报告 开启", plan_text)
+        self.assertIn("题材面板 8 组", plan_text)
+        self.assertIn("能力变化", plan_text)
+
+    def test_strategy_script_action_status_texts_surface_next_step(self) -> None:
+        module = importlib.import_module("app_qt")
+        context = SimpleNamespace(
+            strategy_total=6,
+            current_strategy="脚本战法",
+            risk_label="激进",
+            target_dir="tests/.tmp/strategy_catalog",
+        )
+        headline, detail = module._qh_strategy_config_action_status_text_v1(
+            context,
+            action="script_new",
+            strategy_name="脚本龙头",
+            path="tests/.tmp/strategy_plugins/script_leader.py",
+            detail="已带入当前向导元数据和默认公式权重",
+        )
+        self.assertEqual(headline, "脚本模板已创建")
+        self.assertIn("script_leader.py", detail)
+        self.assertIn("编辑脚本", detail)
+
+        headline, detail = module._qh_strategy_config_action_status_text_v1(
+            context,
+            action="script_source",
+            strategy_name="脚本龙头",
+            path="tests/.tmp/strategy_plugins/script_leader.py",
+            detail="来源：脚本文件",
+        )
+        self.assertEqual(headline, "已打开战法来源")
+        self.assertIn("来源：脚本文件", detail)
+        self.assertIn("点击“重载”", detail)
+
+    def test_open_theme_alias_editor_surfaces_current_dictionary_context(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+
+        class _ThemeAliasHost(module.QWidget):
+            pass
+
+        window = _ThemeAliasHost()
+        window.theme_aliases = {"机器人": ("机器人", "自动化")}
+        window.theme_alias_path = str(Path("tests/.tmp/theme_aliases_editor.csv"))
+        window.recommend_status_label = module.QLabel()
+        window._set_plain_text_if_changed = lambda widget, text: widget.setPlainText(text)
+        window._set_button_role = lambda *_args, **_kwargs: None
+        window._set_label_text_if_changed = lambda widget, text, tooltip=None: (
+            widget.setText(text),
+            widget.setToolTip(tooltip or ""),
+        )
+        window._theme_aliases_to_csv_text = lambda: module.QuantHunterWindow._theme_aliases_to_csv_text(window)
+
+        with patch.object(module.QDialog, "exec", return_value=0):
+            module.QuantHunterWindow.open_theme_alias_editor(window)
+
+        self.assertIn("已打开题材词典编辑器", window.recommend_status_label.text())
+        self.assertIn("当前共 1 个主题", window.recommend_status_label.text())
+        self.assertIn(str(Path("tests/.tmp/theme_aliases_editor.csv")), window.recommend_status_label.text())
+        self.assertIn("保存后机会池会自动刷新", window.recommend_status_label.text())
+
+    def test_save_theme_aliases_from_editor_surfaces_path_and_next_step(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        target_dir = Path("tests/.tmp/theme_alias_save_status")
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target_path = target_dir / "theme_aliases.csv"
+        if target_path.exists():
+            target_path.unlink()
+        calls: list[str] = []
+        window = SimpleNamespace(
+            theme_alias_path=str(target_path),
+            theme_aliases={},
+            recommend_status_label=module.QLabel(),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            save_state=lambda: calls.append("save"),
+            refresh_daily_pool=lambda: calls.append("refresh"),
+        )
+        dialog = SimpleNamespace(accept=lambda: calls.append("accept"))
+
+        module.QuantHunterWindow._save_theme_aliases_from_editor(window, dialog, 'theme_name,keywords\n机器人,"机器人,自动化"\n')
+
+        self.assertTrue(target_path.exists())
+        self.assertIn("已保存题材词典 1 个主题", window.recommend_status_label.text())
+        self.assertIn(str(target_path), window.recommend_status_label.text())
+        self.assertIn("核对主线、题材归类和热度映射", window.recommend_status_label.text())
+        self.assertEqual(calls, ["save", "refresh", "accept"])
+
+    def test_refresh_config_capability_overview_surfaces_strategy_and_news_reentry(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        cards = {
+            key: {
+                "headline": module.QLabel(),
+                "detail": module.QLabel(),
+                "meta": module.QLabel(),
+                "button": module.QPushButton(),
+            }
+            for key in ("risk", "strategy", "news", "ai")
+        }
+        window = SimpleNamespace(
+            config_capability_cards=cards,
+            state=SimpleNamespace(strategy_risk_profile="standard", news_source_provider="csv"),
+            config_inputs={
+                "top_theme_limit": module.QLineEdit("5"),
+                "max_total_exposure": module.QLineEdit("0.75"),
+            },
+            daily_plan_template_combo=SimpleNamespace(currentText=lambda: "主线优先"),
+            focus_themes_input=SimpleNamespace(text=lambda: "机器人, 算力"),
+            news_source_provider_key="csv",
+            news_source_last_loaded_at="2026-04-21 10:30",
+            news_source_status="可直接载入",
+            news_catalysts={"SZSE.300001": [1, 2], "SHSE.600000": [1]},
+            ai_review_results_by_symbol={"SZSE.300001": object()},
+            ai_review_last_symbol="SZSE.300001",
+            _strategy_catalog_current_name=lambda: "龙头模型",
+            _current_ai_review_config=lambda: SimpleNamespace(model="gpt-5.4"),
+            _current_ai_review_automation_settings=lambda: (True, True, False),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+        )
+
+        with patch.object(
+            module,
+            "load_strategy_catalog_payload",
+            return_value={"strategies": [{"name": "龙头模型", "enabled": True}, {"name": "低吸试错", "enabled": False}]},
+        ):
+            module.QuantHunterWindow._refresh_config_capability_overview_v1(window)
+
+        self.assertIn("当前档位：标准", cards["risk"]["headline"].text())
+        self.assertIn("主线前排 5", cards["risk"]["detail"].text())
+        self.assertIn("当前共有 2 套战法", cards["strategy"]["headline"].text())
+        self.assertIn("启用 1 套", cards["strategy"]["detail"].text())
+        self.assertIn("当前 龙头模型", cards["strategy"]["detail"].text())
+        self.assertIn("当前来源：本地 CSV", cards["news"]["headline"].text())
+        self.assertIn("已载入 2 只 / 3 条", cards["news"]["meta"].text())
+        self.assertIn("当前模型：gpt-5.4", cards["ai"]["headline"].text())
+        self.assertIn("自动评测 开启", cards["ai"]["detail"].text())
+
+    def test_refresh_config_tool_panel_surfaces_summary_and_next_step(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+
+        risk_combo = module.QComboBox()
+        risk_combo.addItem("标准", "standard")
+        risk_combo.setCurrentIndex(0)
+        template_combo = module.QComboBox()
+        template_combo.addItem("主线优先", "mainline")
+        template_combo.setCurrentIndex(0)
+        window = SimpleNamespace(
+            config_tool_summary_label=module.QLabel(),
+            config_tool_quick_label=module.QLabel(),
+            config_open_risk_button=module.QPushButton(),
+            config_open_strategy_button=module.QPushButton(),
+            config_open_news_button=module.QPushButton(),
+            config_open_ai_button=module.QPushButton(),
+            state=SimpleNamespace(
+                strategy_risk_profile="standard",
+                daily_plan_template="mainline",
+                focus_themes=["机器人"],
+                news_source_provider="csv",
+                ai_review_api_key="",
+            ),
+            strategy_risk_profile_combo=risk_combo,
+            daily_plan_template_combo=template_combo,
+            focus_themes_input=module.QLineEdit("机器人"),
+            news_source_provider_key="csv",
+            news_source_status="未载入",
+            _current_ai_review_config=lambda: SimpleNamespace(model="gpt-5.4", api_key=""),
+            _current_ai_review_automation_settings=lambda: (False, False, False),
+            _strategy_catalog_current_name=lambda: "",
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text) if hasattr(widget, "text") and widget.text() != text else None,
+                widget.setToolTip(tooltip) if tooltip is not None and hasattr(widget, "setToolTip") and widget.toolTip() != tooltip else None,
+            ),
+        )
+
+        with patch.object(module, "load_strategy_catalog_payload", return_value={"strategies": []}):
+            module.QuantHunterWindow._refresh_config_tool_panel_v1(window)
+
+        self.assertIn("档位 标准", window.config_tool_summary_label.text())
+        self.assertIn("消息源 本地 CSV", window.config_tool_summary_label.text())
+        self.assertIn("先新增一套战法", window.config_tool_quick_label.text())
+        self.assertEqual(window.config_open_strategy_button.text(), "看战法")
+        self.assertIn("当前还没有战法", window.config_open_strategy_button.toolTip())
+        self.assertIn("状态 未载入", window.config_open_news_button.toolTip())
+        self.assertEqual(window.config_open_ai_button.text(), "AI评测")
+        self.assertIn("API Key 待补", window.config_open_ai_button.toolTip())
+
+    def test_refresh_detail_tool_panel_state_guides_symbol_and_history_actions(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+
+        window = SimpleNamespace(
+            active_symbol_label=module.QLabel(),
+            detail_hint_title_label=module.QLabel(),
+            detail_load_csv_button=module.QPushButton(),
+            detail_backtest_button=module.QPushButton(),
+            detail_history_button=module.QPushButton(),
+            detail_compare_history_button=module.QPushButton(),
+            detail_export_history_button=module.QPushButton(),
+            strategy_history_report=None,
+            strategy_history_rows=[],
+            strategy_history_compare_rows=[],
+            _selected_strategy_history_name=lambda: "",
+            _set_button_role=lambda button, role="ghost": button.setProperty("testRole", role),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text) if hasattr(widget, "text") and widget.text() != text else None,
+                widget.setToolTip(tooltip) if tooltip is not None and hasattr(widget, "setToolTip") and widget.toolTip() != tooltip else None,
+            ),
+        )
+
+        module.refresh_detail_tool_panel_state_runtime(window, symbol="", stock_name="等待联动", stock_id="--")
+
+        self.assertIn("未选择", window.active_symbol_label.text())
+        self.assertFalse(window.detail_backtest_button.isEnabled())
+        self.assertFalse(window.detail_compare_history_button.isEnabled())
+        self.assertFalse(window.detail_export_history_button.isEnabled())
+        self.assertIn("先锁定一只焦点票", window.detail_backtest_button.toolTip())
+        self.assertIn("先锁定焦点票或导入单票 CSV", window.detail_hint_title_label.text())
+
+        window.strategy_history_report = object()
+        window.strategy_history_rows = [{"strategy_name": "龙头模型"}, {"strategy_name": "低吸试错"}]
+        window.strategy_history_compare_rows = [{"scenario_label": "基础场景"}]
+        window._selected_strategy_history_name = lambda: "龙头模型"
+
+        module.refresh_detail_tool_panel_state_runtime(window, symbol="SZSE.300001", stock_name="龙头样本", stock_id="300001")
+
+        self.assertIn("龙头样本", window.active_symbol_label.text())
+        self.assertIn("历史战法 2 组", window.active_symbol_label.text())
+        self.assertTrue(window.detail_backtest_button.isEnabled())
+        self.assertTrue(window.detail_compare_history_button.isEnabled())
+        self.assertTrue(window.detail_export_history_button.isEnabled())
+        self.assertEqual(window.detail_compare_history_button.property("testRole"), "accent")
+        self.assertIn("围绕当前焦点", window.detail_backtest_button.toolTip())
+        self.assertIn("当前已有 2 组历史结果", window.detail_compare_history_button.toolTip())
+        self.assertIn("导出当前历史战法报表", window.detail_export_history_button.toolTip())
+
+    def test_refresh_scanner_board_action_feedback_guides_scanner_actions(self) -> None:
+        runtime = importlib.import_module("quant_hunter.ui_workspace_runtime")
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+
+        scanner_cards = {
+            key: {"button": module.QPushButton()}
+            for key in ("scan", "watch", "monitor")
+        }
+        watch_cards = {
+            key: {"button": module.QPushButton()}
+            for key in ("watch", "summary", "monitor")
+        }
+        monitor_cards = {
+            key: {"button": module.QPushButton()}
+            for key in ("monitor", "overview", "recommend", "execution")
+        }
+        window = SimpleNamespace(
+            scan_rows=[],
+            daily_pool_rows=[],
+            backtest_summaries=[],
+            watchlist_widget=SimpleNamespace(count=lambda: 0),
+            monitor_table=SimpleNamespace(rowCount=lambda: 0),
+            board_table=SimpleNamespace(rowCount=lambda: 0),
+            board_monitor_table=SimpleNamespace(rowCount=lambda: 0),
+            active_symbol="",
+            state=SimpleNamespace(universe_dir="", watchlist=[]),
+            scanner_capability_cards=scanner_cards,
+            scanner_watch_summary_cards=watch_cards,
+            scanner_monitor_summary_cards=monitor_cards,
+            scanner_open_universe_button=module.QPushButton(),
+            scanner_sample_universe_button=module.QPushButton(),
+            scanner_rescan_button=module.QPushButton(),
+            scanner_add_watch_button=module.QPushButton(),
+            scanner_remove_watch_button=module.QPushButton(),
+            scanner_overview_button=module.QPushButton(),
+            scanner_recommend_button=module.QPushButton(),
+            scanner_detail_button=module.QPushButton(),
+            scanner_board_button=module.QPushButton(),
+            scanner_tool_hint_label=module.QLabel(),
+            monitor_overview_button=module.QPushButton(),
+            monitor_recommend_button=module.QPushButton(),
+            monitor_broker_button=module.QPushButton(),
+            monitor_board_button=module.QPushButton(),
+            _selected_symbol_from_scan=lambda: "",
+            _selected_symbol_from_monitor_table=lambda: "",
+            _selected_symbol_from_watchlist=lambda: "",
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _set_button_role=lambda button, role="ghost": button.setProperty("testRole", role),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text) if hasattr(widget, "text") and widget.text() != text else None,
+                widget.setToolTip(tooltip) if tooltip is not None and hasattr(widget, "setToolTip") and widget.toolTip() != tooltip else None,
+            ),
+        )
+
+        runtime.refresh_scanner_board_action_feedback(window)
+
+        self.assertFalse(window.monitor_broker_button.isEnabled())
+        self.assertIn("先在观察池或监控表里锁定一只焦点票", window.monitor_broker_button.toolTip())
+        self.assertFalse(scanner_cards["monitor"]["button"].isEnabled())
+        self.assertIn("先形成监控焦点", scanner_cards["monitor"]["button"].toolTip())
+        self.assertFalse(monitor_cards["execution"]["button"].isEnabled())
+        self.assertIn("先锁定一只监控焦点", monitor_cards["execution"]["button"].toolTip())
+        self.assertIn("还没有保存本地股票目录", window.scanner_open_universe_button.toolTip())
+        self.assertIn("先在扫描榜里选中一只股票", window.scanner_add_watch_button.toolTip())
+        self.assertIn("先选本地目录或载入示例资料", window.scanner_tool_hint_label.text())
+
+        window.scan_rows = [object(), object()]
+        window.daily_pool_rows = [object()]
+        window.backtest_summaries = [SimpleNamespace(symbol="SZSE.300001", trades=3, total_return=0.18)]
+        window.watchlist_widget = SimpleNamespace(count=lambda: 2)
+        window.monitor_table = SimpleNamespace(rowCount=lambda: 1)
+        window.active_symbol = "SZSE.300001"
+        window.state.universe_dir = "C:\\demo\\universe"
+        window.state.watchlist = []
+        window._selected_symbol_from_scan = lambda: "SZSE.300001"
+
+        runtime.refresh_scanner_board_action_feedback(window)
+
+        self.assertTrue(window.monitor_broker_button.isEnabled())
+        self.assertIn("龙头样本", window.monitor_broker_button.toolTip())
+        self.assertTrue(scanner_cards["monitor"]["button"].isEnabled())
+        self.assertEqual(scanner_cards["monitor"]["button"].property("testRole"), "accent")
+        self.assertTrue(monitor_cards["execution"]["button"].isEnabled())
+        self.assertIn("去交易", monitor_cards["execution"]["button"].toolTip())
+        self.assertIn("当前本地目录", window.scanner_open_universe_button.toolTip())
+        self.assertTrue(window.scanner_add_watch_button.isEnabled())
+        self.assertIn("加入观察池", window.scanner_add_watch_button.toolTip())
+        self.assertIn("下一步优先锁定 龙头样本", window.scanner_tool_hint_label.text())
+
+    def test_refresh_scanner_board_action_feedback_guides_board_actions(self) -> None:
+        runtime = importlib.import_module("quant_hunter.ui_workspace_runtime")
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+
+        board_cards = {
+            key: {"button": module.QPushButton()}
+            for key in ("candidate", "monitor", "execution")
+        }
+        window = SimpleNamespace(
+            scan_rows=[],
+            daily_pool_rows=[],
+            backtest_summaries=[],
+            watchlist_widget=SimpleNamespace(count=lambda: 0),
+            monitor_table=SimpleNamespace(rowCount=lambda: 0),
+            board_table=SimpleNamespace(rowCount=lambda: 0),
+            board_monitor_table=SimpleNamespace(rowCount=lambda: 0),
+            active_symbol="",
+            board_capability_cards=board_cards,
+            board_controls_plan_button=module.QPushButton(),
+            board_controls_review_button=module.QPushButton(),
+            _selected_symbol_from_monitor_table=lambda: "",
+            _selected_symbol_from_watchlist=lambda: "",
+            _selected_board_symbol=lambda: "",
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _set_button_role=lambda button, role="ghost": button.setProperty("testRole", role),
+        )
+
+        runtime.refresh_scanner_board_action_feedback(window)
+
+        self.assertFalse(board_cards["execution"]["button"].isEnabled())
+        self.assertIn("先刷新候选并锁定焦点票", board_cards["execution"]["button"].toolTip())
+        self.assertFalse(window.board_controls_plan_button.isEnabled())
+        self.assertIn("先刷新候选", window.board_controls_plan_button.toolTip())
+
+        window.board_table = SimpleNamespace(rowCount=lambda: 3)
+        window.board_monitor_table = SimpleNamespace(rowCount=lambda: 1)
+        window.active_symbol = "SZSE.300001"
+
+        runtime.refresh_scanner_board_action_feedback(window)
+
+        self.assertTrue(board_cards["execution"]["button"].isEnabled())
+        self.assertEqual(board_cards["execution"]["button"].property("testRole"), "accent")
+        self.assertIn("龙头样本", board_cards["execution"]["button"].toolTip())
+        self.assertTrue(window.board_controls_plan_button.isEnabled())
+        self.assertIn("专项候选 3 只", window.board_controls_plan_button.toolTip())
+        self.assertTrue(window.board_controls_review_button.isEnabled())
+
+    def test_open_board_symbol_routes_without_focus_surface_guidance(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        nav_calls: list[tuple[str, str | None, str | None]] = []
+        refresh_calls: list[str] = []
+        window = SimpleNamespace(
+            _selected_board_symbol=lambda: "",
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: nav_calls.append((workspace_key, widget_name, select_row)),
+            recommend_status_label=module.QLabel(),
+            scan_summary_label=module.QLabel(),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+        )
+
+        module._qh_open_board_symbol_in_recommend(window)
+        module._qh_open_board_symbol_in_scanner(window)
+
+        self.assertEqual(
+            nav_calls,
+            [
+                ("recommend", "daily_pool_table", "daily_pool_table"),
+                ("scanner", "scan_table", None),
+            ],
+        )
+        self.assertEqual(refresh_calls, ["summary", "summary"])
+        self.assertIn("先在专项候选或回封监控里锁定一只焦点票", window.recommend_status_label.text())
+        self.assertIn("先在专项候选或回封监控里锁定一只焦点票", window.scan_summary_label.text())
+
+    def test_open_board_symbol_overview_and_broker_surface_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        refresh_calls: list[str] = []
+        nav_calls: list[tuple[str, str | None, str | None]] = []
+        focus_calls: list[str] = []
+        window = SimpleNamespace(
+            _selected_board_symbol=lambda: "SZSE.300001",
+            active_symbol="SZSE.300001",
+            universe_bars={},
+            daily_pool_rows=[],
+            scan_rows=[],
+            order_intents=[],
+            order_submission_records=[],
+            _board_candidate_snapshot_for_symbol=lambda symbol: {"symbol": symbol, "trigger_style": "回封关注"} if symbol else None,
+            _board_monitor_snapshot_for_symbol=lambda symbol: None,
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: nav_calls.append((workspace_key, widget_name, select_row)),
+            _refresh_broker_order_focus=lambda: None,
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            _focus_symbol_in_broker_workspace=lambda symbol: focus_calls.append(symbol),
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _emit_action_feedback_v11=lambda *_args, **_kwargs: None,
+            market_status_label=module.QLabel(),
+            broker_status_banner=module.QLabel(),
+        )
+
+        module.QuantHunterWindow.open_board_symbol_in_overview(window)
+        self.assertEqual(nav_calls, [("overview", "market_pool_table", None)])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("已从专项入口带着 龙头样本 (300001) 回到总览", window.market_status_label.text())
+
+        nav_calls.clear()
+        refresh_calls.clear()
+        module.QuantHunterWindow.open_board_symbol_in_broker(window)
+        self.assertEqual(focus_calls, ["SZSE.300001"])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("已从专项入口带着 龙头样本 (300001) 去交易", window.broker_status_banner.text())
+
+    def test_open_board_symbol_in_recommend_syncs_global_focus_context(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        refresh_calls: list[str] = []
+        focus_calls: list[tuple[str, str]] = []
+        recommend_calls: list[str] = []
+        window = SimpleNamespace(
+            _selected_board_symbol=lambda: "SZSE.300001",
+            active_symbol="",
+            daily_pool_rows=[],
+            order_intents=[],
+            order_submission_records=[],
+            _focus_symbol_in_recommend_workspace=lambda symbol: recommend_calls.append(symbol),
+            _focus_symbol_everywhere=lambda symbol, origin="": focus_calls.append((symbol, origin)),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            recommend_status_label=module.QLabel(),
+        )
+
+        module.QuantHunterWindow.open_board_symbol_in_recommend(window)
+
+        self.assertEqual(recommend_calls, ["SZSE.300001"])
+        self.assertEqual(focus_calls, [("SZSE.300001", "board")])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("已从专项入口带着 龙头样本 (300001) 回到机会池", window.recommend_status_label.text())
+        self.assertIn("当前结论：继续复核", window.recommend_status_label.text())
+
+    def test_open_board_symbol_in_scanner_surfaces_contextual_verdict(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        refresh_calls: list[str] = []
+        nav_calls: list[tuple[str, str | None, str | None]] = []
+        focus_calls: list[tuple[str, str]] = []
+        window = SimpleNamespace(
+            _selected_board_symbol=lambda: "SZSE.300001",
+            active_symbol="SZSE.300001",
+            universe_bars={},
+            daily_pool_rows=[],
+            scan_rows=[],
+            order_intents=[],
+            order_submission_records=[],
+            _board_candidate_snapshot_for_symbol=lambda symbol: {"symbol": symbol, "trigger_style": "回封关注"} if symbol else None,
+            _board_monitor_snapshot_for_symbol=lambda _symbol: None,
+            _focus_symbol_everywhere=lambda symbol, origin="": focus_calls.append((symbol, origin)),
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: nav_calls.append((workspace_key, widget_name, select_row)),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            scan_summary_label=module.QLabel(),
+        )
+
+        module.QuantHunterWindow.open_board_symbol_in_scanner(window)
+
+        self.assertEqual(focus_calls, [("SZSE.300001", "board")])
+        self.assertEqual(nav_calls, [("scanner", "scan_table", None)])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("已从专项入口带着 龙头样本 (300001) 回到扫描页", window.scan_summary_label.text())
+        self.assertIn("当前结论：继续复核", window.scan_summary_label.text())
+
+    def test_refresh_scanner_focus_status_updates_scanner_action_feedback_immediately(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+
+        window = SimpleNamespace(
+            scan_summary_label=module.QLabel(),
+            scan_rows=[SimpleNamespace(symbol="SZSE.300001", action="BUY", label="RECLAIM_LONG", score=92.0)],
+            daily_pool_rows=[],
+            backtest_summaries=[],
+            monitor_table=SimpleNamespace(rowCount=lambda: 0),
+            watchlist_widget=SimpleNamespace(count=lambda: 0),
+            board_table=SimpleNamespace(rowCount=lambda: 0),
+            board_monitor_table=SimpleNamespace(rowCount=lambda: 0),
+            state=SimpleNamespace(universe_dir="", watchlist=[]),
+            scanner_open_universe_button=module.QPushButton(),
+            scanner_sample_universe_button=module.QPushButton(),
+            scanner_rescan_button=module.QPushButton(),
+            scanner_add_watch_button=module.QPushButton(),
+            scanner_remove_watch_button=module.QPushButton(),
+            scanner_overview_button=module.QPushButton(),
+            scanner_recommend_button=module.QPushButton(),
+            scanner_detail_button=module.QPushButton(),
+            scanner_board_button=module.QPushButton(),
+            scanner_tool_hint_label=module.QLabel(),
+            monitor_overview_button=module.QPushButton(),
+            monitor_recommend_button=module.QPushButton(),
+            monitor_broker_button=module.QPushButton(),
+            monitor_board_button=module.QPushButton(),
+            scanner_capability_cards={key: {"button": module.QPushButton()} for key in ("scan", "watch", "monitor")},
+            scanner_watch_summary_cards={key: {"button": module.QPushButton()} for key in ("watch", "summary", "monitor")},
+            scanner_monitor_summary_cards={key: {"button": module.QPushButton()} for key in ("monitor", "overview", "recommend", "execution")},
+            active_symbol="",
+            last_scan_warnings=[],
+            _selected_symbol_from_scan=lambda: "SZSE.300001",
+            _selected_symbol_from_monitor_table=lambda: "",
+            _selected_symbol_from_watchlist=lambda: "",
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            _display_action=lambda value: {"BUY": "买入", "WATCH": "观察"}.get(value, value),
+            _display_label=lambda value: {"RECLAIM_LONG": "回封确认", "WATCH": "观察"}.get(value, value),
+            _board_candidate_snapshot_for_symbol=lambda symbol: None,
+            _board_monitor_snapshot_for_symbol=lambda symbol: None,
+            _set_button_role=lambda button, role="ghost": button.setProperty("testRole", role),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text) if hasattr(widget, "text") and widget.text() != text else None,
+                widget.setToolTip(tooltip) if tooltip is not None and hasattr(widget, "setToolTip") and widget.toolTip() != tooltip else None,
+            ),
+            _refresh_scanner_summary_cards=lambda symbol="": module.refresh_scanner_summary_cards_runtime(window, symbol=symbol),
+        )
+
+        module._qh_refresh_scanner_focus_status(window)
+
+        self.assertIn("龙头样本", window.scanner_detail_button.toolTip())
+        self.assertTrue(window.scanner_add_watch_button.isEnabled())
+        self.assertIn("加入观察池", window.scanner_add_watch_button.toolTip())
+
+    def test_refresh_scanner_focus_status_without_scans_uses_review_language(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+
+        window = SimpleNamespace(
+            scan_summary_label=module.QLabel(),
+            scan_rows=[],
+            monitor_table=SimpleNamespace(rowCount=lambda: 0),
+            watchlist_widget=SimpleNamespace(count=lambda: 0),
+            _selected_symbol_from_watchlist=lambda: "",
+            active_symbol="",
+            _set_label_text_if_changed=lambda label, text, tooltip=None: label.setText(text),
+            _refresh_scanner_summary_cards=lambda symbol="": None,
+        )
+
+        module._qh_refresh_scanner_focus_status(window)
+
+        self.assertIn("扫描状态：待扫描", window.scan_summary_label.text())
+        self.assertIn("当前结论：继续复核", window.scan_summary_label.text())
+        self.assertIn("执行首轮扫描", window.scan_summary_label.text())
+
+    def test_add_selected_to_watchlist_surfaces_status_and_refreshes_related_scanner_panels(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        calls = {"watchlist": 0, "monitor": [], "focus": [], "summary": [], "capability": 0, "watch": 0, "monitor_summary": [], "live": 0, "banner": 0, "save": 0}
+        window = SimpleNamespace(
+            state=SimpleNamespace(watchlist=[]),
+            scan_summary_label=module.QLabel(),
+            _selected_symbol_from_scan=lambda: "SZSE.300001",
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            _refresh_watchlist=lambda: calls.__setitem__("watchlist", calls["watchlist"] + 1),
+            _select_watchlist_symbol=lambda symbol: calls["monitor"].append(f"select:{symbol}"),
+            _refresh_monitor_summary=lambda symbol="": calls["monitor"].append(symbol),
+            _refresh_scanner_focus_status=lambda symbol="": calls["focus"].append(symbol),
+            _refresh_scanner_summary_cards=lambda symbol="": calls["summary"].append(symbol),
+            _refresh_scanner_capability_overview_v1=lambda: calls.__setitem__("capability", calls["capability"] + 1),
+            _refresh_scanner_watch_summary_v1=lambda: calls.__setitem__("watch", calls["watch"] + 1),
+            _refresh_scanner_monitor_summary_v1=lambda symbol="": calls["monitor_summary"].append(symbol),
+            _refresh_live_workspace_summary_panels=lambda: calls.__setitem__("live", calls["live"] + 1),
+            _refresh_workspace_focus_banners=lambda: calls.__setitem__("banner", calls["banner"] + 1),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+            save_state=lambda: calls.__setitem__("save", calls["save"] + 1),
+        )
+
+        module.QuantHunterWindow.add_selected_to_watchlist(window)
+
+        self.assertEqual(window.state.watchlist, ["SZSE.300001"])
+        self.assertEqual(calls["watchlist"], 1)
+        self.assertIn("select:SZSE.300001", calls["monitor"])
+        self.assertIn("SZSE.300001", calls["focus"])
+        self.assertIn("SZSE.300001", calls["summary"])
+        self.assertEqual(calls["capability"], 1)
+        self.assertEqual(calls["watch"], 1)
+        self.assertEqual(calls["monitor_summary"], ["SZSE.300001"])
+        self.assertEqual(calls["live"], 1)
+        self.assertEqual(calls["banner"], 1)
+        self.assertEqual(calls["save"], 1)
+        self.assertIn("加入观察池", window.scan_summary_label.text())
+
+    def test_remove_selected_from_watchlist_surfaces_status_and_refreshes_related_scanner_panels(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        calls = {"watchlist": 0, "monitor": [], "focus": [], "summary": [], "capability": 0, "watch": 0, "monitor_summary": [], "live": 0, "banner": 0, "save": 0}
+        window = SimpleNamespace(
+            state=SimpleNamespace(watchlist=["SZSE.300001"]),
+            scan_summary_label=module.QLabel(),
+            _selected_symbol_from_scan=lambda: "",
+            _selected_symbol_from_watchlist=lambda: "",
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            _refresh_watchlist=lambda: calls.__setitem__("watchlist", calls["watchlist"] + 1),
+            _refresh_monitor_summary=lambda symbol="": calls["monitor"].append(symbol),
+            _refresh_scanner_focus_status=lambda symbol="": calls["focus"].append(symbol),
+            _refresh_scanner_summary_cards=lambda symbol="": calls["summary"].append(symbol),
+            _refresh_scanner_capability_overview_v1=lambda: calls.__setitem__("capability", calls["capability"] + 1),
+            _refresh_scanner_watch_summary_v1=lambda: calls.__setitem__("watch", calls["watch"] + 1),
+            _refresh_scanner_monitor_summary_v1=lambda symbol="": calls["monitor_summary"].append(symbol),
+            _refresh_live_workspace_summary_panels=lambda: calls.__setitem__("live", calls["live"] + 1),
+            _refresh_workspace_focus_banners=lambda: calls.__setitem__("banner", calls["banner"] + 1),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+            save_state=lambda: calls.__setitem__("save", calls["save"] + 1),
+        )
+        window._selected_symbol_from_scan = lambda: "SZSE.300001"
+
+        module.QuantHunterWindow.remove_selected_from_watchlist(window)
+
+        self.assertEqual(window.state.watchlist, [])
+        self.assertEqual(calls["watchlist"], 1)
+        self.assertEqual(calls["monitor"], [""])
+        self.assertEqual(calls["focus"], [""])
+        self.assertEqual(calls["summary"], [""])
+        self.assertEqual(calls["capability"], 1)
+        self.assertEqual(calls["watch"], 1)
+        self.assertEqual(calls["monitor_summary"], [""])
+        self.assertEqual(calls["live"], 1)
+        self.assertEqual(calls["banner"], 1)
+        self.assertEqual(calls["save"], 1)
+        self.assertIn("移出观察池", window.scan_summary_label.text())
+
+    def test_live_workspace_summary_prefers_scanner_runtime_focus_symbol(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+
+        window = SimpleNamespace(
+            scan_table=SimpleNamespace(rowCount=lambda: 3),
+            watchlist_widget=SimpleNamespace(count=lambda: 2),
+            monitor_table=SimpleNamespace(
+                rowCount=lambda: 1,
+                currentRow=lambda: 0,
+                item=lambda row, column: module.QTableWidgetItem("SZSE.300001") if (row, column) == (0, 2) else None,
+            ),
+            auto_refresh_checkbox=SimpleNamespace(isChecked=lambda: True),
+            universe_label=module.QLabel("股票池目录：示例目录"),
+            last_refresh_label=module.QLabel("最近刷新：10:30"),
+            scanner_live_summary_headline=module.QLabel(),
+            scanner_live_summary_detail=module.QLabel(),
+            scanner_live_summary_meta=module.QLabel(),
+            active_symbol="SHSE.600000",
+            state=SimpleNamespace(license_plan="TRIAL", strategy_risk_profile="standard", universe_dir="", watchlist=[]),
+            daily_plan_template_combo=SimpleNamespace(currentText=lambda: "标准模板"),
+            focus_themes_input=SimpleNamespace(text=lambda: "机器人"),
+            news_source_provider_key="csv",
+            news_source_last_loaded_at="2026-04-22 10:30:00",
+            strategy_risk_profile_combo=SimpleNamespace(currentText=lambda: "标准"),
+            last_daily_pool_meta={},
+            _current_strategy_runtime_config=lambda: (5, 0.8, None),
+            _refresh_risk_snapshot_cards=lambda: None,
+            _refresh_news_source_status_panel=lambda: None,
+            _selected_symbol_from_monitor_table=lambda: "SZSE.300001",
+            _selected_symbol_from_watchlist=lambda: "SHSE.600000",
+            _selected_symbol_from_summary_table=lambda: "",
+            _selected_symbol_from_scan=lambda: "",
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol == "SZSE.300001" else ("浦发样本" if symbol == "SHSE.600000" else "--"),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+        )
+
+        module.QuantHunterWindow._refresh_live_workspace_summary_panels(window)
+
+        self.assertIn("龙头样本", window.scanner_live_summary_detail.text())
+
+    def test_refresh_config_intel_summary_surfaces_news_source_and_ai_state(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        cards = {
+            key: {
+                "headline": module.QLabel(),
+                "detail": module.QLabel(),
+                "meta": module.QLabel(),
+                "button": module.QPushButton(),
+            }
+            for key in ("news", "ai")
+        }
+        window = SimpleNamespace(
+            config_intel_summary_cards=cards,
+            state=SimpleNamespace(news_source_provider="csv"),
+            news_source_provider_key="csv",
+            news_source_last_loaded_at="2026-04-21 10:30",
+            news_source_status="可直接载入",
+            news_catalysts={"SZSE.300001": [1, 2], "SHSE.600000": [1]},
+            ai_review_results_by_symbol={"SZSE.300001": SimpleNamespace(symbol="SZSE.300001", stock_name="龙头样本", reviewed_at="2026-04-21 10:36", summary="继续跟踪")},
+            ai_review_pending_symbol="",
+            ai_review_last_symbol="SZSE.300001",
+            ai_review_last_error="",
+            ai_review_last_trigger="pool_refresh",
+            _current_ai_review_config=lambda: SimpleNamespace(model="gpt-5.4"),
+            _current_ai_review_automation_settings=lambda: (True, True, False),
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+        )
+
+        module.QuantHunterWindow._refresh_config_intel_summary_v1(window)
+
+        self.assertIn("消息源：本地 CSV", cards["news"]["headline"].text())
+        self.assertIn("状态 可直接载入", cards["news"]["detail"].text())
+        self.assertIn("最近载入：2026-04-21 10:30", cards["news"]["meta"].text())
+        self.assertIn("AI评测：gpt-5.4", cards["ai"]["headline"].text())
+        self.assertIn("最近结果：龙头样本", cards["ai"]["detail"].text())
+        self.assertIn("自动 开启", cards["ai"]["meta"].text())
+
+    def test_refresh_config_strategy_summary_surfaces_catalog_draft_and_json_state(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        cards = {
+            key: {
+                "headline": module.QLabel(),
+                "detail": module.QLabel(),
+                "meta": module.QLabel(),
+                "button": module.QPushButton(),
+            }
+            for key in ("catalog", "form", "editor", "script")
+        }
+        formula_stage_combo = module.QComboBox()
+        formula_stage_combo.addItem("基础战法", "base")
+        formula_stage_combo.addItem("聚合战法", "aggregate")
+        formula_stage_combo.setCurrentIndex(0)
+        status_text = module.QTextEdit()
+        status_text.setPlainText("表单草稿待修正\n\n- 缺少说明")
+        formula_text = module.QTextEdit()
+        formula_text.setPlainText('{\n  "momentum": 0.6,\n  "volume": 0.4\n}')
+        editor = module.QTextEdit()
+        editor.setPlainText('{\n  "name": "龙头模型",\n  "enabled": true\n}')
+        window = SimpleNamespace(
+            config_strategy_summary_cards=cards,
+            strategy_config_search_input=module.QLineEdit("龙头"),
+            strategy_config_name_input=module.QLineEdit("龙头模型"),
+            strategy_config_formula_stage_combo=formula_stage_combo,
+            strategy_config_score_field_input=module.QLineEdit("leader_score"),
+            strategy_config_enabled_checkbox=SimpleNamespace(isChecked=lambda: True),
+            strategy_config_status_text=status_text,
+            strategy_config_formula_weights_text=formula_text,
+            strategy_config_editor=editor,
+            strategy_config_source_filter_combo=SimpleNamespace(currentData=lambda: "all"),
+            strategy_registry_diagnostics=lambda: [],
+            _strategy_catalog_current_name=lambda: "龙头模型",
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+        )
+
+        with patch.object(
+            module,
+            "load_strategy_workspace_payload",
+            return_value={
+                "strategies": [
+                    {"name": "龙头模型", "enabled": True, "source_type": "catalog", "formula_stage": "base"},
+                    {"name": "低吸试错", "enabled": False, "source_type": "script", "formula_stage": "base", "script_capabilities": {"required_context_keys": ["technical"], "dependency_strategy_names": [], "allow_dependency_scores": False}},
+                ],
+                "diagnostics": [],
+            },
+        ):
+            module.QuantHunterWindow._refresh_config_strategy_summary_v1(window)
+
+        self.assertIn("战法目录：2 套", cards["catalog"]["headline"].text())
+        self.assertIn("启用 1 套", cards["catalog"]["detail"].text())
+        self.assertIn("当前 龙头模型", cards["catalog"]["meta"].text())
+        self.assertIn("当前草稿：龙头模型", cards["form"]["headline"].text())
+        self.assertIn("启用 | 阶段 基础战法", cards["form"]["detail"].text())
+        self.assertIn("状态 表单草稿待修正", cards["form"]["meta"].text())
+        self.assertIn("JSON编辑：", cards["editor"]["headline"].text())
+        self.assertIn("公式项 2 | 公式已同步", cards["editor"]["detail"].text())
+        self.assertIn("脚本能力：龙头模型", cards["script"]["headline"].text())
+        self.assertIn("当前为 JSON 战法", cards["script"]["detail"].text())
+
+    def test_open_config_strategy_summary_routes_script_card_to_diagnostics(self) -> None:
+        module = importlib.import_module("app_qt")
+        calls: list[tuple[str, str | None]] = []
+        filter_combo = module.QComboBox()
+        filter_combo.addItem("全部级别", "all")
+        filter_combo.addItem("仅错误", "error")
+        filter_combo.addItem("仅警告", "warning")
+        window = SimpleNamespace(
+            _navigate_to_workspace=lambda workspace_key, widget_name=None: calls.append((workspace_key, widget_name)),
+            strategy_plugin_diagnostics_filter_combo=filter_combo,
+            _set_combo_current_data=lambda combo, target: module.QuantHunterWindow._set_combo_current_data(window, combo, target),
+            _preferred_strategy_plugin_diagnostic_filter=lambda: "error",
+        )
+
+        module.QuantHunterWindow._open_config_strategy_summary_v1(window, "script")
+
+        self.assertEqual(calls, [("config", "strategy_plugin_diagnostics_list")])
+        self.assertEqual(filter_combo.currentData(), "error")
+
+    def test_open_recommend_capability_routes_to_expected_widgets(self) -> None:
+        module = importlib.import_module("app_qt")
+        calls: list[tuple[str, str | None, str | None]] = []
+        stage_calls: list[bool] = []
+        window = SimpleNamespace(
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: calls.append((workspace_key, widget_name, select_row)),
+            _set_aux_stage_visibility_v38=lambda visible: stage_calls.append(bool(visible)),
+        )
+
+        module.QuantHunterWindow._open_recommend_capability_v1(window, "strategy")
+        module.QuantHunterWindow._open_recommend_capability_v1(window, "detail")
+        module.QuantHunterWindow._open_recommend_capability_v1(window, "plan")
+        module.QuantHunterWindow._open_recommend_capability_v1(window, "ai")
+        module.QuantHunterWindow._open_recommend_capability_v1(window, "recap")
+
+        self.assertEqual(stage_calls, [True, True, True, True, True])
+        self.assertEqual(
+            calls,
+            [
+                ("recommend", "strategy_pack_box", None),
+                ("recommend", "strategy_detail_box", None),
+                ("recommend", "trade_plan_table", "trade_plan_table"),
+                ("recommend", "recommend_ai_review_text", None),
+                ("recommend", "recommend_message_center_table", "recommend_message_center_table"),
+            ],
+        )
+
+    def test_open_recommend_aux_routes_surface_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-21",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.5,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=80.0,
+            persistence_score=82.0,
+            news_score=74.0,
+            leader_score=88.0,
+            total_score=89.0,
+        )
+        calls: list[tuple[str, str | None, str | None]] = []
+        stage_calls: list[bool] = []
+        refresh_calls: list[str] = []
+        window = SimpleNamespace(
+            _current_recommend_focus=lambda: row,
+            order_intents=[],
+            order_submission_records=[],
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: calls.append((workspace_key, widget_name, select_row)),
+            _set_aux_stage_visibility_v38=lambda visible: stage_calls.append(bool(visible)),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _emit_action_feedback_v11=lambda *_args, **_kwargs: None,
+            recommend_status_label=module.QLabel(),
+        )
+
+        module.QuantHunterWindow._open_recommend_capability_v1(window, "plan")
+        self.assertEqual(stage_calls, [True])
+        self.assertEqual(calls, [("recommend", "trade_plan_table", "trade_plan_table")])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("交易计划区", window.recommend_status_label.text())
+        self.assertIn("当前计划已同步", window.recommend_status_label.text())
+        self.assertIn("当前结论：继续复核", window.recommend_status_label.text())
+
+        calls.clear()
+        refresh_calls.clear()
+        stage_calls.clear()
+        module.QuantHunterWindow._open_recommend_capability_v1(window, "ai")
+        self.assertEqual(stage_calls, [True])
+        self.assertEqual(calls, [("recommend", "recommend_ai_review_text", None)])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("AI评测区", window.recommend_status_label.text())
+        self.assertIn("当前计划已同步", window.recommend_status_label.text())
+        self.assertIn("当前结论：继续复核", window.recommend_status_label.text())
+
+        calls.clear()
+        refresh_calls.clear()
+        stage_calls.clear()
+        window._current_recommend_focus = lambda: None
+        module.QuantHunterWindow._open_recommend_deep_summary_v1(window, "theme")
+        self.assertEqual(stage_calls, [])
+        self.assertEqual(calls, [("recommend", "theme_heat_table", "theme_heat_table")])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("主线主题区", window.recommend_status_label.text())
+        self.assertIn("当前焦点票待同步", window.recommend_status_label.text())
+        self.assertIn("当前结论：继续复核", window.recommend_status_label.text())
+
+    def test_refresh_recommend_capability_overview_surfaces_strategy_plan_and_messages(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        focus_row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-21",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.5,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=80.0,
+            persistence_score=82.0,
+            news_score=74.0,
+            leader_score=88.0,
+            total_score=89.0,
+            primary_strategy="龙头模型",
+        )
+        cards = {
+            key: {
+                "headline": module.QLabel(),
+                "detail": module.QLabel(),
+                "meta": module.QLabel(),
+                "button": module.QPushButton(),
+            }
+            for key in ("strategy", "detail", "plan", "ai", "recap")
+        }
+        window = SimpleNamespace(
+            recommend_capability_cards=cards,
+            daily_pool_rows=[focus_row],
+            smart_message_events=[],
+            current_trade_plan=SimpleNamespace(decisions=[SimpleNamespace(stock_name="龙头样本")]),
+            strategy_pack_cards={"主线": object(), "风控": object(), "计划": object()},
+            strategy_detail_combo=SimpleNamespace(currentText=lambda: "龙头模型"),
+            ai_review_results_by_symbol={"SZSE.300001": SimpleNamespace(symbol="SZSE.300001", stock_name="龙头样本")},
+            ai_review_pending_symbol="",
+            ai_review_last_symbol="SZSE.300001",
+            ai_review_last_error="",
+            _current_ai_review_config=lambda: SimpleNamespace(model="gpt-5.4"),
+            _selected_daily_pool_recommendation=lambda: focus_row,
+            _filtered_daily_pool_rows=lambda: [focus_row],
+            _display_action=lambda value: {"BUY": "买入", "WATCH": "观察"}.get(value, value),
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol == "SZSE.300001" else symbol,
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+        )
+
+        with patch.object(module, "message_center_counts", return_value={"unread": 2, "open": 1, "news": 3, "ai": 1, "trade": 0}):
+            module.QuantHunterWindow._refresh_recommend_capability_overview_v1(window)
+
+        self.assertIn("当前战法：龙头模型", cards["strategy"]["headline"].text())
+        self.assertIn("中控卡 3 张", cards["strategy"]["detail"].text())
+        self.assertIn("当前细节：龙头模型", cards["detail"]["headline"].text())
+        self.assertIn("当前动作 买入", cards["detail"]["detail"].text())
+        self.assertIn("当前计划：1 条", cards["plan"]["headline"].text())
+        self.assertIn("聚焦 龙头样本", cards["plan"]["detail"].text())
+        self.assertIn("AI评测：gpt-5.4", cards["ai"]["headline"].text())
+        self.assertIn("缓存 1 条 | 最近 SZSE.300001", cards["ai"]["detail"].text())
+        self.assertIn("AI评测面板", cards["ai"]["meta"].text())
+        self.assertIn("消息中心：未读 2 | 待办 1", cards["recap"]["headline"].text())
+        self.assertIn("消息 3 | AI 1 | 交易 0", cards["recap"]["detail"].text())
+
+    def test_refresh_recommend_deep_summary_surfaces_theme_strategy_plan_and_recap(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        focus_row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-21",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.5,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=80.0,
+            persistence_score=82.0,
+            news_score=74.0,
+            leader_score=88.0,
+            total_score=89.0,
+            primary_strategy="龙头模型",
+            theme_name="机器人",
+        )
+        cards = {
+            key: {
+                "headline": module.QLabel(),
+                "detail": module.QLabel(),
+                "meta": module.QLabel(),
+                "button": module.QPushButton(),
+            }
+            for key in ("theme", "strategy", "plan", "recap")
+        }
+        window = SimpleNamespace(
+            recommend_deep_summary_cards=cards,
+            daily_pool_rows=[focus_row],
+            theme_heat_rows=[SimpleNamespace(theme_name="机器人"), SimpleNamespace(theme_name="算力")],
+            leader_candidates=[SimpleNamespace(stock_name="龙头样本"), SimpleNamespace(stock_name="次龙头")],
+            theme_heat_table=SimpleNamespace(currentRow=lambda: 0),
+            leader_table=SimpleNamespace(currentRow=lambda: 0),
+            strategy_pack_cards={"主线": object(), "风控": object(), "计划": object()},
+            strategy_detail_combo=SimpleNamespace(currentText=lambda: "龙头模型"),
+            current_trade_plan=SimpleNamespace(decisions=[SimpleNamespace(stock_name="龙头样本")]),
+            current_position_advice=[SimpleNamespace(stock_name="龙头样本")],
+            smart_message_events=[],
+            _selected_daily_pool_recommendation=lambda: focus_row,
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+        )
+
+        with patch.object(module, "message_center_counts", return_value={"unread": 2, "open": 1, "news": 3, "ai": 1, "trade": 0}):
+            module.QuantHunterWindow._refresh_recommend_deep_summary_v1(window)
+
+        self.assertIn("当前主线：机器人", cards["theme"]["headline"].text())
+        self.assertIn("题材 2 组 | 龙头 龙头样本", cards["theme"]["detail"].text())
+        self.assertIn("是否仍占优", cards["theme"]["meta"].text())
+        self.assertIn("战法中控：龙头模型", cards["strategy"]["headline"].text())
+        self.assertIn("卡组 3 张", cards["strategy"]["detail"].text())
+        self.assertIn("主线映射和失效条件", cards["strategy"]["meta"].text())
+        self.assertIn("今日计划：1 条", cards["plan"]["headline"].text())
+        self.assertIn("仓位建议 1 条", cards["plan"]["detail"].text())
+        self.assertIn("消息中心：未读 2 | 待办 1", cards["recap"]["headline"].text())
+        self.assertIn("消息 3 | AI 1 | 交易 0", cards["recap"]["detail"].text())
+
+    def test_open_recommend_deep_summary_routes_to_expected_widgets(self) -> None:
+        module = importlib.import_module("app_qt")
+        calls: list[tuple[str, str | None, str | None]] = []
+        stage_calls: list[bool] = []
+        window = SimpleNamespace(
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: calls.append((workspace_key, widget_name, select_row)),
+            _set_aux_stage_visibility_v38=lambda visible: stage_calls.append(bool(visible)),
+        )
+
+        module.QuantHunterWindow._open_recommend_deep_summary_v1(window, "theme")
+        module.QuantHunterWindow._open_recommend_deep_summary_v1(window, "strategy")
+        module.QuantHunterWindow._open_recommend_deep_summary_v1(window, "plan")
+        module.QuantHunterWindow._open_recommend_deep_summary_v1(window, "recap")
+
+        self.assertEqual(stage_calls, [True, True, True])
+        self.assertEqual(
+            calls,
+            [
+                ("recommend", "theme_heat_table", "theme_heat_table"),
+                ("recommend", "strategy_pack_box", None),
+                ("recommend", "trade_plan_table", "trade_plan_table"),
+                ("recommend", "recommend_message_center_table", "recommend_message_center_table"),
+            ],
+        )
+
+    def test_activate_workspace_stage_for_widget_routes_recommend_strategy_sections_to_deep_tab(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        tabs = module.QTabWidget()
+        for title in ("机会总览", "执行审查", "深度洞察"):
+            tabs.addTab(module.QWidget(), title)
+        window = SimpleNamespace(recommend_workflow_tabs=tabs)
+
+        module.QuantHunterWindow._activate_workspace_stage_for_widget(window, "recommend", "strategy_pack_box")
+        self.assertEqual(tabs.currentIndex(), 2)
+        tabs.setCurrentIndex(0)
+        module.QuantHunterWindow._activate_workspace_stage_for_widget(window, "recommend", "recommend_deep_summary_box")
+        self.assertEqual(tabs.currentIndex(), 2)
+        tabs.setCurrentIndex(0)
+        module.QuantHunterWindow._activate_workspace_stage_for_widget(window, "recommend", "strategy_detail_box")
+        self.assertEqual(tabs.currentIndex(), 2)
+
+    def test_open_detail_capability_routes_to_expected_widgets(self) -> None:
+        module = importlib.import_module("app_qt")
+        calls: list[tuple[str, str | None, str | None]] = []
+        window = SimpleNamespace(_navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: calls.append((workspace_key, widget_name, select_row)))
+
+        module.QuantHunterWindow._open_detail_capability_v1(window, "overview")
+        module.QuantHunterWindow._open_detail_capability_v1(window, "timeline")
+        module.QuantHunterWindow._open_detail_capability_v1(window, "history")
+
+        self.assertEqual(
+            calls,
+            [
+                ("detail", "metrics_text", None),
+                ("detail", "signal_table", "signal_table"),
+                ("detail", "strategy_history_table", "strategy_history_table"),
+            ],
+        )
+
+    def test_open_detail_aux_routes_surface_contextual_hint(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        order_intent = OrderIntent(
+            symbol="SZSE.300001",
+            side="BUY",
+            price=10.0,
+            quantity=1000,
+            stop_price=9.6,
+            target_price=10.8,
+            signal_date="2026-04-22",
+            reason="focus",
+        )
+        calls: list[tuple[str, str | None, str | None]] = []
+        refresh_calls: list[str] = []
+        window = SimpleNamespace(
+            active_symbol="SZSE.300001",
+            daily_pool_rows=[],
+            order_intents=[order_intent],
+            order_submission_records=[],
+            _selected_order_intent=lambda: order_intent,
+            _explicit_recommendation_focus=lambda: None,
+            _selected_detail_signal_snapshot=lambda: None,
+            _strategy_history_selected_summary=lambda: None,
+            _selected_strategy_history_trade_snapshot=lambda: None,
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: calls.append((workspace_key, widget_name, select_row)),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _emit_action_feedback_v11=lambda *_args, **_kwargs: None,
+            detail_hint_title_label=module.QLabel(),
+        )
+
+        module.QuantHunterWindow._open_detail_capability_v1(window, "timeline")
+        self.assertEqual(calls, [("detail", "signal_table", "signal_table")])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("信号与交易时间线", window.detail_hint_title_label.text())
+        self.assertIn("主线计划和委托建议已同步", window.detail_hint_title_label.text())
+
+        calls.clear()
+        refresh_calls.clear()
+        module.QuantHunterWindow._open_detail_history_summary_v1(window, "compare")
+        self.assertEqual(calls, [("detail", "strategy_history_compare_table", "strategy_history_compare_table")])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("参数对比区", window.detail_hint_title_label.text())
+        self.assertIn("主线计划和委托建议已同步", window.detail_hint_title_label.text())
+
+    def test_refresh_detail_capability_overview_surfaces_history_and_trade_reentry(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        focus_row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-21",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.5,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=80.0,
+            persistence_score=82.0,
+            news_score=74.0,
+            leader_score=88.0,
+            total_score=89.0,
+            primary_strategy="龙头模型",
+            next_focus="继续盯量能与承接",
+        )
+        cards = {
+            key: {
+                "headline": module.QLabel(),
+                "detail": module.QLabel(),
+                "meta": module.QLabel(),
+                "button": module.QPushButton(),
+            }
+            for key in ("overview", "timeline", "history")
+        }
+        window = SimpleNamespace(
+            detail_capability_cards=cards,
+            active_symbol="SZSE.300001",
+            daily_pool_rows=[focus_row],
+            analyses=[],
+            strategy_history_rows=[{"strategy_name": "龙头模型"}, {"strategy_name": "低吸试错"}],
+            strategy_history_compare_rows=[{"strategy_name": "龙头模型"}],
+            _selected_detail_signal_snapshot=lambda: {"date": "2026-04-21", "label": "回踩转强", "score": "89", "close": "10.00", "reason": "量价共振"},
+            _selected_detail_trade_snapshot=lambda: {"entry_date": "2026-04-21", "exit_date": "2026-04-23", "entry_price": "10.00", "exit_price": "10.80", "shares": "1000", "pnl": "+8.0%", "exit_reason": "止盈"},
+            _selected_strategy_history_name=lambda: "龙头模型",
+            _selected_strategy_history_trade_snapshot=lambda: {"strategy_name": "龙头模型", "stock_name": "龙头样本"},
+            _strategy_history_selected_trades=lambda: [{"strategy_name": "龙头模型"}],
+            signal_table=SimpleNamespace(rowCount=lambda: 5),
+            trades_table=SimpleNamespace(rowCount=lambda: 6),
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            _display_action=lambda value: {"BUY": "买入", "WATCH": "观察"}.get(value, value),
+            _display_label=lambda value: value,
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+        )
+
+        module.QuantHunterWindow._refresh_detail_capability_overview_v1(window)
+
+        self.assertIn("当前单票：龙头样本", cards["overview"]["headline"].text())
+        self.assertIn("当前动作 买入", cards["overview"]["detail"].text())
+        self.assertIn("下一步：继续盯量能与承接", cards["overview"]["meta"].text())
+        self.assertIn("信号 5 条 | 成交 6 条", cards["timeline"]["headline"].text())
+        self.assertIn("焦点信号：2026-04-21 | 回踩转强", cards["timeline"]["detail"].text())
+        self.assertIn("历史战法：2 组", cards["history"]["headline"].text())
+        self.assertIn("当前战法：龙头模型", cards["history"]["detail"].text())
+        self.assertIn("参数对比 1 条", cards["history"]["detail"].text())
+
+    def test_refresh_detail_history_summary_surfaces_strategy_compare_and_trade_state(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        cards = {
+            key: {
+                "headline": module.QLabel(),
+                "detail": module.QLabel(),
+                "meta": module.QLabel(),
+                "button": module.QPushButton(),
+            }
+            for key in ("strategy", "compare", "trade")
+        }
+        selected_summary = SimpleNamespace(
+            total_return=0.18,
+            win_rate=0.62,
+            max_drawdown=0.07,
+            signal_count=12,
+            trade_count=7,
+        )
+        compare_rows = [
+            {"scenario_label": "强势预算", "total_return": 0.22},
+            {"scenario_label": "保守预算", "total_return": 0.09},
+        ]
+        trade_rows = [
+            {"stock_name": "龙头样本", "entry_date": "2026-04-21", "exit_date": "2026-04-23"},
+        ]
+        window = SimpleNamespace(
+            detail_history_summary_cards=cards,
+            strategy_history_rows=[{"strategy_name": "龙头模型"}, {"strategy_name": "低吸试错"}],
+            _selected_strategy_history_name=lambda: "龙头模型",
+            _strategy_history_selected_summary=lambda: selected_summary,
+            _strategy_history_selected_compare_rows=lambda: compare_rows,
+            _strategy_history_selected_trades=lambda: trade_rows,
+            _selected_strategy_history_trade_snapshot=lambda: {"stock_name": "龙头样本", "entry_date": "2026-04-21", "exit_date": "2026-04-23", "exit_reason": "止盈"},
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+        )
+
+        module.QuantHunterWindow._refresh_detail_history_summary_v1(window)
+
+        self.assertIn("当前战法：龙头模型", cards["strategy"]["headline"].text())
+        self.assertIn("收益 18.00%", cards["strategy"]["detail"].text())
+        self.assertIn("信号 12", cards["strategy"]["meta"].text())
+        self.assertIn("参数对比：2 条", cards["compare"]["headline"].text())
+        self.assertIn("最佳 强势预算 22.00%", cards["compare"]["detail"].text())
+        self.assertIn("逐笔样本：1 条", cards["trade"]["headline"].text())
+        self.assertIn("焦点 龙头样本", cards["trade"]["detail"].text())
+
+    def test_activate_workspace_stage_for_widget_routes_detail_metrics_and_history_sections(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        tabs = module.QTabWidget()
+        for title in ("单票总览", "信号与交易", "历史战法"):
+            tabs.addTab(module.QWidget(), title)
+        window = SimpleNamespace(detail_stage_tabs=tabs)
+
+        module.QuantHunterWindow._activate_workspace_stage_for_widget(window, "detail", "metrics_text")
+        self.assertEqual(tabs.currentIndex(), 0)
+        tabs.setCurrentIndex(0)
+        module.QuantHunterWindow._activate_workspace_stage_for_widget(window, "detail", "strategy_history_rank_table")
+        self.assertEqual(tabs.currentIndex(), 2)
+
+    def test_open_paper_capability_routes_to_expected_widgets(self) -> None:
+        module = importlib.import_module("app_qt")
+        calls: list[tuple[str, str | None, str | None]] = []
+        window = SimpleNamespace(_navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: calls.append((workspace_key, widget_name, select_row)))
+
+        module.QuantHunterWindow._open_paper_capability_v1(window, "overview")
+        module.QuantHunterWindow._open_paper_capability_v1(window, "records")
+        module.QuantHunterWindow._open_paper_capability_v1(window, "analytics")
+
+        self.assertEqual(
+            calls,
+            [
+                ("paper", "paper_trading_box", None),
+                ("paper", "paper_positions_table", "paper_positions_table"),
+                ("paper", "paper_strategy_table", "paper_strategy_table"),
+            ],
+        )
+
+    def test_open_paper_aux_routes_surface_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        calls: list[tuple[str, str | None, str | None]] = []
+        refresh_calls: list[str] = []
+        paper_state = SimpleNamespace(enabled=True)
+        window = SimpleNamespace(
+            active_symbol="SZSE.300001",
+            paper_trading_state=paper_state,
+            state=SimpleNamespace(paper_trading_state=paper_state),
+            _selected_paper_symbol=lambda: "SZSE.300001",
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: calls.append((workspace_key, widget_name, select_row)),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _emit_action_feedback_v11=lambda *_args, **_kwargs: None,
+            paper_trading_focus_label=module.QLabel(),
+            paper_trading_status_label=module.QLabel(),
+        )
+
+        module.QuantHunterWindow._open_paper_capability_v1(window, "records")
+        self.assertEqual(calls, [("paper", "paper_positions_table", "paper_positions_table")])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("持仓与交割区", window.paper_trading_focus_label.text())
+        self.assertIn("龙头样本", window.paper_trading_focus_label.text())
+        self.assertIn("当前结论：继续复核", window.paper_trading_focus_label.text())
+        self.assertIn("当前结论：继续复核", window.paper_trading_focus_label.text())
+
+        calls.clear()
+        refresh_calls.clear()
+        module.QuantHunterWindow._open_paper_analytics_summary_v1(window, "patrol")
+        self.assertEqual(calls, [("paper", "paper_patrol_table", "paper_patrol_table")])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("巡检区", window.paper_trading_focus_label.text())
+        self.assertIn("实验焦点已同步", window.paper_trading_focus_label.text())
+        self.assertIn("当前结论：继续复核", window.paper_trading_focus_label.text())
+        self.assertIn("当前结论：继续复核", window.paper_trading_focus_label.text())
+
+    def test_open_paper_symbol_routes_surface_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        focus_calls: list[tuple[str, str]] = []
+        refresh_calls: list[str] = []
+        paper_state = SimpleNamespace(enabled=True)
+        window = SimpleNamespace(
+            active_symbol="",
+            paper_trading_state=paper_state,
+            state=SimpleNamespace(paper_trading_state=paper_state),
+            _selected_paper_symbol=lambda: "SZSE.300001",
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: None,
+            _focus_symbol_in_recommend_workspace=lambda symbol: focus_calls.append(("recommend", symbol)),
+            _focus_symbol_in_broker_workspace=lambda symbol: focus_calls.append(("broker", symbol)),
+            _focus_symbol_everywhere=lambda symbol, origin="": focus_calls.append((origin, symbol)),
+            open_focus_symbol_in_detail=lambda: focus_calls.append(("detail", "open")),
+            _update_paper_trading_focus_hint=lambda: None,
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _emit_action_feedback_v11=lambda *_args, **_kwargs: None,
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            recommend_status_label=module.QLabel(),
+            detail_hint_title_label=module.QLabel(),
+            broker_status_banner=module.QLabel(),
+        )
+
+        module.QuantHunterWindow.open_paper_symbol_in_recommend(window)
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("已从实验台带着 龙头样本 (300001) 回到机会池", window.recommend_status_label.text())
+
+        refresh_calls.clear()
+        module.QuantHunterWindow.open_paper_symbol_in_detail(window)
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("已从实验台带着 龙头样本 (300001) 进入复盘", window.detail_hint_title_label.text())
+
+        refresh_calls.clear()
+        module.QuantHunterWindow.open_paper_symbol_in_broker(window)
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("已从实验台带着 龙头样本 (300001) 去交易", window.broker_status_banner.text())
+
+    def test_refresh_paper_capability_overview_surfaces_records_and_patrol_reentry(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        cards = {
+            key: {
+                "headline": module.QLabel(),
+                "detail": module.QLabel(),
+                "meta": module.QLabel(),
+                "button": module.QPushButton(),
+            }
+            for key in ("overview", "records", "analytics")
+        }
+        paper_state = SimpleNamespace(
+            enabled=True,
+            total_equity=125000.0,
+            cash=32000.0,
+            positions=[SimpleNamespace(stock_name="龙头样本", symbol="SZSE.300001", strategy_name="龙头模型")],
+            ledger=[object(), object()],
+            patrol_logs=[SimpleNamespace(event_type="REVIEW", summary="减仓复核")],
+        )
+        window = SimpleNamespace(
+            paper_capability_cards=cards,
+            paper_trading_state=paper_state,
+            state=SimpleNamespace(paper_trading_state=paper_state),
+            _current_execution_profile=lambda: {},
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+        )
+
+        with patch.object(module, "summarize_paper_trading_performance", return_value={"closed_trade_count": 3}), patch.object(
+            module,
+            "build_strategy_rotation_snapshot",
+            return_value=[{"strategy_name": "龙头模型", "decision": "转主测"}],
+        ):
+            module.QuantHunterWindow._refresh_paper_capability_overview_v1(window)
+
+        self.assertIn("当前实验：模拟盘运行中", cards["overview"]["headline"].text())
+        self.assertIn("闭环 3 | 持仓 1", cards["overview"]["detail"].text())
+        self.assertIn("下一步：继续主测、交割和复盘", cards["overview"]["meta"].text())
+        self.assertIn("持仓 1 | 交割 2", cards["records"]["headline"].text())
+        self.assertIn("当前第一仓：龙头样本", cards["records"]["detail"].text())
+        self.assertIn("主测战法：龙头模型", cards["analytics"]["headline"].text())
+        self.assertIn("巡航 1 条", cards["analytics"]["detail"].text())
+        self.assertIn("减仓复核", cards["analytics"]["meta"].text())
+
+    def test_refresh_paper_analytics_summary_surfaces_strategy_patrol_and_insight(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        cards = {
+            key: {
+                "headline": module.QLabel(),
+                "detail": module.QLabel(),
+                "meta": module.QLabel(),
+                "button": module.QPushButton(),
+            }
+            for key in ("strategy", "patrol", "insight")
+        }
+        paper_state = SimpleNamespace(
+            enabled=True,
+            patrol_logs=[SimpleNamespace(event_type="CYCLE", summary="主测继续领先")],
+        )
+        window = SimpleNamespace(
+            paper_analytics_summary_cards=cards,
+            paper_trading_state=paper_state,
+            state=SimpleNamespace(paper_trading_state=paper_state),
+            _current_execution_profile=lambda: {},
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+        )
+
+        with patch.object(
+            module,
+            "summarize_paper_trading_performance",
+            return_value={"closed_trade_count": 3, "win_rate": 0.57, "execution_quality_label": "执行承压"},
+        ), patch.object(
+            module,
+            "build_strategy_rotation_snapshot",
+            return_value=[{"strategy_name": "龙头模型", "bias_label": "加权", "budget_multiplier": 1.18, "sample_count": 7, "decision": "继续主测"}],
+        ):
+            module.QuantHunterWindow._refresh_paper_analytics_summary_v1(window)
+
+        self.assertIn("主测战法：龙头模型", cards["strategy"]["headline"].text())
+        self.assertIn("样本 7 | 倾向 加权", cards["strategy"]["detail"].text())
+        self.assertIn("当前决策：继续主测", cards["strategy"]["meta"].text())
+        self.assertIn("巡航日志：1 条", cards["patrol"]["headline"].text())
+        self.assertIn("最近 CYCLE | 主测继续领先", cards["patrol"]["detail"].text())
+        self.assertIn("实验洞察：闭环 3", cards["insight"]["headline"].text())
+        self.assertIn("胜率 57.0%", cards["insight"]["detail"].text())
+
+    def test_open_paper_analytics_summary_routes_to_expected_widgets(self) -> None:
+        module = importlib.import_module("app_qt")
+        calls: list[tuple[str, str | None, str | None]] = []
+        window = SimpleNamespace(_navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: calls.append((workspace_key, widget_name, select_row)))
+
+        module.QuantHunterWindow._open_paper_analytics_summary_v1(window, "strategy")
+        module.QuantHunterWindow._open_paper_analytics_summary_v1(window, "patrol")
+        module.QuantHunterWindow._open_paper_analytics_summary_v1(window, "insight")
+
+        self.assertEqual(
+            calls,
+            [
+                ("paper", "paper_strategy_table", "paper_strategy_table"),
+                ("paper", "paper_patrol_table", "paper_patrol_table"),
+                ("paper", "paper_experiment_text", None),
+            ],
+        )
+
+    def test_activate_workspace_stage_for_widget_routes_paper_capability_and_analytics_sections(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        tabs = module.QTabWidget()
+        for title in ("实验总览", "持仓与交割", "战法与巡航"):
+            tabs.addTab(module.QWidget(), title)
+        window = SimpleNamespace(paper_stage_tabs=tabs)
+
+        module.QuantHunterWindow._activate_workspace_stage_for_widget(window, "paper", "paper_capability_box")
+        self.assertEqual(tabs.currentIndex(), 0)
+        tabs.setCurrentIndex(0)
+        module.QuantHunterWindow._activate_workspace_stage_for_widget(window, "paper", "paper_strategy_table")
+        self.assertEqual(tabs.currentIndex(), 2)
+
+    def test_open_board_capability_routes_to_expected_widgets(self) -> None:
+        module = importlib.import_module("app_qt")
+        calls: list[tuple[str, str | None, str | None]] = []
+        broker_calls: list[str] = []
+        window = SimpleNamespace(
+            _selected_board_symbol=lambda: "SZSE.300001",
+            active_symbol="SZSE.300001",
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: calls.append((workspace_key, widget_name, select_row)),
+            _focus_symbol_in_broker_workspace=lambda symbol: broker_calls.append(symbol),
+        )
+
+        module.QuantHunterWindow._open_board_capability_v1(window, "candidate")
+        module.QuantHunterWindow._open_board_capability_v1(window, "monitor")
+        module.QuantHunterWindow._open_board_capability_v1(window, "execution")
+
+        self.assertEqual(
+            calls,
+            [
+                ("board", "board_table", "board_table"),
+                ("board", "board_monitor_table", "board_monitor_table"),
+            ],
+        )
+        self.assertEqual(broker_calls, ["SZSE.300001"])
+
+    def test_open_board_capability_routes_surface_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        order_intent = OrderIntent(
+            symbol="SZSE.300001",
+            side="BUY",
+            price=10.0,
+            quantity=1000,
+            stop_price=9.6,
+            target_price=10.8,
+            signal_date="2026-04-22",
+            reason="focus",
+        )
+        calls: list[tuple[str, str | None, str | None]] = []
+        broker_calls: list[str] = []
+        refresh_calls: list[str] = []
+        window = SimpleNamespace(
+            _selected_board_symbol=lambda: "SZSE.300001",
+            active_symbol="SZSE.300001",
+            daily_pool_rows=[],
+            scan_rows=[],
+            order_intents=[order_intent],
+            order_submission_records=[],
+            _board_candidate_snapshot_for_symbol=lambda symbol: {"symbol": symbol, "trigger_style": "回封关注"} if symbol else None,
+            _board_monitor_snapshot_for_symbol=lambda symbol: None,
+            _focus_symbol_in_broker_workspace=lambda symbol: broker_calls.append(symbol),
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: calls.append((workspace_key, widget_name, select_row)),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _emit_action_feedback_v11=lambda *_args, **_kwargs: None,
+            board_status_banner=module.QLabel(),
+            broker_status_banner=module.QLabel(),
+        )
+
+        module.QuantHunterWindow._open_board_capability_v1(window, "candidate")
+        self.assertEqual(calls, [("board", "board_table", "board_table")])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("候选区", window.board_status_banner.text())
+        self.assertIn("候选链路已同步", window.board_status_banner.text())
+        self.assertIn("当前结论：继续复核", window.board_status_banner.text())
+
+        calls.clear()
+        refresh_calls.clear()
+        module.QuantHunterWindow._open_board_capability_v1(window, "execution")
+        self.assertEqual(broker_calls, ["SZSE.300001"])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("专项入口", window.broker_status_banner.text())
+        self.assertIn("委托建议已生成", window.broker_status_banner.text())
+        self.assertIn("当前结论：继续复核", window.broker_status_banner.text())
+
+    def test_refresh_board_capability_overview_surfaces_candidate_monitor_and_execution(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        focus_row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-21",
+            close=10.0,
+            entry_price=10.1,
+            stop_price=9.6,
+            target_price=10.9,
+            technical_score=86.0,
+            position_score=80.0,
+            persistence_score=82.0,
+            news_score=74.0,
+            leader_score=88.0,
+            total_score=89.0,
+            primary_strategy="擒龙打板",
+        )
+        cards = {
+            key: {
+                "headline": module.QLabel(),
+                "detail": module.QLabel(),
+                "meta": module.QLabel(),
+                "button": module.QPushButton(),
+            }
+            for key in ("candidate", "monitor", "execution")
+        }
+        window = SimpleNamespace(
+            board_capability_cards=cards,
+            board_table=SimpleNamespace(rowCount=lambda: 4),
+            board_monitor_table=SimpleNamespace(rowCount=lambda: 2),
+            _selected_board_symbol=lambda: "SZSE.300001",
+            active_symbol="SZSE.300001",
+            daily_pool_rows=[focus_row],
+            _board_candidate_snapshot_for_symbol=lambda symbol: {
+                "stock_name": "龙头样本",
+                "stock_id": "300001",
+                "symbol": symbol,
+                "trigger_style": "回封关注",
+                "risk_level": "中",
+                "planned_entry": "10.10",
+                "planned_stop": "9.60",
+                "planned_target": "10.90",
+            },
+            _board_monitor_snapshot_for_symbol=lambda symbol: {
+                "stock_name": "龙头样本",
+                "stock_id": "300001",
+                "symbol": symbol,
+                "monitor_state": "回封观察",
+                "strength": "强",
+                "continuity": "良好",
+                "action_plan": "观察承接后再确认",
+                "note": "量能放大中",
+            },
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            _display_action=lambda value: {"BUY": "买入", "WATCH": "观察"}.get(value, value),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+        )
+
+        module.QuantHunterWindow._refresh_board_capability_overview_v1(window)
+
+        self.assertIn("候选判断：4 只", cards["candidate"]["headline"].text())
+        self.assertIn("触发 回封关注", cards["candidate"]["detail"].text())
+        self.assertIn("买点 10.10", cards["candidate"]["meta"].text())
+        self.assertIn("回封监控：2 条", cards["monitor"]["headline"].text())
+        self.assertIn("回封观察", cards["monitor"]["detail"].text())
+        self.assertIn("观察承接后再确认", cards["monitor"]["meta"].text())
+        self.assertIn("执行准备：买入", cards["execution"]["headline"].text())
+        self.assertIn("龙头样本", cards["execution"]["detail"].text())
+        self.assertIn("送进执行中控核对委托", cards["execution"]["meta"].text())
+
+    def test_activate_workspace_stage_for_widget_routes_board_capability_and_monitor_sections(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        tabs = module.QTabWidget()
+        for title in ("候选总览", "回封监控"):
+            tabs.addTab(module.QWidget(), title)
+        window = SimpleNamespace(board_stage_tabs=tabs)
+
+        module.QuantHunterWindow._activate_workspace_stage_for_widget(window, "board", "board_capability_box")
+        self.assertEqual(tabs.currentIndex(), 0)
+        tabs.setCurrentIndex(0)
+        module.QuantHunterWindow._activate_workspace_stage_for_widget(window, "board", "board_monitor_table")
+        self.assertEqual(tabs.currentIndex(), 1)
+
+    def test_open_scanner_capability_routes_to_expected_widgets(self) -> None:
+        module = importlib.import_module("app_qt")
+        calls: list[tuple[str, str | None, str | None]] = []
+        window = SimpleNamespace(_navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: calls.append((workspace_key, widget_name, select_row)))
+
+        module.QuantHunterWindow._open_scanner_capability_v1(window, "scan")
+        module.QuantHunterWindow._open_scanner_capability_v1(window, "watch")
+        module.QuantHunterWindow._open_scanner_capability_v1(window, "monitor")
+
+        self.assertEqual(
+            calls,
+            [
+                ("scanner", "scan_table", "scan_table"),
+                ("scanner", "watchlist_widget", None),
+                ("scanner", "monitor_table", "monitor_table"),
+            ],
+        )
+
+    def test_open_scanner_aux_routes_surface_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        scan_row = SimpleNamespace(symbol="SZSE.300001")
+        calls: list[tuple[str, str | None, str | None]] = []
+        refresh_calls: list[str] = []
+        window = SimpleNamespace(
+            active_symbol="SZSE.300001",
+            scan_rows=[scan_row],
+            daily_pool_rows=[],
+            order_intents=[],
+            order_submission_records=[],
+            _selected_symbol_from_monitor_table=lambda: "",
+            _selected_symbol_from_watchlist=lambda: "SZSE.300001",
+            _selected_symbol_from_summary_table=lambda: "",
+            _selected_symbol_from_scan=lambda: "",
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: calls.append((workspace_key, widget_name, select_row)),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _emit_action_feedback_v11=lambda *_args, **_kwargs: None,
+            scan_summary_label=module.QLabel(),
+        )
+
+        module.QuantHunterWindow._open_scanner_capability_v1(window, "watch")
+        self.assertEqual(calls, [("scanner", "watchlist_widget", None)])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("观察池", window.scan_summary_label.text())
+        self.assertIn("当前扫描信号已同步", window.scan_summary_label.text())
+        self.assertIn("当前结论：继续复核", window.scan_summary_label.text())
+
+        calls.clear()
+        refresh_calls.clear()
+        module.QuantHunterWindow._open_scanner_watch_summary_v1(window, "summary")
+        self.assertEqual(calls, [("scanner", "summary_table", "summary_table")])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("回测摘要区", window.scan_summary_label.text())
+        self.assertIn("观察与留样链路已同步", window.scan_summary_label.text())
+        self.assertIn("当前结论：继续复核", window.scan_summary_label.text())
+
+    def test_open_scanner_watch_summary_routes_to_expected_widgets(self) -> None:
+        module = importlib.import_module("app_qt")
+        calls: list[tuple[str, str | None, str | None]] = []
+        window = SimpleNamespace(_navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: calls.append((workspace_key, widget_name, select_row)))
+
+        module.QuantHunterWindow._open_scanner_watch_summary_v1(window, "watch")
+        module.QuantHunterWindow._open_scanner_watch_summary_v1(window, "summary")
+        module.QuantHunterWindow._open_scanner_watch_summary_v1(window, "monitor")
+
+        self.assertEqual(
+            calls,
+            [
+                ("scanner", "watchlist_widget", None),
+                ("scanner", "summary_table", "summary_table"),
+                ("scanner", "monitor_table", "monitor_table"),
+            ],
+        )
+
+    def test_open_scanner_monitor_summary_routes_to_expected_widgets(self) -> None:
+        module = importlib.import_module("app_qt")
+        nav_calls: list[tuple[str, str | None, str | None]] = []
+        selected_symbols: list[str] = []
+        recommend_calls: list[str] = []
+        broker_calls: list[str] = []
+        window = SimpleNamespace(
+            _selected_symbol_from_monitor_table=lambda: "SZSE.300001",
+            _selected_symbol_from_watchlist=lambda: "",
+            active_symbol="",
+            universe_bars={"SZSE.300001": object()},
+            select_symbol=lambda symbol: selected_symbols.append(symbol),
+            _focus_symbol_in_recommend_workspace=lambda symbol: recommend_calls.append(symbol),
+            _focus_symbol_in_broker_workspace=lambda symbol: broker_calls.append(symbol),
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: nav_calls.append((workspace_key, widget_name, select_row)),
+        )
+
+        module.QuantHunterWindow._open_scanner_monitor_summary_v1(window, "monitor")
+        module.QuantHunterWindow._open_scanner_monitor_summary_v1(window, "overview")
+        module.QuantHunterWindow._open_scanner_monitor_summary_v1(window, "recommend")
+        module.QuantHunterWindow._open_scanner_monitor_summary_v1(window, "execution")
+
+        self.assertEqual(selected_symbols, ["SZSE.300001"])
+        self.assertEqual(recommend_calls, ["SZSE.300001"])
+        self.assertEqual(broker_calls, ["SZSE.300001"])
+        self.assertEqual(
+            nav_calls,
+            [
+                ("scanner", "monitor_table", "monitor_table"),
+                ("overview", "market_pool_table", None),
+            ],
+        )
+
+    def test_open_scanner_monitor_summary_monitor_route_surfaces_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        calls: list[tuple[str, str | None, str | None]] = []
+        refresh_calls: list[str] = []
+        window = SimpleNamespace(
+            active_symbol="SZSE.300001",
+            scan_rows=[],
+            daily_pool_rows=[],
+            order_intents=[],
+            order_submission_records=[],
+            _selected_symbol_from_monitor_table=lambda: "SZSE.300001",
+            _selected_symbol_from_watchlist=lambda: "",
+            _selected_symbol_from_summary_table=lambda: "",
+            _selected_symbol_from_scan=lambda: "",
+            _board_candidate_snapshot_for_symbol=lambda symbol: None,
+            _board_monitor_snapshot_for_symbol=lambda symbol: {"monitor_state": "回封观察"} if symbol else None,
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: calls.append((workspace_key, widget_name, select_row)),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _emit_action_feedback_v11=lambda *_args, **_kwargs: None,
+            scan_summary_label=module.QLabel(),
+        )
+
+        module.QuantHunterWindow._open_scanner_monitor_summary_v1(window, "monitor")
+
+        self.assertEqual(calls, [("scanner", "monitor_table", "monitor_table")])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("盘中监控区", window.scan_summary_label.text())
+        self.assertIn("盘中监控已同步", window.scan_summary_label.text())
+
+    def test_refresh_scanner_capability_overview_surfaces_scan_watch_and_monitor_reentry(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        cards = {
+            key: {
+                "headline": module.QLabel(),
+                "detail": module.QLabel(),
+                "meta": module.QLabel(),
+                "button": module.QPushButton(),
+            }
+            for key in ("scan", "watch", "monitor")
+        }
+        watch_items = [SimpleNamespace(text=lambda value=value: value) for value in ("SZSE.300001", "SHSE.600000")]
+        watchlist = SimpleNamespace(
+            count=lambda: len(watch_items),
+            currentItem=lambda: watch_items[0],
+        )
+        summary_table = SimpleNamespace(rowCount=lambda: 2)
+        monitor_table = SimpleNamespace(
+            rowCount=lambda: 1,
+            currentRow=lambda: 0,
+            item=lambda row, column: module.QTableWidgetItem("SZSE.300001") if (row, column) == (0, 2) else None,
+        )
+        window = SimpleNamespace(
+            scanner_capability_cards=cards,
+            scan_table=SimpleNamespace(rowCount=lambda: 3),
+            watchlist_widget=watchlist,
+            summary_table=summary_table,
+            monitor_table=monitor_table,
+            active_symbol="SZSE.300001",
+            _selected_symbol_from_scan=lambda: "SZSE.300001",
+            _selected_symbol_from_watchlist=lambda: "SZSE.300001",
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+        )
+
+        module.QuantHunterWindow._refresh_scanner_capability_overview_v1(window)
+
+        self.assertIn("扫描候选：3 只", cards["scan"]["headline"].text())
+        self.assertIn("焦点 龙头样本", cards["scan"]["detail"].text())
+        self.assertIn("先筛信号", cards["scan"]["meta"].text())
+        self.assertIn("观察池 2 | 回测 2", cards["watch"]["headline"].text())
+        self.assertIn("焦点 龙头样本", cards["watch"]["detail"].text())
+        self.assertIn("盘中监控：1 条", cards["monitor"]["headline"].text())
+        self.assertIn("焦点 龙头样本", cards["monitor"]["detail"].text())
+        self.assertIn("核对动作、信号和跨页跳转", cards["monitor"]["meta"].text())
+
+    def test_refresh_scanner_watch_summary_surfaces_watch_backtest_and_monitor_reentry(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        cards = {
+            key: {
+                "headline": module.QLabel(),
+                "detail": module.QLabel(),
+                "meta": module.QLabel(),
+                "button": module.QPushButton(),
+            }
+            for key in ("watch", "summary", "monitor")
+        }
+        watch_items = [SimpleNamespace(text=lambda value=value: value) for value in ("SZSE.300001", "SHSE.600000")]
+        watchlist = SimpleNamespace(
+            count=lambda: len(watch_items),
+            currentItem=lambda: watch_items[0],
+        )
+        backtest_summaries = [
+            SimpleNamespace(symbol="SZSE.300001", trades=3, total_return=0.18, win_rate=0.67),
+            SimpleNamespace(symbol="SHSE.600000", trades=2, total_return=0.06, win_rate=0.50),
+        ]
+        monitor_table = SimpleNamespace(
+            rowCount=lambda: 1,
+            currentRow=lambda: 0,
+            item=lambda row, column: module.QTableWidgetItem("SZSE.300001") if (row, column) == (0, 2) else None,
+        )
+        window = SimpleNamespace(
+            scanner_watch_summary_cards=cards,
+            watchlist_widget=watchlist,
+            backtest_summaries=backtest_summaries,
+            monitor_table=monitor_table,
+            active_symbol="SZSE.300001",
+            _selected_symbol_from_watchlist=lambda: "SZSE.300001",
+            _selected_symbol_from_summary_table=lambda: "SZSE.300001",
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol == "SZSE.300001" else ("浦发样本" if symbol else "--"),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+        )
+
+        module.QuantHunterWindow._refresh_scanner_watch_summary_v1(window)
+
+        self.assertIn("观察池：2 只", cards["watch"]["headline"].text())
+        self.assertIn("焦点 龙头样本", cards["watch"]["detail"].text())
+        self.assertIn("是否继续跟踪", cards["watch"]["meta"].text())
+        self.assertIn("回测摘要：2 条", cards["summary"]["headline"].text())
+        self.assertIn("交易 3 笔 | 收益 18.00%", cards["summary"]["detail"].text())
+        self.assertIn("胜率 67.00%", cards["summary"]["meta"].text())
+        self.assertIn("盘中联动：1 条", cards["monitor"]["headline"].text())
+        self.assertIn("焦点 龙头样本", cards["monitor"]["detail"].text())
+        self.assertIn("联动机会池或打板", cards["monitor"]["meta"].text())
+
+    def test_refresh_scanner_monitor_summary_surfaces_monitor_overview_and_execution_reentry(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        focus_row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-21",
+            close=10.0,
+            entry_price=10.1,
+            stop_price=9.6,
+            target_price=10.9,
+            technical_score=86.0,
+            position_score=80.0,
+            persistence_score=82.0,
+            news_score=74.0,
+            leader_score=88.0,
+            total_score=89.0,
+            primary_strategy="龙头模型",
+            theme_name="机器人",
+            opportunity_tier="A层",
+        )
+        cards = {
+            key: {
+                "headline": module.QLabel(),
+                "detail": module.QLabel(),
+                "meta": module.QLabel(),
+                "button": module.QPushButton(),
+            }
+            for key in ("monitor", "overview", "recommend", "execution")
+        }
+        monitor_table = SimpleNamespace(
+            rowCount=lambda: 1,
+            currentRow=lambda: 0,
+            item=lambda row, column: module.QTableWidgetItem("SZSE.300001") if (row, column) == (0, 2) else None,
+        )
+        window = SimpleNamespace(
+            scanner_monitor_summary_cards=cards,
+            monitor_table=monitor_table,
+            watchlist_widget=SimpleNamespace(count=lambda: 2),
+            backtest_summaries=[SimpleNamespace(symbol="SZSE.300001"), SimpleNamespace(symbol="SHSE.600000")],
+            intraday_monitor_rows=[SimpleNamespace(symbol="SZSE.300001", action="BUY", label="RECLAIM_LONG", score=92)],
+            scan_rows=[],
+            daily_pool_rows=[focus_row],
+            active_symbol="SZSE.300001",
+            _selected_symbol_from_monitor_table=lambda: "SZSE.300001",
+            _selected_symbol_from_watchlist=lambda: "SHSE.600000",
+            _board_candidate_snapshot_for_symbol=lambda symbol: {
+                "trigger_style": "回封关注",
+                "risk_level": "中",
+            },
+            _board_monitor_snapshot_for_symbol=lambda symbol: {
+                "monitor_state": "回封观察",
+                "strength": "强",
+            },
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _display_action=lambda value: {"BUY": "买入", "WATCH": "观察"}.get(value, value),
+            _display_label=lambda value: {"RECLAIM_LONG": "回封确认", "WATCH": "观察"}.get(value, value),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+        )
+
+        module.QuantHunterWindow._refresh_scanner_monitor_summary_v1(window)
+
+        self.assertIn("盘中监控：1 条", cards["monitor"]["headline"].text())
+        self.assertIn("买入 / 回封确认 / 评分 92", cards["monitor"]["detail"].text())
+        self.assertIn("观察池 2 | 回测 2", cards["monitor"]["meta"].text())
+        self.assertIn("总览联动：机器人", cards["overview"]["headline"].text())
+        self.assertIn("焦点 龙头样本", cards["overview"]["detail"].text())
+        self.assertIn("主线热度、量价和市场位置", cards["overview"]["meta"].text())
+        self.assertIn("机会联动：买入", cards["recommend"]["headline"].text())
+        self.assertIn("主线 机器人 | 分层 A层", cards["recommend"]["detail"].text())
+        self.assertIn("进入送审链路", cards["recommend"]["meta"].text())
+        self.assertIn("执行联动：买入", cards["execution"]["headline"].text())
+        self.assertIn("打板 回封关注 | 风险 中", cards["execution"]["detail"].text())
+        self.assertIn("去交易或看打板", cards["execution"]["meta"].text())
+
+    def test_open_monitor_symbol_actions_prioritize_monitor_selection(self) -> None:
+        module = importlib.import_module("app_qt")
+        nav_calls: list[tuple[str, str | None, str | None]] = []
+        selected_symbols: list[str] = []
+        recommend_calls: list[str] = []
+        broker_calls: list[str] = []
+        board_candidate_calls: list[str] = []
+        board_monitor_calls: list[str] = []
+        board_focus_calls: list[str] = []
+        window = SimpleNamespace(
+            _selected_symbol_from_monitor_table=lambda: "SZSE.300001",
+            _selected_symbol_from_watchlist=lambda: "SHSE.600000",
+            active_symbol="SHSE.601398",
+            universe_bars={"SZSE.300001": object()},
+            select_symbol=lambda symbol: selected_symbols.append(symbol),
+            _focus_symbol_in_recommend_workspace=lambda symbol: recommend_calls.append(symbol),
+            _focus_symbol_in_broker_workspace=lambda symbol: broker_calls.append(symbol),
+            _select_board_candidate_row_for_symbol=lambda symbol: board_candidate_calls.append(symbol),
+            _select_board_monitor_row_for_symbol=lambda symbol: board_monitor_calls.append(symbol),
+            _refresh_board_focus_panels=lambda symbol="": board_focus_calls.append(symbol),
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: nav_calls.append((workspace_key, widget_name, select_row)),
+        )
+
+        module.QuantHunterWindow.open_monitor_symbol_in_overview(window)
+        module.QuantHunterWindow.open_monitor_symbol_in_recommend(window)
+        module.QuantHunterWindow.open_monitor_symbol_in_broker(window)
+        module.QuantHunterWindow.open_monitor_symbol_in_board(window)
+
+        self.assertEqual(selected_symbols, ["SZSE.300001"])
+        self.assertEqual(recommend_calls, ["SZSE.300001"])
+        self.assertEqual(broker_calls, ["SZSE.300001"])
+        self.assertEqual(board_candidate_calls, ["SZSE.300001"])
+        self.assertEqual(board_monitor_calls, ["SZSE.300001"])
+        self.assertEqual(board_focus_calls, ["SZSE.300001"])
+        self.assertEqual(
+            nav_calls,
+            [
+                ("overview", "market_pool_table", None),
+                ("board", "board_table", None),
+            ],
+        )
+
+    def test_open_monitor_symbol_actions_without_focus_surface_guidance(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        nav_calls: list[tuple[str, str | None, str | None]] = []
+        refresh_calls: list[str] = []
+        window = SimpleNamespace(
+            _selected_symbol_from_monitor_table=lambda: "",
+            _selected_symbol_from_watchlist=lambda: "",
+            active_symbol="",
+            universe_bars={},
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: nav_calls.append((workspace_key, widget_name, select_row)),
+            market_status_label=module.QLabel(),
+            recommend_status_label=module.QLabel(),
+            board_status_banner=module.QLabel(),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+        )
+
+        module.QuantHunterWindow.open_monitor_symbol_in_overview(window)
+        module.QuantHunterWindow.open_monitor_symbol_in_recommend(window)
+        module.QuantHunterWindow.open_monitor_symbol_in_board(window)
+
+        self.assertEqual(
+            nav_calls,
+            [
+                ("overview", "market_pool_table", None),
+                ("recommend", "daily_pool_table", "daily_pool_table"),
+                ("board", "board_table", None),
+            ],
+        )
+        self.assertEqual(refresh_calls, ["summary", "summary", "summary"])
+        self.assertIn("先在扫描、观察池或监控表里锁定一只焦点票", window.market_status_label.text())
+        self.assertIn("先在扫描、观察池或监控表里锁定一只焦点票", window.recommend_status_label.text())
+        self.assertIn("当前结论：继续复核", window.market_status_label.text())
+        self.assertIn("当前结论：继续复核", window.recommend_status_label.text())
+        self.assertIn("先在扫描、观察池或监控表里锁定一只焦点票", window.board_status_banner.text())
+
+    def test_open_monitor_symbol_overview_and_recommend_surface_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        nav_calls: list[tuple[str, str | None, str | None]] = []
+        refresh_calls: list[str] = []
+        focus_calls: list[tuple[str, str]] = []
+        recommend_calls: list[str] = []
+        window = SimpleNamespace(
+            _selected_symbol_from_monitor_table=lambda: "SZSE.300001",
+            _selected_symbol_from_watchlist=lambda: "",
+            active_symbol="",
+            universe_bars={"SZSE.300001": object()},
+            daily_pool_rows=[SimpleNamespace(symbol="SZSE.300001", stock_id="300001", action="BUY", mainline_tag="机器人")],
+            scan_rows=[SimpleNamespace(symbol="SZSE.300001", action="BUY", label="RECLAIM_LONG", score=92.0)],
+            order_intents=[],
+            order_submission_records=[],
+            _board_candidate_snapshot_for_symbol=lambda _symbol: None,
+            _board_monitor_snapshot_for_symbol=lambda _symbol: None,
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: nav_calls.append((workspace_key, widget_name, select_row)),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            _focus_symbol_everywhere=lambda symbol, origin="": focus_calls.append((symbol, origin)),
+            _focus_symbol_in_recommend_workspace=lambda symbol: recommend_calls.append(symbol),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            market_status_label=module.QLabel(),
+            recommend_status_label=module.QLabel(),
+        )
+
+        module.QuantHunterWindow.open_monitor_symbol_in_overview(window)
+        module.QuantHunterWindow.open_monitor_symbol_in_recommend(window)
+
+        self.assertEqual(nav_calls, [("overview", "market_pool_table", None)])
+        self.assertEqual(focus_calls, [("SZSE.300001", "scanner"), ("SZSE.300001", "scanner")])
+        self.assertEqual(recommend_calls, ["SZSE.300001"])
+        self.assertEqual(refresh_calls, [])
+        self.assertIn("已从扫描链路带着 龙头样本 (300001) 回到总览", window.market_status_label.text())
+        self.assertIn("机会池计划已同步", window.market_status_label.text())
+        self.assertIn("当前结论：继续复核", window.market_status_label.text())
+        self.assertIn("已从扫描链路带着 龙头样本 (300001) 回到机会池", window.recommend_status_label.text())
+        self.assertIn("机会池计划已同步", window.recommend_status_label.text())
+        self.assertIn("当前结论：继续复核", window.recommend_status_label.text())
+
+    def test_focus_symbol_in_broker_workspace_refreshes_summary_and_focus_banners(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        refresh_calls: list[str] = []
+        window = SimpleNamespace(
+            scan_rows=[],
+            execution_status_by_symbol={},
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            _queue_symbol_to_watchlist=lambda symbol: None,
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: None,
+            _refresh_broker_order_focus=lambda: None,
+            _refresh_submission_focus=lambda: None,
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            broker_status_banner=module.QLabel(),
+            orders_focus_label=module.QLabel(),
+        )
+
+        module._qh_focus_symbol_in_broker_workspace(window, "SZSE.300001")
+
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("龙头样本", window.broker_status_banner.text())
+        self.assertIn("龙头样本", window.orders_focus_label.text())
+        self.assertIn("继续复核", window.orders_focus_label.text())
+
+    def test_open_monitor_symbol_in_broker_surfaces_refresh_and_guidance(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        nav_calls: list[tuple[str, str | None, str | None]] = []
+        refresh_calls: list[str] = []
+        focus_calls: list[str] = []
+        window = SimpleNamespace(
+            _selected_symbol_from_monitor_table=lambda: "",
+            _selected_symbol_from_watchlist=lambda: "",
+            active_symbol="",
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: nav_calls.append((workspace_key, widget_name, select_row)),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            broker_status_banner=module.QLabel(),
+            _focus_symbol_in_broker_workspace=lambda symbol: focus_calls.append(symbol),
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+        )
+
+        module.QuantHunterWindow.open_monitor_symbol_in_broker(window)
+
+        self.assertEqual(nav_calls, [("broker", "orders_table", None)])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("当前焦点票待同步", window.broker_status_banner.text())
+
+        nav_calls.clear()
+        refresh_calls.clear()
+        window._selected_symbol_from_monitor_table = lambda: "SZSE.300001"
+        module.QuantHunterWindow.open_monitor_symbol_in_broker(window)
+
+        self.assertEqual(focus_calls, ["SZSE.300001"])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("已从扫描监控联动 龙头样本", window.broker_status_banner.text())
+
+    def test_open_detail_routes_without_focus_surface_guidance(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        nav_calls: list[tuple[str, str | None, str | None]] = []
+        refresh_calls: list[str] = []
+        window = SimpleNamespace(
+            active_symbol="",
+            order_intents=[],
+            order_submission_records=[],
+            daily_pool_rows=[],
+            strategy_history_report=None,
+            _selected_order_intent=lambda: None,
+            _explicit_recommendation_focus=lambda: None,
+            _selected_detail_signal_snapshot=lambda: None,
+            _strategy_history_selected_summary=lambda: None,
+            _selected_strategy_history_trade_snapshot=lambda: None,
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: nav_calls.append((workspace_key, widget_name, select_row)),
+            recommend_status_label=module.QLabel(),
+            scan_summary_label=module.QLabel(),
+            broker_status_banner=module.QLabel(),
+            _emit_action_feedback_v11=lambda *args, **kwargs: None,
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+        )
+
+        module.QuantHunterWindow.open_detail_to_recommend(window)
+        module.QuantHunterWindow.open_detail_to_scanner(window)
+        module.QuantHunterWindow.open_detail_to_broker(window)
+
+        self.assertEqual(
+            nav_calls,
+            [
+                ("recommend", "daily_pool_table", "daily_pool_table"),
+                ("scanner", "scan_table", "scan_table"),
+                ("broker", "orders_table", None),
+            ],
+        )
+        self.assertEqual(refresh_calls, ["summary", "focus", "summary", "focus", "summary", "focus"])
+        self.assertIn("当前焦点票待同步", window.recommend_status_label.text())
+        self.assertIn("当前结论：继续复核", window.recommend_status_label.text())
+        self.assertIn("当前焦点票待同步", window.scan_summary_label.text())
+        self.assertIn("当前结论：继续复核", window.scan_summary_label.text())
+        self.assertIn("当前焦点票待同步", window.broker_status_banner.text())
+
+    def test_open_detail_routes_with_order_context_surface_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        recommend_calls: list[str] = []
+        broker_calls: list[str] = []
+        everywhere_calls: list[tuple[str, str]] = []
+        scan_select_calls: list[str] = []
+        watch_select_calls: list[str] = []
+        monitor_select_calls: list[str] = []
+        nav_calls: list[tuple[str, str | None, str | None]] = []
+        refresh_calls: list[str] = []
+        order_intent = OrderIntent(
+            symbol="SZSE.300001",
+            side="BUY",
+            price=10.0,
+            quantity=1000,
+            stop_price=9.6,
+            target_price=10.8,
+            signal_date="2026-04-22",
+            reason="focus",
+        )
+
+        def focus_recommend(symbol: str) -> None:
+            recommend_calls.append(symbol)
+            nav_calls.append(("recommend", "daily_pool_table", None))
+
+        def focus_broker(symbol: str) -> None:
+            broker_calls.append(symbol)
+            nav_calls.append(("broker", "orders_table", None))
+
+        window = SimpleNamespace(
+            active_symbol="SZSE.300001",
+            order_intents=[order_intent],
+            order_submission_records=[],
+            daily_pool_rows=[],
+            strategy_history_report=None,
+            _selected_order_intent=lambda: order_intent,
+            _explicit_recommendation_focus=lambda: None,
+            _selected_detail_signal_snapshot=lambda: None,
+            _strategy_history_selected_summary=lambda: None,
+            _selected_strategy_history_trade_snapshot=lambda: None,
+            _focus_symbol_in_recommend_workspace=focus_recommend,
+            _focus_symbol_in_broker_workspace=focus_broker,
+            _focus_symbol_everywhere=lambda symbol, origin="": everywhere_calls.append((symbol, origin)),
+            _select_scan_row_for_symbol=lambda symbol: scan_select_calls.append(symbol),
+            _select_watchlist_symbol=lambda symbol: watch_select_calls.append(symbol),
+            _select_monitor_row_for_symbol=lambda symbol: monitor_select_calls.append(symbol),
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: nav_calls.append((workspace_key, widget_name, select_row)),
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            recommend_status_label=module.QLabel(),
+            scan_summary_label=module.QLabel(),
+            broker_status_banner=module.QLabel(),
+            _emit_action_feedback_v11=lambda *args, **kwargs: None,
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+        )
+
+        module.QuantHunterWindow.open_detail_to_recommend(window)
+        module.QuantHunterWindow.open_detail_to_scanner(window)
+        module.QuantHunterWindow.open_detail_to_broker(window)
+
+        self.assertEqual(recommend_calls, ["SZSE.300001"])
+        self.assertEqual(broker_calls, ["SZSE.300001"])
+        self.assertEqual(everywhere_calls, [("SZSE.300001", "detail"), ("SZSE.300001", "detail"), ("SZSE.300001", "detail")])
+        self.assertEqual(scan_select_calls, ["SZSE.300001"])
+        self.assertEqual(watch_select_calls, ["SZSE.300001"])
+        self.assertEqual(monitor_select_calls, ["SZSE.300001"])
+        self.assertEqual(
+            nav_calls,
+            [
+                ("recommend", "daily_pool_table", None),
+                ("scanner", "scan_table", "scan_table"),
+                ("broker", "orders_table", None),
+            ],
+        )
+        self.assertEqual(refresh_calls, ["summary", "focus", "summary", "focus", "summary", "focus"])
+        self.assertIn("执行链路已先行", window.recommend_status_label.text())
+        self.assertIn("当前结论：继续复核", window.recommend_status_label.text())
+        self.assertIn("执行链路已先行", window.scan_summary_label.text())
+        self.assertIn("当前结论：继续复核", window.scan_summary_label.text())
+        self.assertIn("委托建议已生成", window.broker_status_banner.text())
+        self.assertIn("当前结论：继续复核", window.broker_status_banner.text())
+        self.assertIn("核对价格、数量和风控", window.broker_status_banner.text())
+
+    def test_open_detail_and_runtime_to_overview_surface_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        nav_calls: list[tuple[str, str | None, str | None]] = []
+        focus_calls: list[tuple[str, str]] = []
+        refresh_calls: list[str] = []
+        order_intent = OrderIntent(
+            symbol="SZSE.300001",
+            side="BUY",
+            price=10.0,
+            quantity=1000,
+            stop_price=9.6,
+            target_price=10.8,
+            signal_date="2026-04-22",
+            reason="focus",
+        )
+        detail_window = SimpleNamespace(
+            active_symbol="SZSE.300001",
+            order_intents=[order_intent],
+            order_submission_records=[],
+            daily_pool_rows=[],
+            strategy_history_report=None,
+            universe_bars={},
+            _selected_order_intent=lambda: order_intent,
+            _explicit_recommendation_focus=lambda: None,
+            _selected_detail_signal_snapshot=lambda: None,
+            _strategy_history_selected_summary=lambda: None,
+            _selected_strategy_history_trade_snapshot=lambda: None,
+            _focus_symbol_everywhere=lambda symbol, origin="": focus_calls.append((symbol, origin)),
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: nav_calls.append((workspace_key, widget_name, select_row)),
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            market_status_label=module.QLabel(),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+        )
+
+        module.QuantHunterWindow.open_detail_to_overview(detail_window)
+
+        self.assertEqual(nav_calls, [("overview", "market_pool_table", None)])
+        self.assertEqual(focus_calls, [("SZSE.300001", "detail")])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("执行链路已先行", detail_window.market_status_label.text())
+        self.assertIn("当前结论：继续复核", detail_window.market_status_label.text())
+
+        runtime_refresh_calls: list[str] = []
+        runtime_nav_calls: list[tuple[str, str | None, str | None]] = []
+        runtime_window = SimpleNamespace(
+            active_symbol="",
+            market_status_label=module.QLabel(),
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: runtime_nav_calls.append((workspace_key, widget_name, select_row)),
+            _refresh_live_workspace_summary_panels=lambda: runtime_refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: runtime_refresh_calls.append("focus"),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+        )
+
+        module.QuantHunterWindow.open_runtime_to_overview(runtime_window)
+
+        self.assertEqual(runtime_nav_calls, [("overview", "market_pool_table", None)])
+        self.assertEqual(runtime_refresh_calls, ["summary", "focus"])
+        self.assertIn("当前焦点票待同步", runtime_window.market_status_label.text())
+        self.assertIn("当前结论：继续复核", runtime_window.market_status_label.text())
+
+    def test_open_overview_routes_without_focus_surface_guidance(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        nav_calls: list[tuple[str, str | None, str | None]] = []
+        refresh_calls: list[str] = []
+        window = SimpleNamespace(
+            active_symbol="",
+            daily_pool_rows=[],
+            order_intents=[],
+            order_submission_records=[],
+            analyses=[],
+            recommend_status_label=module.QLabel(),
+            broker_status_banner=module.QLabel(),
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: nav_calls.append((workspace_key, widget_name, select_row)),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _emit_action_feedback_v11=lambda *_args, **_kwargs: None,
+        )
+
+        module.QuantHunterWindow.open_overview_theme_to_recommend(window)
+        module.QuantHunterWindow.open_overview_capital_to_recommend(window)
+        module.QuantHunterWindow.open_overview_decision_to_broker(window)
+
+        self.assertEqual(
+            nav_calls,
+            [
+                ("recommend", "daily_pool_table", "daily_pool_table"),
+                ("recommend", "theme_heat_table", "daily_pool_table"),
+                ("broker", "orders_table", None),
+            ],
+        )
+        self.assertEqual(refresh_calls, ["summary", "focus", "summary", "focus", "summary", "focus"])
+        self.assertIn("当前焦点票待同步", window.recommend_status_label.text())
+        self.assertIn("当前结论：继续复核", window.recommend_status_label.text())
+        self.assertIn("当前焦点票待同步", window.broker_status_banner.text())
+        self.assertIn("当前结论：继续复核", window.broker_status_banner.text())
+
+    def test_open_overview_routes_with_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        nav_calls: list[tuple[str, str | None, str | None]] = []
+        recommend_calls: list[str] = []
+        broker_calls: list[str] = []
+        focus_calls: list[tuple[str, str]] = []
+        refresh_calls: list[str] = []
+        focus_row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-22",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.6,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=80.0,
+            persistence_score=82.0,
+            news_score=74.0,
+            leader_score=88.0,
+            total_score=89.0,
+            mainline_tag="机器人",
+        )
+        order_intent = OrderIntent(
+            symbol="SZSE.300001",
+            side="BUY",
+            price=10.0,
+            quantity=1000,
+            stop_price=9.6,
+            target_price=10.8,
+            signal_date="2026-04-22",
+            reason="focus",
+        )
+
+        def focus_recommend(symbol: str) -> None:
+            recommend_calls.append(symbol)
+            nav_calls.append(("recommend", "daily_pool_table", None))
+
+        def focus_broker(symbol: str) -> None:
+            broker_calls.append(symbol)
+            nav_calls.append(("broker", "orders_table", None))
+
+        window = SimpleNamespace(
+            active_symbol="SZSE.300001",
+            daily_pool_rows=[focus_row],
+            order_intents=[order_intent],
+            order_submission_records=[],
+            analyses=[],
+            _focus_symbol_in_recommend_workspace=focus_recommend,
+            _focus_symbol_in_broker_workspace=focus_broker,
+            _focus_symbol_everywhere=lambda symbol, origin="": focus_calls.append((symbol, origin)),
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            recommend_status_label=module.QLabel(),
+            broker_status_banner=module.QLabel(),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _emit_action_feedback_v11=lambda *_args, **_kwargs: None,
+        )
+
+        module.QuantHunterWindow.open_overview_theme_to_recommend(window)
+        self.assertIn("总览主线入口", window.recommend_status_label.text())
+        self.assertIn("计划已同步", window.recommend_status_label.text())
+        self.assertIn("当前结论：继续复核", window.recommend_status_label.text())
+
+        module.QuantHunterWindow.open_overview_capital_to_recommend(window)
+        self.assertIn("总览资金入口", window.recommend_status_label.text())
+        self.assertIn("承接、分层和计划", window.recommend_status_label.text())
+        self.assertIn("当前结论：继续复核", window.recommend_status_label.text())
+
+        module.QuantHunterWindow.open_overview_decision_to_broker(window)
+        self.assertIn("总览决策入口", window.broker_status_banner.text())
+        self.assertIn("委托建议已生成", window.broker_status_banner.text())
+        self.assertIn("当前结论：继续复核", window.broker_status_banner.text())
+
+        self.assertEqual(recommend_calls, ["SZSE.300001", "SZSE.300001"])
+        self.assertEqual(broker_calls, ["SZSE.300001"])
+        self.assertEqual(
+            focus_calls,
+            [
+                ("SZSE.300001", "overview"),
+                ("SZSE.300001", "overview"),
+                ("SZSE.300001", "overview"),
+            ],
+        )
+        self.assertEqual(
+            nav_calls,
+            [
+                ("recommend", "daily_pool_table", None),
+                ("recommend", "daily_pool_table", None),
+                ("broker", "orders_table", None),
+            ],
+        )
+        self.assertEqual(refresh_calls, ["summary", "focus", "summary", "focus", "summary", "focus"])
+
+    def test_open_broker_focus_routes_surface_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        nav_calls: list[tuple[str, str | None, str | None]] = []
+        recommend_calls: list[str] = []
+        focus_calls: list[tuple[str, str]] = []
+        refresh_calls: list[str] = []
+        order_focus_calls: list[str] = []
+        execution_focus_calls: list[str] = []
+        order_intent = OrderIntent(
+            symbol="SZSE.300001",
+            side="BUY",
+            price=10.0,
+            quantity=1000,
+            stop_price=9.6,
+            target_price=10.8,
+            signal_date="2026-04-22",
+            reason="focus",
+        )
+        window = SimpleNamespace(
+            active_symbol="SZSE.300001",
+            order_intents=[order_intent],
+            order_submission_records=[],
+            daily_pool_rows=[],
+            strategy_history_report=None,
+            _selected_order_intent=lambda: order_intent,
+            _explicit_recommendation_focus=lambda: None,
+            _selected_detail_signal_snapshot=lambda: None,
+            _strategy_history_selected_summary=lambda: None,
+            _selected_strategy_history_trade_snapshot=lambda: None,
+            _focus_symbol_in_recommend_workspace=lambda symbol: (recommend_calls.append(symbol), nav_calls.append(("recommend", "daily_pool_table", None))),
+            _focus_symbol_everywhere=lambda symbol, origin="": focus_calls.append((symbol, origin)),
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: nav_calls.append((workspace_key, widget_name, select_row)),
+            _refresh_broker_order_focus=lambda: order_focus_calls.append("orders"),
+            _refresh_submission_focus=lambda: execution_focus_calls.append("execution"),
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            recommend_status_label=module.QLabel(),
+            broker_status_banner=module.QLabel(),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+        )
+
+        module.QuantHunterWindow.open_broker_focus_orders(window)
+        self.assertIn("委托建议已生成", window.broker_status_banner.text())
+        self.assertIn("当前结论：继续复核", window.broker_status_banner.text())
+        self.assertIn("送审或提交", window.broker_status_banner.text())
+
+        module.QuantHunterWindow.open_broker_focus_execution(window)
+        self.assertIn("回执未到", window.broker_status_banner.text())
+        self.assertIn("当前结论：继续复核", window.broker_status_banner.text())
+        self.assertIn("再回来盯回执", window.broker_status_banner.text())
+
+        module.QuantHunterWindow.open_broker_focus_recommend(window)
+        self.assertIn("委托建议已生成", window.recommend_status_label.text())
+        self.assertIn("当前结论：继续复核", window.recommend_status_label.text())
+        self.assertIn("是否值得继续送审", window.recommend_status_label.text())
+
+        self.assertEqual(
+            nav_calls,
+            [
+                ("broker", "orders_table", "orders_table"),
+                ("broker", "execution_table", "execution_table"),
+                ("recommend", "daily_pool_table", None),
+            ],
+        )
+        self.assertEqual(recommend_calls, ["SZSE.300001"])
+        self.assertEqual(focus_calls, [("SZSE.300001", "broker")])
+        self.assertEqual(order_focus_calls, ["orders"])
+        self.assertEqual(execution_focus_calls, ["execution"])
+        self.assertEqual(refresh_calls, ["summary", "focus", "summary", "focus", "summary", "focus"])
+
+    def test_open_broker_capability_routes_surface_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        order_intent = OrderIntent(
+            symbol="SZSE.300001",
+            side="BUY",
+            price=10.0,
+            quantity=1000,
+            stop_price=9.6,
+            target_price=10.8,
+            signal_date="2026-04-22",
+            reason="focus",
+        )
+        calls: list[tuple[str, str | None, str | None]] = []
+        refresh_calls: list[str] = []
+        order_focus_calls: list[str] = []
+        execution_focus_calls: list[str] = []
+        window = SimpleNamespace(
+            active_symbol="SZSE.300001",
+            daily_pool_rows=[],
+            order_intents=[order_intent],
+            order_submission_records=[],
+            _selected_order_intent=lambda: order_intent,
+            _explicit_recommendation_focus=lambda: None,
+            _selected_detail_signal_snapshot=lambda: None,
+            _strategy_history_selected_summary=lambda: None,
+            _selected_strategy_history_trade_snapshot=lambda: None,
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: calls.append((workspace_key, widget_name, select_row)),
+            _refresh_broker_order_focus=lambda: order_focus_calls.append("orders"),
+            _refresh_submission_focus=lambda: execution_focus_calls.append("execution"),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _emit_action_feedback_v11=lambda *_args, **_kwargs: None,
+            broker_status_banner=module.QLabel(),
+        )
+
+        module.QuantHunterWindow._open_broker_capability_v1(window, "commit")
+        self.assertEqual(calls, [("broker", "orders_table", "orders_table")])
+        self.assertEqual(order_focus_calls, ["orders"])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("委托建议区", window.broker_status_banner.text())
+        self.assertIn("委托建议已生成", window.broker_status_banner.text())
+        self.assertIn("当前结论：继续复核", window.broker_status_banner.text())
+
+        calls.clear()
+        refresh_calls.clear()
+        module.QuantHunterWindow._open_broker_capability_v1(window, "posttrade")
+        self.assertEqual(calls, [("broker", "execution_table", "execution_table")])
+        self.assertEqual(execution_focus_calls, ["execution"])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("回执区", window.broker_status_banner.text())
+        self.assertIn("回执未到", window.broker_status_banner.text())
+        self.assertIn("当前结论：继续复核", window.broker_status_banner.text())
+
+    def test_activate_workspace_stage_for_widget_routes_scanner_capability_and_monitor_sections(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        tabs = module.QTabWidget()
+        for title in ("扫描榜", "观察池", "盘中监控"):
+            tabs.addTab(module.QWidget(), title)
+        window = SimpleNamespace(scanner_stage_tabs=tabs)
+
+        module.QuantHunterWindow._activate_workspace_stage_for_widget(window, "scanner", "scanner_capability_box")
+        self.assertEqual(tabs.currentIndex(), 0)
+        tabs.setCurrentIndex(0)
+        module.QuantHunterWindow._activate_workspace_stage_for_widget(window, "scanner", "scanner_watch_summary_box")
+        self.assertEqual(tabs.currentIndex(), 1)
+        tabs.setCurrentIndex(0)
+        module.QuantHunterWindow._activate_workspace_stage_for_widget(window, "scanner", "scanner_monitor_summary_box")
+        self.assertEqual(tabs.currentIndex(), 2)
+        tabs.setCurrentIndex(0)
+        module.QuantHunterWindow._activate_workspace_stage_for_widget(window, "scanner", "monitor_table")
+        self.assertEqual(tabs.currentIndex(), 2)
+
+    def test_open_broker_capability_routes_to_expected_widgets(self) -> None:
+        module = importlib.import_module("app_qt")
+        calls: list[tuple[str, str | None, str | None]] = []
+        window = SimpleNamespace(_navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: calls.append((workspace_key, widget_name, select_row)))
+
+        module.QuantHunterWindow._open_broker_capability_v1(window, "overview")
+        module.QuantHunterWindow._open_broker_capability_v1(window, "commit")
+        module.QuantHunterWindow._open_broker_capability_v1(window, "posttrade")
+        module.QuantHunterWindow._open_broker_capability_v1(window, "setup")
+
+        self.assertEqual(
+            calls,
+            [
+                ("broker", "broker_summary_box", None),
+                ("broker", "orders_table", "orders_table"),
+                ("broker", "execution_table", "execution_table"),
+                ("broker", "broker_setup_drawer", None),
+            ],
+        )
+
+    def test_refresh_broker_capability_overview_surfaces_commit_posttrade_and_setup_reentry(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        cards = {
+            key: {
+                "headline": module.QLabel(),
+                "detail": module.QLabel(),
+                "meta": module.QLabel(),
+                "button": module.QPushButton(),
+            }
+            for key in ("overview", "commit", "posttrade", "setup")
+        }
+        latest_record = {
+            "symbol": "SZSE.300001",
+            "order_status": "SUBMITTED",
+            "fill_status": "PENDING",
+        }
+        window = SimpleNamespace(
+            broker_capability_cards=cards,
+            order_intents=[SimpleNamespace(symbol="SZSE.300001")],
+            order_submission_records=[latest_record],
+            holdings=[object(), object()],
+            active_symbol="SZSE.300001",
+            _selected_order_intent=lambda: SimpleNamespace(symbol="SZSE.300001"),
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            _display_order_status=lambda status: "已提交" if status else "--",
+            _display_fill_status=lambda status: "待成交" if status else "--",
+            current_broker_profile=lambda: SimpleNamespace(export_dir="C:\\exports\\broker", account_name="东方财富主账户"),
+            auth_channel_combo=SimpleNamespace(currentText=lambda: "东方财富"),
+            mode_combo=SimpleNamespace(currentText=lambda: "SDK 模式"),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+        )
+
+        module.QuantHunterWindow._refresh_broker_capability_overview_v1(window)
+
+        self.assertIn("执行总览：已提交 / 待成交", cards["overview"]["headline"].text())
+        self.assertIn("委托 1 笔 | 回执 1 条 | 持仓 2 只", cards["overview"]["detail"].text())
+        self.assertIn("审查 继续复核", cards["overview"]["detail"].text())
+        self.assertIn("委托提交：1 笔", cards["commit"]["headline"].text())
+        self.assertIn("龙头样本", cards["commit"]["detail"].text())
+        self.assertIn("回执复盘：1 条", cards["posttrade"]["headline"].text())
+        self.assertIn("已提交 / 待成交", cards["posttrade"]["detail"].text())
+        self.assertIn("审查 继续复核", cards["posttrade"]["detail"].text())
+        self.assertIn("接入维护：东方财富", cards["setup"]["headline"].text())
+        self.assertIn("SDK 模式", cards["setup"]["detail"].text())
+        self.assertIn("broker", cards["setup"]["detail"].text())
+
+    def test_activate_workspace_stage_for_widget_routes_broker_capability_and_setup_sections(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        tabs = module.QTabWidget()
+        for title in ("执行总览", "委托提交", "回执复盘", "接入维护"):
+            tabs.addTab(module.QWidget(), title)
+        window = SimpleNamespace(broker_stage_tabs=tabs)
+
+        module.QuantHunterWindow._activate_workspace_stage_for_widget(window, "broker", "broker_capability_box")
+        self.assertEqual(tabs.currentIndex(), 0)
+        tabs.setCurrentIndex(0)
+        module.QuantHunterWindow._activate_workspace_stage_for_widget(window, "broker", "broker_setup_drawer")
+        self.assertEqual(tabs.currentIndex(), 3)
+
+    def test_open_overview_capability_routes_to_expected_quick_actions(self) -> None:
+        module = importlib.import_module("app_qt")
+        calls: list[str] = []
+        window = SimpleNamespace(activate_overview_quick_action=lambda focus: calls.append(focus))
+
+        module.QuantHunterWindow._open_overview_capability_v1(window, "market")
+        module.QuantHunterWindow._open_overview_capability_v1(window, "leaders")
+        module.QuantHunterWindow._open_overview_capability_v1(window, "news")
+        module.QuantHunterWindow._open_overview_capability_v1(window, "decision")
+
+        self.assertEqual(calls, ["市场总览", "主线龙头", "消息催化", "买卖决策"])
+
+    def test_open_overview_capability_routes_surface_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        calls: list[str] = []
+        refresh_calls: list[str] = []
+        focus_row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-21",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.5,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=80.0,
+            persistence_score=82.0,
+            news_score=74.0,
+            leader_score=88.0,
+            total_score=89.0,
+            mainline_tag="机器人",
+        )
+        order_intent = OrderIntent(
+            symbol="SZSE.300001",
+            side="BUY",
+            price=10.0,
+            quantity=1000,
+            stop_price=9.6,
+            target_price=10.8,
+            signal_date="2026-04-22",
+            reason="focus",
+        )
+        window = SimpleNamespace(
+            active_symbol="SZSE.300001",
+            daily_pool_rows=[focus_row],
+            order_intents=[order_intent],
+            order_submission_records=[],
+            analyses=[],
+            activate_overview_quick_action=lambda focus: calls.append(focus),
+            market_status_label=module.QLabel(),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _emit_action_feedback_v11=lambda *_args, **_kwargs: None,
+        )
+
+        module.QuantHunterWindow._open_overview_capability_v1(window, "decision")
+
+        self.assertEqual(calls, ["买卖决策"])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("买卖决策", window.market_status_label.text())
+        self.assertIn("委托建议已生成", window.market_status_label.text())
+        self.assertIn("当前结论：继续复核", window.market_status_label.text())
+
+    def test_activate_overview_quick_action_refreshes_summary_and_banners(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        refresh_calls: list[str] = []
+        nav_calls: list[tuple[str, str | None, str | None]] = []
+        window = SimpleNamespace(
+            set_overview_focus=lambda focus: setattr(window, "overview_focus_mode", focus),
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: nav_calls.append((workspace_key, widget_name, select_row)),
+            overview_command_text=module.QTextEdit(),
+            market_status_label=module.QLabel("总览状态：已同步焦点 | 当前结论：继续复核"),
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+        )
+
+        module.QuantHunterWindow.activate_overview_quick_action(window, "消息催化")
+
+        self.assertEqual(nav_calls, [("overview", "market_breadth_text", None)])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("焦点：消息", window.overview_command_text.toPlainText())
+        self.assertIn("快捷：消息", window.market_status_label.text())
+
+    def test_open_overview_source_to_news_surfaces_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        calls: list[str] = []
+        refresh_calls: list[str] = []
+        item = SimpleNamespace(symbol="SZSE.300001", stock_name="龙头样本", title="机器人主线继续扩散", source="财联社")
+        window = SimpleNamespace(
+            active_symbol="SZSE.300001",
+            activate_overview_quick_action=lambda focus: calls.append(focus),
+            _latest_news_item_for_symbol=lambda symbol: item if symbol == "SZSE.300001" else None,
+            _set_news_focus_context=lambda current, target="": setattr(window, "last_news_focus_context", {"symbol": current.symbol, "target": target}),
+            _trigger_news_navigation_feedback=lambda current, target="": None,
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            market_status_label=module.QLabel(),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            _emit_action_feedback_v11=lambda *_args, **_kwargs: None,
+        )
+
+        module.QuantHunterWindow.open_overview_source_to_news(window)
+
+        self.assertEqual(calls, ["消息催化"])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertEqual(window.last_news_focus_context["target"], "overview")
+        self.assertIn("已切到消息催化", window.market_status_label.text())
+        self.assertIn("龙头样本 (300001)", window.market_status_label.text())
+        self.assertIn("催化、主线扩散和异动线索", window.market_status_label.text())
+
+    def test_set_overview_focus_refreshes_summary_and_banners(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        refresh_calls: list[str] = []
+        quick_button = module.QPushButton("消息催化")
+        quick_button.setCheckable(True)
+        overview_command = module.QTextEdit()
+        status_label = module.QLabel("总览状态：已同步焦点 | 当前结论：继续复核")
+        window = SimpleNamespace(
+            overview_focus_mode="市场总览",
+            overview_quick_buttons={"news": quick_button},
+            overview_main_splitter=None,
+            overview_left_notes_splitter=None,
+            overview_mini_chart_splitter=None,
+            _configure_splitter=lambda splitter, sizes: None,
+            market_pool_table=None,
+            market_breadth_text=module.QTextEdit(),
+            market_capital_text=None,
+            market_theme_brief_text=None,
+            market_decision_text=None,
+            overview_command_text=overview_command,
+            market_status_label=status_label,
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+        )
+
+        module.QuantHunterWindow.set_overview_focus(window, "消息催化")
+
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertEqual(window.overview_focus_mode, "消息催化")
+        self.assertIn("视图：消息", status_label.text())
+
+    def test_refresh_overview_capability_overview_surfaces_market_leaders_news_and_decision(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        focus_row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-21",
+            close=10.0,
+            entry_price=10.0,
+            stop_price=9.5,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=80.0,
+            persistence_score=82.0,
+            news_score=74.0,
+            leader_score=88.0,
+            total_score=89.0,
+            mainline_tag="机器人",
+            primary_strategy="龙头模型",
+        )
+        cards = {
+            key: {
+                "headline": module.QLabel(),
+                "detail": module.QLabel(),
+                "meta": module.QLabel(),
+                "button": module.QPushButton(),
+            }
+            for key in ("market", "leaders", "news", "decision")
+        }
+        window = SimpleNamespace(
+            overview_capability_cards=cards,
+            market_pool_table=SimpleNamespace(rowCount=lambda: 3),
+            daily_pool_rows=[focus_row],
+            active_symbol="SZSE.300001",
+            news_catalysts={"SZSE.300001": [SimpleNamespace(title="机器人主线继续扩散", source="财联社")]},
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol else "--",
+            _display_action=lambda value: {"BUY": "买入", "WATCH": "观察"}.get(value, value),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+        )
+
+        module.QuantHunterWindow._refresh_overview_capability_overview_v1(window)
+
+        self.assertIn("市场判断：3 只", cards["market"]["headline"].text())
+        self.assertIn("龙头样本", cards["market"]["detail"].text())
+        self.assertIn("先定结构、温度和交易区间", cards["market"]["meta"].text())
+        self.assertIn("主线龙头：机器人", cards["leaders"]["headline"].text())
+        self.assertIn("可做 1 只", cards["leaders"]["detail"].text())
+        self.assertIn("消息催化：1 条", cards["news"]["headline"].text())
+        self.assertIn("机器人主线继续扩散", cards["news"]["detail"].text())
+        self.assertIn("买卖决策：1 只可做", cards["decision"]["headline"].text())
+        self.assertIn("动作 买入", cards["decision"]["detail"].text())
+
+    def test_open_auth_capability_routes_to_expected_widgets(self) -> None:
+        module = importlib.import_module("app_qt")
+        calls: list[tuple[str, str | None, str | None]] = []
+        window = SimpleNamespace(_navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: calls.append((workspace_key, widget_name, select_row)))
+
+        module.QuantHunterWindow._open_auth_capability_v1(window, "channel")
+        module.QuantHunterWindow._open_auth_capability_v1(window, "credential")
+        module.QuantHunterWindow._open_auth_capability_v1(window, "bridge")
+        module.QuantHunterWindow._open_auth_capability_v1(window, "next")
+
+        self.assertEqual(
+            calls,
+            [
+                ("auth", "auth_form_box", None),
+                ("auth", "login_status_text", None),
+                ("auth", "login_status_text", None),
+                ("recommend", "daily_pool_table", "daily_pool_table"),
+            ],
+        )
+
+    def test_open_auth_capability_routes_surface_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        profile = SimpleNamespace(
+            mode="sdk",
+            username="demo_user",
+            account_id="demo-account",
+            strategy_id="demo-strategy",
+            token="secret-token",
+            sdk_module="gm.api",
+            sdk_python_path="C:\\Python\\python.exe",
+        )
+        calls: list[tuple[str, str | None, str | None]] = []
+        refresh_calls: list[str] = []
+        window = SimpleNamespace(
+            state=SimpleNamespace(broker_profile=profile),
+            current_broker_profile=lambda: profile,
+            auth_channel_combo=SimpleNamespace(currentText=lambda: "GM"),
+            _display_mode=lambda value: {"sdk": "SDK"}.get(value, value),
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: calls.append((workspace_key, widget_name, select_row)),
+            auth_status_banner=module.QLabel(),
+            recommend_status_label=module.QLabel(),
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _emit_action_feedback_v11=lambda *_args, **_kwargs: None,
+        )
+
+        module.QuantHunterWindow._open_auth_capability_v1(window, "bridge")
+        self.assertEqual(calls, [("auth", "login_status_text", None)])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("桥接区", window.auth_status_banner.text())
+        self.assertIn("当前结论：继续复核", window.auth_status_banner.text())
+        self.assertIn("GM 参数已齐", window.auth_status_banner.text())
+
+        calls.clear()
+        refresh_calls.clear()
+        module.QuantHunterWindow._open_auth_capability_v1(window, "next")
+        self.assertEqual(calls, [("recommend", "daily_pool_table", "daily_pool_table")])
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("接入中心进入机会池", window.recommend_status_label.text())
+        self.assertIn("当前结论：继续复核", window.recommend_status_label.text())
+        self.assertIn("接入参数已齐", window.recommend_status_label.text())
+
+    def test_refresh_auth_capability_overview_surfaces_channel_credentials_bridge_and_next(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        cards = {
+            key: {
+                "headline": module.QLabel(),
+                "detail": module.QLabel(),
+                "meta": module.QLabel(),
+                "button": module.QPushButton(),
+            }
+            for key in ("channel", "credential", "bridge", "next")
+        }
+        profile = SimpleNamespace(
+            mode="sdk",
+            account_name="东方财富主账户",
+            username="demo_user",
+            account_id="demo-account",
+            strategy_id="demo-strategy",
+            token="secret-token",
+            sdk_module="gm.api",
+            sdk_python_path="C:\\Python\\python.exe",
+        )
+        window = SimpleNamespace(
+            auth_capability_cards=cards,
+            state=SimpleNamespace(broker_profile=profile),
+            broker_inputs={"account_name": object()},
+            current_broker_profile=lambda: profile,
+            auth_channel_combo=SimpleNamespace(currentText=lambda: "GM"),
+            _display_mode=lambda mode: "SDK 模式" if mode == "sdk" else mode,
+            _set_capability_card_copy_v1=lambda cards_obj, key, **kwargs: module.QuantHunterWindow._set_capability_card_copy_v1(window, cards_obj, key, **kwargs),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+        )
+
+        module.QuantHunterWindow._refresh_auth_capability_overview_v1(window)
+
+        self.assertIn("接入通道：GM", cards["channel"]["headline"].text())
+        self.assertIn("SDK 模式", cards["channel"]["detail"].text())
+        self.assertIn("凭据校验：参数已齐", cards["credential"]["headline"].text())
+        self.assertIn("账号、账户 ID、策略 ID 与 Token 已齐", cards["credential"]["detail"].text())
+        self.assertIn("Bridge 环境：已就绪", cards["bridge"]["headline"].text())
+        self.assertIn("gm.api", cards["bridge"]["detail"].text())
+        self.assertIn("后续入口：可联动机会池", cards["next"]["headline"].text())
+        self.assertIn("完成校验后继续进入机会池与交易链路", cards["next"]["detail"].text())
+
+    def test_refresh_login_status_updates_auth_action_buttons_by_readiness(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+
+        profile = SimpleNamespace(
+            mode="sdk",
+            account_name="演示账户",
+            username="demo_user",
+            account_id="",
+            strategy_id="demo-strategy",
+            token="",
+            sdk_python_path="",
+        )
+        window = SimpleNamespace(
+            login_status_text=module.QTextEdit(),
+            auth_status_banner=module.QLabel(),
+            auth_desk_summary_subtitle=module.QLabel(),
+            auth_summary_metric_labels={key: module.QLabel() for key in ("channel", "credential", "bridge", "next")},
+            auth_summary_metric_accents={key: module.QLabel() for key in ("channel", "credential", "bridge", "next")},
+            auth_save_button=module.QPushButton(),
+            auth_validate_button=module.QPushButton(),
+            auth_to_broker_button=module.QPushButton(),
+            auth_to_recommend_button=module.QPushButton(),
+            state=SimpleNamespace(broker_profile=profile),
+            broker_inputs={"account_name": object()},
+            login_inputs={
+                "account_name": module.QLineEdit("演示账户"),
+                "username": module.QLineEdit("demo_user"),
+                "account_id": module.QLineEdit(""),
+                "strategy_id": module.QLineEdit("demo-strategy"),
+                "token": module.QLineEdit(""),
+                "sdk_module": module.QLineEdit("gm.api"),
+                "sdk_python_path": module.QLineEdit(""),
+            },
+            current_broker_profile=lambda: profile,
+            auth_channel_combo=SimpleNamespace(currentText=lambda: "GM", currentData=lambda: "gm"),
+            _display_mode=lambda mode: "SDK 模式" if mode == "sdk" else mode,
+            _set_button_role=lambda button, role="ghost": button.setProperty("testRole", role),
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text) if widget.toPlainText() != text else None,
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text) if hasattr(widget, "text") and widget.text() != text else None,
+                widget.setToolTip(tooltip) if tooltip is not None and hasattr(widget, "setToolTip") and widget.toolTip() != tooltip else None,
+            ),
+        )
+
+        module.QuantHunterWindow._refresh_login_status(window)
+
+        self.assertEqual(window.auth_save_button.property("testRole"), "accent")
+        self.assertEqual(window.auth_validate_button.property("testRole"), "tonal")
+        self.assertFalse(window.auth_validate_button.isEnabled())
+        self.assertIn("继续补齐", window.auth_save_button.toolTip())
+        self.assertIn("还缺", window.auth_validate_button.toolTip())
+        self.assertIn("可以先浏览交易链路", window.auth_to_broker_button.toolTip())
+
+        profile.account_id = "demo-account"
+        profile.token = "demo-token"
+        profile.sdk_python_path = "C:\\Python\\python.exe"
+        window.login_inputs["account_id"].setText("demo-account")
+        window.login_inputs["token"].setText("demo-token")
+        window.login_inputs["sdk_python_path"].setText("C:\\Python\\python.exe")
+
+        module.QuantHunterWindow._refresh_login_status(window)
+
+        self.assertEqual(window.auth_save_button.property("testRole"), "tonal")
+        self.assertEqual(window.auth_validate_button.property("testRole"), "accent")
+        self.assertTrue(window.auth_validate_button.isEnabled())
+        self.assertIn("参数已齐", window.auth_validate_button.toolTip())
+        self.assertIn("更稳妥的顺序仍是先点校验接入", window.auth_to_recommend_button.toolTip())
+
+    def test_sync_first_screen_visibility_applies_watch_density_to_secondary_summary_boxes(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        splitter_sizes: list[int] = []
+        recommend_dispatch_sizes: list[int] = []
+        recommend_summary_sizes: list[int] = []
+        recommend_recap_middle_sizes: list[int] = []
+        recommend_recap_bottom_sizes: list[int] = []
+        recommend_review_sizes: list[int] = []
+        broker_control_sizes: list[int] = []
+        broker_workbench_sizes: list[int] = []
+        broker_middle_sizes: list[int] = []
+        broker_order_focus_sizes: list[int] = []
+        broker_execution_detail_sizes: list[int] = []
+        scanner_watch_summary_sizes: list[int] = []
+        board_workspace_sizes: list[int] = []
+        detail_recap_sizes: list[int] = []
+        paper_trading_sizes: list[int] = []
+        paper_analytics_sizes: list[int] = []
+        strategy_config_sizes: list[int] = []
+
+        class _DummySplitter:
+            def count(self) -> int:
+                return 3
+
+            def setSizes(self, sizes) -> None:
+                splitter_sizes[:] = list(sizes)
+
+        class _DummyTwoSplitter:
+            def __init__(self, sink: list[int]) -> None:
+                self._sink = sink
+
+            def count(self) -> int:
+                return 2
+
+            def setSizes(self, sizes) -> None:
+                self._sink[:] = list(sizes)
+
+        class _DummyThreeSplitter(_DummyTwoSplitter):
+            def count(self) -> int:
+                return 3
+
+        window = SimpleNamespace(
+            auth_summary_box=module.QGroupBox(),
+            auth_capability_box=module.QGroupBox(),
+            auth_status_banner=module.QLabel(),
+            auth_status_box=module.QGroupBox(),
+            auth_desk_summary_frame=module.QFrame(),
+            overview_leaderboard_box=module.QGroupBox(),
+            overview_left_panel=module.QWidget(),
+            overview_right_panel=module.QWidget(),
+            overview_main_splitter=_DummySplitter(),
+            market_status_label=module.QLabel(),
+            market_header_label=module.QLabel(),
+            market_subheader_label=module.QLabel(),
+            market_signal_label=module.QLabel(),
+            market_quote_label=module.QLabel(),
+            dashboard_metrics_box=module.QGroupBox(),
+            overview_priority_box=module.QGroupBox(),
+            overview_summary_box=module.QGroupBox(),
+            overview_capability_box=module.QGroupBox(),
+            overview_signal_summary_column=module.QWidget(),
+            left_signal_tabs=None,
+            overview_mini_chart_tabs=module.QTabWidget(),
+            overview_chart_controls_tabs=module.QTabWidget(),
+            right_intel_tabs=module.QTabWidget(),
+            overview_theme_summary_box=module.QGroupBox(),
+            overview_cockpit_box=module.QGroupBox(),
+            overview_playbook_box=module.QGroupBox(),
+            recommend_empty_box=module.QGroupBox(),
+            recommend_status_label=module.QLabel(),
+            recommend_section_hint=module.QLabel(),
+            recommend_desk_summary_frame=module.QFrame(),
+            recommend_focus_cards_box=module.QGroupBox(),
+            recommend_capability_box=module.QGroupBox(),
+            recommend_deep_summary_box=module.QGroupBox(),
+            recommend_stage_summary_frame=module.QFrame(),
+            recommend_workflow_tabs=module.QTabWidget(),
+            recommend_dispatch_splitter=_DummyThreeSplitter(recommend_dispatch_sizes),
+            recommend_summary_splitter=_DummyTwoSplitter(recommend_summary_sizes),
+            recommend_recap_middle_splitter=_DummyTwoSplitter(recommend_recap_middle_sizes),
+            recommend_recap_bottom_splitter=_DummyTwoSplitter(recommend_recap_bottom_sizes),
+            recommend_review_splitter=_DummyTwoSplitter(recommend_review_sizes),
+            broker_recap_box=module.QGroupBox(),
+            broker_workbench_banner=module.QLabel(),
+            broker_stage_label=module.QLabel(),
+            broker_desk_summary_frame=module.QFrame(),
+            broker_stage_summary_frame=module.QFrame(),
+            broker_stage_tabs=module.QTabWidget(),
+            broker_summary_box=module.QGroupBox(),
+            broker_metrics_box=module.QGroupBox(),
+            broker_capability_box=module.QGroupBox(),
+            scanner_summary_box=module.QGroupBox(),
+            scanner_capability_box=module.QGroupBox(),
+            scanner_watch_summary_box=module.QGroupBox(),
+            scanner_monitor_summary_box=module.QGroupBox(),
+            scanner_status_banner=module.QLabel(),
+            scanner_desk_summary_frame=module.QFrame(),
+            scanner_tool_panel=module.QGroupBox(),
+            scanner_stage_summary_frame=module.QFrame(),
+            scanner_stage_tabs=module.QTabWidget(),
+            scanner_watch_summary_splitter=_DummyTwoSplitter(scanner_watch_summary_sizes),
+            board_summary_box=module.QGroupBox(),
+            board_capability_box=module.QGroupBox(),
+            board_status_banner=module.QLabel(),
+            board_desk_summary_frame=module.QFrame(),
+            board_tool_panel=module.QGroupBox(),
+            board_stage_summary_frame=module.QFrame(),
+            board_stage_tabs=module.QTabWidget(),
+            detail_summary_box=module.QGroupBox(),
+            detail_capability_box=module.QGroupBox(),
+            detail_status_banner=module.QLabel(),
+            detail_desk_summary_frame=module.QFrame(),
+            detail_tool_panel=module.QGroupBox(),
+            detail_stage_summary_frame=module.QFrame(),
+            paper_summary_box=module.QGroupBox(),
+            paper_capability_box=module.QGroupBox(),
+            paper_status_banner=module.QLabel(),
+            paper_desk_summary_frame=module.QFrame(),
+            paper_overview_box=module.QGroupBox(),
+            paper_tool_panel=module.QGroupBox(),
+            paper_stage_summary_frame=module.QFrame(),
+            paper_stage_tabs=module.QTabWidget(),
+            config_tool_panel=module.QGroupBox(),
+            config_status_banner=module.QLabel(),
+            config_desk_summary_frame=module.QFrame(),
+            config_risk_snapshot_box=module.QGroupBox(),
+            config_capability_box=module.QGroupBox(),
+            config_stage_summary_frame=module.QFrame(),
+            config_stage_tabs=module.QTabWidget(),
+            market_pool_table=SimpleNamespace(rowCount=lambda: 3),
+            broker_control_splitter=_DummyThreeSplitter(broker_control_sizes),
+            summary_table=SimpleNamespace(rowCount=lambda: 2),
+            monitor_table=SimpleNamespace(rowCount=lambda: 2),
+            broker_workbench_splitter=_DummyTwoSplitter(broker_workbench_sizes),
+            broker_middle_splitter=_DummyTwoSplitter(broker_middle_sizes),
+            broker_order_focus_splitter=_DummyTwoSplitter(broker_order_focus_sizes),
+            broker_execution_detail_splitter=_DummyTwoSplitter(broker_execution_detail_sizes),
+            board_workspace_splitter=_DummyTwoSplitter(board_workspace_sizes),
+            detail_recap_splitter=_DummyThreeSplitter(detail_recap_sizes),
+            paper_trading_splitter=_DummyTwoSplitter(paper_trading_sizes),
+            paper_analytics_splitter=_DummyTwoSplitter(paper_analytics_sizes),
+            strategy_config_splitter=_DummyTwoSplitter(strategy_config_sizes),
+            board_table=SimpleNamespace(rowCount=lambda: 2),
+            board_monitor_table=SimpleNamespace(rowCount=lambda: 1),
+            daily_pool_rows=[object()],
+            order_intents=[object()],
+            order_submission_records=[object()],
+            scan_rows=[object()],
+            active_symbol="SZSE.300001",
+            state=SimpleNamespace(
+                broker_profile=SimpleNamespace(
+                    username="demo_user",
+                    password="",
+                    token="",
+                    account_id="",
+                    sdk_python_path="",
+                    strategy_id="",
+                )
+            ),
+            paper_trading_state=SimpleNamespace(enabled=True, positions=[object()], ledger=[], patrol_logs=[]),
+            current_density="watch",
+            width=lambda: 1600,
+            height=lambda: 900,
+        )
+
+        for tab_widget, count in (
+            (window.recommend_workflow_tabs, 3),
+            (window.broker_stage_tabs, 4),
+            (window.scanner_stage_tabs, 3),
+            (window.board_stage_tabs, 2),
+            (window.paper_stage_tabs, 3),
+            (window.config_stage_tabs, 4),
+        ):
+            for index in range(count):
+                tab_widget.addTab(module.QWidget(), str(index))
+
+        module.QuantHunterWindow._sync_first_screen_visibility_v69(window)
+
+        self.assertFalse(window.overview_leaderboard_box.isVisible())
+        self.assertFalse(window.overview_left_panel.isVisible())
+        self.assertFalse(window.overview_right_panel.isVisible())
+        self.assertEqual(splitter_sizes, [0, 1600, 0])
+        self.assertFalse(window.market_header_label.isVisible())
+        self.assertFalse(window.market_subheader_label.isVisible())
+        self.assertFalse(window.market_signal_label.isVisible())
+        self.assertFalse(window.market_quote_label.isVisible())
+        self.assertFalse(window.dashboard_metrics_box.isVisible())
+        self.assertFalse(window.overview_priority_box.isVisible())
+        self.assertFalse(window.overview_summary_box.isVisible())
+        self.assertFalse(window.overview_capability_box.isVisible())
+        self.assertFalse(window.overview_signal_summary_column.isVisible())
+        self.assertFalse(window.overview_mini_chart_tabs.isVisible())
+        self.assertFalse(window.overview_chart_controls_tabs.isVisible())
+        self.assertFalse(window.right_intel_tabs.isVisible())
+        self.assertFalse(window.overview_theme_summary_box.isVisible())
+        self.assertFalse(window.overview_cockpit_box.isVisible())
+        self.assertFalse(window.overview_playbook_box.isVisible())
+        self.assertFalse(window.recommend_empty_box.isVisible())
+        self.assertFalse(window.auth_summary_box.isVisible())
+        self.assertFalse(window.auth_capability_box.isVisible())
+        self.assertFalse(window.auth_status_banner.isVisible())
+        self.assertFalse(window.auth_status_box.isVisible())
+        self.assertFalse(window.auth_desk_summary_frame.isVisible())
+        self.assertFalse(window.market_status_label.isVisible())
+        self.assertFalse(window.recommend_status_label.isVisible())
+        self.assertFalse(window.recommend_section_hint.isVisible())
+        self.assertFalse(window.recommend_desk_summary_frame.isVisible())
+        self.assertFalse(window.recommend_focus_cards_box.isVisible())
+        self.assertFalse(window.recommend_capability_box.isVisible())
+        self.assertFalse(window.recommend_deep_summary_box.isVisible())
+        self.assertFalse(window.recommend_stage_summary_frame.isVisible())
+        self.assertEqual(recommend_dispatch_sizes, [384, 832, 384])
+        self.assertEqual(recommend_summary_sizes, [576, 1024])
+        self.assertEqual(recommend_recap_middle_sizes, [544, 1056])
+        self.assertEqual(recommend_recap_bottom_sizes, [544, 1056])
+        self.assertEqual(recommend_review_sizes, [800, 800])
+        self.assertTrue(window.broker_recap_box.isVisible())
+        self.assertFalse(window.broker_workbench_banner.isVisible())
+        self.assertFalse(window.broker_stage_label.isVisible())
+        self.assertFalse(window.broker_desk_summary_frame.isVisible())
+        self.assertFalse(window.broker_stage_summary_frame.isVisible())
+        self.assertFalse(window.broker_summary_box.isVisible())
+        self.assertFalse(window.broker_metrics_box.isVisible())
+        self.assertFalse(window.broker_capability_box.isVisible())
+        self.assertFalse(window.scanner_summary_box.isVisible())
+        self.assertFalse(window.scanner_capability_box.isVisible())
+        self.assertFalse(window.scanner_watch_summary_box.isVisible())
+        self.assertFalse(window.scanner_monitor_summary_box.isVisible())
+        self.assertFalse(window.scanner_status_banner.isVisible())
+        self.assertFalse(window.scanner_desk_summary_frame.isVisible())
+        self.assertFalse(window.scanner_tool_panel.isVisible())
+        self.assertFalse(window.scanner_stage_summary_frame.isVisible())
+        self.assertEqual(scanner_watch_summary_sizes, [480, 1120])
+        self.assertFalse(window.board_summary_box.isVisible())
+        self.assertFalse(window.board_capability_box.isVisible())
+        self.assertFalse(window.board_status_banner.isVisible())
+        self.assertFalse(window.board_desk_summary_frame.isVisible())
+        self.assertFalse(window.board_tool_panel.isVisible())
+        self.assertFalse(window.board_stage_summary_frame.isVisible())
+        self.assertEqual(board_workspace_sizes, [720, 880])
+        self.assertFalse(window.detail_summary_box.isVisible())
+        self.assertFalse(window.detail_capability_box.isVisible())
+        self.assertFalse(window.detail_status_banner.isVisible())
+        self.assertFalse(window.detail_desk_summary_frame.isVisible())
+        self.assertFalse(window.detail_tool_panel.isVisible())
+        self.assertFalse(window.detail_stage_summary_frame.isVisible())
+        self.assertEqual(detail_recap_sizes, [512, 608, 480])
+        self.assertFalse(window.paper_summary_box.isVisible())
+        self.assertFalse(window.paper_capability_box.isVisible())
+        self.assertFalse(window.paper_status_banner.isVisible())
+        self.assertFalse(window.paper_desk_summary_frame.isVisible())
+        self.assertFalse(window.paper_overview_box.isVisible())
+        self.assertFalse(window.paper_tool_panel.isVisible())
+        self.assertFalse(window.paper_stage_summary_frame.isVisible())
+        self.assertEqual(paper_trading_sizes, [688, 912])
+        self.assertEqual(paper_analytics_sizes, [640, 960])
+        self.assertFalse(window.config_tool_panel.isVisible())
+        self.assertFalse(window.config_status_banner.isVisible())
+        self.assertFalse(window.config_desk_summary_frame.isVisible())
+        self.assertFalse(window.config_risk_snapshot_box.isVisible())
+        self.assertFalse(window.config_capability_box.isVisible())
+        self.assertFalse(window.config_stage_summary_frame.isVisible())
+        self.assertEqual(strategy_config_sizes, [384, 1216])
+        self.assertEqual(window.recommend_workflow_tabs.currentIndex(), 1)
+        self.assertEqual(window.broker_stage_tabs.currentIndex(), 1)
+        self.assertEqual(window.scanner_stage_tabs.currentIndex(), 2)
+        self.assertEqual(window.board_stage_tabs.currentIndex(), 1)
+        self.assertEqual(window.config_stage_tabs.currentIndex(), 1)
+        self.assertEqual(broker_control_sizes, [480, 544, 576])
+        self.assertEqual(broker_workbench_sizes, [384, 1216])
+        self.assertEqual(broker_middle_sizes, [448, 1152])
+        self.assertEqual(broker_order_focus_sizes, [1120, 480])
+        self.assertEqual(broker_execution_detail_sizes, [672, 928])
+
+    def test_qt_window_watch_density_downshifts_auth_and_config_secondary_first_screen_blocks(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.current_density = "watch"
+                window._set_density_combo_value("watch")
+                if "username" in window.login_inputs:
+                    window.login_inputs["username"].setText("demo_user")
+                window._sync_terminal_density_ui()
+                window.tabs.setCurrentWidget(window.auth_tab)
+                window._sync_first_screen_visibility_v69()
+                window._apply_layout_polish_v19()
+                app.processEvents()
+                self.assertFalse(window.auth_summary_box.isVisible())
+                self.assertFalse(window.auth_capability_box.isVisible())
+                self.assertFalse(window.auth_status_box.isVisible())
+                self.assertFalse(window.auth_desk_summary_frame.isVisible())
+                self.assertFalse(window.auth_form_box.isHidden())
+                self.assertFalse(window.auth_status_banner.isVisible())
+                self.assertEqual(window.login_status_text.maximumHeight(), 16777215)
+                self.assertEqual(window.login_status_text.property("_qh_watch_min_height_v1"), 300)
+
+                window.tabs.setCurrentWidget(window.overview_tab)
+                window.active_symbol = "SZSE.300001"
+                window._sync_first_screen_visibility_v69()
+                window._apply_layout_polish_v19()
+                app.processEvents()
+                self.assertEqual(window.overview_controls_drawer.maximumHeight(), 16777215)
+                self.assertEqual(window.overview_controls_drawer.property("_qh_watch_min_height_v1"), 320)
+                self.assertEqual(window.overview_stage_container.maximumHeight(), 16777215)
+                self.assertEqual(window.overview_stage_container.property("_qh_watch_min_height_v1"), 520)
+                self.assertEqual(window.overview_controls_drawer.layout().spacing(), 6)
+                self.assertEqual(window.overview_stage_container.layout().spacing(), 8)
+                self.assertFalse(window.market_status_label.isVisible())
+                self.assertEqual(window.overview_desk_summary_frame.layout().spacing(), 8)
+                self.assertEqual(window.overview_desk_summary_frame.layout().contentsMargins().left(), 10)
+                overview_badge_rail = window.overview_desk_summary_frame.findChild(module.AdaptivePanelGrid, "workspaceBadgeRail")
+                self.assertIsNotNone(overview_badge_rail)
+                self.assertLessEqual(overview_badge_rail.maximumWidth(), 320)
+                self.assertFalse(window.dashboard_metrics_box.isVisible())
+                self.assertFalse(window.overview_left_panel.isVisible())
+                self.assertFalse(window.overview_right_panel.isVisible())
+                self.assertFalse(window.market_header_label.isVisible())
+                self.assertFalse(window.market_subheader_label.isVisible())
+                self.assertFalse(window.market_signal_label.isVisible())
+                self.assertFalse(window.market_quote_label.isVisible())
+                self.assertFalse(window.overview_capability_box.isVisible())
+                self.assertFalse(window.overview_cockpit_box.isVisible())
+                self.assertFalse(window.overview_playbook_box.isVisible())
+                self.assertFalse(window.overview_priority_box.isVisible())
+                self.assertFalse(window.overview_summary_box.isVisible())
+                self.assertFalse(window.overview_signal_summary_column.isVisible())
+                self.assertFalse(window.overview_mini_chart_tabs.isVisible())
+                self.assertFalse(window.overview_chart_controls_tabs.isVisible())
+                self.assertFalse(window.right_intel_tabs.isVisible())
+                self.assertFalse(window.overview_leaderboard_box.isVisible())
+                self.assertFalse(window.overview_theme_summary_box.isVisible())
+                self.assertEqual(window.market_focus_summary_box.maximumHeight(), 16777215)
+                self.assertEqual(window.market_focus_summary_box.property("_qh_watch_min_height_v1"), 220)
+                self.assertEqual(window.overview_summary_box.maximumHeight(), 16777215)
+                self.assertEqual(window.overview_summary_box.property("_qh_watch_min_height_v1"), 260)
+                self.assertEqual(window.overview_cockpit_box.maximumHeight(), 16777215)
+                self.assertEqual(window.overview_cockpit_box.property("_qh_watch_min_height_v1"), 320)
+                self.assertEqual(window.overview_playbook_box.maximumHeight(), 16777215)
+                self.assertEqual(window.overview_playbook_box.property("_qh_watch_min_height_v1"), 240)
+                self.assertFalse(window.market_focus_summary_box.isHidden())
+                self.assertFalse(window.overview_primary_chart_tabs.isHidden())
+                self.assertFalse(window.market_pool_table.isHidden())
+                self.assertEqual(window.market_theme_brief_text.maximumHeight(), 16777215)
+                self.assertEqual(window.market_theme_brief_text.property("_qh_watch_min_height_v1"), 204)
+                self.assertEqual(window.market_source_status_text.maximumHeight(), 16777215)
+                self.assertEqual(window.market_source_status_text.property("_qh_watch_min_height_v1"), 196)
+                self.assertEqual(window.overview_capital_box.maximumHeight(), 16777215)
+                self.assertEqual(window.overview_capital_box.property("_qh_watch_min_height_v1"), 300)
+                self.assertEqual(window.market_capital_text.maximumHeight(), 16777215)
+                self.assertEqual(window.market_capital_text.property("_qh_watch_min_height_v1"), 252)
+                self.assertEqual(window.overview_decision_box.maximumHeight(), 16777215)
+                self.assertEqual(window.overview_decision_box.property("_qh_watch_min_height_v1"), 320)
+                self.assertEqual(window.market_decision_text.maximumHeight(), 16777215)
+                self.assertEqual(window.market_decision_text.property("_qh_watch_min_height_v1"), 252)
+                self.assertEqual(window.overview_primary_chart_tabs.maximumHeight(), 16777215)
+                self.assertGreaterEqual(window.market_pool_table.height(), 150)
+                self.assertGreater(window.overview_main_splitter.sizes()[1], 0)
+                self.assertLessEqual(window.overview_main_splitter.sizes()[0], window.overview_main_splitter.sizes()[1])
+                self.assertLessEqual(window.overview_main_splitter.sizes()[2], window.overview_main_splitter.sizes()[1])
+
+                window.tabs.setCurrentWidget(window.config_tab)
+                window._sync_first_screen_visibility_v69()
+                app.processEvents()
+                self.assertFalse(window.config_tool_panel.isVisible())
+                self.assertFalse(window.config_desk_summary_frame.isVisible())
+                self.assertFalse(window.config_risk_snapshot_box.isVisible())
+                self.assertFalse(window.config_stage_summary_frame.isVisible())
+                self.assertFalse(window.findChild(module.QGroupBox, "configStrategyBox").isHidden())
+
+                window.tabs.setCurrentWidget(window.recommend_tab)
+                window._sync_first_screen_visibility_v69()
+                window._apply_layout_polish_v19()
+                app.processEvents()
+                self.assertEqual(window.recommend_controls_drawer.maximumHeight(), 16777215)
+                self.assertEqual(window.recommend_controls_drawer.property("_qh_watch_min_height_v1"), 360)
+                self.assertEqual(window.recommend_controls_drawer.layout().spacing(), 6)
+                self.assertEqual(window.recommend_controls_section.layout().spacing(), 4)
+                self.assertFalse(window.recommend_status_label.isVisible())
+                self.assertEqual(window.recommend_desk_summary_frame.layout().spacing(), 8)
+                self.assertFalse(window.recommend_desk_summary_frame.isVisible())
+                self.assertFalse(window.recommend_focus_cards_box.isVisible())
+                self.assertFalse(window.recommend_capability_box.isVisible())
+                self.assertFalse(window.recommend_stage_summary_frame.isVisible())
+                self.assertFalse(window.daily_pool_focus_label.isHidden())
+                self.assertFalse(window.recommend_decision_summary_box.isHidden())
+                self.assertFalse(window.recommend_workflow_tabs.isHidden())
+                self.assertEqual(window.recommend_pool_box.maximumHeight(), 16777215)
+                self.assertEqual(window.recommend_pool_box.property("_qh_watch_min_height_v1"), 420)
+                self.assertEqual(window.strategy_pack_box.maximumHeight(), 16777215)
+                self.assertEqual(window.strategy_pack_box.property("_qh_watch_min_height_v1"), 320)
+                self.assertEqual(window.recommend_decision_summary_box.maximumHeight(), 16777215)
+                self.assertGreaterEqual(window.recommend_decision_summary_box.minimumHeight(), 248)
+                self.assertEqual(window.recommend_workflow_tabs.maximumHeight(), 16777215)
+                self.assertGreaterEqual(window.recommend_workflow_tabs.minimumHeight(), 560)
+                self.assertEqual(window.recommend_dispatch_text.maximumHeight(), 16777215)
+                self.assertEqual(window.recommend_dispatch_text.property("_qh_watch_min_height_v1"), 220)
+                self.assertEqual(window.recommend_focus_review_text.maximumHeight(), 16777215)
+                self.assertEqual(window.recommend_focus_review_text.property("_qh_watch_min_height_v1"), 236)
+                self.assertEqual(window.recommend_queue_text.maximumHeight(), 16777215)
+                self.assertEqual(window.recommend_queue_text.property("_qh_watch_min_height_v1"), 220)
+                self.assertEqual(window.recommend_decision_summary_text.maximumHeight(), 16777215)
+                self.assertEqual(window.recommend_decision_summary_text.property("_qh_watch_min_height_v1"), 280)
+                self.assertEqual(window.strategy_detail_box.maximumHeight(), 16777215)
+                self.assertEqual(window.strategy_detail_box.property("_qh_watch_min_height_v1"), 360)
+                self.assertEqual(window.strategy_path_text.maximumHeight(), 16777215)
+                self.assertEqual(window.strategy_path_text.property("_qh_watch_min_height_v1"), 220)
+                self.assertEqual(window.strategy_path_box.maximumHeight(), 16777215)
+                self.assertEqual(window.strategy_path_box.property("_qh_watch_min_height_v1"), 320)
+                self.assertEqual(window.action_flow_box.maximumHeight(), 16777215)
+                self.assertEqual(window.action_flow_box.property("_qh_watch_min_height_v1"), 220)
+                self.assertEqual(window.priority_box.maximumHeight(), 16777215)
+                self.assertEqual(window.priority_box.property("_qh_watch_min_height_v1"), 220)
+                self.assertEqual(window.recommend_review_text.maximumHeight(), 16777215)
+                self.assertEqual(window.recommend_review_text.property("_qh_watch_min_height_v1"), 236)
+                self.assertEqual(window.recommend_next_day_text.maximumHeight(), 16777215)
+                self.assertEqual(window.recommend_next_day_text.property("_qh_watch_min_height_v1"), 236)
+                self.assertEqual(window.recommend_message_center_text.maximumHeight(), 16777215)
+                self.assertEqual(window.recommend_message_center_text.property("_qh_watch_min_height_v1"), 200)
+                self.assertEqual(window.recommend_theme_box.maximumHeight(), 16777215)
+                self.assertEqual(window.recommend_theme_box.property("_qh_watch_min_height_v1"), 320)
+                self.assertEqual(window.recommend_leader_box.maximumHeight(), 16777215)
+                self.assertEqual(window.recommend_leader_box.property("_qh_watch_min_height_v1"), 320)
+                self.assertEqual(window.recommend_message_center_box.maximumHeight(), 16777215)
+                self.assertEqual(window.recommend_message_center_box.property("_qh_watch_min_height_v1"), 320)
+                self.assertEqual(window.recommend_detail_box.maximumHeight(), 16777215)
+                self.assertEqual(window.recommend_detail_box.property("_qh_watch_min_height_v1"), 280)
+                self.assertEqual(window.recommend_plan_box.maximumHeight(), 16777215)
+                self.assertEqual(window.recommend_plan_box.property("_qh_watch_min_height_v1"), 280)
+                self.assertEqual(window.recommend_pulse_box.maximumHeight(), 16777215)
+                self.assertEqual(window.recommend_pulse_box.property("_qh_watch_min_height_v1"), 240)
+                self.assertEqual(window.recommend_holding_box.maximumHeight(), 16777215)
+                self.assertEqual(window.recommend_holding_box.property("_qh_watch_min_height_v1"), 260)
+                recommend_dispatch_sizes = list(window.recommend_dispatch_splitter.property("_qh_watch_sizes_v1") or ())
+                recommend_summary_sizes = list(window.recommend_summary_splitter.property("_qh_watch_sizes_v1") or ())
+                recommend_recap_middle_sizes = list(window.recommend_recap_middle_splitter.property("_qh_watch_sizes_v1") or ())
+                recommend_recap_bottom_sizes = list(window.recommend_recap_bottom_splitter.property("_qh_watch_sizes_v1") or ())
+                recommend_review_sizes = list(window.recommend_review_splitter.property("_qh_watch_sizes_v1") or ())
+                self.assertGreater(recommend_dispatch_sizes[1], recommend_dispatch_sizes[0])
+                self.assertGreater(recommend_dispatch_sizes[1], recommend_dispatch_sizes[2])
+                self.assertGreater(recommend_summary_sizes[1], recommend_summary_sizes[0])
+                self.assertGreater(recommend_recap_middle_sizes[1], recommend_recap_middle_sizes[0])
+                self.assertGreater(recommend_recap_bottom_sizes[1], recommend_recap_bottom_sizes[0])
+                self.assertEqual(len(recommend_review_sizes), 2)
+                self.assertGreaterEqual(recommend_review_sizes[0], 360)
+                self.assertGreaterEqual(recommend_review_sizes[1], 360)
+                self.assertLessEqual(abs(recommend_review_sizes[0] - recommend_review_sizes[1]), 24)
+
+                window.tabs.setCurrentWidget(window.broker_tab)
+                window.order_intents = [SimpleNamespace(symbol="SZSE.300001")]
+                window._sync_first_screen_visibility_v69()
+                window._apply_layout_polish_v19()
+                app.processEvents()
+                self.assertEqual(window.broker_stage_tabs.currentIndex(), 1)
+                self.assertEqual(window.broker_setup_drawer.maximumHeight(), 16777215)
+                self.assertEqual(window.broker_setup_drawer.property("_qh_watch_min_height_v1"), 420)
+                self.assertEqual(window.broker_setup_drawer.layout().spacing(), 6)
+                self.assertFalse(window.broker_status_banner.isVisible())
+                self.assertEqual(window.broker_desk_summary_frame.layout().spacing(), 8)
+                self.assertFalse(window.broker_workbench_banner.isVisible())
+                self.assertFalse(window.broker_stage_label.isVisible())
+                self.assertFalse(window.broker_desk_summary_frame.isVisible())
+                self.assertFalse(window.broker_stage_summary_frame.isVisible())
+                self.assertFalse(window.broker_summary_box.isVisible())
+                self.assertFalse(window.broker_metrics_box.isVisible())
+                self.assertFalse(window.broker_capability_box.isVisible())
+                self.assertFalse(window.orders_focus_label.isHidden())
+                self.assertFalse(window.broker_stage_tabs.isHidden())
+                self.assertEqual(window.broker_cockpit_section.maximumHeight(), 16777215)
+                self.assertEqual(window.broker_cockpit_section.property("_qh_watch_min_height_v1"), 280)
+                self.assertEqual(window.broker_execution_column.maximumHeight(), 16777215)
+                self.assertEqual(window.broker_execution_column.property("_qh_watch_min_height_v1"), 560)
+                self.assertEqual(window.broker_posttrade_section.maximumHeight(), 16777215)
+                self.assertEqual(window.broker_posttrade_section.property("_qh_watch_min_height_v1"), 420)
+                self.assertGreaterEqual(window.broker_execution_box.minimumHeight(), 420)
+                self.assertEqual(window.broker_stage_tabs.maximumHeight(), 16777215)
+                self.assertGreaterEqual(window.broker_stage_tabs.minimumHeight(), 620)
+                self.assertEqual(window.broker_gate_summary_text.maximumHeight(), 16777215)
+                self.assertEqual(window.broker_gate_summary_text.property("_qh_watch_min_height_v1"), 156)
+                self.assertEqual(window.broker_mainline_review_text.maximumHeight(), 16777215)
+                self.assertEqual(window.broker_mainline_review_text.property("_qh_watch_min_height_v1"), 220)
+                self.assertEqual(window.broker_execution_text.maximumHeight(), 16777215)
+                self.assertEqual(window.broker_execution_text.property("_qh_watch_min_height_v1"), 220)
+                self.assertEqual(window.broker_status_text.maximumHeight(), 16777215)
+                self.assertEqual(window.broker_status_text.property("_qh_watch_min_height_v1"), 280)
+                self.assertEqual(window.broker_order_focus_text.maximumHeight(), 16777215)
+                self.assertEqual(window.broker_order_focus_text.property("_qh_watch_min_height_v1"), 280)
+                self.assertEqual(window.broker_result_box.maximumHeight(), 16777215)
+                self.assertEqual(window.broker_result_box.property("_qh_watch_min_height_v1"), 360)
+                self.assertEqual(window.broker_recap_box.maximumHeight(), 16777215)
+                self.assertEqual(window.broker_recap_box.property("_qh_watch_min_height_v1"), 320)
+                self.assertEqual(window.execution_table.property("_qh_watch_min_height_v1"), 320)
+                self.assertEqual(window.order_result_text.maximumHeight(), 16777215)
+                self.assertEqual(window.order_result_text.property("_qh_watch_min_height_v1"), 220)
+                self.assertEqual(window.broker_recap_text.maximumHeight(), 16777215)
+                self.assertEqual(window.broker_recap_text.property("_qh_watch_min_height_v1"), 236)
+                self.assertEqual(window.runtime_status_text.maximumHeight(), 16777215)
+                self.assertEqual(window.runtime_status_text.property("_qh_watch_min_height_v1"), 170)
+                self.assertEqual(window.runtime_log_text.maximumHeight(), 16777215)
+                self.assertEqual(window.runtime_log_text.property("_qh_watch_min_height_v1"), 320)
+                self.assertEqual(window.broker_replay_event_cards["current"].maximumHeight(), 16777215)
+                self.assertEqual(window.broker_replay_event_cards["current"].property("_qh_watch_min_height_v1"), 176)
+                self.assertEqual(window.broker_replay_event_cards["previous"].maximumHeight(), 16777215)
+                self.assertEqual(window.broker_replay_event_cards["previous"].property("_qh_watch_min_height_v1"), 128)
+                self.assertEqual(window.broker_replay_event_cards["exception"].maximumHeight(), 16777215)
+                self.assertEqual(window.broker_replay_event_cards["exception"].property("_qh_watch_min_height_v1"), 128)
+                broker_control_sizes = list(window.broker_control_splitter.property("_qh_watch_sizes_v1") or ())
+                broker_workbench_sizes = list(window.broker_workbench_splitter.property("_qh_watch_sizes_v1") or ())
+                broker_middle_sizes = list(window.broker_middle_splitter.property("_qh_watch_sizes_v1") or ())
+                broker_order_focus_sizes = list(window.broker_order_focus_splitter.property("_qh_watch_sizes_v1") or ())
+                broker_execution_detail_sizes = list(window.broker_execution_detail_splitter.property("_qh_watch_sizes_v1") or ())
+                self.assertGreater(broker_control_sizes[2], broker_control_sizes[0])
+                self.assertGreater(broker_workbench_sizes[1], broker_workbench_sizes[0])
+                self.assertGreater(broker_middle_sizes[1], broker_middle_sizes[0])
+                self.assertGreater(broker_order_focus_sizes[0], broker_order_focus_sizes[1])
+                self.assertGreater(broker_execution_detail_sizes[1], broker_execution_detail_sizes[0])
+
+                window.tabs.setCurrentWidget(window.paper_tab)
+                window._sync_first_screen_visibility_v69()
+                window._apply_layout_polish_v19()
+                app.processEvents()
+                self.assertFalse(window.paper_summary_box.isVisible())
+                self.assertFalse(window.paper_capability_box.isVisible())
+                self.assertFalse(window.paper_status_banner.isVisible())
+                self.assertFalse(window.paper_desk_summary_frame.isVisible())
+                self.assertFalse(window.paper_overview_box.isVisible())
+                self.assertFalse(window.paper_tool_panel.isVisible())
+                self.assertFalse(window.paper_stage_summary_frame.isVisible())
+                self.assertFalse(window.paper_stage_tabs.isHidden())
+                self.assertEqual(window.paper_stage_tabs.maximumHeight(), 16777215)
+                self.assertGreaterEqual(window.paper_stage_tabs.minimumHeight(), 520)
+                self.assertEqual(window.paper_equity_chart_view.maximumHeight(), 16777215)
+                self.assertEqual(window.paper_equity_chart_view.property("_qh_watch_min_height_v1"), 320)
+                self.assertEqual(window.paper_strategy_table.property("_qh_watch_min_height_v1"), 260)
+                self.assertEqual(window.paper_patrol_table.property("_qh_watch_min_height_v1"), 260)
+                self.assertEqual(window.paper_trading_text.maximumHeight(), 16777215)
+                self.assertGreaterEqual(window.paper_trading_text.minimumHeight(), 220)
+                self.assertEqual(window.paper_experiment_text.maximumHeight(), 16777215)
+                self.assertGreaterEqual(window.paper_experiment_text.minimumHeight(), 236)
+                paper_trading_sizes = list(window.paper_trading_splitter.property("_qh_watch_sizes_v1") or ())
+                paper_analytics_sizes = list(window.paper_analytics_splitter.property("_qh_watch_sizes_v1") or ())
+                self.assertGreater(paper_trading_sizes[1], paper_trading_sizes[0])
+                self.assertGreater(paper_analytics_sizes[1], paper_analytics_sizes[0])
+
+                window.tabs.setCurrentWidget(window.scanner_tab)
+                window._sync_first_screen_visibility_v69()
+                window._apply_layout_polish_v19()
+                app.processEvents()
+                self.assertFalse(window.scanner_desk_summary_frame.isVisible())
+                self.assertFalse(window.scanner_status_banner.isVisible())
+                self.assertFalse(window.scanner_capability_box.isVisible())
+                self.assertFalse(window.scanner_stage_summary_frame.isVisible())
+                self.assertFalse(window.scanner_stage_tabs.isHidden())
+                self.assertEqual(window.scanner_stage_tabs.maximumHeight(), 16777215)
+                self.assertGreaterEqual(window.scanner_stage_tabs.minimumHeight(), 520)
+                self.assertEqual(window.scan_table.property("_qh_watch_min_height_v1"), 380)
+                self.assertEqual(window.summary_table.property("_qh_watch_min_height_v1"), 320)
+                self.assertEqual(window.monitor_table.property("_qh_watch_min_height_v1"), 360)
+                self.assertEqual(window.monitor_summary_text.maximumHeight(), 16777215)
+                self.assertEqual(window.monitor_summary_text.property("_qh_watch_min_height_v1"), 184)
+                scanner_watch_summary_sizes = list(window.scanner_watch_summary_splitter.property("_qh_watch_sizes_v1") or ())
+                self.assertGreater(scanner_watch_summary_sizes[1], scanner_watch_summary_sizes[0])
+
+                window.tabs.setCurrentWidget(window.board_tab)
+                window._sync_first_screen_visibility_v69()
+                window._apply_layout_polish_v19()
+                app.processEvents()
+                self.assertFalse(window.board_desk_summary_frame.isVisible())
+                self.assertFalse(window.board_status_banner.isVisible())
+                self.assertFalse(window.board_capability_box.isVisible())
+                self.assertFalse(window.board_stage_summary_frame.isVisible())
+                self.assertFalse(window.board_stage_tabs.isHidden())
+                self.assertEqual(window.board_stage_tabs.maximumHeight(), 16777215)
+                self.assertGreaterEqual(window.board_stage_tabs.minimumHeight(), 500)
+                self.assertEqual(window.board_table.property("_qh_watch_min_height_v1"), 340)
+                self.assertEqual(window.board_monitor_table.property("_qh_watch_min_height_v1"), 340)
+                self.assertEqual(window.board_text.maximumHeight(), 16777215)
+                self.assertEqual(window.board_text.property("_qh_watch_min_height_v1"), 248)
+                self.assertEqual(window.board_monitor_text.maximumHeight(), 16777215)
+                self.assertEqual(window.board_monitor_text.property("_qh_watch_min_height_v1"), 248)
+
+                window.tabs.setCurrentWidget(window.detail_tab)
+                window._sync_first_screen_visibility_v69()
+                window._apply_layout_polish_v19()
+                app.processEvents()
+                self.assertFalse(window.detail_desk_summary_frame.isVisible())
+                self.assertFalse(window.detail_status_banner.isVisible())
+                self.assertFalse(window.detail_capability_box.isVisible())
+                self.assertFalse(window.detail_stage_summary_frame.isVisible())
+                self.assertFalse(window.detail_stage_tabs.isHidden())
+                self.assertEqual(window.detail_stage_tabs.maximumHeight(), 16777215)
+                self.assertGreaterEqual(window.detail_stage_tabs.minimumHeight(), 540)
+                self.assertEqual(window.detail_decision_text.maximumHeight(), 16777215)
+                self.assertEqual(window.detail_execution_text.maximumHeight(), 16777215)
+                self.assertEqual(window.detail_conclusion_text.maximumHeight(), 16777215)
+                self.assertEqual(window.metrics_text.maximumHeight(), 16777215)
+                self.assertEqual(window.metrics_text.property("_qh_watch_min_height_v1"), 240)
+                self.assertEqual(window.strategy_history_curve_view.maximumHeight(), 16777215)
+                self.assertEqual(window.strategy_history_curve_view.property("_qh_watch_min_height_v1"), 320)
+                self.assertEqual(window.strategy_history_trade_table.property("_qh_watch_min_height_v1"), 300)
+                self.assertEqual(window.strategy_history_compare_table.property("_qh_watch_min_height_v1"), 260)
+                self.assertGreaterEqual(window.detail_decision_text.minimumHeight(), 320)
+                self.assertGreaterEqual(window.detail_execution_text.minimumHeight(), 320)
+                self.assertGreaterEqual(window.detail_conclusion_text.minimumHeight(), 320)
+                detail_recap_sizes = list(window.detail_recap_splitter.property("_qh_watch_sizes_v1") or ())
+                self.assertGreater(detail_recap_sizes[1], detail_recap_sizes[0])
+                self.assertGreater(detail_recap_sizes[0], detail_recap_sizes[2])
+                detail_timeline_sizes = list(window.detail_timeline_splitter.property("_qh_watch_sizes_v1") or ())
+                self.assertGreater(detail_timeline_sizes[1], detail_timeline_sizes[0])
+                detail_history_period_sizes = list(window.detail_history_period_splitter.property("_qh_watch_sizes_v1") or ())
+                self.assertGreater(detail_history_period_sizes[1], detail_history_period_sizes[0])
+
+                window.tabs.setCurrentWidget(window.config_tab)
+                window._sync_first_screen_visibility_v69()
+                window._apply_layout_polish_v19()
+                app.processEvents()
+                self.assertEqual(window.config_stage_tabs.currentIndex(), 1)
+                self.assertFalse(window.config_tool_panel.isVisible())
+                self.assertFalse(window.config_status_banner.isVisible())
+                self.assertFalse(window.config_desk_summary_frame.isVisible())
+                self.assertFalse(window.config_risk_snapshot_box.isVisible())
+                self.assertFalse(window.config_capability_box.isVisible())
+                self.assertFalse(window.config_stage_summary_frame.isVisible())
+                self.assertFalse(window.findChild(module.QGroupBox, "configStrategyBox").isHidden())
+                self.assertEqual(window.config_stage_tabs.maximumHeight(), 16777215)
+                self.assertGreaterEqual(window.config_stage_tabs.minimumHeight(), 560)
+                self.assertEqual(window.license_status_text.maximumHeight(), 16777215)
+                self.assertEqual(window.license_status_text.property("_qh_watch_min_height_v1"), 260)
+                self.assertEqual(window.news_source_status_text.maximumHeight(), 16777215)
+                self.assertEqual(window.news_source_status_text.property("_qh_watch_min_height_v1"), 260)
+                self.assertEqual(window.ai_review_status_text.maximumHeight(), 16777215)
+                self.assertEqual(window.ai_review_status_text.property("_qh_watch_min_height_v1"), 220)
+                self.assertEqual(window.config_notes_text.maximumHeight(), 16777215)
+                self.assertEqual(window.config_notes_text.property("_qh_watch_min_height_v1"), 240)
+                self.assertEqual(window.strategy_config_formula_weights_text.maximumHeight(), 16777215)
+                self.assertEqual(window.strategy_config_formula_weights_text.property("_qh_watch_min_height_v1"), 160)
+                self.assertEqual(window.strategy_config_scene_input.maximumHeight(), 16777215)
+                self.assertEqual(window.strategy_config_scene_input.property("_qh_watch_min_height_v1"), 112)
+                self.assertEqual(window.strategy_config_standard_action_buy_input.maximumHeight(), 16777215)
+                self.assertEqual(window.strategy_config_standard_action_buy_input.property("_qh_watch_min_height_v1"), 112)
+                self.assertEqual(window.strategy_config_failure_sample_input.maximumHeight(), 16777215)
+                self.assertEqual(window.strategy_config_failure_sample_input.property("_qh_watch_min_height_v1"), 112)
+                self.assertEqual(window.strategy_config_formula_help_text.maximumHeight(), 16777215)
+                self.assertEqual(window.strategy_config_formula_help_text.property("_qh_watch_min_height_v1"), 280)
+                self.assertEqual(window.strategy_config_status_text.maximumHeight(), 16777215)
+                self.assertEqual(window.strategy_config_status_text.property("_qh_watch_min_height_v1"), 140)
+                self.assertEqual(window.strategy_config_editor.property("_qh_watch_min_height_v1"), 420)
+                strategy_config_sizes = list(window.strategy_config_splitter.property("_qh_watch_sizes_v1") or ())
+                self.assertGreater(strategy_config_sizes[1], strategy_config_sizes[0])
+            finally:
+                window.close()
+                app.processEvents()
 
     def test_qt_window_hides_leaderboard_on_compact_layout(self) -> None:
         if importlib.util.find_spec("PySide6") is None:
@@ -15722,7 +25351,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(lead["badge"], "主测")
         self.assertIn("主测 | 龙头模型 | 继续主测", lead["title"])
         self.assertIn("样本 7", lead["detail"])
-        self.assertIn("推荐页优先筛同战法前排", lead["cta"])
+        self.assertIn("机会池优先筛同战法前排", lead["cta"])
         self.assertEqual(other["badge"], "备选")
         self.assertIn("未进入实验前排 | 尾盘买入法", other["title"])
         self.assertIn("主测 龙头模型 | 对照 价值低吸", other["detail"])
@@ -15999,7 +25628,7 @@ class StrategyWorkflowTests(unittest.TestCase):
                 "badge": "主测",
                 "title": "主测 | 龙头模型 | 继续主测",
                 "detail": "样本 7 | 胜率 62.0% | 平均持有 1.8 天 | 预算 x1.18",
-                "cta": "推荐页优先筛同战法前排，交易页按主测纪律推进。",
+                "cta": "机会池优先筛同战法前排，执行中控按主测纪律推进，但先别因为单票强弱临时改打法。",
             },
         ):
             module.QuantHunterWindow._refresh_recommend_decision_summary(window, row)
@@ -16007,9 +25636,9 @@ class StrategyWorkflowTests(unittest.TestCase):
         text = window.recommend_decision_summary_text.toPlainText()
         self.assertIn("模拟盘联动：主测 | 龙头模型 | 继续主测", text)
         self.assertIn("实验提示：样本 7 | 胜率 62.0% | 平均持有 1.8 天 | 预算 x1.18", text)
-        self.assertIn("实验 CTA：推荐页优先筛同战法前排，交易页按主测纪律推进。", text)
+        self.assertIn("实验 CTA：机会池优先筛同战法前排，执行中控按主测纪律推进，但先别因为单票强弱临时改打法。", text)
         self.assertIn("首选动作：推进送审", text)
-        self.assertIn("路径建议：当前条件已经比较齐，先送审，再去交易页复核委托和仓位。", text)
+        self.assertIn("路径建议：当前条件已经比较齐，先送审，再去交易复核委托和仓位。", text)
         self.assertIn("实验 主测", window.recommend_decision_summary_label.text())
         self.assertEqual(window.recommend_push_focus_button.role, "accent")
         self.assertEqual(window.recommend_detail_focus_button.role, "tonal")
@@ -16085,7 +25714,7 @@ class StrategyWorkflowTests(unittest.TestCase):
                 "badge": "主测",
                 "title": "主测 | 龙头模型 | 继续主测",
                 "detail": "样本 7 | 胜率 62.0% | 平均持有 1.8 天 | 预算 x1.18",
-                "cta": "推荐页优先筛同战法前排，交易页按主测纪律推进。",
+                "cta": "机会池优先筛同战法前排，执行中控按主测纪律推进，但先别因为单票强弱临时改打法。",
             },
         ):
             module.QuantHunterWindow._refresh_recommend_decision_summary(window, row)
@@ -16208,7 +25837,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         with patch.object(module, "_ORIGINAL_QH_REFRESH_RECOMMEND_DECISION_SUMMARY_V39", lambda self, current=None: None), patch.object(
             module, "_qh_recommend_execution_summary_v24", return_value=("可继续跟踪", "主线和价位已对齐", True, True)
         ), patch.object(
-            module, "_qh_recommend_primary_cta_v38", return_value=("推进送审", "当前条件已经比较齐，先送审，再去交易页复核委托和仓位。")
+            module, "_qh_recommend_primary_cta_v38", return_value=("推进送审", "当前条件已经比较齐，先送审，再去交易复核委托和仓位。")
         ):
             module._qh_refresh_recommend_decision_summary_v39(window, row)
             first_role_count = calls["role"]
@@ -16269,7 +25898,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         with patch.object(module, "_ORIGINAL_QH_REFRESH_RECOMMEND_DECISION_SUMMARY_V38", lambda self, current=None: None), patch.object(
             module, "_qh_recommend_execution_summary_v24", return_value=("可继续跟踪", "主线和价位已对齐", True, True)
         ), patch.object(
-            module, "_qh_recommend_primary_cta_v38", return_value=("推进送审", "当前条件已经比较齐，先送审，再去交易页复核委托和仓位。")
+            module, "_qh_recommend_primary_cta_v38", return_value=("推进送审", "当前条件已经比较齐，先送审，再去交易复核委托和仓位。")
         ):
             module._qh_refresh_recommend_decision_summary_v38(window, row)
             first_text_calls = calls["text"]
@@ -16550,6 +26179,82 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertIn("已扫描 2 条信号", window.scan_summary_label.text())
         self.assertNotIn("异常文件", window.scan_summary_label.text())
 
+    def test_scanner_focus_runtime_prefers_monitor_selection_over_watchlist(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+
+        class DummyLabel:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def text(self) -> str:
+                return self.value
+
+            def setText(self, value: str) -> None:
+                self.value = value
+
+        def record_set(widget, text, tooltip=None) -> None:
+            widget.setText(text)
+
+        focus_labels = {key: DummyLabel() for key in ["symbol", "signal", "action", "monitor"]}
+        focus_accents = {key: DummyLabel() for key in ["symbol", "signal", "action", "monitor"]}
+        summary_labels = {key: DummyLabel() for key in ["scan", "watch", "summary", "monitor"]}
+        summary_accents = {key: DummyLabel() for key in ["scan", "watch", "summary", "monitor"]}
+        focus_row = RecommendationRow(
+            symbol="SZSE.300001",
+            stock_id="300001",
+            stock_name="龙头样本",
+            action="BUY",
+            label="RECLAIM_LONG",
+            signal_date="2026-04-21",
+            close=10.0,
+            entry_price=10.1,
+            stop_price=9.6,
+            target_price=10.8,
+            technical_score=86.0,
+            position_score=80.0,
+            persistence_score=82.0,
+            news_score=74.0,
+            leader_score=88.0,
+            total_score=89.0,
+            primary_strategy="龙头模型",
+            theme_name="机器人",
+        )
+        window = SimpleNamespace(
+            scan_summary_label=module.QLabel(),
+            scanner_focus_metric_labels=focus_labels,
+            scanner_focus_metric_accents=focus_accents,
+            scanner_summary_metric_labels=summary_labels,
+            scanner_summary_metric_accents=summary_accents,
+            scan_rows=[SimpleNamespace(symbol="SZSE.300001", action="BUY", label="RECLAIM_LONG", score=92.0)],
+            daily_pool_rows=[focus_row],
+            backtest_summaries=[SimpleNamespace(symbol="SZSE.300001", trades=4, total_return=0.12)],
+            monitor_table=SimpleNamespace(rowCount=lambda: 1),
+            watchlist_widget=SimpleNamespace(count=lambda: 2),
+            last_scan_warnings=[],
+            active_symbol="SHSE.600000",
+            _selected_symbol_from_monitor_table=lambda: "SZSE.300001",
+            _selected_symbol_from_watchlist=lambda: "SHSE.600000",
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol == "SZSE.300001" else "浦发样本",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol == "SZSE.300001" else "600000",
+            _display_action=lambda value: {"BUY": "买入", "WATCH": "观察"}.get(value, value),
+            _display_label=lambda value: {"RECLAIM_LONG": "回封确认", "WATCH": "观察"}.get(value, value),
+            _board_candidate_snapshot_for_symbol=lambda symbol: {"trigger_style": "回封关注", "risk_level": "中", "board_score": "81.0"} if symbol == "SZSE.300001" else None,
+            _board_monitor_snapshot_for_symbol=lambda symbol: None,
+            _set_label_text_if_changed=record_set,
+        )
+
+        module._qh_refresh_scanner_focus_status(window)
+        module._qh_refresh_scanner_focus_cards(window)
+        module._qh_refresh_scanner_summary_cards(window)
+
+        self.assertIn("龙头样本", window.scan_summary_label.text())
+        self.assertNotIn("浦发样本", window.scan_summary_label.text())
+        self.assertIn("当前结论：继续复核", window.scan_summary_label.text())
+        self.assertEqual(focus_labels["symbol"].text(), "龙头样本")
+        self.assertIn("龙头样本 / 300001", summary_accents["scan"].text())
+
     def test_refresh_monitor_summary_skips_repeated_same_signature(self) -> None:
         module = importlib.import_module("app_qt")
         app = module.QApplication.instance() or module.QApplication([])
@@ -16579,11 +26284,13 @@ class StrategyWorkflowTests(unittest.TestCase):
         )
         window = SimpleNamespace(
             monitor_summary_text=module.QTextEdit(),
+            scanner_workbench_banner=module.QLabel(),
             active_symbol="SZSE.300001",
             scan_rows=[scan_row],
             daily_pool_rows=[recommendation],
             universe_analyses={"SZSE.300001": []},
             _selected_symbol_from_watchlist=lambda: "",
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
             _symbol_identity_text=lambda symbol: "龙头样本 (300001 / SZSE.300001)",
             _display_action=lambda value: {"BUY": "买入", "WATCH": "观察"}.get(value, value),
             _display_label=lambda value: {"RECLAIM_LONG": "回踩转强"}.get(value, value),
@@ -16592,6 +26299,7 @@ class StrategyWorkflowTests(unittest.TestCase):
             _refresh_scanner_focus_status=lambda symbol="": calls.__setitem__("status", calls["status"] + 1),
             _refresh_scanner_focus_cards=lambda symbol="": calls.__setitem__("focus", calls["focus"] + 1),
             _refresh_scanner_summary_cards=lambda symbol="": calls.__setitem__("summary", calls["summary"] + 1),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
             _set_plain_text_if_changed=record_text,
         )
 
@@ -16600,6 +26308,172 @@ class StrategyWorkflowTests(unittest.TestCase):
         module.QuantHunterWindow._refresh_monitor_summary(window, "SZSE.300001")
 
         self.assertEqual(calls, first_counts)
+        self.assertIn("当前结论：继续复核", window.monitor_summary_text.toPlainText())
+        self.assertIn("信号扫描：当前联动 龙头样本", window.scanner_workbench_banner.text())
+
+    def test_refresh_monitor_summary_empty_state_uses_structured_copy(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        calls = {"status": [], "focus": [], "summary": [], "monitor": []}
+        window = SimpleNamespace(
+            monitor_summary_text=module.QTextEdit(),
+            active_symbol="",
+            scan_rows=[],
+            daily_pool_rows=[],
+            universe_analyses={},
+            _selected_symbol_from_watchlist=lambda: "",
+            _refresh_scanner_focus_status=lambda symbol="": calls["status"].append(symbol),
+            _refresh_scanner_focus_cards=lambda symbol="": calls["focus"].append(symbol),
+            _refresh_scanner_summary_cards=lambda symbol="": calls["summary"].append(symbol),
+            _refresh_scanner_monitor_summary_v1=lambda symbol="": calls["monitor"].append(symbol),
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+        )
+
+        module.QuantHunterWindow._refresh_monitor_summary(window)
+
+        text = window.monitor_summary_text.toPlainText()
+        self.assertIn("状态：待联动", text)
+        self.assertIn("当前结论：继续复核", text)
+        self.assertIn("下一步：", text)
+        self.assertIn("执行扫描", text)
+        self.assertEqual(calls["status"], [""])
+        self.assertEqual(calls["focus"], [""])
+        self.assertEqual(calls["summary"], [""])
+        self.assertEqual(calls["monitor"], [""])
+
+    def test_refresh_board_focus_panels_reset_structured_empty_state_when_no_focus(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        calls = {"focus": [], "capability": 0, "feedback": 0}
+        window = SimpleNamespace(
+            board_text=module.QTextEdit(),
+            board_monitor_text=module.QTextEdit(),
+            _selected_board_symbol=lambda: "",
+            _refresh_board_focus_cards=lambda symbol="", candidate=None, monitor=None: calls["focus"].append((symbol, candidate, monitor)),
+            _refresh_board_capability_overview_v1=lambda: calls.__setitem__("capability", calls["capability"] + 1),
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+        )
+
+        with patch.object(module, "refresh_scanner_board_action_feedback_runtime", lambda _window: calls.__setitem__("feedback", calls["feedback"] + 1)):
+            module._qh_refresh_board_focus_panels(window)
+
+        self.assertIn("状态：待锁定焦点", window.board_text.toPlainText())
+        self.assertIn("当前结论：继续复核", window.board_text.toPlainText())
+        self.assertIn("下一步：", window.board_text.toPlainText())
+        self.assertIn("状态：待锁定焦点", window.board_monitor_text.toPlainText())
+        self.assertEqual(calls["focus"], [("", None, None)])
+        self.assertEqual(calls["capability"], 1)
+        self.assertEqual(calls["feedback"], 1)
+
+    def test_refresh_board_focus_panels_explain_scan_linked_pending_candidate_and_monitor(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        calls = {"focus": [], "capability": 0, "feedback": 0}
+        scan_row = SimpleNamespace(
+            symbol="SZSE.300001",
+            action="BUY",
+            label="RECLAIM_LONG",
+            score=88.0,
+            close=10.2,
+            signal_date="2026-04-18",
+            reason="量价共振",
+        )
+        recommendation = SimpleNamespace(
+            symbol="SZSE.300001",
+            mainline_flow_signal="主升",
+            mainline_stage="前排",
+        )
+        window = SimpleNamespace(
+            board_text=module.QTextEdit(),
+            board_monitor_text=module.QTextEdit(),
+            scan_rows=[scan_row],
+            daily_pool_rows=[recommendation],
+            _selected_board_symbol=lambda: "SZSE.300001",
+            _board_candidate_snapshot_for_symbol=lambda symbol: None,
+            _board_monitor_snapshot_for_symbol=lambda symbol: None,
+            _stock_name_for_symbol=lambda symbol: "龙头样本",
+            _stock_id_for_symbol=lambda symbol: "300001",
+            _display_action=lambda value: {"BUY": "买入", "WATCH": "观察"}.get(value, value),
+            _display_label=lambda value: {"RECLAIM_LONG": "回踩转强"}.get(value, value),
+            _refresh_board_focus_cards=lambda symbol, candidate, monitor: calls["focus"].append((symbol, candidate, monitor)),
+            _refresh_board_capability_overview_v1=lambda: calls.__setitem__("capability", calls["capability"] + 1),
+            _set_plain_text_if_changed=lambda widget, text: widget.setPlainText(text),
+        )
+
+        with patch.object(module, "refresh_scanner_board_action_feedback_runtime", lambda _window: calls.__setitem__("feedback", calls["feedback"] + 1)):
+            module._qh_refresh_board_focus_panels(window)
+
+        self.assertIn("审查 继续复核", window.board_text.toPlainText())
+        self.assertIn("专项候选尚未生成", window.board_text.toPlainText())
+        self.assertIn("先刷新打板候选", window.board_text.toPlainText())
+        self.assertIn("主线参考：主升 / 前排", window.board_text.toPlainText())
+        self.assertIn("审查 继续复核", window.board_monitor_text.toPlainText())
+        self.assertIn("回封监控尚未形成", window.board_monitor_text.toPlainText())
+        self.assertIn("主线参考：主升 / 前排", window.board_monitor_text.toPlainText())
+        self.assertEqual(calls["focus"], [("SZSE.300001", None, None)])
+        self.assertEqual(calls["capability"], 1)
+        self.assertEqual(calls["feedback"], 1)
+
+    def test_refresh_broker_action_flow_empty_queue_accent_uses_review_language(self) -> None:
+        runtime = importlib.import_module("quant_hunter.ui_workspace_runtime")
+
+        class _Sink:
+            def __init__(self, value: str = "") -> None:
+                self.value = value
+
+            def text(self) -> str:
+                return self.value
+
+            def setText(self, value: str) -> None:
+                self.value = value
+
+        window = SimpleNamespace(
+            broker_summary_metric_accents={"queue": _Sink("等待生成第一批委托")},
+            broker_replay_event_accents={},
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+        )
+
+        with patch.object(runtime, "_ORIGINAL_REFRESH_BROKER_ACTION_FLOW_V2", lambda *args, **kwargs: None):
+            runtime.refresh_broker_action_flow(
+                window,
+                risk_profile_labels={},
+                broker_primary_cta_labels_fn=lambda *args, **kwargs: {},
+                broker_primary_cta_tooltips_fn=lambda *args, **kwargs: {},
+            )
+
+        self.assertEqual(window.broker_summary_metric_accents["queue"].text(), "继续复核 | 等待生成第一批委托")
+
+    def test_refresh_broker_action_flow_replay_current_accent_uses_review_language(self) -> None:
+        runtime = importlib.import_module("quant_hunter.ui_workspace_runtime")
+
+        class _Sink:
+            def __init__(self, value: str = "") -> None:
+                self.value = value
+
+            def text(self) -> str:
+                return self.value
+
+            def setText(self, value: str) -> None:
+                self.value = value
+
+        window = SimpleNamespace(
+            broker_summary_metric_accents={},
+            broker_replay_event_accents={"current": _Sink("当前焦点已同步，等待回执事件\n下一步 先看回执 | 继续复核\n点击聚焦当前节点")},
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+        )
+
+        with patch.object(runtime, "_ORIGINAL_REFRESH_BROKER_ACTION_FLOW_V2", lambda *args, **kwargs: None):
+            runtime.refresh_broker_action_flow(
+                window,
+                risk_profile_labels={},
+                broker_primary_cta_labels_fn=lambda *args, **kwargs: {},
+                broker_primary_cta_tooltips_fn=lambda *args, **kwargs: {},
+            )
+
+        self.assertIn("当前结论：继续复核", window.broker_replay_event_accents["current"].text())
 
     def test_refresh_scanner_focus_cards_skips_repeated_same_signature(self) -> None:
         module = importlib.import_module("app_qt")
@@ -16644,6 +26518,144 @@ class StrategyWorkflowTests(unittest.TestCase):
         module._qh_refresh_scanner_focus_cards(window, "SZSE.300001")
 
         self.assertEqual(len(calls), first_call_count)
+
+    def test_refresh_overview_focus_cards_empty_state_uses_review_language(self) -> None:
+        module = importlib.import_module("app_qt")
+        calls: dict[str, tuple[str, str]] = {}
+
+        class DummyCard:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            def set_data(self, headline: str, detail: str) -> None:
+                calls[self.name] = (headline, detail)
+
+        window = SimpleNamespace(
+            overview_summary_cards={
+                "theme": DummyCard("theme"),
+                "source": DummyCard("source"),
+                "capital": DummyCard("capital"),
+                "decision": DummyCard("decision"),
+            },
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "等待行情接入",
+        )
+
+        module.QuantHunterWindow._refresh_overview_focus_cards(window, "", None, None)
+
+        self.assertIn("当前结论：继续复核", calls["theme"][1])
+        self.assertIn("当前结论：继续复核", calls["source"][1])
+        self.assertIn("当前结论：继续复核", calls["capital"][1])
+        self.assertIn("当前结论：继续复核", calls["decision"][1])
+
+    def test_refresh_board_focus_cards_empty_state_uses_review_language(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        class DummyLabel:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def text(self) -> str:
+                return self.value
+
+            def setText(self, value: str) -> None:
+                self.value = value
+
+        labels = {key: DummyLabel() for key in ["symbol", "score", "risk", "action"]}
+        accents = {key: DummyLabel() for key in ["symbol", "score", "risk", "action"]}
+        window = SimpleNamespace(
+            board_focus_metric_labels=labels,
+            board_focus_metric_accents=accents,
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+        )
+
+        module._qh_refresh_board_focus_cards(window, "")
+
+        self.assertEqual(labels["action"].text(), "继续复核")
+        self.assertEqual(accents["action"].text(), "等待监控链路 | 审查")
+
+    def test_refresh_scanner_focus_cards_empty_state_uses_review_language(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        class DummyLabel:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def text(self) -> str:
+                return self.value
+
+            def setText(self, value: str) -> None:
+                self.value = value
+
+        labels = {key: DummyLabel() for key in ["symbol", "signal", "action", "monitor"]}
+        accents = {key: DummyLabel() for key in ["symbol", "signal", "action", "monitor"]}
+        window = SimpleNamespace(
+            scanner_focus_metric_labels=labels,
+            scanner_focus_metric_accents=accents,
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+        )
+
+        module._qh_refresh_scanner_focus_cards(window, "")
+
+        self.assertEqual(labels["action"].text(), "观察")
+        self.assertEqual(accents["action"].text(), "继续复核")
+        self.assertEqual(labels["monitor"].text(), "继续复核")
+        self.assertEqual(accents["monitor"].text(), "等待监控链路 | 审查")
+
+    def test_refresh_scanner_summary_cards_empty_state_uses_review_language(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        class DummyLabel:
+            def __init__(self) -> None:
+                self.value = ""
+
+            def text(self) -> str:
+                return self.value
+
+            def setText(self, value: str) -> None:
+                self.value = value
+
+        labels = {key: DummyLabel() for key in ["scan", "watch", "summary", "monitor"]}
+        accents = {key: DummyLabel() for key in ["scan", "watch", "summary", "monitor"]}
+        window = SimpleNamespace(
+            scanner_summary_metric_labels=labels,
+            scanner_summary_metric_accents=accents,
+            scan_rows=[],
+            watchlist_widget=SimpleNamespace(count=lambda: 0),
+            backtest_summaries=[],
+            monitor_table=SimpleNamespace(rowCount=lambda: 0),
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+        )
+
+        module._qh_refresh_scanner_summary_cards(window, "")
+
+        self.assertEqual(accents["scan"].text(), "等待扫描链路 | 继续复核")
+        self.assertEqual(accents["watch"].text(), "等待观察池 | 继续复核")
+        self.assertEqual(accents["summary"].text(), "等待回测摘要 | 继续复核")
+        self.assertEqual(accents["monitor"].text(), "等待监控链路 | 审查")
+
+    def test_refresh_workspace_focus_banners_prefers_monitor_selection_for_scanner_banner(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        window = SimpleNamespace(
+            active_symbol="SHSE.600000",
+            scan_rows=[SimpleNamespace(symbol="SZSE.300001")],
+            daily_pool_rows=[],
+            monitor_table=SimpleNamespace(rowCount=lambda: 1),
+            watchlist_widget=SimpleNamespace(count=lambda: 2),
+            _selected_symbol_from_monitor_table=lambda: "SZSE.300001",
+            _selected_symbol_from_watchlist=lambda: "SHSE.600000",
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol == "SZSE.300001" else "浦发样本",
+            _stock_id_for_symbol=lambda symbol: "300001" if symbol == "SZSE.300001" else "600000",
+            _focus_banner_tone=lambda symbol="", recommendation=None, scan_row=None: "active" if symbol else "idle",
+            scanner_focus_banner=module.QLabel(),
+            _set_focus_banner_state=lambda widget, tone, text, tooltip=None: widget.setText(f"{tone}|{text}"),
+        )
+
+        module.QuantHunterWindow._refresh_workspace_focus_banners(window)
+
+        self.assertIn("龙头样本", window.scanner_focus_banner.text())
+        self.assertNotIn("浦发样本", window.scanner_focus_banner.text())
 
     def test_refresh_scanner_summary_cards_skips_repeated_same_signature(self) -> None:
         module = importlib.import_module("app_qt")
@@ -17820,6 +27832,7 @@ class StrategyWorkflowTests(unittest.TestCase):
             smart_message_events=[event],
             _recommend_message_center_visible_events=[],
             recommend_message_center_selected_signature=module.message_event_signature(event),
+            recommend_message_center_selection_locked=True,
             recommend_message_center_filter="all",
             recommend_message_center_text=module.QTextEdit(),
             recommend_message_center_summary_label=module.QLabel(),
@@ -17881,6 +27894,7 @@ class StrategyWorkflowTests(unittest.TestCase):
             smart_message_events=[anchor_event],
             _recommend_message_center_visible_events=[],
             recommend_message_center_selected_signature=module.message_event_signature(anchor_event),
+            recommend_message_center_selection_locked=True,
             recommend_message_center_filter="all",
             recommend_message_center_text=module.QTextEdit(),
             recommend_message_center_summary_label=module.QLabel(),
@@ -17904,7 +27918,7 @@ class StrategyWorkflowTests(unittest.TestCase):
             module.SmartMessageEvent(
                 timestamp="10:31:00",
                 category="system",
-                title="推荐池已刷新",
+                title="机会池已刷新",
                 detail="共有 12 只候选，前排延续机器人。",
                 symbol="",
                 level="SUCCESS",
@@ -17998,6 +28012,23 @@ class StrategyWorkflowTests(unittest.TestCase):
         first_counts = dict(calls)
         module.QuantHunterWindow._refresh_live_workspace_summary_panels(window)
 
+        self.assertEqual(window.scanner_live_summary_headline.text(), "当前状态：扫描 3 / 观察 2 / 监控 1 | 自动刷新 开启")
+        self.assertIn("龙头样本", window.scanner_live_summary_detail.text())
+        self.assertIn("审查 继续复核", window.scanner_live_summary_detail.text())
+        self.assertIn("当前结论：继续复核", window.scanner_live_summary_meta.text())
+        self.assertIn("下一步：", window.scanner_live_summary_meta.text())
+        self.assertEqual(window.board_live_summary_headline.text(), "当前状态：候选 4 / 监控 2 | 收盘导出 关闭")
+        self.assertIn("焦点：", window.board_live_summary_detail.text())
+        self.assertIn("当前结论：继续复核", window.board_live_summary_meta.text())
+        self.assertIn("下一步：", window.board_live_summary_meta.text())
+        self.assertEqual(window.detail_live_summary_headline.text(), "当前状态：近期信号 5 条 | 交易记录 6 条")
+        self.assertIn("焦点：", window.detail_live_summary_detail.text())
+        self.assertIn("审查 继续复核", window.detail_live_summary_detail.text())
+        self.assertIn("当前结论：继续复核", window.detail_live_summary_meta.text())
+        self.assertIn("下一步：", window.detail_live_summary_meta.text())
+        self.assertEqual(window.config_live_summary_headline.text(), "当前状态：方案 TRIAL | 消息源 本地 CSV")
+        self.assertIn("焦点：", window.config_live_summary_detail.text())
+        self.assertIn("下一步：", window.config_live_summary_meta.text())
         self.assertEqual(calls, first_counts)
 
     def test_refresh_recommend_focus_cards_promotes_tail_buy_execution_board(self) -> None:
@@ -18513,6 +28544,7 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         self.assertIn("隔日 强博弈", window.trade_plan_focus_label.text())
         self.assertIn("组合适配 86", window.trade_plan_focus_label.text())
+        self.assertIn("审查 继续复核", window.trade_plan_focus_label.text())
 
     def test_refresh_trade_plan_focus_label_appends_news_action_brief(self) -> None:
         module = importlib.import_module("app_qt")
@@ -18538,7 +28570,7 @@ class StrategyWorkflowTests(unittest.TestCase):
             current_trade_plan=plan,
             daily_pool_rows=[row],
             trade_plan_focus_label=_Sink(),
-            _news_action_brief=lambda symbol="": "消息建议：先看推荐页",
+            _news_action_brief=lambda symbol="": "消息建议：先看机会池",
         )
 
         with patch.object(module, "_ORIGINAL_QH_REFRESH_TRADE_PLAN_V7", lambda _window: None), patch.object(
@@ -18546,7 +28578,8 @@ class StrategyWorkflowTests(unittest.TestCase):
         ), patch.object(module, "one_day_hold_grade", return_value=""):
             module._qh_refresh_trade_plan_v5(window)
 
-        self.assertIn("消息建议：先看推荐页", window.trade_plan_focus_label.text())
+        self.assertIn("消息建议：先看机会池", window.trade_plan_focus_label.text())
+        self.assertIn("审查 继续复核", window.trade_plan_focus_label.text())
 
     def test_refresh_trade_plan_focus_label_skips_repeated_same_signature(self) -> None:
         module = importlib.import_module("app_qt")
@@ -18575,7 +28608,7 @@ class StrategyWorkflowTests(unittest.TestCase):
             current_trade_plan=plan,
             daily_pool_rows=[row],
             trade_plan_focus_label=label,
-            _news_action_brief=lambda symbol="": "消息建议：先看推荐页",
+            _news_action_brief=lambda symbol="": "消息建议：先看机会池",
         )
 
         with patch.object(module, "_ORIGINAL_QH_REFRESH_TRADE_PLAN_V7", lambda _window: None), patch.object(
@@ -18609,7 +28642,7 @@ class StrategyWorkflowTests(unittest.TestCase):
             _explicit_recommendation_focus=lambda: focus_row,
             _selected_order_intent=lambda: None,
             _stock_name_for_symbol=lambda symbol: "龙头样本",
-            _news_action_brief=lambda symbol="": "消息建议：先看推荐页",
+            _news_action_brief=lambda symbol="": "消息建议：先看机会池",
             _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
             _set_button_role=lambda button, role="ghost": setattr(button, "role", role),
         )
@@ -18619,7 +28652,38 @@ class StrategyWorkflowTests(unittest.TestCase):
         ):
             module._qh_update_broker_action_flow_v26(window)
 
-        self.assertIn("消息建议：先看推荐页", window.broker_status_banner.text())
+        self.assertIn("消息建议：先看机会池", window.broker_status_banner.text())
+
+    def test_confirm_and_submit_orders_refreshes_summary_and_banners_after_submission(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        refresh_calls: list[str] = []
+        window = SimpleNamespace(
+            order_submission_records=[],
+            execution_table=SimpleNamespace(rowCount=lambda: 1, selectRow=lambda row: None),
+            _on_execution_selection_changed=lambda: None,
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: None,
+            _stock_name_for_symbol=lambda symbol: "龙头样本" if symbol else "--",
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+            _update_broker_action_flow_v26=lambda: None,
+            _refresh_live_workspace_summary_panels=lambda: refresh_calls.append("summary"),
+            _refresh_workspace_focus_banners=lambda: refresh_calls.append("focus"),
+            broker_status_banner=module.QLabel(),
+        )
+
+        def fake_submit(_window, **_kwargs):
+            _window.order_submission_records.append({"symbol": "SZSE.300001"})
+
+        with patch.object(module, "confirm_and_submit_orders_controller", fake_submit):
+            module.QuantHunterWindow.confirm_and_submit_orders(window)
+
+        self.assertEqual(refresh_calls, ["summary", "focus"])
+        self.assertIn("提交完成", window.broker_status_banner.text())
+        self.assertIn("最新执行回执", window.broker_status_banner.text())
 
     def test_decision_engine_market_pulse_exposes_flow_signal(self) -> None:
         recommendations = [
@@ -18764,6 +28828,8 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         self.assertIsNone(prepared)
         self.assertIn("提交前硬拦截", status["extra"])
+        self.assertIn("当前结论：禁止提交", status["extra"])
+        self.assertIn("下一步：", status["extra"])
 
     def test_prepare_order_submission_controller_uses_keyword_arguments_for_confirmation(self) -> None:
         from quant_hunter import ui_controllers
@@ -18833,7 +28899,7 @@ class StrategyWorkflowTests(unittest.TestCase):
                     "badge": "主测",
                     "title": "主测 | 龙头模型 | 继续主测",
                     "detail": "样本 7 | 胜率 62.0% | 平均持有 1.8 天 | 预算 x1.18",
-                    "cta": "推荐页优先筛同战法前排，交易页按主测纪律推进。",
+                    "cta": "机会池优先筛同战法前排，执行中控按主测纪律推进，但先别因为单票强弱临时改打法。",
                 },
             ),
             patch.object(ui_controllers, "build_broker_execution_summary", return_value=({"blockers": []}, {})),
@@ -18918,7 +28984,7 @@ class StrategyWorkflowTests(unittest.TestCase):
                     "badge": "主测",
                     "title": "主测 | 龙头模型 | 继续主测",
                     "detail": "样本 7 | 胜率 62.0% | 平均持有 1.8 天 | 预算 x1.18",
-                    "cta": "推荐页优先筛同战法前排，交易页按主测纪律推进。",
+                    "cta": "机会池优先筛同战法前排，执行中控按主测纪律推进，但先别因为单票强弱临时改打法。",
                 },
             ),
             patch.object(ui_controllers, "build_broker_execution_summary", return_value=({"blockers": []}, {})),
@@ -19354,7 +29420,8 @@ class StrategyWorkflowTests(unittest.TestCase):
                 "sdk_python_path": module.QLineEdit("C:\\demo\\python.exe"),
             },
             mode_combo=SimpleNamespace(currentData=lambda: "sdk"),
-            auth_channel_combo=SimpleNamespace(currentData=lambda: "gm"),
+            auth_channel_combo=SimpleNamespace(currentData=lambda: "gm", currentText=lambda: "GM"),
+            auth_status_banner=module.QLabel(),
             test_submit_only_checkbox=SimpleNamespace(isChecked=lambda: True),
             test_submit_max_amount_input=module.QLineEdit("2500"),
             test_submit_symbol_whitelist_input=module.QLineEdit("600000"),
@@ -19362,6 +29429,11 @@ class StrategyWorkflowTests(unittest.TestCase):
             save_state=lambda: calls.__setitem__("saved", calls["saved"] + 1),
             _refresh_login_status=lambda: calls.__setitem__("login", calls["login"] + 1),
             validate_broker_connection=lambda: calls.__setitem__("validate", calls["validate"] + 1),
+            _display_mode=lambda value: "SDK 模式" if value == "sdk" else value,
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
         )
         window._input_mapping_value = lambda mapping, key: module.QuantHunterWindow._input_mapping_value(window, mapping, key)
         window._shared_broker_field_value = lambda key: module.QuantHunterWindow._shared_broker_field_value(window, key)
@@ -19376,6 +29448,56 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(calls["saved"], 1)
         self.assertEqual(calls["login"], 1)
         self.assertEqual(calls["validate"], 1)
+        self.assertIn("登录联调已同步", window.auth_status_banner.text())
+        self.assertIn("账户 demo-account", window.auth_status_banner.text())
+
+    def test_save_strategy_preferences_and_license_switch_surface_contextual_status(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+
+        calls = {"controller": 0}
+        pref_window = SimpleNamespace(
+            state=SimpleNamespace(
+                strategy_risk_profile="aggressive",
+                strategy_top_theme_limit=4,
+                strategy_max_total_exposure=0.65,
+                focus_themes=["机器人", "算力"],
+                daily_plan_template="focus",
+                daily_plan_focus_only=True,
+                daily_plan_candidate_limit=10,
+            ),
+            config_status_banner=module.QLabel(),
+            recommend_status_label=module.QLabel(),
+            _license_capabilities=lambda: {"daily_plan_export_limit": 12},
+            _refresh_config_capability_overview_v1=lambda: None,
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+        )
+        with patch.object(module, "save_strategy_preferences_controller", side_effect=lambda *_args, **_kwargs: calls.__setitem__("controller", calls["controller"] + 1)):
+            module.QuantHunterWindow.save_strategy_preferences(pref_window)
+        self.assertEqual(calls["controller"], 1)
+        self.assertIn("策略偏好已保存", pref_window.config_status_banner.text())
+        self.assertIn("风险档位 激进", pref_window.config_status_banner.text())
+        self.assertIn("盘前模板 focus / 仅焦点主题 / 上限 10", pref_window.config_status_banner.text())
+        self.assertIn("策略偏好已保存", pref_window.recommend_status_label.text())
+
+        plan_calls: list[str] = []
+        license_window = SimpleNamespace(
+            config_status_banner=module.QLabel(),
+            _license_capabilities=lambda: {"plan_label": "专业版", "auto_daily_plan_export": True, "theme_panel_size": 8, "market_history_limit": 12},
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            ),
+        )
+        with patch.object(module, "switch_license_plan_controller", side_effect=lambda *_args, **_kwargs: plan_calls.append("switch")):
+            module.QuantHunterWindow.activate_professional_plan(license_window)
+        self.assertEqual(plan_calls, ["switch"])
+        self.assertIn("许可证已切换到 专业版", license_window.config_status_banner.text())
+        self.assertIn("自动盘前报告 开启", license_window.config_status_banner.text())
 
     def test_save_strategy_preferences_controller_persists_risk_profile(self) -> None:
         from quant_hunter import ui_controllers
@@ -19580,7 +29702,7 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(window.risk_snapshot_cards["standard"]["button"].role, "tonal")
         self.assertFalse(window.risk_snapshot_cards["standard"]["card"].props["riskActive"])
         self.assertEqual(window.risk_snapshot_cards["standard"]["button"].value, "切换到此档")
-        self.assertIn("点击后将保存配置并刷新推荐池", window.risk_snapshot_cards["standard"]["button"].tooltip)
+        self.assertIn("点击后将保存配置并刷新机会池", window.risk_snapshot_cards["standard"]["button"].tooltip)
 
     def test_normalize_config_workspace_texts_uses_object_names_for_clean_titles(self) -> None:
         module = importlib.import_module("app_qt")
@@ -19792,24 +29914,235 @@ class StrategyWorkflowTests(unittest.TestCase):
 
         module.QuantHunterWindow._normalize_action_row_texts(window)
 
-        self.assertEqual([button.text() for button in cockpit_buttons], ["查看机会池", "前往交易执行", "前往配置页"])
-        self.assertEqual([button.text() for button in playbook_buttons], ["前往登录配置", "前往推荐池", "前往交易执行"])
-        self.assertIn("交易页", cockpit_buttons[1].toolTip())
+        self.assertEqual([button.text() for button in cockpit_buttons], ["看机会", "去交易", "去配置"])
+        self.assertEqual([button.text() for button in playbook_buttons], ["去登录", "去推荐", "去交易"])
+        self.assertIn("执行中控", cockpit_buttons[1].toolTip())
+
+    def test_normalize_action_row_texts_compacts_contextual_labels_and_tooltips(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        class DummyButton:
+            def __init__(self, text: str) -> None:
+                self._text = text
+                self._tooltip = ""
+
+            def text(self) -> str:
+                return self._text
+
+            def setText(self, value: str) -> None:
+                self._text = value
+
+            def setToolTip(self, value: str) -> None:
+                self._tooltip = value
+
+            def toolTip(self) -> str:
+                return self._tooltip
+
+        class DummyRow:
+            def __init__(self, buttons: list[DummyButton]) -> None:
+                self._buttons = buttons
+
+            def findChildren(self, cls):
+                if cls.__name__ == "QPushButton":
+                    return self._buttons
+                return []
+
+        overview_buttons = [DummyButton("打开推荐池")]
+        broker_buttons = [DummyButton("执行看委托")]
+        detail_buttons = [DummyButton("执行去交易")]
+        rows = {
+            "overviewThemeActionRow": DummyRow(overview_buttons),
+            "brokerExecutionActionRow": DummyRow(broker_buttons),
+            "detailExecutionActionRow": DummyRow(detail_buttons),
+        }
+
+        window = SimpleNamespace(
+            findChild=lambda _cls, name: rows.get(name),
+            _has_mojibake_text=lambda _text: False,
+            _set_label_text_if_changed=lambda widget, text, tooltip=None: widget.setText(text),
+        )
+
+        module.QuantHunterWindow._normalize_action_row_texts(window)
+
+        self.assertEqual(overview_buttons[0].text(), "看机会")
+        self.assertIn("机会池", overview_buttons[0].toolTip())
+        self.assertEqual(broker_buttons[0].text(), "看委托")
+        self.assertIn("委托表格", broker_buttons[0].toolTip())
+        self.assertEqual(detail_buttons[0].text(), "去交易")
+        self.assertIn("执行中控", detail_buttons[0].toolTip())
+
+    def test_rebind_workspace_action_rows_accepts_short_terminal_labels(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        calls: list[str] = []
+
+        detail_execution_row = module.QWidget()
+        detail_execution_layout = module.QVBoxLayout(detail_execution_row)
+        detail_trade_button = module.QPushButton("去交易")
+        detail_trade_button.setProperty("routeActionKey", "执行去交易")
+        detail_scan_button = module.QPushButton("看扫描")
+        detail_scan_button.setProperty("routeActionKey", "执行看扫描")
+        detail_execution_layout.addWidget(detail_trade_button)
+        detail_execution_layout.addWidget(detail_scan_button)
+
+        detail_conclusion_row = module.QWidget()
+        detail_conclusion_layout = module.QVBoxLayout(detail_conclusion_row)
+        detail_recommend_button = module.QPushButton("看机会")
+        detail_recommend_button.setProperty("routeActionKey", "结论看机会池")
+        detail_conclusion_layout.addWidget(detail_recommend_button)
+
+        broker_execution_row = module.QWidget()
+        broker_execution_layout = module.QVBoxLayout(broker_execution_row)
+        broker_recommend_button = module.QPushButton("看机会")
+        broker_recommend_button.setProperty("routeActionKey", "执行看机会池")
+        broker_execution_layout.addWidget(broker_recommend_button)
+
+        rows = {
+            "detailExecutionActionRow": detail_execution_row,
+            "detailConclusionActionRow": detail_conclusion_row,
+            "brokerExecutionActionRow": broker_execution_row,
+        }
+        window = SimpleNamespace(
+            findChild=lambda _cls, name: rows.get(name),
+            open_detail_to_broker=lambda: calls.append("detail_broker"),
+            open_detail_to_scanner=lambda: calls.append("detail_scanner"),
+            open_detail_to_recommend=lambda: calls.append("detail_recommend"),
+            open_broker_focus_recommend=lambda: calls.append("broker_recommend"),
+        )
+
+        module._qh_rebind_workspace_action_rows(window)
+
+        detail_trade_button.click()
+        detail_scan_button.click()
+        detail_recommend_button.click()
+        broker_recommend_button.click()
+
+        self.assertEqual(
+            calls,
+            ["detail_broker", "detail_scanner", "detail_recommend", "broker_recommend"],
+        )
+
+    def test_rebind_detail_routes_accepts_route_action_key(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+        calls: list[str] = []
+
+        scanner_row = module.QWidget()
+        scanner_layout = module.QVBoxLayout(scanner_row)
+        scanner_button = module.QPushButton("看复盘")
+        scanner_button.setProperty("routeActionKey", "看复盘")
+        scanner_layout.addWidget(scanner_button)
+
+        detail_row = module.QWidget()
+        detail_layout = module.QVBoxLayout(detail_row)
+        detail_button = module.QPushButton("复盘入口")
+        detail_button.setProperty("routeActionKey", "查看复盘研究")
+        detail_layout.addWidget(detail_button)
+
+        rows = {
+            "scannerTopActionRow": scanner_row,
+            "detailMetricsActionRow": detail_row,
+        }
+        window = SimpleNamespace(
+            findChild=lambda _cls, name: rows.get(name),
+            open_focus_symbol_in_detail=lambda: calls.append("detail"),
+        )
+
+        module._qh_rebind_detail_routes_v9(window)
+
+        scanner_button.click()
+        detail_button.click()
+
+        self.assertEqual(calls, ["detail", "detail"])
+
+    def test_inject_overview_and_recommend_action_rows_use_short_terminal_verbs(self) -> None:
+        module = importlib.import_module("app_qt")
+        app = module.QApplication.instance() or module.QApplication([])
+        _ = app
+
+        def host():
+            container = module.QWidget()
+            layout = module.QVBoxLayout(container)
+            target = module.QTextEdit()
+            layout.addWidget(target)
+            return container, target
+
+        theme_host, market_theme_brief_text = host()
+        capital_host, market_capital_text = host()
+        decision_host, market_decision_text = host()
+        board_host, board_text = host()
+        pool_host, daily_pool_text = host()
+        plan_host, trade_plan_text = host()
+        pulse_host, market_pulse_text = host()
+        holding_host, position_advice_text = host()
+
+        window = SimpleNamespace(
+            market_theme_brief_text=market_theme_brief_text,
+            market_capital_text=market_capital_text,
+            market_decision_text=market_decision_text,
+            board_text=board_text,
+            daily_pool_text=daily_pool_text,
+            trade_plan_text=trade_plan_text,
+            market_pulse_text=market_pulse_text,
+            position_advice_text=position_advice_text,
+            open_overview_theme_to_recommend=lambda: None,
+            open_overview_source_to_news=lambda: None,
+            open_overview_capital_to_recommend=lambda: None,
+            open_overview_decision_to_broker=lambda: None,
+            _navigate_to_workspace=lambda workspace_key, widget_name=None, select_row=None: None,
+            trigger_trade_plan_refresh=lambda: None,
+            open_trade_plan_broker_workspace=lambda: None,
+            open_trade_plan_watch_bucket=lambda: None,
+            show_risk_bucket=lambda: None,
+            _set_button_role=lambda button, role="ghost": setattr(button, "role", role),
+        )
+        window._ensure_action_row = lambda target_widget, row_name, actions: module.QuantHunterWindow._ensure_action_row(window, target_widget, row_name, actions)
+        window._ensure_metric_row = lambda target_widget, row_name, specs: ({}, {})
+        window._refresh_board_focus_cards = lambda symbol="": None
+
+        module.QuantHunterWindow._inject_overview_action_rows(window)
+        module.QuantHunterWindow._inject_board_focus_cards(window)
+        module.QuantHunterWindow._inject_recommend_action_rows(window)
+
+        def row_texts(widget, row_name: str) -> list[str]:
+            row = widget.parentWidget().findChild(module.QFrame, row_name)
+            self.assertIsNotNone(row)
+            return [button.text() for button in row.findChildren(module.QPushButton)]
+
+        self.assertEqual(row_texts(market_theme_brief_text, "overviewThemeActionRow"), ["看机会", "看消息"])
+        self.assertEqual(row_texts(market_capital_text, "overviewCapitalActionRow"), ["看机会", "看总览"])
+        self.assertEqual(row_texts(market_decision_text, "overviewDecisionActionRow"), ["去交易", "看机会"])
+        self.assertEqual(row_texts(daily_pool_text, "recommendPoolActionRow"), ["看总览", "定位机会"])
+        self.assertEqual(row_texts(trade_plan_text, "recommendPlanActionRow"), ["重算计划", "去交易", "看观察"])
+        self.assertEqual(row_texts(market_pulse_text, "recommendPulseActionRow"), ["看总览", "看消息"])
+        self.assertEqual(row_texts(position_advice_text, "recommendHoldingActionRow"), ["看风险", "去交易"])
+
+        capital_row = market_capital_text.parentWidget().findChild(module.QFrame, "overviewCapitalActionRow")
+        capital_buttons = capital_row.findChildren(module.QPushButton)
+        self.assertEqual(capital_buttons[0].property("routeActionKey"), "资金看推荐")
+        self.assertEqual(capital_buttons[1].property("routeActionKey"), "资金回总览")
+
+        plan_row = trade_plan_text.parentWidget().findChild(module.QFrame, "recommendPlanActionRow")
+        plan_buttons = plan_row.findChildren(module.QPushButton)
+        self.assertEqual(plan_buttons[1].property("routeActionKey"), "计划去交易")
+        self.assertEqual(plan_buttons[2].property("routeActionKey"), "计划看观察池")
 
     def test_overview_nav_button_helpers_match_expected_labels(self) -> None:
         module = importlib.import_module("app_qt")
 
         self.assertEqual(
             module._overview_action_row_fallbacks()["overviewDecisionActionRow"],
-            ["前往交易执行", "查看机会池"],
+            ["去交易", "看机会"],
         )
         self.assertEqual(
             module._overview_nav_button_groups()["cockpitBox"],
-            ["查看机会池", "前往交易执行", "前往配置页"],
+            ["看机会", "去交易", "去配置"],
         )
         self.assertEqual(
             module._overview_nav_button_groups()["playbookBox"],
-            ["前往登录配置", "前往推荐池", "前往交易执行"],
+            ["去登录", "去推荐", "去交易"],
         )
 
     def test_apply_daily_pool_rows_surfaces_risk_profile_in_status(self) -> None:
@@ -20001,14 +30334,14 @@ class StrategyWorkflowTests(unittest.TestCase):
                 "badge": "主测",
                 "title": "主测 | 龙头模型 | 继续主测",
                 "detail": "样本 7 | 胜率 62.0% | 平均持有 1.8 天 | 预算 x1.18",
-                "cta": "推荐页优先筛同战法前排，交易页按主测纪律推进。",
+                "cta": "机会池优先筛同战法前排，执行中控按主测纪律推进，但先别因为单票强弱临时改打法。",
             },
         )
         try:
             self.assertIn("当前战法：龙头模型", dialog.summary_text.toPlainText())
             self.assertIn("实验结论：主测 | 龙头模型 | 继续主测", dialog.experiment_text.toPlainText())
             self.assertIn("真实交易建议：可以继续推进", dialog.experiment_text.toPlainText())
-            self.assertIn("下一步：推荐页优先筛同战法前排", dialog.experiment_text.toPlainText())
+            self.assertIn("下一步：机会池优先筛同战法前排", dialog.experiment_text.toPlainText())
             self.assertIn("模拟盘结论与风险", dialog.confirm_checkbox.text())
         finally:
             dialog.close()
@@ -20050,12 +30383,18 @@ class StrategyWorkflowTests(unittest.TestCase):
             DummyAdapter(),
             execution_summary={
                 "mainline_review": {"status": "通过", "pass_count": 1, "missing_count": 0, "rows": [{"name": "拥挤样本", "detail": "主线通过"}]},
-                "portfolio_risk_review": {"status": "谨慎", "total_loss_ratio": 0.012},
+                "portfolio_risk_review": {
+                    "status": "谨慎",
+                    "total_loss_ratio": 0.012,
+                    "rows": [{"symbol": "SZSE.300077", "asset_usage_ratio": 0.12, "cash_usage_ratio": 0.32, "loss_ratio": 0.008}],
+                },
                 "portfolio_fit_review": {
                     "status": "谨慎",
                     "avg_fit_score": 52.0,
-                    "rows": [{"name": "拥挤样本", "detail": "机器人 | 组合适配 52 | 分散度 48 | 集中惩罚 46 | 跟踪确认"}],
+                    "rows": [{"name": "拥挤样本", "detail": "机器人 | 组合适配 52 | 分散度 48 | 集中惩罚 46 | 跟踪确认", "concentration_penalty_score": 46.0}],
                 },
+                "capital_usage_ratio": 0.32,
+                "asset_usage_ratio": 0.12,
                 "warnings": ["组合适配 / 执行闸门：拥挤样本 组合适配 52，建议缩量或等待更分散的进场窗口。"],
             },
             strategy_name="龙头模型",
@@ -20065,6 +30404,10 @@ class StrategyWorkflowTests(unittest.TestCase):
             self.assertIn("组合止损：谨慎", dialog.execution_gate_text.toPlainText())
             self.assertIn("组合适配：谨慎 | 均值适配 52", dialog.execution_gate_text.toPlainText())
             self.assertIn("提交提醒：组合适配 / 执行闸门", dialog.execution_gate_text.toPlainText())
+            self.assertIn("当前结论：谨慎推进", dialog.review_verdict_label.text())
+            self.assertIn("风险预算：谨慎 | 组合止损 1.2% | 现金占用 32.0% | 资产占用 12.0%", dialog.review_checklist_text.toPlainText())
+            self.assertIn("组合适配：谨慎 | 均值适配 52 | 最大集中惩罚 46", dialog.review_checklist_text.toPlainText())
+            self.assertIn("风险焦点：SZSE.300077 | 止损 0.8% | 资产占用 12.0%", dialog.review_checklist_text.toPlainText())
         finally:
             dialog.close()
             app.processEvents()
@@ -20577,6 +30920,498 @@ class StrategyWorkflowTests(unittest.TestCase):
         self.assertEqual(window._market_chart_action_note_history_index_v1, 0)
         self.assertEqual([item["title"] for item in window._market_chart_action_note_history_v1], ["当前钉住", "新提示"])
 
+    def test_market_chart_view_defaults_to_no_zoom_interaction(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            view = module.MarketChartView()
+            try:
+                self.assertEqual(view.rubberBand(), module.QChartView.NoRubberBand)
+                self.assertIn("PageUp/PageDown", view._hover_summary_footer.text())
+            finally:
+                view.deleteLater()
+                app.processEvents()
+
+    def test_market_chart_view_hover_summary_card_supports_dragging(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtCore import QEvent, QPointF, Qt
+            from PySide6.QtGui import QMouseEvent
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            view = module.MarketChartView()
+            try:
+                view.resize(640, 420)
+                view.show()
+                app.processEvents()
+                view._set_hover_summary_card_content(
+                    [
+                        "时间: 2025-11-28",
+                        "开/高/低/收: 9.74 / 9.80 / 9.48 / 9.61",
+                        "涨跌: -1.54%",
+                        "成交量: 58.91万",
+                    ]
+                )
+                app.processEvents()
+                frame = view._hover_summary_frame
+                initial_pos = frame.pos()
+                press_point = QPointF(frame.geometry().center())
+                move_point = press_point + QPointF(48.0, 36.0)
+                press_event = QMouseEvent(
+                    QEvent.MouseButtonPress,
+                    press_point,
+                    press_point,
+                    Qt.LeftButton,
+                    Qt.LeftButton,
+                    Qt.NoModifier,
+                )
+                move_event = QMouseEvent(
+                    QEvent.MouseMove,
+                    move_point,
+                    move_point,
+                    Qt.NoButton,
+                    Qt.LeftButton,
+                    Qt.NoModifier,
+                )
+                release_event = QMouseEvent(
+                    QEvent.MouseButtonRelease,
+                    move_point,
+                    move_point,
+                    Qt.LeftButton,
+                    Qt.NoButton,
+                    Qt.NoModifier,
+                )
+                view.mousePressEvent(press_event)
+                view.mouseMoveEvent(move_event)
+                view.mouseReleaseEvent(release_event)
+                app.processEvents()
+
+                self.assertNotEqual(frame.pos(), initial_pos)
+                self.assertIsNotNone(view._hover_summary_manual_pos)
+                self.assertFalse(view._hover_summary_drag_active)
+            finally:
+                view.deleteLater()
+                app.processEvents()
+
+    def test_qt_recommend_ai_review_panel_has_larger_width_budget(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication, QSplitter
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            window = module.QuantHunterWindow()
+            try:
+                window.resize(1800, 1000)
+                window.show()
+                if hasattr(window, "_apply_layout_polish_v19"):
+                    window._apply_layout_polish_v19()
+                app.processEvents()
+                ai_box = getattr(window, "recommend_ai_review_box", None)
+                splitter = getattr(window, "recommend_review_splitter", None)
+                review_column = getattr(window, "recommend_review_column", None)
+                self.assertIsNotNone(ai_box)
+                self.assertIsInstance(splitter, QSplitter)
+                self.assertIs(review_column, ai_box.parentWidget())
+                self.assertIs(review_column, splitter.parentWidget())
+                self.assertEqual(splitter.count(), 2)
+                sizes = splitter.sizes()
+                self.assertEqual(len(sizes), 2)
+                self.assertGreater(ai_box.width(), max(sizes))
+                self.assertGreaterEqual(window.recommend_ai_review_text.minimumHeight(), window.recommend_review_text.minimumHeight())
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_recommend_review_splitter_persistence_ignores_legacy_sizes_with_new_layout(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        class FakeSignal:
+            def __init__(self) -> None:
+                self.connected = []
+
+            def connect(self, callback) -> None:
+                self.connected.append(callback)
+
+        class FakeSplitter:
+            def __init__(self, sizes) -> None:
+                self._sizes = list(sizes)
+                self.splitterMoved = FakeSignal()
+
+            def count(self) -> int:
+                return 2
+
+            def sizes(self):
+                return list(self._sizes)
+
+            def setSizes(self, sizes) -> None:
+                self._sizes = list(sizes)
+
+        save_calls: list[list[int]] = []
+        splitter = FakeSplitter([420, 420])
+        host = SimpleNamespace(
+            recommend_review_splitter=splitter,
+            _recommend_review_splitter_saved_sizes_v1=[320, 320, 720],
+            _recommend_review_splitter_persistence_connected_v1=False,
+            _applying_recommend_review_splitter_sizes_v1=False,
+            state=SimpleNamespace(recommend_review_splitter_sizes=[320, 320, 720]),
+        )
+        host.save_state = lambda: save_calls.append(list(host.state.recommend_review_splitter_sizes))
+        host._normalized_recommend_review_splitter_sizes_v1 = lambda sizes=None: module.QuantHunterWindow._normalized_recommend_review_splitter_sizes_v1(host, sizes)
+        host._capture_recommend_review_splitter_sizes_v1 = lambda: module.QuantHunterWindow._capture_recommend_review_splitter_sizes_v1(host)
+        host._apply_saved_recommend_review_splitter_sizes_v1 = lambda: module.QuantHunterWindow._apply_saved_recommend_review_splitter_sizes_v1(host)
+        host._on_recommend_review_splitter_moved_v1 = lambda pos, index: module.QuantHunterWindow._on_recommend_review_splitter_moved_v1(host, pos, index)
+
+        with patch.object(module, "QSplitter", FakeSplitter):
+            module.QuantHunterWindow._install_recommend_review_splitter_persistence_v1(host)
+            self.assertEqual(splitter._sizes, [420, 420])
+            self.assertEqual(len(splitter.splitterMoved.connected), 0)
+            module.QuantHunterWindow._on_recommend_review_splitter_moved_v1(host, 0, 0)
+
+        self.assertEqual(host._recommend_review_splitter_saved_sizes_v1, [320, 320, 720])
+        self.assertEqual(host.state.recommend_review_splitter_sizes, [320, 320, 720])
+        self.assertEqual(save_calls, [])
+
+    def test_open_market_chart_preset_manager_surfaces_contextual_intro_and_status(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication, QLabel
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            state_file = Path("tests/.tmp/test_market_chart_preset_manager_state.json")
+            if state_file.exists():
+                state_file.unlink()
+            with patch.object(module, "STATE_FILE", state_file):
+                window = module.QuantHunterWindow()
+            window.save_state = lambda: None
+            window.refresh_remote_market = lambda *args, **kwargs: None
+            def _safe_close() -> None:
+                for timer in window.findChildren(module.QTimer):
+                    timer.stop()
+                    timer.deleteLater()
+                window.deleteLater()
+
+            window.close = _safe_close
+            try:
+                symbol = next(iter(window.universe_bars), "")
+                if symbol:
+                    window.active_symbol = symbol
+                window.market_chart_preset = "FLOW"
+                window.market_chart_custom_presets = {
+                    "USER_TEST": {
+                        "label": "我的盯盘预设",
+                        "detail": "自定义量价联动视图",
+                        "tags": ["自用"],
+                        "overlays": {"MA", "BOLL"},
+                        "annotation_mode": "PLAN",
+                        "indicator": "VOL",
+                        "expanded": False,
+                        "pinned": False,
+                    }
+                }
+                captured: dict[str, str] = {}
+
+                def _fake_exec(dialog) -> int:
+                    for label in dialog.findChildren(QLabel):
+                        if label.accessibleName():
+                            captured[label.accessibleName()] = label.text()
+                    return 0
+
+                with patch.object(module.QDialog, "exec", new=_fake_exec):
+                    window.open_market_chart_preset_manager()
+                window.market_status_label.setText(window.market_status_label.toolTip())
+                window.market_status_label.text = window.market_status_label.toolTip
+
+                self.assertIn("已打开图表预设管理器", window.market_status_label.toolTip())
+                self.assertIn("当前预设：量价联动", captured["marketChartPresetManagerIntro"])
+                self.assertIn("自定义预设 1 套", captured["marketChartPresetManagerIntro"])
+                self.assertIn("团队模板库", captured["marketChartPresetManagerIntro"])
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_open_market_chart_focus_dialog_surfaces_contextual_hint_and_status(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication, QLabel
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+            state_file = Path("tests/.tmp/test_market_chart_focus_dialog_state.json")
+            if state_file.exists():
+                state_file.unlink()
+            with patch.object(module, "STATE_FILE", state_file):
+                window = module.QuantHunterWindow()
+            window.save_state = lambda: None
+            window.refresh_remote_market = lambda *args, **kwargs: None
+            def _safe_close() -> None:
+                for timer in window.findChildren(module.QTimer):
+                    timer.stop()
+                    timer.deleteLater()
+                window.deleteLater()
+
+            window.close = _safe_close
+            try:
+                symbol = next(iter(window.universe_bars), "")
+                if symbol:
+                    window.active_symbol = symbol
+                window.market_chart_preset = "SIGNAL"
+                window.market_strategy_annotation_mode = "PLAN"
+                window._current_market_chart_symbol = lambda: symbol
+                window._render_market_dashboard = lambda *_args, **_kwargs: None
+                window._show_market_chart_feedback = lambda _message: None
+                captured: dict[str, str] = {}
+
+                def _fake_exec(dialog) -> int:
+                    for label in dialog.findChildren(QLabel):
+                        if label.accessibleName():
+                            captured[label.accessibleName()] = label.text()
+                    return 0
+
+                with patch.object(module.QDialog, "exec", new=_fake_exec):
+                    window.open_market_chart_focus_dialog()
+                window.market_status_label.setText(window.market_status_label.toolTip())
+                window.market_status_label.text = window.market_status_label.toolTip
+
+                self.assertFalse(window.market_chart_focus_dialog_open)
+                self.assertIn("已进入全屏看图", window.market_status_label.toolTip())
+                self.assertIn("全屏看图", captured["marketChartFocusTitle"])
+                self.assertIn("当前预设：信号复盘", captured["marketChartFocusHint"])
+                self.assertIn("标注模式：计划 / 只看计划", captured["marketChartFocusHint"])
+                self.assertIn("Esc 关闭", captured["marketChartFocusHint"])
+            finally:
+                window.close()
+                app.processEvents()
+
+    def test_market_chart_preset_action_status_text_surfaces_context_and_next_step(self) -> None:
+        module = importlib.import_module("app_qt")
+        context = SimpleNamespace(
+            symbol="SZSE.300001",
+            stock_name="龙头样本",
+            stock_id="300001",
+            preset_label="信号复盘",
+            custom_count=2,
+            annotation_label="计划",
+            annotation_hint="只看计划",
+            timeframe="日线",
+            header_text="龙头样本 300001",
+        )
+
+        save_text = module._qh_market_chart_preset_action_status_text_v1(
+            context,
+            action="save",
+            preset_label="盘中盯盘",
+            detail="标注 计划 / 指标 VOL",
+        )
+        self.assertIn("已保存自定义预设", save_text)
+        self.assertIn("龙头样本 (300001)", save_text)
+        self.assertIn("受影响预设：盘中盯盘", save_text)
+        self.assertIn("下一步", save_text)
+
+        import_text = module._qh_market_chart_preset_action_status_text_v1(
+            context,
+            action="import",
+            preset_label="量价联动",
+            detail="图表预设包 | 预设 2 个",
+            path="tests/.tmp/chart_presets.json",
+            count=2,
+        )
+        self.assertIn("已导入图表预设", import_text)
+        self.assertIn("共 2 套", import_text)
+        self.assertIn("chart_presets.json", import_text)
+        self.assertIn("受影响预设：量价联动", import_text)
+
+    def test_market_chart_preset_prompt_intro_texts_surface_focus_and_guidance(self) -> None:
+        module = importlib.import_module("app_qt")
+        context = SimpleNamespace(
+            symbol="SZSE.300001",
+            stock_name="龙头样本",
+            stock_id="300001",
+            preset_label="信号复盘",
+            custom_count=2,
+            annotation_label="计划",
+            annotation_hint="只看计划",
+            timeframe="日线",
+            header_text="龙头样本 300001",
+        )
+
+        save_intro = module._qh_market_chart_preset_name_prompt_intro_text_v1(
+            context,
+            action="save",
+            current_label="信号复盘",
+        )
+        self.assertIn("龙头样本 (300001)", save_intro)
+        self.assertIn("当前图表预设：信号复盘", save_intro)
+        self.assertIn("当前叠加层、标注模式、副图指标", save_intro)
+
+        rename_intro = module._qh_market_chart_preset_name_prompt_intro_text_v1(
+            context,
+            action="rename",
+            current_label="盘中盯盘",
+        )
+        self.assertIn("待重命名预设：盘中盯盘", rename_intro)
+        self.assertIn("建议名称直接体现使用场景", rename_intro)
+
+        package_intro = module._qh_market_chart_package_prompt_intro_text_v1(
+            context,
+            default_title="图表预设包",
+            preset_count=3,
+        )
+        self.assertIn("本次准备导出 3 套预设", package_intro)
+        self.assertIn("默认包标题：图表预设包", package_intro)
+        self.assertIn("导入验证一次", package_intro)
+
+    def test_market_chart_preset_actions_call_contextual_status_helper(self) -> None:
+        if importlib.util.find_spec("PySide6") is None:
+            self.skipTest("PySide6 is not installed in the current interpreter")
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen")}):
+            from PySide6.QtWidgets import QApplication
+
+            module = importlib.import_module("app_qt")
+            app = QApplication.instance() or QApplication([])
+
+            class _PresetHost(module.QWidget):
+                pass
+
+            host = _PresetHost()
+            feedback_calls: list[str] = []
+            status_calls: list[dict[str, object]] = []
+            export_path = Path("tests/.tmp/chart_preset_status_export.json")
+            export_path.parent.mkdir(parents=True, exist_ok=True)
+            if export_path.exists():
+                export_path.unlink()
+
+            host.market_status_label = module.QLabel()
+            host.market_header_label = module.QLabel("龙头样本 300001")
+            host.active_symbol = "SZSE.300001"
+            host.market_chart_preset = "FLOW"
+            host.market_chart_custom_presets = {}
+            host.market_overlay_modes = {"MA", "BOLL"}
+            host.market_strategy_annotation_mode = "PLAN"
+            host.market_secondary_indicator_mode = "VOL"
+            host.market_primary_chart_expanded = False
+            host.market_timeframe_mode = "日线"
+            host._stock_name_for_symbol = lambda symbol: "龙头样本" if symbol else "--"
+            host._stock_id_for_symbol = lambda symbol: "300001" if symbol else "--"
+            host._current_market_chart_symbol = lambda: host.active_symbol
+            host._normalize_market_chart_preset_key = lambda value: module.QuantHunterWindow._normalize_market_chart_preset_key(value)
+            host._normalize_market_strategy_annotation_mode = (
+                lambda value=None: module.QuantHunterWindow._normalize_market_strategy_annotation_mode(value)
+            )
+            host._normalize_market_chart_custom_preset_spec = (
+                lambda raw: module.QuantHunterWindow._normalize_market_chart_custom_preset_spec(raw)
+            )
+            host._normalized_market_chart_custom_presets = (
+                lambda: module.QuantHunterWindow._normalized_market_chart_custom_presets(host)
+            )
+            host._market_chart_builtin_preset_specs = (
+                lambda: module.QuantHunterWindow._market_chart_builtin_preset_specs(host)
+            )
+            host._market_chart_preset_specs = lambda: module.QuantHunterWindow._market_chart_preset_specs(host)
+            host._market_chart_preset_label = lambda key=None: module.QuantHunterWindow._market_chart_preset_label(host, key)
+            host._market_chart_custom_preset_key_for_label = (
+                lambda label: module.QuantHunterWindow._market_chart_custom_preset_key_for_label(host, label)
+            )
+            host._capture_market_chart_preset_spec = (
+                lambda **kwargs: module.QuantHunterWindow._capture_market_chart_preset_spec(host, **kwargs)
+            )
+            host._market_strategy_annotation_mode_hint = (
+                lambda mode=None: module.QuantHunterWindow._market_strategy_annotation_mode_hint(mode)
+            )
+            host._normalize_market_timeframe = lambda timeframe=None: "日线"
+            host._sync_market_chart_preset_state = lambda persist=False: None
+            host._show_market_chart_feedback = lambda message: feedback_calls.append(message)
+            host._set_button_role = lambda *_args, **_kwargs: None
+            host._prompt_market_chart_preset_package_metadata = (
+                lambda default_title="", default_detail="", preset_count=0: ("图表预设包", default_detail or "导出说明")
+            )
+            host._prompt_market_chart_preset_label_v1 = (
+                lambda action="", default_text="", current_label="":
+                ("盘中盯盘" if action == "save" else "盘中盯盘A", True)
+            )
+            host._market_chart_custom_preset_export_payload = (
+                lambda preset_keys=None, package_title="", package_detail="":
+                module.QuantHunterWindow._market_chart_custom_preset_export_payload(
+                    host,
+                    preset_keys,
+                    package_title=package_title,
+                    package_detail=package_detail,
+                )
+            )
+            host._import_market_chart_custom_preset_payload = (
+                lambda payload, persist=True: module.QuantHunterWindow._import_market_chart_custom_preset_payload(
+                    host,
+                    payload,
+                    persist=persist,
+                )
+            )
+            host._market_chart_preset_package_summary = (
+                lambda payload: module.QuantHunterWindow._market_chart_preset_package_summary(host, payload)
+            )
+            host.apply_market_chart_preset = (
+                lambda preset_key, save=True, feedback=False: setattr(host, "market_chart_preset", preset_key)
+            )
+            host._set_label_text_if_changed = lambda widget, text, tooltip=None: (
+                widget.setText(text),
+                widget.setToolTip(tooltip or ""),
+            )
+
+            try:
+                with patch.object(
+                    module,
+                    "_qh_apply_market_chart_preset_action_status_v1",
+                    side_effect=lambda _self, **kwargs: status_calls.append(dict(kwargs)) or "",
+                ):
+                    duplicate_key = module.QuantHunterWindow.duplicate_market_chart_preset_as_custom(host, "FLOW")
+                    self.assertTrue(duplicate_key.startswith("USER_"))
+                    self.assertEqual(status_calls[-1]["action"], "duplicate")
+
+                    module.QuantHunterWindow.toggle_market_chart_preset_pinned(host, duplicate_key)
+                    self.assertEqual(status_calls[-1]["action"], "pin_on")
+
+                    saved_key = module.QuantHunterWindow._save_current_market_chart_preset(host, prompt_overwrite=False)
+                    self.assertTrue(saved_key.startswith("USER_"))
+                    self.assertEqual(status_calls[-1]["action"], "save")
+                    module.QuantHunterWindow.rename_market_chart_preset(host, saved_key)
+                    self.assertEqual(status_calls[-1]["action"], "rename")
+
+                    with patch.object(module.QDialog, "exec", return_value=module.QDialog.Accepted):
+                        module.QuantHunterWindow.edit_market_chart_preset_metadata(host, saved_key)
+                    self.assertEqual(status_calls[-1]["action"], "metadata")
+
+                    with patch.object(module.QFileDialog, "getSaveFileName", return_value=(str(export_path), "")):
+                        exported = module.QuantHunterWindow.export_market_chart_preset(host, saved_key)
+                    self.assertEqual(str(export_path), exported)
+                    self.assertEqual(status_calls[-1]["action"], "export_single")
+
+                    with patch.object(module.QFileDialog, "getOpenFileName", return_value=(str(export_path), "")):
+                        imported = module.QuantHunterWindow.import_market_chart_presets_from_file(host)
+                    self.assertTrue(imported)
+                    self.assertEqual(status_calls[-1]["action"], "import")
+
+                    host.market_chart_preset = saved_key
+                    with patch.object(module.QMessageBox, "question", return_value=module.QMessageBox.Yes):
+                        deleted = module.QuantHunterWindow.delete_market_chart_preset(host, saved_key)
+                    self.assertTrue(deleted)
+                    self.assertEqual(status_calls[-1]["action"], "delete")
+
+                self.assertTrue(feedback_calls)
+                self.assertTrue(export_path.exists())
+            finally:
+                host.deleteLater()
+                app.processEvents()
+
     def test_qt_note_panel_content_renders_dismissible_chart_action_card(self) -> None:
         if importlib.util.find_spec("PySide6") is None:
             self.skipTest("PySide6 is not installed in the current interpreter")
@@ -20793,6 +31628,520 @@ class StrategyWorkflowTests(unittest.TestCase):
             finally:
                 window.close()
                 app.processEvents()
+
+
+class MarketSearchFeatureTests(unittest.TestCase):
+    def test_normalize_symbol_supports_eastmoney_quote_id(self) -> None:
+        self.assertEqual(normalize_symbol("0.300750"), "SZSE.300750")
+        self.assertEqual(normalize_symbol("1.600000"), "SHSE.600000")
+        self.assertEqual(normalize_symbol("116.00700"), "HKSE.00700")
+        self.assertEqual(normalize_symbol("105.AAPL"), "NASDAQ.AAPL")
+        self.assertEqual(normalize_symbol("106.BABA"), "NYSE.BABA")
+
+    def test_eastmoney_secid_supports_hk_and_us_symbols(self) -> None:
+        self.assertEqual(EastmoneyMarketFeed._secid("HKSE.00700"), "116.00700")
+        self.assertEqual(EastmoneyMarketFeed._secid("NASDAQ.AAPL"), "105.AAPL")
+        self.assertEqual(EastmoneyMarketFeed._secid("NYSE.BABA"), "106.BABA")
+
+    def test_resolve_remote_market_search_target_prefers_exact_code_match(self) -> None:
+        module = importlib.import_module("app_qt")
+        payload = {
+            "QuotationCodeTable": {
+                "Data": [
+                    {
+                        "Code": "300751",
+                        "Name": "迈为股份",
+                        "QuoteID": "0.300751",
+                        "Classify": "AStock",
+                        "SecurityTypeName": "深A",
+                        "MktNum": "0",
+                    },
+                    {
+                        "Code": "300750",
+                        "Name": "宁德时代",
+                        "QuoteID": "0.300750",
+                        "Classify": "AStock",
+                        "SecurityTypeName": "深A",
+                        "MktNum": "0",
+                    },
+                ]
+            }
+        }
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+        host = SimpleNamespace(
+            _select_remote_market_search_target_v1=module.QuantHunterWindow._select_remote_market_search_target_v1
+        )
+        with patch.object(module.urllib.request, "urlopen", return_value=FakeResponse()):
+            target = module.QuantHunterWindow._resolve_remote_market_search_target_v1(host, "300750")
+        self.assertIsNotNone(target)
+        self.assertEqual(target.symbol, "SZSE.300750")
+        self.assertEqual(target.stock_id, "300750")
+        self.assertEqual(target.stock_name, "宁德时代")
+
+    def test_remote_market_search_symbol_from_row_supports_hk_and_us(self) -> None:
+        module = importlib.import_module("app_qt")
+        hk_symbol = module.QuantHunterWindow._remote_market_search_symbol_from_row_v1(
+            {
+                "Code": "00700",
+                "JYS": "HK",
+                "MktNum": "116",
+                "SecurityTypeName": "港股",
+            }
+        )
+        us_symbol = module.QuantHunterWindow._remote_market_search_symbol_from_row_v1(
+            {
+                "Code": "AAPL",
+                "JYS": "NASDAQ",
+                "MktNum": "105",
+                "SecurityTypeName": "美股",
+            }
+        )
+        self.assertEqual(hk_symbol, "HKSE.00700")
+        self.assertEqual(us_symbol, "NASDAQ.AAPL")
+
+    def test_market_price_plan_brief_formats_entry_stop_target(self) -> None:
+        module = importlib.import_module("app_qt")
+        host = SimpleNamespace()
+        brief = module.QuantHunterWindow._market_price_plan_brief_v1(
+            host,
+            SimpleNamespace(entry_price=15.8, stop_price=15.2, target_price=17.4, close=15.9),
+        )
+        self.assertEqual(brief, "买 15.80 / 损 15.20 / 目 17.40")
+
+    def test_market_search_suggestion_entries_include_stock_theme_and_strategy(self) -> None:
+        module = importlib.import_module("app_qt")
+        symbol = "SZSE.300750"
+        host = SimpleNamespace(
+            market_screen_result=SimpleNamespace(
+                algorithmic_pool=[
+                    SimpleNamespace(
+                        symbol=symbol,
+                        stock_name="宁德时代",
+                        stock_id="300750",
+                        theme_name="固态电池",
+                        strategy_tag="主力雷达",
+                    )
+                ]
+            ),
+            daily_pool_rows=[
+                SimpleNamespace(
+                    symbol=symbol,
+                    stock_name="宁德时代",
+                    stock_id="300750",
+                    mainline_tag="新能源",
+                    theme_name="新能源",
+                    primary_strategy="主力雷达",
+                )
+            ],
+            market_snapshots={},
+            universe_bars={symbol: []},
+            theme_aliases={"机器人": ("机器人", "人形机器人")},
+            _stock_name_for_symbol=lambda current: "宁德时代" if current == symbol else current,
+            _stock_id_for_symbol=lambda current: "300750" if current == symbol else current,
+        )
+        entries = module.QuantHunterWindow._market_search_suggestion_entries_v1(host, limit=20)
+        self.assertIn("宁德时代", entries)
+        self.assertIn("300750", entries)
+        self.assertIn(symbol, entries)
+        self.assertIn("新能源", entries)
+        self.assertIn("主力雷达", entries)
+
+    def test_resolve_local_market_search_target_supports_theme_and_strategy_keywords(self) -> None:
+        module = importlib.import_module("app_qt")
+        symbol = "SZSE.300750"
+        host = SimpleNamespace(
+            market_screen_result=SimpleNamespace(
+                algorithmic_pool=[
+                    SimpleNamespace(
+                        symbol=symbol,
+                        stock_name="宁德时代",
+                        stock_id="300750",
+                        theme_name="新能源",
+                        strategy_tag="主力雷达",
+                    )
+                ]
+            ),
+            daily_pool_rows=[
+                SimpleNamespace(
+                    symbol=symbol,
+                    stock_name="宁德时代",
+                    stock_id="300750",
+                    mainline_tag="新能源",
+                    theme_name="新能源",
+                    primary_strategy="主力雷达",
+                )
+            ],
+            market_snapshots={},
+            universe_bars={},
+            _stock_name_for_symbol=lambda current: "宁德时代" if current == symbol else current,
+        )
+        by_theme = module.QuantHunterWindow._resolve_local_market_search_target_v1(host, "新能源")
+        by_strategy = module.QuantHunterWindow._resolve_local_market_search_target_v1(host, "主力雷达")
+        self.assertIsNotNone(by_theme)
+        self.assertIsNotNone(by_strategy)
+        self.assertEqual(by_theme.symbol, symbol)
+        self.assertEqual(by_strategy.symbol, symbol)
+
+    def test_apply_market_search_async_result_finalizes_focus_after_load(self) -> None:
+        module = importlib.import_module("app_qt")
+        calls: list[tuple[str, object]] = []
+        host = SimpleNamespace(
+            _set_market_search_busy_v1=lambda busy, message="": calls.append(("busy", busy)),
+            _apply_market_search_loaded_payload_v1=lambda payload: calls.append(("payload", payload)) or True,
+            _finalize_market_search_focus_v1=lambda **kwargs: calls.append(("finalize", kwargs)),
+            _set_market_search_status_v1=lambda text: calls.append(("status", text)),
+        )
+        module.QuantHunterWindow._apply_market_search_async_result_v1(
+            host,
+            {
+                "status": "loaded",
+                "query": "宁德时代",
+                "target": SimpleNamespace(symbol="SZSE.300750", stock_name="宁德时代", route="remote"),
+                "payload": {"symbol": "SZSE.300750"},
+            },
+        )
+        self.assertIn(("busy", False), calls)
+        self.assertIn(("payload", {"symbol": "SZSE.300750"}), calls)
+        self.assertIn(
+            (
+                "finalize",
+                {"symbol": "SZSE.300750", "stock_name": "宁德时代", "route": "remote"},
+            ),
+            calls,
+        )
+
+    def test_update_market_search_progress_updates_status_and_bar(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        class FakeProgressBar:
+            def __init__(self) -> None:
+                self.visible = False
+                self.range_values = (0, 100)
+                self.value = 0
+
+            def setVisible(self, visible):
+                self.visible = bool(visible)
+
+            def setRange(self, low, high):
+                self.range_values = (low, high)
+
+            def setValue(self, value):
+                self.value = value
+
+        status_calls: list[str] = []
+        progress = FakeProgressBar()
+        host = SimpleNamespace(
+            market_search_progress_bar=progress,
+            _set_market_search_status_v1=lambda text: status_calls.append(text),
+        )
+        with patch.object(module, "QProgressBar", FakeProgressBar):
+            module.QuantHunterWindow._update_market_search_progress_v1(
+                host,
+                {"value": 52, "text": "总览状态：搜索中 | 正在计算战法信号..."},
+            )
+        self.assertEqual(status_calls[-1], "总览状态：搜索中 | 正在计算战法信号...")
+        self.assertTrue(progress.visible)
+        self.assertEqual(progress.range_values, (0, 100))
+        self.assertEqual(progress.value, 52)
+
+    def test_search_market_symbol_starts_background_job_with_progress_callback(self) -> None:
+        module = importlib.import_module("app_qt")
+        captured: dict[str, object] = {}
+        host = SimpleNamespace(
+            _market_search_query_text=lambda: "宁德时代",
+            _resolve_local_market_search_target_v1=lambda query: None,
+            _market_search_runtime_context_v1=lambda symbol_hint="": {},
+            _set_market_search_busy_v1=lambda busy, message="": captured.setdefault("busy", (busy, message)),
+            _update_market_search_progress_v1=lambda payload: None,
+            _run_background_job=lambda job_name, fn, on_success, on_error, **kwargs: captured.update(
+                {
+                    "job_name": job_name,
+                    "pass_progress_callback": kwargs.get("pass_progress_callback"),
+                    "has_on_progress": callable(kwargs.get("on_progress")),
+                }
+            )
+            or True,
+            _apply_market_search_async_result_v1=lambda result: None,
+            _handle_market_search_async_error_v1=lambda message, query: None,
+            _resolve_remote_market_search_target_v1=lambda query: None,
+            _is_job_running=lambda job_name: False,
+        )
+        module.QuantHunterWindow.search_market_symbol(host)
+        self.assertEqual(captured["job_name"], "market_symbol_search")
+        self.assertTrue(captured["pass_progress_callback"])
+        self.assertTrue(captured["has_on_progress"])
+
+    def test_select_table_row_if_needed_scrolls_to_selected_row(self) -> None:
+        module = importlib.import_module("app_qt")
+
+        class FakeSelectionModel:
+            def isRowSelected(self, row, _index):
+                return False
+
+        class FakeItem:
+            pass
+
+        class FakeTable:
+            def __init__(self) -> None:
+                self.selected_row = -1
+                self.scrolled = None
+                self.focused = False
+                self.signals_blocked = []
+
+            def currentRow(self):
+                return -1
+
+            def selectionModel(self):
+                return FakeSelectionModel()
+
+            def blockSignals(self, blocked):
+                self.signals_blocked.append(bool(blocked))
+
+            def selectRow(self, row):
+                self.selected_row = row
+
+            def item(self, row, column):
+                return FakeItem() if row == 3 and column == 0 else None
+
+            def scrollToItem(self, item, hint):
+                self.scrolled = (item, hint)
+
+            def setFocus(self):
+                self.focused = True
+
+        table = FakeTable()
+        with patch.object(module, "QTableWidget", FakeTable):
+            changed = module.QuantHunterWindow._select_table_row_if_needed(SimpleNamespace(), table, 3)
+        self.assertTrue(changed)
+        self.assertEqual(table.selected_row, 3)
+        self.assertIsNotNone(table.scrolled)
+        self.assertTrue(table.focused)
+
+    def test_replace_market_result_sequence_updates_frozen_market_result_lists(self) -> None:
+        module = importlib.import_module("app_qt")
+        result = MarketScreenResult(market_name="demo", generated_at="2026-04-23 22:00:00")
+        summary = SymbolBacktestSummary(
+            symbol="SZSE.300750",
+            trades=1,
+            total_return=0.1,
+            max_drawdown=0.02,
+            win_rate=1.0,
+            ending_equity=1.1,
+        )
+        module.QuantHunterWindow._replace_market_result_sequence_v1(result, "summaries", [summary])
+        self.assertEqual(len(result.summaries), 1)
+        self.assertEqual(result.summaries[0].symbol, "SZSE.300750")
+
+    def test_apply_market_screen_result_restores_manual_search_focus(self) -> None:
+        module = importlib.import_module("app_qt")
+        calls: list[tuple[str, object]] = []
+        host = SimpleNamespace(
+            _captured_manual_market_search_payloads_v1=lambda: [{"symbol": "HKSE.00700"}],
+            _manual_market_focus_symbol_v1="HKSE.00700",
+            _symbol_data_revision=0,
+            _startup_market_loaded=False,
+            _set_startup_progress=lambda value, text: calls.append(("progress", (value, text))),
+            _apply_market_search_loaded_payload_v1=lambda payload: calls.append(("restore", payload)) or True,
+            universe_bars={"HKSE.00700": [object()]},
+            select_symbol=lambda symbol, origin="": calls.append(("select", (symbol, origin))),
+            _set_market_search_status_v1=lambda text: calls.append(("status", text)),
+            _market_search_action_text_v1=lambda **kwargs: f"focus:{kwargs['symbol']}",
+            _stock_name_for_symbol=lambda symbol: "腾讯控股" if symbol == "HKSE.00700" else symbol,
+            _refresh_shell_header=lambda: calls.append(("header", True)),
+            _finish_startup_loading=lambda text: calls.append(("finish", text)),
+            _startup_scan_loaded=True,
+        )
+        with patch.object(module, "apply_market_screen_result", lambda *args, **kwargs: calls.append(("binder", True))):
+            module.QuantHunterWindow._apply_market_screen_result(
+                host,
+                MarketScreenResult(market_name="demo", generated_at="2026-04-23 22:00:00"),
+                update_chart=False,
+                feed_state=None,
+            )
+        self.assertIn(("restore", {"symbol": "HKSE.00700"}), calls)
+        self.assertIn(("select", ("HKSE.00700", "search")), calls)
+        self.assertIn(("status", "focus:HKSE.00700"), calls)
+
+    def test_ensure_market_search_symbol_loaded_adds_existing_local_symbol_to_overview(self) -> None:
+        module = importlib.import_module("app_qt")
+        symbol = "SZSE.300750"
+        bars = [
+            PriceBar(
+                date=f"2026-03-{index + 1:02d}",
+                symbol=symbol,
+                open=100.0 + index * 0.2,
+                high=101.0 + index * 0.2,
+                low=99.5 + index * 0.2,
+                close=100.5 + index * 0.2,
+                volume=1_000_000 + index * 10_000,
+            )
+            for index in range(40)
+        ]
+        analyses = [
+            DailyAnalysis(
+                date="2026-03-20",
+                symbol=symbol,
+                close=108.5,
+                atr=1.2,
+                ma_fast=107.9,
+                ma_slow=105.8,
+                breakout_level=107.2,
+                volume_ratio=1.8,
+                upper_shadow_pct=0.12,
+                close_location=0.82,
+                label="RECLAIM_LONG",
+                score=88,
+                reason="回踩确认后重新转强。",
+                entry_price=108.2,
+                stop_price=104.8,
+                target_price=116.5,
+            )
+        ]
+        selected_signal = analyses[0]
+        snapshot = MarketSnapshot(
+            symbol=symbol,
+            stock_id="300750",
+            stock_name="宁德时代",
+            latest_price=108.5,
+            pct_change=4.2,
+            change_amount=4.4,
+            turnover=6.8,
+            amount=9.6e8,
+            open_price=104.9,
+            high_price=109.2,
+            low_price=103.8,
+            prev_close=104.1,
+            main_inflow=0.0,
+            pe_ratio=28.0,
+            heat_score=82.0,
+            fund_model="主力净流入",
+            strategy_tag="主力雷达",
+            momentum_bias=76.0,
+        )
+        summary = SymbolBacktestSummary(
+            symbol=symbol,
+            trades=4,
+            total_return=0.18,
+            max_drawdown=0.06,
+            win_rate=0.75,
+            ending_equity=1.18,
+        )
+        scan_row = ScanRow(
+            symbol=symbol,
+            signal_date=selected_signal.date,
+            label=selected_signal.label,
+            action="BUY",
+            score=selected_signal.score,
+            close=selected_signal.close,
+            entry_price=selected_signal.entry_price,
+            stop_price=selected_signal.stop_price,
+            target_price=selected_signal.target_price,
+            reason=selected_signal.reason,
+            source_path="search://single-symbol",
+            stock_id="300750",
+            stock_name="宁德时代",
+        )
+        recommendation = SimpleNamespace(
+            symbol=symbol,
+            stock_id="300750",
+            stock_name="宁德时代",
+            action="BUY",
+            total_score=91.0,
+            entry_price=108.2,
+            stop_price=104.8,
+            target_price=116.5,
+        )
+
+        class FakeRemoteMarketScreener:
+            def __init__(self, params=None, feed=None):
+                self.params = params
+                self.feed = feed
+
+            def _pick_signal(self, analyses, snapshot):
+                return selected_signal
+
+            def _build_algorithmic_pool(self, recommendations, scan_rows, snapshot_map):
+                return [SimpleNamespace(symbol=scan_rows[0].symbol)]
+
+            def _build_chart_series(self, snapshot, bars, analyses):
+                return SimpleNamespace(symbol=snapshot.symbol)
+
+        class FakeBacktester:
+            def __init__(self, strategy_params=None):
+                self.strategy_params = strategy_params
+
+            def run(self, bars, analyses):
+                return SimpleNamespace(
+                    trades=[],
+                    total_return=summary.total_return,
+                    max_drawdown=summary.max_drawdown,
+                    win_rate=summary.win_rate,
+                    ending_equity=summary.ending_equity,
+                )
+
+        host = SimpleNamespace(
+            universe_bars={symbol: list(bars)},
+            universe_analyses={symbol: list(analyses)},
+            market_snapshots={},
+            daily_pool_rows=[],
+            stock_profiles={},
+            paths_by_symbol={},
+            scan_rows=[],
+            backtest_summaries=[],
+            news_catalysts={},
+            theme_aliases={},
+            market_screen_result=SimpleNamespace(
+                summaries=[],
+                scan_rows=[],
+                algorithmic_pool=[],
+                recommendations=[],
+                snapshots={},
+                bars_by_symbol={},
+                analyses_by_symbol={},
+                chart_series_by_symbol={},
+            ),
+            strategy_params=lambda: StrategyParams(),
+            _market_search_symbol_ready_for_overview_v1=lambda _symbol: False,
+            _build_market_search_snapshot_v1=lambda _symbol, _stock_name, _bars: snapshot,
+            _build_market_search_recommendation_v1=lambda **kwargs: recommendation,
+            _build_market_search_scan_row_v1=lambda **kwargs: scan_row,
+            _merge_rows_by_symbol_v1=lambda rows, row, symbol_attr="symbol", prepend=True: module.QuantHunterWindow._merge_rows_by_symbol_v1(
+                rows,
+                row,
+                symbol_attr=symbol_attr,
+                prepend=prepend,
+            ),
+            _replace_market_result_sequence_v1=lambda result_container, attr_name, rows: module.QuantHunterWindow._replace_market_result_sequence_v1(
+                result_container,
+                attr_name,
+                rows,
+            ),
+            _refresh_market_theme_options=lambda: None,
+        )
+
+        with patch.object(module, "RemoteMarketScreener", FakeRemoteMarketScreener), patch.object(module, "Backtester", FakeBacktester):
+            loaded = module.QuantHunterWindow._ensure_market_search_symbol_loaded_v1(
+                host,
+                symbol,
+                stock_name="宁德时代",
+                stock_id="300750",
+            )
+
+        self.assertTrue(loaded)
+        self.assertEqual(host.daily_pool_rows[0].symbol, symbol)
+        self.assertEqual(host.market_screen_result.algorithmic_pool[0].symbol, symbol)
+        self.assertEqual(host.market_screen_result.recommendations[0].symbol, symbol)
+        self.assertEqual(host.paths_by_symbol[symbol].name, "300750.json")
 
 
 if __name__ == "__main__":

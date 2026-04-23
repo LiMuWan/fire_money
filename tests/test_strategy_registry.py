@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from quant_hunter.board import BoardPlan
 from quant_hunter.decision import DecisionEngine
-from quant_hunter.models import RecommendationRow, ScanRow
+from quant_hunter.models import HoldingRecord, RecommendationRow, ScanRow
 from quant_hunter.paper_trading import PaperTradingEngine
 from quant_hunter.recommend import DailyPoolBuilder
 from quant_hunter.reports import export_daily_trade_plan, export_end_of_day_review
@@ -23,7 +23,10 @@ from quant_hunter.strategy_registry import (
     ranked_strategy_scores,
     reload_strategy_registry,
     save_strategy_catalog_payload,
+    strategy_buy_position_meta,
+    strategy_execution_discipline_meta,
     strategy_score_map,
+    strategy_sell_position_meta,
 )
 from quant_hunter.storage import load_app_state
 
@@ -34,6 +37,7 @@ BOARD_ATTACK = "\u64d2\u9f99\u6253\u677f"
 VALUE = "\u4ef7\u503c\u4f4e\u5438"
 TAIL_BUY = "\u5c3e\u76d8\u4e70\u5165\u6cd5"
 ONE_DAY = "\u4e00\u65e5\u6301\u80a1\u6cd5"
+HALF_POSITION = "\u534a\u4ed3\u6301\u80a1\u6cd5"
 DECISION = "\u6398\u9f99\u51b3\u7b56"
 ALIAS_RELAY = "\u5f3a\u52bf\u63a5\u529b"
 ALIAS_TAIL = "\u5c3e\u76d8\u4e70\u5165"
@@ -80,6 +84,7 @@ class StrategyRegistryTests(unittest.TestCase):
 
         self.assertEqual(registry.canonical_strategy_name(ALIAS_RELAY), BOARD_ATTACK)
         self.assertEqual(registry.canonical_strategy_name(ALIAS_TAIL), TAIL_BUY)
+        self.assertEqual(registry.canonical_strategy_name("\u505aT"), HALF_POSITION)
         self.assertEqual(registry.definition(LEADER).ui_metadata.get("short_label"), "\u9f99\u5934")
 
         defaults = registry.plan_defaults(ALIAS_TAIL)
@@ -87,6 +92,23 @@ class StrategyRegistryTests(unittest.TestCase):
         self.assertAlmostEqual(defaults.target_pct, 0.032, places=4)
         self.assertAlmostEqual(defaults.budget_multiplier_strong, 0.82, places=4)
         self.assertAlmostEqual(defaults.budget_multiplier_normal, 0.72, places=4)
+
+    def test_strategy_position_metadata_describes_buy_and_sell_sizes(self) -> None:
+        registry = get_strategy_registry()
+
+        for strategy_name in registry.strategy_names:
+            self.assertTrue(strategy_buy_position_meta(strategy_name), strategy_name)
+            self.assertTrue(strategy_sell_position_meta(strategy_name), strategy_name)
+            discipline = strategy_execution_discipline_meta(strategy_name)
+            self.assertTrue(discipline, strategy_name)
+            self.assertTrue(any(keyword in discipline for keyword in ("必须", "不能", "只做", "禁止", "严格")), strategy_name)
+
+        self.assertIn("1-2 成", strategy_buy_position_meta(TAIL_BUY))
+        self.assertIn("先卖 1/2", strategy_sell_position_meta(TAIL_BUY))
+        self.assertIn("14:30", strategy_execution_discipline_meta(TAIL_BUY))
+        self.assertIn("底仓", strategy_buy_position_meta(HALF_POSITION))
+        self.assertIn("机动仓", strategy_sell_position_meta(HALF_POSITION))
+        self.assertIn("必须停止做T", strategy_execution_discipline_meta(HALF_POSITION))
 
     def test_registry_hides_disabled_strategies_from_runtime_exports(self) -> None:
         import quant_hunter.strategy_registry as registry_module
@@ -99,7 +121,11 @@ class StrategyRegistryTests(unittest.TestCase):
                     {**build_strategy_template_payload("disabled_tail"), "enabled": False},
                 ]
             }
-            with patch.object(registry_module, "_catalog_path", return_value=catalog_path):
+            with patch.object(registry_module, "_catalog_path", return_value=catalog_path), patch.object(
+                registry_module,
+                "_strategy_plugin_directory",
+                return_value=Path(tmp) / "plugins",
+            ):
                 save_strategy_catalog_payload(payload)
                 registry = reload_strategy_registry()
                 self.assertEqual(registry.strategy_names, ("custom_flow",))
@@ -131,6 +157,27 @@ class StrategyRegistryTests(unittest.TestCase):
         self.assertIn("one_day_hold_score", scores)
         self.assertIn("tail_buy_score", scores)
         self.assertEqual(scores["primary_strategy"], TAIL_BUY)
+
+    def test_half_position_plugin_scores_single_stock_t_context(self) -> None:
+        registry = get_strategy_registry()
+        context = {
+            "technical": 78.0,
+            "position": 68.0,
+            "persistence": 76.0,
+            "news": 62.0,
+            "leader": 60.0,
+            "main_force_bias": 8.0,
+            "value_bias": 8.0,
+            "half_position_bias": 22.0,
+            "t_trade_window": 96.0,
+            "single_stock_focus": 92.0,
+        }
+
+        scores = registry.compute_scores(context)
+
+        self.assertIn("half_position_hold_score", scores)
+        self.assertEqual(scores["primary_strategy"], HALF_POSITION)
+        self.assertGreater(float(scores["half_position_hold_score"]), 85.0)
 
     def test_registry_exports_ui_specs(self) -> None:
         registry = get_strategy_registry()
@@ -200,6 +247,110 @@ class StrategyRegistryTests(unittest.TestCase):
         self.assertEqual(set(item.strategy_scores), set(get_strategy_registry().strategy_names))
         self.assertAlmostEqual(item.strategy_scores[LEADER], item.leader_model_score, places=2)
         self.assertAlmostEqual(item.strategy_scores[DECISION], item.dragon_decision_score, places=2)
+        self.assertIn(HALF_POSITION, item.strategy_scores)
+
+    def test_daily_pool_builder_surfaces_half_position_t_plan(self) -> None:
+        rows = [
+            ScanRow(
+                stock_name="Half Position Demo",
+                stock_id="300777",
+                symbol="SZSE.300777",
+                action="BUY",
+                label="RECLAIM_LONG",
+                score=76,
+                close=20.0,
+                signal_date="2026-04-05",
+                entry_price=20.0,
+                stop_price=19.2,
+                target_price=21.0,
+                reason="半仓持股 做T 高抛低吸 专心拿好一只股 主力承接",
+                source_path="demo",
+            )
+        ]
+        profiles = {
+            "SZSE.300777": type(
+                "Profile",
+                (),
+                {"stock_id": "300777", "name": "Half Position Demo", "industry": "robot", "notes": "单票熟悉 反复跟踪", "is_leader": False},
+            )(),
+        }
+
+        pool = DailyPoolBuilder(stock_profiles=profiles).build(rows, {"SZSE.300777": []}, [], top_n=5)
+
+        self.assertEqual(len(pool), 1)
+        item = pool[0]
+        self.assertEqual(item.primary_strategy, HALF_POSITION)
+        self.assertGreater(item.strategy_scores[HALF_POSITION], 80.0)
+        self.assertIn("半仓", item.buy_point)
+        self.assertIn("做T", item.add_point)
+        self.assertIn("高抛", item.sell_point)
+        self.assertIn("半仓", item.rationale)
+        self.assertIn("执行纪律", item.rationale)
+        self.assertIn("必须停止做T", item.rationale)
+
+    def test_decision_engine_caps_half_position_budget_and_next_focus(self) -> None:
+        recommendation = _make_recommendation(
+            symbol="SZSE.300777",
+            stock_id="300777",
+            stock_name="Half Position Demo",
+            entry_price=20.0,
+            stop_price=19.2,
+            target_price=21.2,
+            total_score=86.0,
+            news_score=70.0,
+            leader_score=60.0,
+            primary_strategy=HALF_POSITION,
+            strategy_scores={
+                LEADER: 58.0,
+                MAIN_FORCE: 70.0,
+                VALUE: 72.0,
+                HALF_POSITION: 91.0,
+                DECISION: 84.0,
+            },
+            stock_pool="趋势股",
+            buy_point="底仓半仓以内，回踩承接再低吸机动仓",
+            sell_point="冲高先高抛机动仓",
+            rationale="半仓持股 做T 高抛低吸",
+        )
+
+        trade_plan = DecisionEngine().build_plan([recommendation], [], available_cash=100000, max_picks=1)
+
+        self.assertEqual(len(trade_plan.decisions), 1)
+        decision = trade_plan.decisions[0]
+        self.assertLessEqual(decision.suggested_budget, 50000.0)
+        self.assertIn("买入仓位", decision.rationale)
+        self.assertIn("卖出仓位", decision.rationale)
+        self.assertIn("执行纪律", decision.rationale)
+        self.assertIn("底仓不超过半仓", decision.rationale)
+        self.assertIn("高抛低吸", decision.rationale)
+        self.assertIn("停止做T", decision.next_focus)
+
+    def test_decision_engine_reduces_half_position_mobile_lot_on_profit(self) -> None:
+        recommendation = _make_recommendation(
+            symbol="SZSE.300777",
+            stock_id="300777",
+            stock_name="Half Position Demo",
+            close=20.6,
+            primary_strategy=HALF_POSITION,
+            strategy_scores={
+                HALF_POSITION: 91.0,
+                DECISION: 84.0,
+            },
+        )
+        holding = HoldingRecord(
+            symbol="SZSE.300777",
+            quantity=1000,
+            available=1000,
+            cost_price=20.0,
+            market_value=20600.0,
+        )
+
+        trade_plan = DecisionEngine().build_plan([recommendation], [holding], available_cash=20000, max_picks=1)
+
+        self.assertEqual(len(trade_plan.position_advice), 1)
+        advice = trade_plan.position_advice[0]
+        self.assertEqual(advice.action, "REDUCE")
+        self.assertIn("高抛机动仓", advice.rationale)
 
     def test_export_daily_trade_plan_surfaces_dynamic_strategy_brief(self) -> None:
         recommendation = _make_recommendation(
@@ -311,6 +462,85 @@ class StrategyRegistryTests(unittest.TestCase):
         rows = module.QuantHunterWindow._filtered_daily_pool_rows(window)
 
         self.assertEqual([item.stock_id for item in rows], ["301188"])
+
+    def test_app_qt_filtered_daily_pool_rows_supports_half_position_strategy(self) -> None:
+        import app_qt as module
+
+        half_position = _make_recommendation(
+            symbol="SZSE.301288",
+            stock_id="301288",
+            stock_name="Half Position",
+            primary_strategy="",
+            strategy_scores={
+                LEADER: 58.0,
+                MAIN_FORCE: 70.0,
+                BOARD_ATTACK: 62.0,
+                VALUE: 72.0,
+                TAIL_BUY: 60.0,
+                ONE_DAY: 61.0,
+                HALF_POSITION: 91.0,
+                DECISION: 78.0,
+            },
+        )
+        leader = _make_recommendation(
+            symbol="SHSE.600188",
+            stock_id="600188",
+            stock_name="Leader",
+            primary_strategy=LEADER,
+            strategy_scores={
+                LEADER: 88.0,
+                HALF_POSITION: 40.0,
+                DECISION: 80.0,
+            },
+        )
+        window = SimpleNamespace(
+            daily_pool_rows=[half_position, leader],
+            recommend_theme_filter=ALL,
+            recommend_strategy_filter=HALF_POSITION,
+        )
+
+        rows = module.QuantHunterWindow._filtered_daily_pool_rows(window)
+
+        self.assertEqual([item.stock_id for item in rows], ["301288"])
+
+    def test_app_qt_runtime_refresh_populates_recommend_strategy_combo(self) -> None:
+        import app_qt as module
+
+        class DummyCombo:
+            def __init__(self) -> None:
+                self.items: list[str] = []
+                self.value = ""
+
+            def currentText(self) -> str:
+                return self.value
+
+            def blockSignals(self, _value: bool) -> None:
+                return None
+
+            def clear(self) -> None:
+                self.items = []
+
+            def addItems(self, values: list[str]) -> None:
+                self.items.extend(values)
+
+            def setCurrentText(self, value: str) -> None:
+                self.value = value
+
+        combo = DummyCombo()
+        host = SimpleNamespace(
+            recommend_strategy_combo=combo,
+            recommend_strategy_filter=HALF_POSITION,
+            market_filter_tag=ALL,
+            _strategy_catalog_current_name=lambda: "",
+            _rebuild_market_filter_buttons=lambda: None,
+            _rebuild_strategy_pack_cards=lambda: None,
+        )
+
+        module.QuantHunterWindow._refresh_strategy_runtime_widgets(host)
+
+        self.assertIn(HALF_POSITION, combo.items)
+        self.assertIn("\u5c3e\u76d8\u4f18\u9009", combo.items)
+        self.assertEqual(combo.value, HALF_POSITION)
 
     def test_app_qt_set_strategy_detail_from_row_uses_resolved_primary_strategy(self) -> None:
         import app_qt as module

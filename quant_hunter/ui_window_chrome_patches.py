@@ -3,6 +3,14 @@ from __future__ import annotations
 from PySide6.QtCharts import QChartView
 from PySide6.QtWidgets import QLabel, QTableWidget, QTextEdit, QWidget
 
+from quant_hunter.ui_config import (
+    WORKSPACE_TAB_ORDER,
+    workspace_key_from_label,
+    workspace_name_for_index,
+    workspace_shell_header_copy,
+    workspace_tab_tooltip,
+)
+
 
 def apply_commercial_chrome_patches(window_cls: type, *, set_shell_chip_fn) -> None:
     if getattr(window_cls, "_qh_commercial_chrome_patches_applied_v34", False):
@@ -239,6 +247,10 @@ QWidget#brokerRoot QFrame#workspaceHero {
     border: 1px solid rgba(120, 141, 165, 0.18);
     border-radius: 22px;
 }
+QWidget#brokerRoot QFrame#workspaceHero[heroCompact="true"] {
+    border-radius: 16px;
+    border: 1px solid rgba(111, 132, 154, 0.16);
+}
 QWidget#brokerRoot QLabel#statusBanner,
 QWidget#brokerRoot QLabel#focusStateLabel,
 QWidget#brokerRoot QLabel#workspaceFocusBanner {
@@ -394,20 +406,12 @@ QWidget#brokerRoot QPushButton#accentButton:hover {
     def _sync_commercial_navigation_v34(self) -> None:
         if not hasattr(self, "tabs"):
             return
-        tab_specs = [
-            ("市场总览", "查看市场结构、主线、消息面与全局节奏。"),
-            ("扫描观察", "管理扫描结果、观察池和盘中焦点。"),
-            ("机会推荐", "从每日推荐池推进到计划与送审。"),
-            ("打板监控", "管理打板候选、回封监控与专项观察。"),
-            ("系统配置", "统一维护参数、导出目录和运行偏好。"),
-            ("账户登录", "维护东方财富、GM 与扩展渠道登录配置。"),
-            ("复盘研究", "查看单票画像、执行回放与复盘结论。"),
-            ("交易执行", "生成委托、确认提交、回看回执与模拟盘。"),
-        ]
         bar = self.tabs.tabBar()
-        for index, (label, tooltip) in enumerate(tab_specs):
+        for index, key in enumerate(WORKSPACE_TAB_ORDER):
             if index >= self.tabs.count():
                 break
+            label = workspace_name_for_index(index)
+            tooltip = workspace_tab_tooltip(key)
             if self.tabs.tabText(index) != label:
                 self.tabs.setTabText(index, label)
             bar.setTabToolTip(index, tooltip)
@@ -424,79 +428,19 @@ QWidget#brokerRoot QPushButton#accentButton:hover {
         warnings = list((getattr(self, "last_broker_execution_summary", {}) or {}).get("warnings", []) or [])
         risk_tone = "risk" if blockers else ("watch" if warnings or pending_orders else ("buy" if submitted_orders or plan_count or pool_count else "idle"))
 
-        page_key = {
-            "市场总览": "overview",
-            "市场机会工作台": "overview",
-            "总览": "overview",
-            "扫描": "scanner",
-            "策略扫描": "scanner",
-            "推荐": "recommend",
-            "每日推荐": "recommend",
-            "打板": "board",
-            "打板专项": "board",
-            "配置": "config",
-            "参数配置": "config",
-            "登录": "auth",
-            "统一登录": "auth",
-            "明细": "detail",
-            "明细复盘": "detail",
-            "交易": "broker",
-            "交易执行": "broker",
-        }.get(current_name, "overview")
-
-        page_copy = {
-            "overview": (
-                "量化猎手 Pro",
-                "把市场结构、主线持续性与交易节奏收束进统一驾驶舱。",
-                "全局态势",
-            ),
-            "scanner": (
-                "量化猎手 Pro / 扫描观察",
-                "把盘中扫描、观察池与焦点筛选收成一条连续工作流。",
-                "观察筛选",
-            ),
-            "recommend": (
-                "量化猎手 Pro / 机会推荐",
-                "从候选排序到交易计划生成，尽量压缩人工切页成本。",
-                "推荐分发",
-            ),
-            "board": (
-                "量化猎手 Pro / 打板监控",
-                "把候选、回封监控与专项复盘做成一个真正可跟单的盘中工作台。",
-                "打板监控",
-            ),
-            "config": (
-                "量化猎手 Pro / 系统配置",
-                "把策略参数、导出目录与运行偏好统一归口，减少碎片化设置成本。",
-                "系统配置",
-            ),
-            "auth": (
-                "量化猎手 Pro / 账户登录",
-                "把登录、渠道与桥接环境统一托管，为后续多券商接入预留接口。",
-                "账户连接",
-            ),
-            "detail": (
-                "量化猎手 Pro / 复盘研究",
-                "围绕单票形成决策画像、执行回放与复盘结论。",
-                "复盘研究",
-            ),
-            "broker": (
-                "量化猎手 Pro / 交易执行",
-                "把委托生成、确认提交与回执回看压进同一执行工作台。",
-                "交易执行",
-            ),
-        }
+        page_key = workspace_key_from_label(current_name)
         pill_copy = {
-            "overview": "FLAGSHIP DESK",
-            "scanner": "LIVE SCAN",
-            "recommend": "ALPHA FLOW",
-            "board": "BOARD WATCH",
-            "config": "SYSTEM LAB",
-            "auth": "ACCESS LAYER",
-            "detail": "REVIEW LAB",
-            "broker": "EXECUTION CORE",
+            "overview": "QUANT HUNTER PRO",
+            "scanner": "QUANT HUNTER PRO",
+            "recommend": "QUANT HUNTER PRO",
+            "board": "QUANT HUNTER PRO",
+            "config": "QUANT HUNTER PRO",
+            "auth": "QUANT HUNTER PRO",
+            "detail": "QUANT HUNTER PRO",
+            "broker": "QUANT HUNTER PRO",
+            "paper": "QUANT HUNTER PRO",
         }
-        title, subtitle, badge = page_copy.get(page_key, ("量化猎手 Pro", "统一管理行情、推荐、执行与复盘。", "机构终端"))
+        title, subtitle, badge = workspace_shell_header_copy(page_key)
         pulse_label_detail = getattr(getattr(self, "shell_pulse_label", None), "text", lambda: "")()
         pulse_hint_detail = getattr(getattr(self, "shell_pulse_hint", None), "text", lambda: "")()
         pulse_meta_detail = getattr(getattr(self, "shell_pulse_meta", None), "text", lambda: "")()
@@ -514,6 +458,8 @@ QWidget#brokerRoot QPushButton#accentButton:hover {
             "shell_product_title",
             "shell_product_subtitle",
             "top_badge",
+            "density_title_label",
+            "density_combo",
             "shell_header",
             "shell_pulse_bar",
             "shell_workflow_bar",
@@ -597,8 +543,11 @@ QWidget#brokerRoot QPushButton#accentButton:hover {
                 self.style().polish(chart)
                 chart.update()
         if hasattr(self, "top_badge"):
-            badge_text = f"{badge} · 推{pool_count} · 计{plan_count} · 审{pending_orders}"
-            self._set_label_text_if_changed(self.top_badge, badge_text, tooltip=badge_text)
+            density_label = self.density_combo.currentText().strip() if hasattr(self, "density_combo") else ""
+            badge_text = f"{badge} · {density_label} · 推{pool_count} · 计{plan_count} · 审{pending_orders}" if density_label else f"{badge} · 推{pool_count} · 计{plan_count} · 审{pending_orders}"
+            density_hint = self.density_combo.toolTip().strip() if hasattr(self, "density_combo") else ""
+            tooltip = f"{badge_text}\n{density_hint}" if density_hint else badge_text
+            self._set_label_text_if_changed(self.top_badge, badge_text, tooltip=tooltip)
         if hasattr(self, "shell_runtime_chip"):
             runtime_value = f"已提交 {submitted_orders} / 风险 {'红灯' if blockers else ('黄灯' if warnings else '绿灯')}"
             set_shell_chip_fn(self.shell_runtime_chip, runtime_value)
@@ -627,7 +576,7 @@ QWidget#brokerRoot QPushButton#accentButton:hover {
             "config": f"系统配置：当前任务{'运行中' if risk_tone == 'buy' else '待机中'}，状态 {risk_label}。",
             "auth": f"账户接入：连接状态待确认，当前风险提示 {risk_label}。",
             "detail": f"复盘研究：已回写 {submitted_orders} 笔执行记录，可继续查看复盘结论。",
-            "broker": f"交易执行：{pending_orders} 笔待确认，{submitted_orders} 笔已提交。",
+            "broker": f"执行中控：{pending_orders} 笔待确认，{submitted_orders} 笔已提交。",
         }.get(page_key, f"终端概览：当前 {pool_count} 只候选，{plan_count} 笔计划待推进。")
         meta_summary = f"状态 {risk_label} | 候选 {pool_count} | 计划 {plan_count} | 已提交 {submitted_orders}"
         if hasattr(self, "shell_pulse_label"):

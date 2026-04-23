@@ -270,7 +270,7 @@ def paper_strategy_experiment_bridge_v45(
             "badge": "样本积累",
             "title": f"样本积累中 | {canonical_strategy}",
             "detail": "模拟盘已经启用，但还没有形成稳定战法排序。",
-            "cta": "推荐页先按主线与价位筛票，等模拟盘补出闭环样本后再放大战法结论。",
+            "cta": "机会池先按主线与价位筛票，等模拟盘补出闭环样本后再放大战法结论。",
         }
 
     contexts = paper_experiment_table_context_v44(experiment_analytics, experiment_rows)
@@ -283,7 +283,7 @@ def paper_strategy_experiment_bridge_v45(
             "badge": "备选",
             "title": f"未进入实验前排 | {canonical_strategy}",
             "detail": f"当前实验主测 {lead_name} | 对照 {compare_name}，这套战法还没进入前排样本。",
-            "cta": "推荐页先把它当备选观察，不要脱离实验排序直接推进真实交易。",
+            "cta": "机会池先把它当备选观察，不要脱离实验排序直接推进真实交易。",
         }
 
     role_label = str(context.get("role_label", "") or "备选")
@@ -307,13 +307,13 @@ def paper_strategy_experiment_bridge_v45(
         execution_available = bool(strategy_execution.get("execution_quality_available", execution_available))
 
     if role_label == "主测":
-        cta = "推荐页优先筛同战法前排，交易页按主测纪律推进，但先别因为单票强弱临时改打法。"
+        cta = "机会池优先筛同战法前排，执行中控按主测纪律推进，但先别因为单票强弱临时改打法。"
     elif role_label == "对照":
-        cta = "推荐页继续保留对照观察，不和主测抢仓位，等样本继续领先再考虑转主测。"
+        cta = "机会池继续保留对照观察，不和主测抢仓位，等样本继续领先再考虑转主测。"
     elif role_label == "观察":
-        cta = "交易页只保留观察或小样本试错，先复盘失败样本，避免把降权战法直接放大到真实执行。"
+        cta = "执行中控只保留观察或小样本试错，先复盘失败样本，避免把降权战法直接放大到真实执行。"
     else:
-        cta = "先把它放在推荐页备选区观察，等样本和胜率继续抬升后再进入交易链路。"
+        cta = "先把它放在机会池备选区观察，等样本和胜率继续抬升后再进入交易链路。"
 
     detail = f"样本 {sample_count} | 胜率 {win_rate:.1%} | 平均持有 {avg_hold_days:.1f} 天 | 预算 x{budget_multiplier:.2f}"
     if execution_available and execution_label:

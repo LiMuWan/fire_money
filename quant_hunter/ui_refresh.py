@@ -38,13 +38,13 @@ except ModuleNotFoundError:  # pragma: no cover - enables pure-logic tests witho
         def text(self) -> str:
             return str(self._value)
 
-from quant_hunter.broker import describe_order_intent, submission_record_execution_delta, summarize_trade_recap
+from quant_hunter.broker import build_execution_review_snapshot, describe_order_intent, submission_record_execution_delta, summarize_trade_recap
 from quant_hunter.broker_status import build_broker_execution_summary
 from quant_hunter.risk import RISK_PROFILE_LABELS, risk_profile_brief
 from quant_hunter.models import ScanRow
 from quant_hunter.reports import _report_mainline_followup_text
 from quant_hunter.recommend_status import execution_summary_for_rows
-from quant_hunter.strategy_registry import get_strategy_registry, resolved_primary_strategy, strategy_applicable_market_meta, strategy_capacity_limit_meta, strategy_capital_style, strategy_default_risk_level, strategy_failure_sample_meta, strategy_low_flag_risk_level, strategy_no_go_meta, strategy_position_hint_meta, strategy_product_positioning, strategy_scene_copy, strategy_score, strategy_score_map, strategy_short_label, strategy_standard_action_meta
+from quant_hunter.strategy_registry import get_strategy_registry, resolved_primary_strategy, strategy_applicable_market_meta, strategy_buy_position_meta, strategy_capacity_limit_meta, strategy_capital_style, strategy_default_risk_level, strategy_execution_discipline_meta, strategy_failure_sample_meta, strategy_low_flag_risk_level, strategy_no_go_meta, strategy_position_hint_meta, strategy_product_positioning, strategy_scene_copy, strategy_score, strategy_score_map, strategy_sell_position_meta, strategy_short_label, strategy_standard_action_meta
 from quant_hunter.theme import display_mainline_role as _shared_display_mainline_role
 from quant_hunter.ui_helpers import one_day_hold_grade, one_day_hold_tripwire_metrics, tail_buy_execution_checklist, tail_buy_runtime_panel_lines, tail_buy_runtime_status
 from quant_hunter.ui_status import display_fill_status, display_order_status, market_pool_colors, signal_colors, submission_colors, submission_risk_badge_palette_v2, submission_table_snapshot_v2
@@ -53,6 +53,7 @@ from quant_hunter.ui_status import display_fill_status, display_order_status, ma
 QT_USER_ROLE = Qt.UserRole if Qt is not None else 0
 _STRATEGY_REGISTRY = get_strategy_registry()
 _TERMINAL_MONO_FONT_CACHE: dict[tuple[int, bool], object] = {}
+_UNSET = object()
 
 
 @contextmanager
@@ -318,6 +319,528 @@ def _set_tooltip_if_changed(widget, tooltip: str) -> None:
         widget.setToolTip(tooltip)
 
 
+def _configure_terminal_tables_if_needed(window) -> None:
+    configure = getattr(window, "_configure_terminal_tables", None)
+    if not callable(configure):
+        return
+    tracked_tables = []
+    for table_name in (
+        "daily_pool_table",
+        "orders_table",
+        "execution_table",
+        "theme_heat_table",
+        "leader_table",
+        "position_advice_table",
+    ):
+        table = getattr(window, table_name, None)
+        if table is None:
+            continue
+        tracked_tables.append(
+            (
+                table_name,
+                int(table.columnCount()) if hasattr(table, "columnCount") else 0,
+                int(table.width()) if hasattr(table, "width") else 0,
+                int(table.height()) if hasattr(table, "height") else 0,
+            )
+        )
+    signature = (
+        getattr(window, "density_mode", ""),
+        getattr(getattr(window, "state", None), "terminal_density", ""),
+        int(window.width()) if hasattr(window, "width") else 0,
+        int(window.height()) if hasattr(window, "height") else 0,
+        tuple(tracked_tables),
+    )
+    if getattr(window, "_terminal_table_layout_signature_v1", None) == signature:
+        return
+    configure()
+    window._terminal_table_layout_signature_v1 = signature
+
+
+def _daily_pool_status_palette(execution_status: str) -> tuple[QColor, QColor]:
+    if execution_status == "已提交":
+        return submission_colors({"order_status": "SUBMITTED", "fill_status": ""})
+    if execution_status == "已送审":
+        return submission_colors({"order_status": "", "fill_status": "PENDING"})
+    if execution_status == "提交失败":
+        return submission_colors({"order_status": "FAILED", "fill_status": "REJECTED"})
+    return QColor("#171F28"), QColor("#D8E1EB")
+
+
+def _build_daily_pool_row_render_payload(window, row, execution_status: str) -> dict[str, object]:
+    stock_id = row.stock_id or window._stock_id_for_symbol(row.symbol)
+    stock_name = row.stock_name or window._stock_name_for_symbol(row.symbol)
+    symbol = row.symbol or "--"
+    mainline_rank = getattr(row, "mainline_rank", row.theme_rank) or "--"
+    compact_role = _compact_daily_pool_role(getattr(row, "mainline_role", ""))
+    mainline_tag = getattr(row, "mainline_tag", "") or row.theme_name or "未分类"
+    compact_strategy = _compact_daily_pool_strategy(getattr(row, "primary_strategy", "") or "掘龙决策")
+    leader_level_text = _shorten_daily_pool_text(window._display_leader_level(row.leader_level), 6)
+    price_snapshot = _daily_pool_price_snapshot(row)
+    entry_price = float(price_snapshot["entry"] or 0.0)
+    target_price = float(price_snapshot["target"] or 0.0)
+    entry_text = f"{entry_price:.2f}" if entry_price else "--"
+    target_text = f"{target_price:.2f}" if target_price else "--"
+    rr_ratio = float(price_snapshot["rr_ratio"] or 0.0)
+    action_text = _compact_daily_pool_action(row.action)
+    catalyst_text = _shorten_daily_pool_text(row.catalyst, 8)
+    signal_date_text = _compact_daily_pool_date(row.signal_date)
+    row_tooltip = _daily_pool_row_tooltip(window, row, execution_status)
+    identity_badge = execution_status if execution_status != "待观察" else window._display_action(row.action)
+    decision_score = _strategy_score_value(row, "掘龙决策") or float(getattr(row, "total_score", 0.0) or 0.0)
+    strategy_scores = {
+        "leader_model": _strategy_score_value(row, "龙头模型"),
+        "main_force": _strategy_score_value(row, "主力雷达"),
+        "board_attack": _strategy_score_value(row, "擒龙打板"),
+        "value_recovery": _strategy_score_value(row, "价值低吸"),
+        "tail_buy": _strategy_score_value(row, "尾盘买入法"),
+        "one_day_hold": _strategy_score_value(row, "一日持股法"),
+    }
+    identity_text = f"{stock_name}  {stock_id}\n{identity_badge} | {mainline_tag} | 评 {decision_score:.1f}"
+    theme_text = f"{mainline_tag}\n{compact_role} | 位次 {mainline_rank}"
+    action_detail_text = f"{action_text}\n{compact_strategy}"
+    price_text = (
+        f"买 {entry_text} / 卖 {target_text}\n盈亏比 {rr_ratio:.2f}"
+        if rr_ratio
+        else f"买 {entry_text} / 卖 {target_text}"
+    )
+    risk_text = f"{getattr(row, 'mainline_risk_flag', '--')}\n总分 {row.total_score:.1f}"
+    return {
+        "signature": (
+            symbol,
+            execution_status,
+            stock_name,
+            stock_id,
+            identity_text,
+            theme_text,
+            str(mainline_rank),
+            compact_role,
+            f"{getattr(row, 'mainline_window_score', 0.0):.1f}",
+            risk_text,
+            compact_strategy,
+            f"{getattr(row, 'mainline_strength_score', row.theme_score):.1f}",
+            leader_level_text,
+            f"{row.total_score:.1f}",
+            f"{strategy_scores['leader_model']:.0f}",
+            f"{strategy_scores['main_force']:.0f}",
+            f"{strategy_scores['board_attack']:.0f}",
+            f"{strategy_scores['value_recovery']:.0f}",
+            f"{strategy_scores['tail_buy']:.0f}",
+            f"{strategy_scores['one_day_hold']:.0f}",
+            action_detail_text,
+            action_text,
+            catalyst_text,
+            signal_date_text,
+            price_text,
+            row_tooltip,
+        ),
+        "row_tooltip": row_tooltip,
+        "identity_text": identity_text,
+        "identity_data": {
+            "symbol": symbol,
+            "stock_name": stock_name,
+            "stock_id": stock_id,
+            "execution_status": execution_status,
+            "badge": identity_badge,
+            "heat_score": float(getattr(row, "mainline_strength_score", getattr(row, "theme_score", row.total_score)) or 0.0),
+        },
+        "theme_text": theme_text,
+        "theme_data": {
+            "mainline_tag": mainline_tag,
+            "mainline_role": getattr(row, "mainline_role", ""),
+            "symbol": row.symbol,
+        },
+        "action_detail_text": action_detail_text,
+        "price_text": price_text,
+        "price_data": {
+            "symbol": row.symbol,
+            "entry_price": entry_price,
+            "target_price": target_price,
+            "rr_ratio": rr_ratio,
+            "upside_pct": price_snapshot["upside_pct"],
+        },
+        "risk_text": risk_text,
+        "base_values": {
+            0: _compact_daily_pool_status(execution_status),
+            2: stock_id,
+            3: row.symbol,
+            5: str(mainline_rank),
+            6: compact_role,
+            7: f"{getattr(row, 'mainline_window_score', 0.0):.1f}",
+            9: compact_strategy,
+            10: f"{getattr(row, 'mainline_strength_score', row.theme_score):.1f}",
+            11: leader_level_text,
+            12: f"{row.total_score:.1f}",
+            13: f"{strategy_scores['leader_model']:.0f}",
+            14: f"{strategy_scores['main_force']:.0f}",
+            15: f"{strategy_scores['board_attack']:.0f}",
+            16: f"{strategy_scores['value_recovery']:.0f}",
+            17: f"{strategy_scores['tail_buy']:.0f}",
+            18: f"{strategy_scores['one_day_hold']:.0f}",
+            20: action_text,
+            21: catalyst_text,
+            22: signal_date_text,
+        },
+    }
+
+
+def _build_monitor_row_render_payload(window, row) -> dict[str, object]:
+    stock_name = window._stock_name_for_symbol(row.symbol)
+    stock_id = window._stock_id_for_symbol(row.symbol)
+    action_text = window._display_action(row.action)
+    label_text = window._display_label(row.label)
+    score_text = str(row.score)
+    close_text = f"{row.close:.2f}"
+    background, foreground = signal_colors(row.action, row.label)
+    tooltip = (
+        f"{stock_name} ({stock_id})\n"
+        f"交易标识：{row.symbol}\n动作：{action_text}\n"
+        f"信号：{label_text}\n评分：{row.score}"
+    )
+    identity_text = f"{stock_name}  {stock_id}\n{row.symbol or '--'} | 优先 {label_text}"
+    action_text_compact = f"{action_text} / {label_text}"
+    return {
+        "signature": (
+            stock_name,
+            stock_id,
+            row.symbol,
+            action_text,
+            label_text,
+            score_text,
+            close_text,
+            row.signal_date,
+            tooltip,
+        ),
+        "background": background,
+        "foreground": foreground,
+        "tooltip": tooltip,
+        "action_tooltip": f"{stock_name} ({stock_id})",
+        "identity_text": identity_text,
+        "identity_data": {
+            "symbol": row.symbol,
+            "stock_name": stock_name,
+            "stock_id": stock_id,
+            "badge": label_text,
+        },
+        "action_badge_text": action_text_compact,
+        "base_values": {
+            1: stock_id,
+            2: row.symbol,
+            4: label_text,
+            5: score_text,
+            6: close_text,
+            7: row.signal_date,
+        },
+    }
+
+
+def _build_theme_heat_row_render_payload(row) -> dict[str, object]:
+    values = {
+        0: row.theme_name,
+        1: f"{row.strength_score:.1f}",
+        2: f"{row.continuation_score:.1f}",
+        3: f"{getattr(row, 'window_score', 0.0):.1f}",
+        4: f"{getattr(row, 'divergence_score', 0.0):.1f}",
+        5: f"{row.news_score:.1f}",
+        6: str(row.leader_count),
+        7: str(row.theme_rank),
+        8: row.risk_flag,
+    }
+    return {
+        "signature": tuple(values[index] for index in range(9)),
+        "base_values": values,
+    }
+
+
+def _build_leader_row_render_payload(window, leader) -> dict[str, object]:
+    stock_name = leader.stock_name
+    stock_id = leader.stock_id
+    action_text = window._display_action(leader.action)
+    role_text = _display_mainline_role(getattr(leader, "mainline_role", ""))
+    tooltip = (
+        f"{stock_name} ({stock_id})\n"
+        f"题材：{leader.theme_name}\n"
+        f"角色：{role_text}\n"
+        f"动作：{action_text}\n"
+        f"风险：{getattr(leader, 'mainline_risk_flag', '--')}"
+    )
+    identity_text = f"{stock_name}  {stock_id}\n{leader.symbol or '--'} | 优先 {action_text}"
+    values = {
+        1: stock_id,
+        2: leader.theme_name,
+        3: window._display_leader_level(leader.leader_level),
+        4: role_text,
+        5: f"{getattr(leader, 'mainline_window_score', 0.0):.1f}",
+        6: getattr(leader, "mainline_risk_flag", "--"),
+        7: f"{leader.leader_score:.1f}",
+        8: action_text,
+        9: leader.rationale,
+    }
+    return {
+        "signature": (
+            identity_text,
+            tuple(values[index] for index in range(1, 10)),
+            tooltip,
+        ),
+        "tooltip": tooltip,
+        "identity_text": identity_text,
+        "identity_data": {
+            "symbol": leader.symbol,
+            "stock_name": stock_name,
+            "stock_id": stock_id,
+            "badge": action_text,
+        },
+        "base_values": values,
+    }
+
+
+def _order_intent_side_palette(side_key: str) -> tuple[QColor, QColor]:
+    if side_key == "BUY":
+        return QColor("#123124"), QColor("#7CE5C2")
+    if side_key in {"SELL", "REDUCE"}:
+        return QColor("#351820"), QColor("#FFB4BC")
+    if side_key == "WATCH":
+        return QColor("#332712"), QColor("#FFD46B")
+    return QColor("#1A2430"), QColor("#F4F7FB")
+
+
+def _build_order_intent_row_render_payload(
+    window,
+    item,
+    *,
+    available_cash: float,
+    risk_profile: str,
+    recommendation_map: dict[str, object],
+    broker_summary: dict[str, object],
+) -> dict[str, object]:
+    details = describe_order_intent(item, available_cash=available_cash, risk_profile=risk_profile)
+    recommendation = recommendation_map.get(item.symbol)
+    mainline_gate = _mainline_gate_text(recommendation)
+    available_qty = _order_available_quantity(window, item.symbol)
+    risk_lamp = _order_risk_lamp_text(
+        window,
+        item,
+        recommendation=recommendation,
+        details=details,
+        summary=broker_summary,
+        available_qty=available_qty,
+    )
+    priority = str(details["priority"])
+    action_text = window._display_action(item.side)
+    side_key = str(getattr(item, "side", "") or "").upper()
+    stock_name = window._stock_name_for_symbol(item.symbol)
+    stock_id = window._stock_id_for_symbol(item.symbol)
+    tooltip_parts = [
+        f"代码：{item.symbol}",
+        f"主线闸门：{mainline_gate}",
+        f"风险灯：{risk_lamp}",
+        f"完整逻辑：{item.reason}",
+    ]
+    if side_key in {"SELL", "REDUCE"}:
+        if available_qty is None:
+            tooltip_parts.append("持仓检查：缺少可卖持仓")
+        else:
+            tooltip_parts.append(f"持仓检查：可卖 {available_qty} 股")
+    if details["checks"]:
+        tooltip_parts.append("检查项：" + " / ".join(details["checks"]))
+    tooltip_text = "\n".join(tooltip_parts)
+    identity_text = f"{stock_name}  {stock_id}\n{item.symbol or '--'} | 优先 {priority}"
+    action_item_text = f"{action_text} / {priority}"
+    action_tooltip = (
+        f"动作：{action_text}\n"
+        f"优先级：{priority}\n"
+        f"主线闸门：{mainline_gate}\n"
+        f"风险灯：{risk_lamp}"
+    )
+    return {
+        "signature": (
+            getattr(item, "symbol", ""),
+            getattr(item, "side", ""),
+            getattr(item, "price", 0.0),
+            getattr(item, "quantity", 0),
+            getattr(item, "stop_price", 0.0),
+            getattr(item, "target_price", 0.0),
+            getattr(item, "signal_date", ""),
+            getattr(item, "reason", ""),
+            priority,
+            details["estimated_capital"],
+            details["risk_reward_ratio"],
+            details["reason_summary"],
+            tuple(details["checks"]),
+            mainline_gate,
+            risk_lamp,
+            available_qty,
+            identity_text,
+            action_item_text,
+            tooltip_text,
+        ),
+        "details": details,
+        "risk_lamp": risk_lamp,
+        "tooltip_text": tooltip_text,
+        "identity_text": identity_text,
+        "identity_tooltip": "\n".join(
+            [
+                f"{stock_name} ({stock_id})",
+                f"交易标识：{item.symbol}",
+                f"优先级：{priority}",
+                f"预计资金：{details['estimated_capital']:,.0f}",
+                f"盈亏比：{details['risk_reward_ratio']:.2f}",
+            ]
+        ),
+        "identity_data": {
+            "symbol": item.symbol,
+            "stock_name": stock_name,
+            "stock_id": stock_id,
+            "badge": priority,
+            "risk_reward_ratio": float(details["risk_reward_ratio"] or 0.0),
+            "estimated_capital": float(details["estimated_capital"] or 0.0),
+        },
+        "identity_palette": _priority_palette(priority),
+        "action_item_text": action_item_text,
+        "action_tooltip": action_tooltip,
+        "action_palette": _order_intent_side_palette(side_key),
+        "column_values": {
+            0: priority,
+            3: f"{item.price:.2f}",
+            4: str(item.quantity),
+            5: f"{details['estimated_capital']:,.0f}",
+            6: f"{details['risk_reward_ratio']:.2f}",
+            7: f"{item.stop_price:.2f}",
+            8: f"{item.target_price:.2f}",
+            9: mainline_gate,
+            10: item.signal_date,
+            11: details["reason_summary"],
+            12: risk_lamp,
+        },
+    }
+
+
+def _broker_profile_signature(profile) -> tuple:
+    if profile is None:
+        return ()
+    if hasattr(profile, "__dict__"):
+        items = vars(profile).items()
+    else:
+        items = ((name, getattr(profile, name)) for name in dir(profile) if not name.startswith("_"))
+    return tuple(sorted((str(key), repr(value)) for key, value in items))
+
+
+def _broker_status_recommendation_signature(rows: list) -> tuple:
+    return tuple(
+        (
+            getattr(row, "symbol", ""),
+            getattr(row, "stock_name", ""),
+            getattr(row, "action", ""),
+            getattr(row, "entry_price", None),
+            getattr(row, "stop_price", None),
+            getattr(row, "target_price", None),
+            getattr(row, "theme_name", ""),
+            getattr(row, "theme_rank", 0),
+            getattr(row, "mainline_tag", ""),
+            getattr(row, "mainline_rank", 0),
+            getattr(row, "mainline_role", ""),
+            getattr(row, "mainline_window_score", 0.0),
+            getattr(row, "mainline_risk_flag", ""),
+            getattr(row, "total_score", 0.0),
+        )
+        for row in rows
+    )
+
+
+def _broker_status_inputs_signature(window, profile, risk_profile: str) -> tuple:
+    holdings_signature = tuple(
+        (
+            getattr(item, "symbol", ""),
+            int(getattr(item, "quantity", 0) or 0),
+            int(getattr(item, "available", 0) or 0),
+            float(getattr(item, "cost_price", 0.0) or 0.0),
+            float(getattr(item, "market_value", 0.0) or 0.0),
+        )
+        for item in getattr(window, "holdings", []) or []
+    )
+    order_intents_signature = tuple(
+        (
+            getattr(item, "symbol", ""),
+            getattr(item, "side", ""),
+            float(getattr(item, "price", 0.0) or 0.0),
+            int(getattr(item, "quantity", 0) or 0),
+            float(getattr(item, "stop_price", 0.0) or 0.0),
+            float(getattr(item, "target_price", 0.0) or 0.0),
+            getattr(item, "signal_date", ""),
+            getattr(item, "reason", ""),
+            getattr(item, "opportunity_tier", ""),
+            getattr(item, "risk_flag", ""),
+            getattr(item, "signal_source", ""),
+            float(getattr(item, "risk_reward_ratio", 0.0) or 0.0),
+        )
+        for item in getattr(window, "order_intents", []) or []
+    )
+    cash_snapshot = getattr(window, "cash_snapshot", None)
+    cash_signature = (
+        float(getattr(cash_snapshot, "available_cash", 0.0) or 0.0),
+        float(getattr(cash_snapshot, "total_assets", 0.0) or 0.0),
+    ) if cash_snapshot is not None else ()
+    recommendations_signature = _broker_status_recommendation_signature(list(getattr(window, "daily_pool_rows", []) or []))
+    return (
+        _broker_profile_signature(profile),
+        str(risk_profile or ""),
+        holdings_signature,
+        order_intents_signature,
+        cash_signature,
+        recommendations_signature,
+    )
+
+
+def _trade_recap_inputs_signature(window) -> tuple:
+    submission_records_signature = tuple(
+        tuple(sorted((str(key), repr(value)) for key, value in dict(item).items()))
+        for item in list(getattr(window, "order_submission_records", []) or [])
+        if isinstance(item, dict)
+    )
+    holdings_signature = tuple(
+        (
+            getattr(item, "symbol", ""),
+            int(getattr(item, "quantity", 0) or 0),
+            int(getattr(item, "available", 0) or 0),
+            float(getattr(item, "cost_price", 0.0) or 0.0),
+            float(getattr(item, "market_value", 0.0) or 0.0),
+        )
+        for item in getattr(window, "holdings", []) or []
+    )
+    order_intents_signature = tuple(
+        (
+            getattr(item, "symbol", ""),
+            getattr(item, "side", ""),
+            float(getattr(item, "price", 0.0) or 0.0),
+            int(getattr(item, "quantity", 0) or 0),
+            float(getattr(item, "stop_price", 0.0) or 0.0),
+            float(getattr(item, "target_price", 0.0) or 0.0),
+            getattr(item, "signal_date", ""),
+            getattr(item, "reason", ""),
+        )
+        for item in getattr(window, "order_intents", []) or []
+    )
+    order_log_signature = tuple(str(item) for item in list(getattr(window, "order_submission_log", []) or []))
+    return (
+        submission_records_signature,
+        holdings_signature,
+        order_intents_signature,
+        order_log_signature,
+    )
+
+
+def _cached_trade_recap_summary(window) -> dict[str, object]:
+    signature = _trade_recap_inputs_signature(window)
+    if getattr(window, "_trade_recap_summary_signature_v1", None) != signature:
+        window._trade_recap_summary_cache_v1 = summarize_trade_recap(
+            submission_records=window.order_submission_records,
+            holdings=window.holdings,
+            order_intents=window.order_intents,
+            order_log=window.order_submission_log,
+        )
+        window._trade_recap_summary_signature_v1 = signature
+    return dict(getattr(window, "_trade_recap_summary_cache_v1", {}) or {})
+
+
 def _brief_panel_text(title: str, conclusion: str, risk: str, next_step: str) -> str:
     return "\n".join(
         [
@@ -478,6 +1001,8 @@ def _strategy_reason_copy(row, strategy_name: str) -> str:
         return f"题材 {mainline_tag} 更适合尾盘回流后隔夜，催化 {catalyst}，当前尾盘分 {score:.1f}。"
     if strategy_name == "一日持股法":
         return f"题材 {mainline_tag} 具备隔日博弈空间，催化 {catalyst}，当前隔日节奏分 {score:.1f}。"
+    if strategy_name == "半仓持股法":
+        return f"主线 {mainline_tag} 更适合熟悉单票滚动，底仓半仓拿住、机动仓做高抛低吸，当前半仓分 {score:.1f}。"
     if strategy_name == "价值低吸":
         return f"主线 {mainline_tag} 有修复预期，位置和承接更偏低吸，当前低吸分 {score:.1f}。"
     if strategy_name == "主力雷达":
@@ -511,6 +1036,21 @@ def _strategy_position_hint(strategy_name: str, focus_row) -> str:
     if action in {"SELL", "REDUCE"}:
         return "当前以处理持仓为主，不新增仓位。"
     return strategy_position_hint_meta(strategy_name).strip()
+
+
+def _strategy_buy_position(strategy_name: str, focus_row) -> str:
+    action = str(getattr(focus_row, "action", "") or "").upper()
+    if action in {"SELL", "REDUCE"}:
+        return "当前不新增买入仓位，只处理存量仓。"
+    return strategy_buy_position_meta(strategy_name).strip()
+
+
+def _strategy_sell_position(strategy_name: str, focus_row) -> str:
+    return strategy_sell_position_meta(strategy_name).strip()
+
+
+def _strategy_execution_discipline(strategy_name: str, focus_row) -> str:
+    return strategy_execution_discipline_meta(strategy_name).strip()
 
 
 def _strategy_no_go_text(strategy_name: str, focus_row) -> str:
@@ -699,7 +1239,7 @@ def _order_available_quantity(window, symbol: str) -> int | None:
     return None
 
 
-def _order_risk_lamp_text(window, item, recommendation=None, details=None, summary=None) -> str:
+def _order_risk_lamp_text(window, item, recommendation=None, details=None, summary=None, available_qty=_UNSET) -> str:
     details = details or {}
     summary = summary or getattr(window, "last_broker_execution_summary", None) or {}
     blockers = list(summary.get("blockers", []) or [])
@@ -707,7 +1247,7 @@ def _order_risk_lamp_text(window, item, recommendation=None, details=None, summa
     side = str(getattr(item, "side", "")).upper()
     quantity = int(getattr(item, "quantity", 0) or 0)
     symbol = getattr(item, "symbol", "")
-    available = _order_available_quantity(window, symbol)
+    available = _order_available_quantity(window, symbol) if available_qty is _UNSET else available_qty
 
     if side in {"SELL", "REDUCE"}:
         if available is None:
@@ -873,7 +1413,7 @@ def build_recommend_dispatch_snapshot(
 
     selected = selected_row or top_pick
     if selected is None:
-        focus = _brief_panel_text("焦点审查", "等待选择股票", "暂无焦点风险", "请先从推荐池选择一只股票。")
+        focus = _brief_panel_text("焦点审查", "等待选择股票", "暂无焦点风险", "请先从机会池选择一只股票。")
     else:
         execution_status = execution_status_by_symbol.get(getattr(selected, "symbol", ""), "待观察")
         action_text = display_action_fn(selected.action) if callable(display_action_fn) else getattr(selected, "action", "")
@@ -887,7 +1427,7 @@ def build_recommend_dispatch_snapshot(
         if getattr(selected, "action", "") == "BUY" and execution_status == "待观察":
             next_step = "可直接推送审查。"
         elif execution_status == "已送审":
-            next_step = "已进入审查，可切交易页。"
+            next_step = "已进入审查，可切执行中控。"
         elif execution_status == "已提交":
             next_step = "已提交，跟踪成交。"
         elif execution_status == "提交失败":
@@ -914,9 +1454,9 @@ def build_recommend_dispatch_snapshot(
             f"先处理 {pending_review[0].stock_name}"
             if pending_review
             else (
-                f"转交易页跟踪 {queued_rows[0].stock_name}"
+                f"转执行中控跟踪 {queued_rows[0].stock_name}"
                 if queued_rows
-                else ("复核失败单" if failed_rows else "继续从推荐池挑选高优先票。")
+                else ("复核失败单" if failed_rows else "继续从机会池挑选高优先票。")
             )
         ),
     )
@@ -989,7 +1529,7 @@ def build_overview_command_snapshot(
     if execution_summary["failed"] > 0:
         execution_lines.append("下一步：先处理失败单，再考虑新开仓。")
     elif execution_summary["reviewing"] > 0:
-        execution_lines.append("下一步：有票已送审，先去交易页完成最后确认。")
+        execution_lines.append("下一步：有票已送审，先去交易完成最后确认。")
     elif execution_summary["submitted"] > 0:
         execution_lines.append("下一步：已有持仓在执行，优先盯成交质量和减仓位。")
     else:
@@ -1507,7 +2047,7 @@ def refresh_priority_cards(window, plan) -> None:
         (
             f"下一步: {resolved_primary_strategy(top_pick, default='掘龙决策') or '掘龙决策'} | {top_pick.theme_name or '未分类'}"
             if top_pick
-            else "下一步: 等待推荐池刷新。"
+            else "下一步: 等待机会池刷新。"
         ),
     )
     refresh_strategy_path_panel(window, plan, top_theme, top_strategy_name, top_pick)
@@ -1712,6 +2252,9 @@ def refresh_strategy_focus_detail(window, strategy_score_fields) -> None:
         f"- 风险等级：{_strategy_risk_level(canonical_strategy_name, focus_row)}",
         f"- 适合资金：{_strategy_capital_style(canonical_strategy_name)}",
         f"- 仓位建议：{_strategy_position_hint(canonical_strategy_name, focus_row)}",
+        f"- 买入仓位：{_strategy_buy_position(canonical_strategy_name, focus_row)}",
+        f"- 卖出仓位：{_strategy_sell_position(canonical_strategy_name, focus_row)}",
+        f"- 执行纪律：{_strategy_execution_discipline(canonical_strategy_name, focus_row)}",
         f"- 禁做情形：{_strategy_no_go_text(canonical_strategy_name, focus_row)}",
         "",
         "商品说明",
@@ -1730,6 +2273,9 @@ def refresh_strategy_focus_detail(window, strategy_score_fields) -> None:
         f"- 确认：{_strategy_confirm_signal_text(focus_row)}",
         f"- 失效：{_strategy_invalidation_signal_text(focus_row)}",
         f"- 仓位：{_strategy_position_hint(canonical_strategy_name, focus_row)}",
+        f"- 买入：{_strategy_buy_position(canonical_strategy_name, focus_row)}",
+        f"- 卖出：{_strategy_sell_position(canonical_strategy_name, focus_row)}",
+        f"- 纪律：{_strategy_execution_discipline(canonical_strategy_name, focus_row)}",
         "",
         "为什么是它",
         f"- 焦点：{example_names}",
@@ -1895,6 +2441,7 @@ def refresh_strategy_pack_panels(window, strategy_score_fields) -> None:
             lines.append(
                 f"- {item.stock_name} | {_strategy_score_value(item, canonical_strategy_name):.1f} | {item.theme_name or '未分类'} | {window._display_action(item.action)}"
             )
+        lines.append(f"纪律：{_strategy_execution_discipline(canonical_strategy_name, top)}")
         lines.append(f"逻辑：{top.rationale[:88]}")
         signature = (
             "summary",
@@ -1927,27 +2474,18 @@ def refresh_theme_heat_panels(window, strategy_score_fields) -> None:
             getattr(window, "theme_heat_rows", []),
             attr_name="theme_name",
         )
-        theme_signature = tuple(
-            (
-                item.theme_name,
-                f"{item.strength_score:.1f}",
-                f"{item.continuation_score:.1f}",
-                f"{getattr(item, 'window_score', 0.0):.1f}",
-                f"{getattr(item, 'divergence_score', 0.0):.1f}",
-                f"{item.news_score:.1f}",
-                str(item.leader_count),
-                str(item.theme_rank),
-                item.risk_flag,
-            )
-            for item in window.theme_heat_rows
-        )
+        theme_payloads = [_build_theme_heat_row_render_payload(item) for item in window.theme_heat_rows]
+        theme_signature = tuple(payload["signature"] for payload in theme_payloads)
         previous_theme_signature = tuple(getattr(window, "_theme_heat_table_signature", ()))
         if previous_theme_signature != theme_signature:
             with _batched_table_update(window.theme_heat_table):
                 window.theme_heat_table.setRowCount(len(window.theme_heat_rows))
-                for row_index, values in enumerate(theme_signature):
-                    for column, value in enumerate(values):
-                        window.theme_heat_table.setItem(row_index, column, QTableWidgetItem(value))
+                for row_index, payload in enumerate(theme_payloads):
+                    if row_index < len(previous_theme_signature) and previous_theme_signature[row_index] == theme_signature[row_index]:
+                        continue
+                    for column, value in dict(payload["base_values"]).items():
+                        item = _ensure_table_item(window.theme_heat_table, row_index, column, value)
+                        _set_tooltip_if_changed(item, "")
             window._theme_heat_table_signature = theme_signature
         current_row = window.theme_heat_table.currentRow()
         if window.theme_heat_rows and (
@@ -1965,37 +2503,20 @@ def refresh_theme_heat_panels(window, strategy_score_fields) -> None:
             getattr(window, "leader_candidates", []),
             attr_name="stock_id",
         )
-        leader_signature = tuple(
-            (
-                item.stock_name,
-                item.stock_id,
-                item.theme_name,
-                window._display_leader_level(item.leader_level),
-                _display_mainline_role(getattr(item, "mainline_role", "")),
-                f"{getattr(item, 'mainline_window_score', 0.0):.1f}",
-                getattr(item, "mainline_risk_flag", "--"),
-                f"{item.leader_score:.1f}",
-                window._display_action(item.action),
-                item.rationale,
-            )
-            for item in window.leader_candidates
-        )
+        leader_payloads = [_build_leader_row_render_payload(window, item) for item in window.leader_candidates]
+        leader_signature = tuple(payload["signature"] for payload in leader_payloads)
         previous_leader_signature = tuple(getattr(window, "_leader_table_signature", ()))
         if previous_leader_signature != leader_signature:
             with _batched_table_update(window.leader_table):
                 window.leader_table.setRowCount(len(window.leader_candidates))
-                for row_index, values in enumerate(leader_signature):
-                    leader = window.leader_candidates[row_index]
-                    tooltip = (
-                        f"{leader.stock_name} ({leader.stock_id})\n"
-                        f"题材：{leader.theme_name}\n"
-                        f"角色：{_display_mainline_role(getattr(leader, 'mainline_role', ''))}\n"
-                        f"动作：{window._display_action(leader.action)}\n"
-                        f"风险：{getattr(leader, 'mainline_risk_flag', '--')}"
-                    )
-                    for column, value in enumerate(values):
-                        item = QTableWidgetItem(value)
-                        item.setToolTip(tooltip)
+                for row_index, leader in enumerate(window.leader_candidates):
+                    if row_index < len(previous_leader_signature) and previous_leader_signature[row_index] == leader_signature[row_index]:
+                        continue
+                    payload = leader_payloads[row_index]
+                    tooltip = str(payload["tooltip"])
+                    for column, value in dict(payload["base_values"]).items():
+                        item = _ensure_table_item(window.leader_table, row_index, column, value)
+                        _set_tooltip_if_changed(item, tooltip)
                         if column == 6:
                             risk_label = str(value)
                             if risk_label == "高":
@@ -2011,10 +2532,11 @@ def refresh_theme_heat_panels(window, strategy_score_fields) -> None:
                             action_bg, action_fg = signal_colors(leader.action, leader.action)
                             item.setBackground(action_bg)
                             item.setForeground(action_fg)
-                        window.leader_table.setItem(row_index, column, item)
-                    identity_item = _build_identity_table_item(window, leader.symbol, badge=window._display_action(leader.action))
-                    identity_item.setToolTip(tooltip)
-                    window.leader_table.setItem(row_index, 0, identity_item)
+                    identity_item = _ensure_table_item(window.leader_table, row_index, 0, str(payload["identity_text"]))
+                    identity_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                    _apply_table_item_font(identity_item, bold=True)
+                    _set_tooltip_if_changed(identity_item, tooltip)
+                    _set_item_data_if_changed(identity_item, QT_USER_ROLE, payload["identity_data"])
             window._leader_table_signature = leader_signature
         current_row = window.leader_table.currentRow()
         if window.leader_candidates and (
@@ -2044,38 +2566,15 @@ def populate_filtered_daily_pool_table(window) -> None:
         )
         for row in rows
     }
-    table_signature = tuple(
-        (
-            getattr(row, "symbol", ""),
-            execution_status_by_symbol.get(getattr(row, "symbol", ""), ""),
-            getattr(row, "stock_name", ""),
-            getattr(row, "stock_id", ""),
-            getattr(row, "mainline_tag", ""),
-            getattr(row, "theme_name", ""),
-            getattr(row, "mainline_rank", getattr(row, "theme_rank", "")),
-            getattr(row, "mainline_role", ""),
-            getattr(row, "mainline_window_score", 0.0),
-            getattr(row, "mainline_risk_flag", "--"),
-            getattr(row, "primary_strategy", ""),
-            getattr(row, "mainline_strength_score", getattr(row, "theme_score", 0.0)),
-            getattr(row, "leader_level", ""),
-            getattr(row, "total_score", 0.0),
-            _strategy_score_value(row, "龙头模型"),
-            _strategy_score_value(row, "主力雷达"),
-            _strategy_score_value(row, "擒龙打板"),
-            _strategy_score_value(row, "价值低吸"),
-            _strategy_score_value(row, "尾盘买入法"),
-            _strategy_score_value(row, "一日持股法"),
-            _strategy_score_value(row, "掘龙决策"),
-            getattr(row, "action", ""),
-            getattr(row, "catalyst", ""),
-            getattr(row, "signal_date", ""),
-            getattr(row, "entry_price", None),
-            getattr(row, "stop_price", None),
-            getattr(row, "target_price", None),
+    render_payloads = [
+        _build_daily_pool_row_render_payload(
+            window,
+            row,
+            execution_status_by_symbol.get(getattr(row, "symbol", ""), "待观察"),
         )
         for row in rows
-    )
+    ]
+    table_signature = tuple(payload["signature"] for payload in render_payloads)
     if tuple(getattr(window, "_daily_pool_table_signature", ())) == table_signature:
         if rows:
             _select_row_by_symbol(window.daily_pool_table, rows, selected_symbol)
@@ -2086,70 +2585,17 @@ def populate_filtered_daily_pool_table(window) -> None:
         for row_index, row in enumerate(rows):
             if row_index < len(previous_signature) and previous_signature[row_index] == table_signature[row_index]:
                 continue
-            execution_status = (
-                window._execution_status_for_symbol(row.symbol)
-                if hasattr(window, "_execution_status_for_symbol")
-                else "待观察"
-            )
-            row_tooltip = _daily_pool_row_tooltip(window, row, execution_status)
-            price_snapshot = _daily_pool_price_snapshot(row)
-            entry_price = float(price_snapshot["entry"] or 0.0)
-            target_price = float(price_snapshot["target"] or 0.0)
-            entry_text = f"{entry_price:.2f}" if entry_price else "--"
-            target_text = f"{target_price:.2f}" if target_price else "--"
-            values = {
-                0: _compact_daily_pool_status(execution_status),
-                2: row.stock_id or window._stock_id_for_symbol(row.symbol),
-                3: row.symbol,
-                5: str(getattr(row, "mainline_rank", row.theme_rank) or "--"),
-                6: _compact_daily_pool_role(getattr(row, "mainline_role", "")),
-                7: f"{getattr(row, 'mainline_window_score', 0.0):.1f}",
-                8: getattr(row, "mainline_risk_flag", "--"),
-                9: _compact_daily_pool_strategy(getattr(row, "primary_strategy", "") or "掘龙决策"),
-                10: f"{getattr(row, 'mainline_strength_score', row.theme_score):.1f}",
-                11: _shorten_daily_pool_text(window._display_leader_level(row.leader_level), 6),
-                12: f"{row.total_score:.1f}",
-                13: f"{_strategy_score_value(row, '龙头模型'):.0f}",
-                14: f"{_strategy_score_value(row, '主力雷达'):.0f}",
-                15: f"{_strategy_score_value(row, '擒龙打板'):.0f}",
-                16: f"{_strategy_score_value(row, '价值低吸'):.0f}",
-                17: f"{_strategy_score_value(row, '尾盘买入法'):.0f}",
-                18: f"{_strategy_score_value(row, '一日持股法'):.0f}",
-                20: _compact_daily_pool_action(row.action),
-                21: _shorten_daily_pool_text(row.catalyst, 8),
-                22: _compact_daily_pool_date(row.signal_date),
-                23: f"买 {entry_text} / 卖 {target_text}",
-            }
-            for column, value in values.items():
+            payload = render_payloads[row_index]
+            execution_status = execution_status_by_symbol.get(getattr(row, "symbol", ""), "待观察")
+            row_tooltip = str(payload["row_tooltip"])
+            for column, value in dict(payload["base_values"]).items():
                 table_item = _ensure_table_item(window.daily_pool_table, row_index, column, value)
-                if hasattr(table_item, "setToolTip") and table_item.toolTip() != row_tooltip:
-                    table_item.setToolTip(row_tooltip)
+                _set_tooltip_if_changed(table_item, row_tooltip)
                 if column == 0:
-                    if execution_status == "已提交":
-                        background, foreground = submission_colors({"order_status": "SUBMITTED", "fill_status": ""})
-                        table_item.setBackground(background)
-                        table_item.setForeground(foreground)
-                    elif execution_status == "已送审":
-                        background, foreground = submission_colors({"order_status": "", "fill_status": "PENDING"})
-                        table_item.setBackground(background)
-                        table_item.setForeground(foreground)
-                    elif execution_status == "提交失败":
-                        background, foreground = submission_colors({"order_status": "FAILED", "fill_status": "REJECTED"})
-                        table_item.setBackground(background)
-                        table_item.setForeground(foreground)
+                    background, foreground = _daily_pool_status_palette(execution_status)
+                    table_item.setBackground(background)
+                    table_item.setForeground(foreground)
                     table_item.setTextAlignment(Qt.AlignCenter)
-                    _apply_table_item_font(table_item, bold=True)
-                elif column == 8:
-                    risk_label = str(value)
-                    if risk_label == "高":
-                        table_item.setBackground(QColor("#23181C"))
-                        table_item.setForeground(QColor("#D7AAB0"))
-                    elif risk_label == "中":
-                        table_item.setBackground(QColor("#242116"))
-                        table_item.setForeground(QColor("#D8C07D"))
-                    else:
-                        table_item.setBackground(QColor("#16231D"))
-                        table_item.setForeground(QColor("#9DCBB3"))
                     _apply_table_item_font(table_item, bold=True)
                 elif column == 12:
                     try:
@@ -2187,38 +2633,34 @@ def populate_filtered_daily_pool_table(window) -> None:
                 elif column == 23:
                     table_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                     _apply_table_item_font(table_item, mono=True, bold=True)
-            identity_item = _build_daily_pool_identity_item(window, row, execution_status)
-            if identity_item.toolTip() != row_tooltip:
-                identity_item.setToolTip(row_tooltip)
-            window.daily_pool_table.setItem(row_index, 1, identity_item)
+            identity_item = _ensure_table_item(window.daily_pool_table, row_index, 1, str(payload["identity_text"]))
+            identity_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            _apply_table_item_font(identity_item, bold=True)
+            _set_tooltip_if_changed(identity_item, row_tooltip)
+            _set_item_data_if_changed(identity_item, QT_USER_ROLE, payload["identity_data"])
 
             theme_item = _ensure_table_item(
                 window.daily_pool_table,
                 row_index,
                 4,
-                f"{getattr(row, 'mainline_tag', '') or row.theme_name or '未分类'}\n{_compact_daily_pool_role(getattr(row, 'mainline_role', ''))} | 位次 {getattr(row, 'mainline_rank', row.theme_rank) or '--'}",
+                str(payload["theme_text"]),
             )
             theme_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             theme_item.setBackground(QColor("#19212A"))
             theme_item.setForeground(QColor("#D2BE93"))
             _apply_table_item_font(theme_item, bold=True)
-            if theme_item.toolTip() != row_tooltip:
-                theme_item.setToolTip(row_tooltip)
+            _set_tooltip_if_changed(theme_item, row_tooltip)
             _set_item_data_if_changed(
                 theme_item,
                 QT_USER_ROLE,
-                {
-                    "mainline_tag": getattr(row, "mainline_tag", "") or row.theme_name or "未分类",
-                    "mainline_role": getattr(row, "mainline_role", ""),
-                    "symbol": row.symbol,
-                },
+                payload["theme_data"],
             )
 
             action_item = _ensure_table_item(
                 window.daily_pool_table,
                 row_index,
                 19,
-                f"{_compact_daily_pool_action(row.action)}\n{_compact_daily_pool_strategy(getattr(row, 'primary_strategy', '') or '掘龙决策')}",
+                str(payload["action_detail_text"]),
             )
             action_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             if row.action == "BUY":
@@ -2231,43 +2673,32 @@ def populate_filtered_daily_pool_table(window) -> None:
                 action_item.setBackground(QColor("#171F28"))
                 action_item.setForeground(QColor("#D8E1EB"))
             _apply_table_item_font(action_item, bold=True)
-            if action_item.toolTip() != row_tooltip:
-                action_item.setToolTip(row_tooltip)
-
-            rr_ratio = float(price_snapshot["rr_ratio"] or 0.0)
+            _set_tooltip_if_changed(action_item, row_tooltip)
             price_item = _ensure_table_item(
                 window.daily_pool_table,
                 row_index,
                 23,
-                f"买 {entry_text} / 卖 {target_text}\n盈亏比 {rr_ratio:.2f}" if rr_ratio else f"买 {entry_text} / 卖 {target_text}",
+                str(payload["price_text"]),
             )
+            rr_ratio = float(dict(payload["price_data"]).get("rr_ratio", 0.0) or 0.0)
             price_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             price_item.setBackground(QColor("#16241D" if rr_ratio >= 1.8 else ("#252216" if rr_ratio >= 1.0 else "#231A1C")))
             price_item.setForeground(QColor("#9FCDB6" if rr_ratio >= 1.8 else ("#D5BF80" if rr_ratio >= 1.0 else "#D5A9B1")))
-            if price_item.toolTip() != row_tooltip:
-                price_item.setToolTip(row_tooltip)
+            _set_tooltip_if_changed(price_item, row_tooltip)
             price_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             _set_item_data_if_changed(
                 price_item,
                 QT_USER_ROLE,
-                {
-                    "symbol": row.symbol,
-                    "entry_price": entry_price,
-                    "target_price": target_price,
-                    "rr_ratio": rr_ratio,
-                    "upside_pct": price_snapshot["upside_pct"],
-                },
+                payload["price_data"],
             )
-            risk_item = _ensure_table_item(window.daily_pool_table, row_index, 8, f"{getattr(row, 'mainline_risk_flag', '--')}\n总分 {row.total_score:.1f}")
+            risk_item = _ensure_table_item(window.daily_pool_table, row_index, 8, str(payload["risk_text"]))
             risk_item.setTextAlignment(Qt.AlignCenter)
             risk_item.setBackground(QColor("#23181C" if getattr(row, "mainline_risk_flag", "--") == "高" else ("#252216" if getattr(row, "mainline_risk_flag", "--") == "中" else "#16231D")))
             risk_item.setForeground(QColor("#D7AAB0" if getattr(row, "mainline_risk_flag", "--") == "高" else ("#D5BF80" if getattr(row, "mainline_risk_flag", "--") == "中" else "#9FCDB6")))
             _apply_table_item_font(risk_item, bold=True)
-            if risk_item.toolTip() != row_tooltip:
-                risk_item.setToolTip(row_tooltip)
+            _set_tooltip_if_changed(risk_item, row_tooltip)
     window._daily_pool_table_signature = table_signature
-    if hasattr(window, "_configure_terminal_tables"):
-        window._configure_terminal_tables()
+    _configure_terminal_tables_if_needed(window)
     if rows:
         _select_row_by_symbol(window.daily_pool_table, rows, selected_symbol)
 
@@ -2747,21 +3178,12 @@ def refresh_intraday_monitor(window) -> None:
         rows_to_show = window.scan_rows[:10]
 
     should_beep = False
+    render_payloads: list[dict[str, object]] = []
     table_signature: list[tuple[str, ...]] = []
-    for row_index, row in enumerate(rows_to_show):
-        values = [
-            window._stock_name_for_symbol(row.symbol),
-            window._stock_id_for_symbol(row.symbol),
-            row.symbol,
-            window._display_action(row.action),
-            window._display_label(row.label),
-            str(row.score),
-            f"{row.close:.2f}",
-            row.signal_date,
-        ]
-        background, foreground = signal_colors(row.action, row.label)
-        table_signature.append(tuple(values + [row.action, row.label]))
-
+    for row in rows_to_show:
+        payload = _build_monitor_row_render_payload(window, row)
+        render_payloads.append(payload)
+        table_signature.append(tuple(payload["signature"]))
         recommendation = recommendation_map.get(row.symbol)
         if recommendation and recommendation.theme_rank > window.state.strategy_top_theme_limit:
             alert_state = f"THEME_DROP::{recommendation.theme_rank}"
@@ -2784,38 +3206,32 @@ def refresh_intraday_monitor(window) -> None:
             for row_index, row in enumerate(rows_to_show):
                 if row_index < len(previous_signature) and previous_signature[row_index] == current_signature[row_index]:
                     continue
-                values = list(current_signature[row_index][:-2]) + [updated]
-                background, foreground = signal_colors(row.action, row.label)
-                tooltip = (
-                    f"{window._stock_name_for_symbol(row.symbol)} ({window._stock_id_for_symbol(row.symbol)})\n"
-                    f"交易标识：{row.symbol}\n动作：{window._display_action(row.action)}\n"
-                    f"信号：{window._display_label(row.label)}\n评分：{row.score}"
-                )
-                for column, value in enumerate(values):
-                    item = window.monitor_table.item(row_index, column)
-                    if item is None:
-                        item = QTableWidgetItem(value)
-                        window.monitor_table.setItem(row_index, column, item)
-                    elif item.text() != value:
-                        item.setText(value)
+                payload = render_payloads[row_index]
+                background = payload["background"]
+                foreground = payload["foreground"]
+                tooltip = str(payload["tooltip"])
+                for column, value in dict(payload["base_values"]).items():
+                    item = _ensure_table_item(window.monitor_table, row_index, column, value)
                     item.setBackground(background)
                     item.setForeground(foreground)
-                    if item.toolTip() != tooltip:
-                        item.setToolTip(tooltip)
-                identity_item = _build_identity_table_item(window, row.symbol, badge=window._display_label(row.label))
+                    _set_tooltip_if_changed(item, tooltip)
+                updated_item = _ensure_table_item(window.monitor_table, row_index, 8, updated)
+                updated_item.setBackground(background)
+                updated_item.setForeground(foreground)
+                _set_tooltip_if_changed(updated_item, tooltip)
+                identity_item = _ensure_table_item(window.monitor_table, row_index, 0, str(payload["identity_text"]))
                 identity_item.setBackground(background)
                 identity_item.setForeground(foreground)
-                identity_item.setToolTip(tooltip)
-                window.monitor_table.setItem(row_index, 0, identity_item)
-                action_item = _build_compact_badge_item(
-                    [window._display_action(row.action), window._display_label(row.label)],
-                    tooltip=f"{window._stock_name_for_symbol(row.symbol)} ({window._stock_id_for_symbol(row.symbol)})",
-                    background="#223040",
-                    foreground="#FFD166",
-                )
+                identity_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                _apply_table_item_font(identity_item, bold=True)
+                _set_tooltip_if_changed(identity_item, tooltip)
+                _set_item_data_if_changed(identity_item, QT_USER_ROLE, payload["identity_data"])
+                action_item = _ensure_table_item(window.monitor_table, row_index, 3, str(payload["action_badge_text"]))
                 action_item.setBackground(background)
                 action_item.setForeground(foreground)
-                window.monitor_table.setItem(row_index, 3, action_item)
+                action_item.setTextAlignment(Qt.AlignCenter)
+                _apply_table_item_font(action_item, bold=True)
+                _set_tooltip_if_changed(action_item, str(payload["action_tooltip"]))
         window._monitor_table_signature = current_signature
     window.intraday_monitor_rows = list(rows_to_show)
     if rows_to_show:
@@ -2881,12 +3297,8 @@ def refresh_trade_recap(window) -> None:
         focus_symbol = str(getattr(focus_recommend, "symbol", "") or "") if focus_recommend is not None else ""
     if not focus_symbol:
         focus_symbol = str(getattr(window, "active_symbol", "") or "")
-    summary = summarize_trade_recap(
-        submission_records=window.order_submission_records,
-        holdings=window.holdings,
-        order_intents=window.order_intents,
-        order_log=window.order_submission_log,
-    )
+    summary = _cached_trade_recap_summary(window)
+    submission_record_count = len(list(getattr(window, "order_submission_records", []) or []))
     conclusion = (
         f"提交 {summary['submitted_count']} | 失败 {summary['failed_count']} | 待成 {summary['pending_count']} | 偏差 {summary['deviation_count']}"
         if summary["submitted_count"] or summary["pending_count"] or summary["failed_count"]
@@ -2935,10 +3347,13 @@ def refresh_trade_recap(window) -> None:
                 next_step = focused_gate or gated[0]
             else:
                 next_step = gated[0]
-    _set_plain_text_if_changed(window.broker_recap_text, _brief_panel_text("成交回顾", conclusion, risk, next_step))
+    verdict_value = "待复盘"
+    if summary["submitted_count"] or summary["pending_count"] or summary["failed_count"] or submission_record_count > 0:
+        verdict_value = "继续复核"
+    recap_headline = f"当前结论：{verdict_value}"
+    _set_plain_text_if_changed(window.broker_recap_text, _brief_panel_text("成交回顾", f"{recap_headline} | {conclusion}", risk, next_step))
     if hasattr(window, "broker_recap_metric_labels"):
         focused_recommendation = recommendation_map.get(focus_symbol) if "recommendation_map" in locals() else None
-        verdict_value = "待复盘" if not summary["submitted_count"] and not summary["pending_count"] else ("建议复核" if summary["failed_count"] else "继续跟踪")
         verdict_accent = conclusion
         mainline_value = (
             _report_mainline_followup_text(focused_recommendation)
@@ -2952,7 +3367,7 @@ def refresh_trade_recap(window) -> None:
         )
         quality_value = "有偏差" if summary["failed_count"] else ("待回写" if not summary["submitted_count"] else "已回写")
         quality_accent = summary["latest_deviation_note"] or risk
-        action_value = "先看回执" if summary["submitted_count"] else "继续观察"
+        action_value = "继续复核" if (summary["submitted_count"] or summary["pending_count"] or summary["failed_count"]) else "继续观察"
         action_accent = next_step
         _set_label_text_if_changed(window.broker_recap_metric_labels["verdict"], verdict_value)
         _set_label_text_if_changed(window.broker_recap_metric_accents["verdict"], verdict_accent)
@@ -3030,7 +3445,7 @@ def refresh_broker_execution_panel(window, summary: dict[str, object]) -> None:
         stage_accent = f"准备 {readiness_score}% | 组合 {portfolio_status} | 适配 {portfolio_fit_status}"
         if not has_execution_focus:
             stage_value = "待委托"
-            stage_accent = "先从推荐页或交易计划生成第一批委托"
+            stage_accent = "先从机会池或交易计划生成第一批委托"
         gate_value = review_status
         if blockers:
             gate_accent = blockers[0]
@@ -3092,17 +3507,18 @@ def refresh_broker_execution_panel(window, summary: dict[str, object]) -> None:
         _set_label_text_if_changed(window.broker_metric_accents["risk_budget"], portfolio_hint)
 
     if hasattr(window, "broker_gate_summary_text"):
-        headline = "可进入确认"
-        if blockers:
-            headline = "先处理阻塞再提交"
-        elif warnings:
-            headline = "可继续，建议复核"
-        next_step = blockers[0] if blockers else (warnings[0] if warnings else (f"优先核对 {symbols[0]}" if symbols else "继续确认委托"))
+        review_snapshot = build_execution_review_snapshot(summary)
+        next_step = str(review_snapshot.get("next_step", "") or "")
         if available_cash <= 0 and estimated_capital > 0:
             next_step = "先同步资金，再确认委托占用"
-        risk = f"{risk_lamp} | {risk_profile_label}档 | 组合 {portfolio_status} | 适配 {portfolio_fit_status} | {risk_note}"
-        conclusion = f"{headline} | 准备 {readiness_score}% | 闸门 {review_status} | 组合 {portfolio_status} | 适配 {portfolio_fit_status}"
-        _set_plain_text_if_changed(window.broker_gate_summary_text, _brief_panel_text("闸门提要", conclusion, risk, next_step))
+        risk = str(review_snapshot.get("risk_summary", "") or f"{risk_lamp} | {risk_profile_label}档 | 组合 {portfolio_status} | 适配 {portfolio_fit_status} | {risk_note}")
+        gate_lines = [
+            "闸门提要",
+            str(review_snapshot.get("headline", "") or f"当前结论：继续复核 | 准备 {readiness_score}% 后再提交。"),
+            f"风险：{risk}",
+            f"下一步：{next_step}",
+        ]
+        _set_plain_text_if_changed(window.broker_gate_summary_text, "\n".join(gate_lines))
 
     if hasattr(window, "broker_execution_summary_metric_labels"):
         first_review_row = next(iter(list(mainline_review.get("rows", []) or [])), {})
@@ -3194,7 +3610,7 @@ def refresh_broker_execution_panel(window, summary: dict[str, object]) -> None:
             (
                 f"焦点委托：{fit_focus_name} | {fit_focus_detail}"
                 if fit_focus_name or fit_focus_detail
-                else "焦点委托：等待推荐池输出组合适配结论"
+                else "焦点委托：等待机会池输出组合适配结论"
             ),
             f"下一步：{next_step}",
             f"档位：{risk_profile_hint}",
@@ -3202,17 +3618,26 @@ def refresh_broker_execution_panel(window, summary: dict[str, object]) -> None:
         _set_plain_text_if_changed(window.broker_execution_text, "\n".join(execution_lines))
 
 def refresh_broker_status(window, *, adapter_cls, extra: str = "") -> None:
-    adapter = adapter_cls()
     profile = window.current_broker_profile()
-    summary, env = build_broker_execution_summary(
-        profile=profile,
-        adapter=adapter,
-        order_intents=window.order_intents,
-        holdings=window.holdings,
-        cash_snapshot=window.cash_snapshot,
-        recommendations=getattr(window, "daily_pool_rows", []),
-        risk_profile=getattr(window.state, "strategy_risk_profile", "standard"),
-    )
+    risk_profile_key = getattr(window.state, "strategy_risk_profile", "standard")
+    status_signature = _broker_status_inputs_signature(window, profile, risk_profile_key)
+    if getattr(window, "_broker_status_summary_signature_v1", None) == status_signature:
+        summary = dict(getattr(window, "_broker_status_summary_cache_v1", {}) or {})
+        env = dict(getattr(window, "_broker_status_env_cache_v1", {}) or {})
+    else:
+        adapter = adapter_cls()
+        summary, env = build_broker_execution_summary(
+            profile=profile,
+            adapter=adapter,
+            order_intents=window.order_intents,
+            holdings=window.holdings,
+            cash_snapshot=window.cash_snapshot,
+            recommendations=getattr(window, "daily_pool_rows", []),
+            risk_profile=risk_profile_key,
+        )
+        window._broker_status_summary_cache_v1 = dict(summary)
+        window._broker_status_env_cache_v1 = dict(env)
+        window._broker_status_summary_signature_v1 = status_signature
     window.last_broker_execution_summary = summary
     risk_profile = str(summary.get("risk_profile", "standard") or "standard")
     risk_profile_label = RISK_PROFILE_LABELS.get(risk_profile, risk_profile)
@@ -3277,7 +3702,8 @@ def fill_holdings_table(window) -> None:
             window.holdings_table.setRowCount(len(window.holdings))
             for row_index, values in enumerate(table_signature):
                 for column, value in enumerate(values):
-                    window.holdings_table.setItem(row_index, column, QTableWidgetItem(value))
+                    item = _ensure_table_item(window.holdings_table, row_index, column, value)
+                    _set_tooltip_if_changed(item, "")
         window._holdings_table_signature = table_signature
     window._refresh_broker_status()
 
@@ -3292,34 +3718,18 @@ def fill_order_intents_table(window) -> None:
     risk_profile = getattr(getattr(window, "state", None), "strategy_risk_profile", "standard")
     recommendation_map = {getattr(item, "symbol", ""): item for item in getattr(window, "daily_pool_rows", [])}
     broker_summary = getattr(window, "last_broker_execution_summary", None) or {}
-    signature_rows = []
-    for item in window.order_intents:
-        details = describe_order_intent(item, available_cash=available_cash, risk_profile=risk_profile)
-        recommendation = recommendation_map.get(item.symbol)
-        mainline_gate = _mainline_gate_text(recommendation)
-        risk_lamp = _order_risk_lamp_text(window, item, recommendation=recommendation, details=details, summary=broker_summary)
-        available_qty = _order_available_quantity(window, item.symbol)
-        signature_rows.append(
-            (
-                getattr(item, "symbol", ""),
-                getattr(item, "side", ""),
-                getattr(item, "price", 0.0),
-                getattr(item, "quantity", 0),
-                getattr(item, "stop_price", 0.0),
-                getattr(item, "target_price", 0.0),
-                getattr(item, "signal_date", ""),
-                getattr(item, "reason", ""),
-                details["priority"],
-                details["estimated_capital"],
-                details["risk_reward_ratio"],
-                details["reason_summary"],
-                tuple(details["checks"]),
-                mainline_gate,
-                risk_lamp,
-                available_qty,
-            )
+    render_payloads = [
+        _build_order_intent_row_render_payload(
+            window,
+            item,
+            available_cash=available_cash,
+            risk_profile=risk_profile,
+            recommendation_map=recommendation_map,
+            broker_summary=broker_summary,
         )
-    orders_signature = tuple(signature_rows)
+        for item in window.order_intents
+    ]
+    orders_signature = tuple(payload["signature"] for payload in render_payloads)
     if tuple(getattr(window, "_orders_table_signature", ())) == orders_signature:
         if hasattr(window, "orders_table") and getattr(window, "order_intents", None):
             target_row = next(
@@ -3337,65 +3747,18 @@ def fill_order_intents_table(window) -> None:
         window.orders_table.setRowCount(len(window.order_intents))
 
         for row_index, item in enumerate(window.order_intents):
-            details = describe_order_intent(item, available_cash=available_cash, risk_profile=risk_profile)
-            recommendation = recommendation_map.get(item.symbol)
-            mainline_gate = _mainline_gate_text(recommendation)
-            risk_lamp = _order_risk_lamp_text(window, item, recommendation=recommendation, details=details, summary=broker_summary)
-            available_qty = _order_available_quantity(window, item.symbol)
-
-            values = [
-                details["priority"],
-                item.symbol,
-                window._display_action(item.side),
-                f"{item.price:.2f}",
-                str(item.quantity),
-                f"{details['estimated_capital']:,.0f}",
-                f"{details['risk_reward_ratio']:.2f}",
-                f"{item.stop_price:.2f}",
-                f"{item.target_price:.2f}",
-                mainline_gate,
-                item.signal_date,
-                details["reason_summary"],
-                risk_lamp,
-            ]
-            side_key = str(getattr(item, "side", "") or "").upper()
-            if side_key == "BUY":
-                action_bg, action_fg = QColor("#123124"), QColor("#7CE5C2")
-            elif side_key in {"SELL", "REDUCE"}:
-                action_bg, action_fg = QColor("#351820"), QColor("#FFB4BC")
-            elif side_key == "WATCH":
-                action_bg, action_fg = QColor("#332712"), QColor("#FFD46B")
-            else:
-                action_bg, action_fg = QColor("#1A2430"), QColor("#F4F7FB")
-            for column, value in enumerate(values):
-                table_item = QTableWidgetItem(value)
-                if hasattr(table_item, "setToolTip"):
-                    tooltip_parts = [
-                        f"代码：{item.symbol}",
-                        f"主线闸门：{mainline_gate}",
-                        f"风险灯：{risk_lamp}",
-                        f"完整逻辑：{item.reason}",
-                    ]
-                    if getattr(item, "side", "").upper() in {"SELL", "REDUCE"}:
-                        if available_qty is None:
-                            tooltip_parts.append("持仓检查：缺少可卖持仓")
-                        else:
-                            tooltip_parts.append(f"持仓检查：可卖 {available_qty} 股")
-                    if details["checks"]:
-                        tooltip_parts.append("检查项：" + " / ".join(details["checks"]))
-                    table_item.setToolTip("\n".join(tooltip_parts))
+            payload = render_payloads[row_index]
+            details = dict(payload["details"])
+            risk_lamp = str(payload["risk_lamp"])
+            for column, value in dict(payload["column_values"]).items():
+                table_item = _ensure_table_item(window.orders_table, row_index, column, value)
+                _set_tooltip_if_changed(table_item, str(payload["tooltip_text"]))
                 if column == 0:
-                    priority = str(details["priority"])
-                    priority_bg, priority_fg = _priority_palette(priority)
+                    priority_bg, priority_fg = payload["identity_palette"]
                     table_item.setBackground(priority_bg)
                     table_item.setForeground(priority_fg)
                     table_item.setTextAlignment(Qt.AlignCenter)
                     _apply_table_item_font(table_item, mono=True, bold=True)
-                elif column == 2:
-                    table_item.setBackground(action_bg)
-                    table_item.setForeground(action_fg)
-                    table_item.setTextAlignment(Qt.AlignCenter)
-                    _apply_table_item_font(table_item, bold=True)
                 elif column in {3, 4, 5, 6, 7, 8}:
                     numeric_tone = "positive" if column == 6 and float(details["risk_reward_ratio"] or 0.0) >= 1.8 else ("warning" if column == 6 and float(details["risk_reward_ratio"] or 0.0) >= 1.0 else "neutral")
                     _set_numeric_item_style(table_item, tone=numeric_tone)
@@ -3403,67 +3766,26 @@ def fill_order_intents_table(window) -> None:
                     _apply_risk_lamp_colors(table_item, risk_lamp)
                     table_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
                     _apply_table_item_font(table_item, bold=True)
-                elif column == len(values) - 1:
+                elif column == max(dict(payload["column_values"])):
                     _apply_risk_lamp_colors(table_item, risk_lamp)
                     table_item.setTextAlignment(Qt.AlignCenter)
                     _apply_table_item_font(table_item, bold=True)
-                elif column == 1:
-                    _apply_table_item_font(table_item, bold=True)
-                window.orders_table.setItem(row_index, column, table_item)
+            identity_item = _ensure_table_item(window.orders_table, row_index, 1, str(payload["identity_text"]))
+            identity_bg, identity_fg = payload["identity_palette"]
+            identity_item.setBackground(identity_bg)
+            identity_item.setForeground(identity_fg)
+            identity_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            _apply_table_item_font(identity_item, bold=True)
+            _set_tooltip_if_changed(identity_item, str(payload["identity_tooltip"]))
+            _set_item_data_if_changed(identity_item, QT_USER_ROLE, payload["identity_data"])
+            action_item = _ensure_table_item(window.orders_table, row_index, 2, str(payload["action_item_text"]))
+            action_item.setBackground(QColor("#1A2430"))
+            action_item.setForeground(QColor("#F4F7FB"))
+            action_item.setTextAlignment(Qt.AlignCenter)
+            _apply_table_item_font(action_item, bold=True)
+            _set_tooltip_if_changed(action_item, str(payload["action_tooltip"]))
 
-            stock_name = window._stock_name_for_symbol(item.symbol)
-            stock_id = window._stock_id_for_symbol(item.symbol)
-            identity_item = _build_identity_table_item(window, item.symbol, badge=details["priority"])
-            identity_item.setToolTip(
-                "\n".join(
-                    [
-                        f"{stock_name} ({stock_id})",
-                        f"交易标识：{item.symbol}",
-                        f"优先级：{details['priority']}",
-                        f"预计资金：{details['estimated_capital']:,.0f}",
-                        f"盈亏比：{details['risk_reward_ratio']:.2f}",
-                    ]
-                )
-            )
-            identity_item.setData(
-                QT_USER_ROLE,
-                {
-                    "symbol": item.symbol,
-                    "stock_name": stock_name,
-                    "stock_id": stock_id,
-                    "badge": details["priority"],
-                    "risk_reward_ratio": float(details["risk_reward_ratio"] or 0.0),
-                    "estimated_capital": float(details["estimated_capital"] or 0.0),
-                },
-            )
-            if str(details["priority"]) == "A":
-                identity_bg, identity_fg = _priority_palette("A")
-                identity_item.setBackground(identity_bg)
-                identity_item.setForeground(identity_fg)
-            elif str(details["priority"]) == "B":
-                identity_bg, identity_fg = _priority_palette("B")
-                identity_item.setBackground(identity_bg)
-                identity_item.setForeground(identity_fg)
-            else:
-                identity_bg, identity_fg = _priority_palette("C")
-                identity_item.setBackground(identity_bg)
-                identity_item.setForeground(identity_fg)
-            window.orders_table.setItem(row_index, 1, identity_item)
-            action_item = _build_compact_badge_item(
-                [window._display_action(item.side), str(details["priority"])],
-                tooltip=(
-                    f"动作：{window._display_action(item.side)}\n"
-                    f"优先级：{details['priority']}\n"
-                    f"主线闸门：{mainline_gate}\n"
-                    f"风险灯：{risk_lamp}"
-                ),
-                background="#1A2430",
-                foreground="#F4F7FB",
-            )
-            window.orders_table.setItem(row_index, 2, action_item)
-
-    if hasattr(window, "_configure_terminal_tables"):
-        window._configure_terminal_tables()
+    _configure_terminal_tables_if_needed(window)
     if hasattr(window, "orders_table") and getattr(window, "order_intents", None):
         target_row = next(
             (
@@ -3531,11 +3853,13 @@ def refresh_submission_table(window) -> None:
             ]
             background, foreground = submission_colors(item)
             for column, value in enumerate(values):
-                table_item = QTableWidgetItem(value)
+                table_item = _ensure_table_item(window.execution_table, row_index, column, value)
                 table_item.setBackground(background)
                 table_item.setForeground(foreground)
                 if column in {0, 3, 4, 8}:
-                    table_item.setToolTip(snapshot["tooltip"])
+                    _set_tooltip_if_changed(table_item, snapshot["tooltip"])
+                else:
+                    _set_tooltip_if_changed(table_item, "")
                 if column == 0:
                     table_item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
                     _apply_table_item_font(table_item, mono=True, bold=True)
@@ -3552,10 +3876,8 @@ def refresh_submission_table(window) -> None:
                     badge_bg, badge_fg = submission_risk_badge_palette_v2(item)
                     table_item.setBackground(badge_bg)
                     table_item.setForeground(badge_fg)
-                window.execution_table.setItem(row_index, column, table_item)
     window._execution_table_signature = execution_signature
-    if hasattr(window, "_configure_terminal_tables"):
-        window._configure_terminal_tables()
+    _configure_terminal_tables_if_needed(window)
     if current_row >= 0 and current_row < len(window.order_submission_records):
         window.execution_table.selectRow(current_row)
 

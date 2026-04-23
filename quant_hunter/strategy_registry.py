@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass, field
 from functools import lru_cache
+import importlib.util
 import json
 from pathlib import Path
-from typing import Any, Mapping
+from pprint import pformat
+from typing import Any, Callable, Mapping
 
 
 _DEFAULT_CATALOG_PAYLOAD: dict[str, object] = {
@@ -199,6 +202,9 @@ _STRATEGY_UI_METADATA: dict[str, dict[str, object]] = {
         "default_risk_level": "中高风险",
         "low_flag_risk_level": "中风险",
         "position_hint": "先试仓确认，再沿主线延续分批加。",
+        "buy_position": "首笔 2 成试仓；龙头位次和主线延续确认后，可加到 4-5 成，单票不超过 5 成。",
+        "sell_position": "冲高先分批止盈；失速先减 1/3，主线掉队或跌破防守位降到 0-1 成。",
+        "execution_discipline": "只做主线前排；位次后移不加仓，跌破防守位必须先减仓，不能用龙头名义硬扛后排。",
         "no_go": "主线掉队、位次后排、龙头属性不清时不做。",
         "applicable_market": "适合主线最强仍在加速、龙头位次明确、板块仍有持续性的行情。",
         "capacity_limit": "更适合核心仓位逐步放大，但前提是龙头和主线都没有掉队。",
@@ -216,6 +222,9 @@ _STRATEGY_UI_METADATA: dict[str, dict[str, object]] = {
         "default_risk_level": "中风险",
         "low_flag_risk_level": "中风险",
         "position_hint": "先小仓验证承接，放量确认后再加。",
+        "buy_position": "首笔 2 成跟随；资金持续净流入、承接不破时加到 3-4 成。",
+        "sell_position": "承接转弱先减半；放量滞涨、净流出或跌破防守位时退出机动仓。",
+        "execution_discipline": "必须先看承接再看价格；资金转弱不补仓，放量滞涨当作风险信号处理。",
         "no_go": "资金承接转弱、放量滞涨、催化失真时不做。",
         "applicable_market": "适合资金承接持续增强、量价匹配清晰、机构痕迹明显的行情。",
         "capacity_limit": "更适合中等容量跟随，不适合在承接未确认前瞬间打满。",
@@ -233,6 +242,9 @@ _STRATEGY_UI_METADATA: dict[str, dict[str, object]] = {
         "default_risk_level": "高风险",
         "low_flag_risk_level": "高风险",
         "position_hint": "只做小样本试错，封板质量确认后再考虑加码。",
+        "buy_position": "首笔 1 成试错；封板和回封质量确认后最多 2-3 成，不满仓打板。",
+        "sell_position": "炸板、回封失败或次日弱转弱先卖 1/2 到全出；高开不连强分批兑现。",
+        "execution_discipline": "宁可错过不能乱打；炸板不幻想，回封失败必须撤，情绪退潮时停止试错。",
         "no_go": "情绪退潮、炸板承接差、非主线硬板时不做。",
         "applicable_market": "适合情绪回暖、回封质量高、前排封板溢价仍在的进攻型行情。",
         "capacity_limit": "只适合小样本快节奏试错，不适合重仓持续摊大单票风险。",
@@ -250,6 +262,9 @@ _STRATEGY_UI_METADATA: dict[str, dict[str, object]] = {
         "default_risk_level": "中风险",
         "low_flag_risk_level": "中低风险",
         "position_hint": "优先分批吸，不要一次性打满。",
+        "buy_position": "按 1.5 成、1.5 成、1 成分批低吸，总仓 3-4 成；无承接不补第三笔。",
+        "sell_position": "修复到压力位先卖 1/3-1/2；跌破防守位停止补仓并退出。",
+        "execution_discipline": "只低吸有承接的回踩；越跌越补禁止，第三笔必须等企稳确认。",
         "no_go": "修复逻辑不成立、承接不足、跌破防守位时不做。",
         "applicable_market": "适合主线分歧后的回踩修复、承接重新回流、追高性价比偏低的行情。",
         "capacity_limit": "更适合中等容量分批布局，不适合在无承接时一次性打满。",
@@ -267,6 +282,9 @@ _STRATEGY_UI_METADATA: dict[str, dict[str, object]] = {
         "default_risk_level": "高风险",
         "low_flag_risk_level": "高风险",
         "position_hint": "只做尾盘试仓，隔夜后以兑现优先。",
+        "buy_position": "14:30 后确认回流再买 1-2 成，强信号也不超过 3 成；不提前埋伏。",
+        "sell_position": "次日冲高先卖 1/2；竞价或开盘不及预期直接清掉隔夜仓。",
+        "execution_discipline": "14:30 前不提前埋伏；隔夜只赚确定性溢价，次日不及预期必须先撤。",
         "no_go": "14:30 前无回流、尾盘抢拉无承接、隔夜消息走弱时不做。",
         "applicable_market": "适合尾盘回流确认、隔夜博弈仍有溢价、次日兑现窗口较明确的行情。",
         "capacity_limit": "更适合小到中等容量尾盘试仓，不适合全天追高后被动隔夜。",
@@ -284,6 +302,9 @@ _STRATEGY_UI_METADATA: dict[str, dict[str, object]] = {
         "default_risk_level": "高风险",
         "low_flag_risk_level": "高风险",
         "position_hint": "先轻仓博弈，次日不及预期就快速退出。",
+        "buy_position": "当日只做 1-2 成轻仓博弈，强势确认最多 3 成；不把隔日票做成中线仓。",
+        "sell_position": "次日冲高先卖 1/2；午后不转强或跌破计划位全部离场。",
+        "execution_discipline": "隔日票不能恋战；竞价和开盘承接不达标就撤，午后不转强不拖仓。",
         "no_go": "竞价不转强、开盘承接弱、次日兑现逻辑缺失时不做。",
         "applicable_market": "适合隔日强弱切换快、竞价与开盘承接决定盈亏的短节奏行情。",
         "capacity_limit": "更适合轻仓滚动试错，不适合在次日兑现逻辑不清时大仓位隔夜。",
@@ -301,6 +322,9 @@ _STRATEGY_UI_METADATA: dict[str, dict[str, object]] = {
         "default_risk_level": "中风险",
         "low_flag_risk_level": "中风险",
         "position_hint": "先按综合结论试仓，确认后再进入交易计划。",
+        "buy_position": "按综合评分先 2 成试仓；多项信号共振后加到 3-4 成，单票最高 5 成。",
+        "sell_position": "综合优势下降先减 1/3；主线、资金、位置三项同时转弱时退出。",
+        "execution_discipline": "必须主线、资金、位置至少两项同向；信号冲突时降级观察，不强行下结论。",
         "no_go": "主线不清、信号冲突、价位没有形成时不做。",
         "applicable_market": "适合主线、资金、位置与节奏需要统一判断的综合型行情。",
         "capacity_limit": "容量跟随总分与执行闸门动态调整，不适合脱离主线单独重仓。",
@@ -340,6 +364,9 @@ _FORMULA_CONTEXT_SPECS: dict[str, tuple[str, str]] = {
     "tail_buy_window": ("尾盘窗口", "尾盘买入法的尾盘回流窗口分。"),
     "board_window": ("打板窗口", "打板节奏与封板窗口分。"),
     "value_window": ("低吸窗口", "低吸修复窗口与安全边际分。"),
+    "half_position_bias": ("半仓做T偏置", "命中半仓、底仓、做T、高抛低吸等关键词时的附加加分。"),
+    "t_trade_window": ("做T窗口", "半仓持股法的高抛低吸滚动窗口分。"),
+    "single_stock_focus": ("单票熟悉度", "衡量是否强调专注一只熟悉股票、反复跟踪和节奏熟悉。"),
 }
 
 
@@ -364,14 +391,20 @@ class StrategyDefinition:
     plan_defaults: StrategyPlanDefaults = field(default_factory=StrategyPlanDefaults)
     ui_metadata: dict[str, object] = field(default_factory=dict)
     order_index: int = 0
+    source_type: str = "catalog"
+    source_path: str = ""
+    readonly: bool = False
+    runtime_compute: Callable[..., float] | None = None
+    script_capabilities: dict[str, object] = field(default_factory=dict)
 
 
 class StrategyRegistry:
-    def __init__(self, definitions: list[StrategyDefinition]) -> None:
+    def __init__(self, definitions: list[StrategyDefinition], *, diagnostics: list[dict[str, str]] | None = None) -> None:
         self.definitions = tuple(definitions)
         self._definitions_by_name = {item.name: item for item in self.definitions}
         self._token_to_strategy_name = self._build_token_index()
         self._computation_order = self._build_computation_order()
+        self.diagnostics = tuple(dict(item) for item in (diagnostics or []))
 
     @property
     def strategy_names(self) -> tuple[str, ...]:
@@ -419,6 +452,20 @@ class StrategyRegistry:
 
     def workbench_specs(self) -> list[tuple[str, str]]:
         return [(item.name, item.description) for item in self.active_definitions]
+
+    def source_meta(self, strategy_name: str) -> dict[str, object]:
+        definition = self.definition(strategy_name)
+        if definition is None:
+            return {
+                "source_type": "catalog",
+                "source_path": "",
+                "readonly": False,
+            }
+        return {
+            "source_type": str(definition.source_type or "catalog"),
+            "source_path": str(definition.source_path or ""),
+            "readonly": bool(definition.readonly),
+        }
 
     def score_map_from_payload(self, payload: Mapping[str, object] | None) -> dict[str, float]:
         source = dict(payload or {})
@@ -500,9 +547,7 @@ class StrategyRegistry:
         }
         computed_scores: dict[str, float] = {}
         for definition in (item for item in self._computation_order if item.enabled):
-            score = 0.0
-            for key, weight in definition.formula_weights.items():
-                score += self._resolve_formula_value(key, normalized_context, computed_scores) * _safe_float(weight)
+            score = self._compute_definition_score(definition, normalized_context, computed_scores)
             score = max(0.0, min(score, 99.0))
             adjustment = normalized_adjustments.get(definition.name, 0.0)
             if adjustment:
@@ -586,9 +631,40 @@ class StrategyRegistry:
             return tuple(sorted(self.definitions, key=lambda item: item.order_index))
         return tuple(ordered)
 
+    def _compute_definition_score(
+        self,
+        definition: StrategyDefinition,
+        context: Mapping[str, float],
+        computed_scores: Mapping[str, float],
+    ) -> float:
+        runtime_compute = definition.runtime_compute
+        if callable(runtime_compute):
+            dependency_scores = dict(computed_scores)
+            try:
+                return _safe_float(
+                    runtime_compute(
+                        dict(context),
+                        dependency_scores=dependency_scores,
+                        definition=definition,
+                    )
+                )
+            except TypeError:
+                try:
+                    return _safe_float(runtime_compute(dict(context), dependency_scores))
+                except TypeError:
+                    return _safe_float(runtime_compute(dict(context)))
+        score = 0.0
+        for key, weight in definition.formula_weights.items():
+            score += self._resolve_formula_value(key, context, computed_scores) * _safe_float(weight)
+        return score
+
 
 def _catalog_path() -> Path:
     return Path(__file__).with_name("strategy_catalog.json")
+
+
+def _strategy_plugin_directory() -> Path:
+    return Path(__file__).with_name("strategy_plugins")
 
 
 def _load_catalog_payload() -> dict[str, object]:
@@ -627,6 +703,54 @@ def _json_clone(value: Any) -> Any:
     return json.loads(json.dumps(_json_safe_value(value), ensure_ascii=False))
 
 
+def normalize_script_capabilities(payload: Mapping[str, object] | None) -> dict[str, object]:
+    raw = dict(payload or {})
+    required_context_keys = [
+        str(item).strip()
+        for item in list(raw.get("required_context_keys", []) or [])
+        if str(item).strip()
+    ]
+    dependency_strategy_names = [
+        str(item).strip()
+        for item in list(raw.get("dependency_strategy_names", []) or [])
+        if str(item).strip()
+    ]
+    return {
+        "required_context_keys": required_context_keys,
+        "dependency_strategy_names": dependency_strategy_names,
+        "allow_dependency_scores": bool(raw.get("allow_dependency_scores", bool(dependency_strategy_names))),
+        "notes": str(raw.get("notes", "") or "").strip(),
+    }
+
+
+def derive_script_capabilities_from_payload(payload: Mapping[str, object] | None) -> dict[str, object]:
+    raw = dict(payload or {})
+    formula_weights = {
+        str(key).strip(): _safe_float(value)
+        for key, value in dict(raw.get("formula_weights", {}) or {}).items()
+        if str(key).strip()
+    }
+    registry = get_strategy_registry()
+    required_context_keys: list[str] = []
+    dependency_strategy_names: list[str] = []
+    for key in formula_weights:
+        normalized = _normalize_token(key)
+        if normalized in _KNOWN_SCRIPT_CONTEXT_TOKENS:
+            required_context_keys.append(_KNOWN_SCRIPT_CONTEXT_TOKENS[normalized])
+            continue
+        canonical = registry.canonical_strategy_name(key)
+        definition = registry.definition(canonical)
+        if definition is not None:
+            dependency_strategy_names.append(definition.name)
+    return normalize_script_capabilities(
+        {
+            "required_context_keys": list(dict.fromkeys(required_context_keys)),
+            "dependency_strategy_names": list(dict.fromkeys(dependency_strategy_names)),
+            "allow_dependency_scores": bool(dependency_strategy_names),
+        }
+    )
+
+
 def normalize_strategy_definition_payload(
     payload: Mapping[str, object],
     *,
@@ -654,6 +778,10 @@ def normalize_strategy_definition_payload(
         if str(key).strip()
     }
     ui_metadata = _json_safe_value(dict(raw.get("ui_metadata", {}) or {}))
+    source_type = str(raw.get("source_type", "") or "catalog").strip().lower() or "catalog"
+    source_path = str(raw.get("source_path", "") or "").strip()
+    readonly = bool(raw.get("readonly", source_type == "script"))
+    script_capabilities = normalize_script_capabilities(dict(raw.get("script_capabilities", {}) or {}))
     return {
         "name": name,
         "score_field": score_field,
@@ -663,6 +791,10 @@ def normalize_strategy_definition_payload(
         "formula_stage": formula_stage,
         "ui_metadata": ui_metadata,
         "formula_weights": formula_weights,
+        "source_type": source_type,
+        "source_path": source_path,
+        "readonly": readonly,
+        "script_capabilities": script_capabilities,
         "plan_defaults": {
             "stop_pct": _safe_float(dict(raw.get("plan_defaults", {}) or {}).get("stop_pct"), 0.05),
             "target_pct": _safe_float(dict(raw.get("plan_defaults", {}) or {}).get("target_pct"), 0.08),
@@ -737,6 +869,17 @@ def list_strategy_formula_inputs(formula_stage: str = "base") -> list[dict[str, 
     return items
 
 
+def list_strategy_context_inputs() -> list[dict[str, str]]:
+    return [
+        {
+            "key": key,
+            "label": label,
+            "description": description,
+        }
+        for key, (label, description) in _FORMULA_CONTEXT_SPECS.items()
+    ]
+
+
 def strategy_formula_reference_text(formula_stage: str = "base") -> str:
     stage = str(formula_stage or "base").strip().lower()
     stage_label = "聚合战法" if stage == "aggregate" else "基础战法"
@@ -777,6 +920,8 @@ def validate_strategy_definition_payload(
 
     errors: list[str] = []
     warnings: list[str] = []
+    script_capability_errors: list[str] = []
+    script_capability_warnings: list[str] = []
     context_formula_keys: list[str] = []
     dependency_formula_keys: list[str] = []
     unknown_formula_keys: list[str] = []
@@ -860,6 +1005,40 @@ def validate_strategy_definition_payload(
     if unknown_formula_keys:
         errors.append(f"存在未识别的公式项：{', '.join(unknown_formula_keys)}。")
 
+    script_capabilities = normalize_script_capabilities(dict(normalized.get("script_capabilities", {}) or {}))
+    required_context_keys = list(script_capabilities.get("required_context_keys", []) or [])
+    dependency_strategy_names = list(script_capabilities.get("dependency_strategy_names", []) or [])
+    allow_dependency_scores = bool(script_capabilities.get("allow_dependency_scores", False))
+    unknown_script_context_keys = [key for key in required_context_keys if _normalize_token(key) not in _KNOWN_SCRIPT_CONTEXT_TOKENS]
+    if unknown_script_context_keys:
+        message = f"脚本上下文字段未识别：{', '.join(unknown_script_context_keys)}。"
+        errors.append(message)
+        script_capability_errors.append(message)
+    resolved_dependency_names: list[str] = []
+    for dependency_name in dependency_strategy_names:
+        canonical_dependency = registry.canonical_strategy_name(dependency_name)
+        dependency_definition = registry.definition(canonical_dependency)
+        if dependency_definition is None:
+            message = f"脚本依赖战法不存在：{dependency_name}。"
+            errors.append(message)
+            script_capability_errors.append(message)
+            continue
+        if dependency_definition.name == current_name:
+            message = f"脚本依赖不能引用当前战法自己：{dependency_definition.name}。"
+            errors.append(message)
+            script_capability_errors.append(message)
+            continue
+        if stage == "base" and dependency_definition.formula_stage == "aggregate":
+            message = f"基础战法不能在脚本依赖里引用聚合战法 {dependency_definition.name}。"
+            errors.append(message)
+            script_capability_errors.append(message)
+            continue
+        resolved_dependency_names.append(dependency_definition.name)
+    if dependency_strategy_names and not allow_dependency_scores:
+        message = "已声明脚本依赖战法，但未开启“允许读取依赖得分”，运行时不会按依赖声明读取这些得分。"
+        warnings.append(message)
+        script_capability_warnings.append(message)
+
     return {
         "normalized": normalized,
         "errors": errors,
@@ -868,6 +1047,11 @@ def validate_strategy_definition_payload(
         "context_formula_keys": context_formula_keys,
         "dependency_formula_keys": list(dict.fromkeys(dependency_formula_keys)),
         "unknown_formula_keys": unknown_formula_keys,
+        "script_required_context_keys": required_context_keys,
+        "script_dependency_names": list(dict.fromkeys(resolved_dependency_names)),
+        "unknown_script_context_keys": unknown_script_context_keys,
+        "script_capability_errors": script_capability_errors,
+        "script_capability_warnings": script_capability_warnings,
     }
 
 
@@ -889,6 +1073,15 @@ def build_strategy_template_payload(name: str = "新战法") -> dict[str, object
         "aliases": [],
         "enabled": True,
         "formula_stage": "base",
+        "source_type": "catalog",
+        "source_path": "",
+        "readonly": False,
+        "script_capabilities": {
+            "required_context_keys": [],
+            "dependency_strategy_names": [],
+            "allow_dependency_scores": False,
+            "notes": "",
+        },
         "ui_metadata": {
             "short_label": title[:4],
             "scene_copy": "填写这套战法最适合的市场场景。",
@@ -908,11 +1101,224 @@ def build_strategy_template_payload(name: str = "新战法") -> dict[str, object
     }
 
 
+def build_strategy_plugin_template_payload(name: str = "新脚本战法") -> dict[str, object]:
+    payload = build_strategy_template_payload(name)
+    payload["source_type"] = "script"
+    payload["readonly"] = True
+    return payload
+
+
+def build_strategy_plugin_script_text(name: str = "新脚本战法", *, payload: Mapping[str, object] | None = None) -> str:
+    base_payload = dict(payload or build_strategy_plugin_template_payload(name))
+    payload = normalize_strategy_definition_payload(base_payload, fallback_name=name or str(base_payload.get("name", "") or "新脚本战法"))
+    definition = {
+        "name": payload["name"],
+        "score_field": payload["score_field"],
+        "description": payload["description"],
+        "aliases": payload["aliases"],
+        "enabled": payload["enabled"],
+        "formula_stage": payload["formula_stage"],
+        "formula_weights": payload["formula_weights"],
+        "ui_metadata": payload["ui_metadata"],
+        "plan_defaults": payload["plan_defaults"],
+    }
+    capabilities = normalize_script_capabilities(dict(payload.get("script_capabilities", {}) or {}))
+    if not list(capabilities.get("required_context_keys", []) or []) and not list(capabilities.get("dependency_strategy_names", []) or []):
+        capabilities = derive_script_capabilities_from_payload(payload)
+    return "\n".join(
+        [
+            '"""Strategy plugin script.',
+            "",
+            "Rules:",
+            "- expose STRATEGY_DEFINITION",
+            "- optionally expose STRATEGY_CAPABILITIES",
+            "- optionally expose compute_score(context, *, dependency_scores=None, definition=None)",
+            "- return a score in [0, 99]",
+            '"""',
+            "",
+            f"STRATEGY_DEFINITION = {pformat(definition, sort_dicts=False, width=100)}",
+            f"STRATEGY_CAPABILITIES = {pformat(capabilities, sort_dicts=False, width=100)}",
+            "",
+            "",
+            "def _token(value):",
+            "    text = str(value or '').strip().lower()",
+            "    for token in (' ', '\\t', '\\n', '\\r', '-', '_', '/', '\\\\'):",
+            "        text = text.replace(token, '')",
+            "    return text",
+            "",
+            "",
+            "def _resolve_factor_value(key, context, dependency_scores):",
+            "    normalized = _token(key)",
+            "    if normalized in context:",
+            "        return float(context.get(normalized, 0.0) or 0.0)",
+            "    for name, value in dict(dependency_scores or {}).items():",
+            "        if _token(name) == normalized:",
+            "            return float(value or 0.0)",
+            "    return 0.0",
+            "",
+            "def compute_score(context, *, dependency_scores=None, definition=None):",
+            '    """',
+            "    context: normalized runtime factor map",
+            "    dependency_scores: already computed strategy scores",
+            "    definition: current strategy definition",
+            '    """',
+            "    dependency_scores = dict(dependency_scores or {})",
+            "    formula_weights = dict((definition.formula_weights or {}) if definition is not None else STRATEGY_DEFINITION.get('formula_weights', {}))",
+            "    score = 0.0",
+            "    for key, weight in formula_weights.items():",
+            "        score += _resolve_factor_value(key, context, dependency_scores) * float(weight or 0.0)",
+            "    return score",
+            "",
+        ]
+    )
+
+
+def strategy_plugin_file_path(name: str) -> Path:
+    normalized = _normalize_token(str(name or "").strip()) or "custom_strategy_plugin"
+    return strategy_plugin_directory() / f"{normalized}.py"
+
+
+def create_strategy_plugin_script(name: str, *, overwrite: bool = False) -> Path:
+    title = str(name or "").strip() or "新脚本战法"
+    target = strategy_plugin_file_path(title)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists() and not overwrite:
+        raise FileExistsError(f"脚本已存在：{target}")
+    target.write_text(build_strategy_plugin_script_text(title), encoding="utf-8")
+    return target
+
+
+def create_strategy_plugin_script_from_payload(
+    payload: Mapping[str, object],
+    *,
+    overwrite: bool = False,
+) -> Path:
+    normalized = normalize_strategy_definition_payload(payload)
+    title = str(normalized.get("name", "") or "").strip() or "新脚本战法"
+    target = strategy_plugin_file_path(title)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists() and not overwrite:
+        raise FileExistsError(f"脚本已存在：{target}")
+    target.write_text(build_strategy_plugin_script_text(title, payload=normalized), encoding="utf-8")
+    return target
+
+
+_KNOWN_SCRIPT_CONTEXT_TOKENS = {_normalize_token(key): key for key in _FORMULA_CONTEXT_SPECS}
+_ALLOWED_SCRIPT_IMPORT_ROOTS = {"__future__", "math", "statistics", "typing"}
+_ALLOWED_SCRIPT_TOP_LEVEL_ASSIGN_NAMES = {"STRATEGY_DEFINITION", "STRATEGY_CAPABILITIES"}
+
+
+def _is_safe_script_assignment_value(node: ast.AST) -> bool:
+    if isinstance(node, (ast.Dict, ast.List, ast.Tuple, ast.Set, ast.Constant)):
+        return True
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)) and isinstance(node.operand, ast.Constant):
+        return True
+    return False
+
+
+def _validate_strategy_plugin_ast(path: Path) -> list[dict[str, str]]:
+    diagnostics: list[dict[str, str]] = []
+    try:
+        source = path.read_text(encoding="utf-8")
+    except Exception as exc:
+        return [
+            {
+                "level": "error",
+                "path": str(path),
+                "name": path.stem,
+                "message": f"脚本读取失败：{exc}",
+            }
+        ]
+    try:
+        tree = ast.parse(source, filename=str(path))
+    except SyntaxError as exc:
+        return [
+            {
+                "level": "error",
+                "path": str(path),
+                "name": path.stem,
+                "message": f"脚本语法错误：{exc.msg} (line {exc.lineno})",
+            }
+        ]
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = str(alias.name or "").split(".", 1)[0]
+                if root not in _ALLOWED_SCRIPT_IMPORT_ROOTS:
+                    diagnostics.append(
+                        {
+                            "level": "error",
+                            "path": str(path),
+                            "name": path.stem,
+                            "message": f"不允许导入模块：{alias.name}",
+                        }
+                    )
+        elif isinstance(node, ast.ImportFrom):
+            module_name = str(node.module or "").strip()
+            root = module_name.split(".", 1)[0] if module_name else ""
+            if node.level != 0 or root not in _ALLOWED_SCRIPT_IMPORT_ROOTS:
+                diagnostics.append(
+                    {
+                        "level": "error",
+                        "path": str(path),
+                        "name": path.stem,
+                        "message": f"不允许导入模块：{'.' * node.level}{module_name}",
+                    }
+                )
+
+    for node in tree.body:
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            continue
+        if isinstance(node, (ast.Import, ast.ImportFrom, ast.FunctionDef)):
+            continue
+        if isinstance(node, ast.Assign):
+            target_names = [item.id for item in node.targets if isinstance(item, ast.Name)]
+            if not target_names or any(name not in _ALLOWED_SCRIPT_TOP_LEVEL_ASSIGN_NAMES for name in target_names):
+                diagnostics.append(
+                    {
+                        "level": "error",
+                        "path": str(path),
+                        "name": path.stem,
+                        "message": "顶层只允许定义 STRATEGY_DEFINITION / STRATEGY_CAPABILITIES 和函数。",
+                    }
+                )
+                continue
+            if not _is_safe_script_assignment_value(node.value):
+                diagnostics.append(
+                    {
+                        "level": "error",
+                        "path": str(path),
+                        "name": path.stem,
+                        "message": "顶层配置赋值必须是字面量常量，不能执行函数或表达式。",
+                    }
+                )
+            continue
+        diagnostics.append(
+            {
+                "level": "error",
+                "path": str(path),
+                "name": path.stem,
+                "message": f"不允许的顶层语句：{type(node).__name__}",
+            }
+        )
+    return diagnostics
+
+
+def _persistable_strategy_payload(payload: Mapping[str, object]) -> dict[str, object]:
+    normalized = normalize_strategy_definition_payload(payload)
+    return {
+        key: value
+        for key, value in normalized.items()
+        if key not in {"source_type", "source_path", "readonly"}
+    }
+
+
 def save_strategy_catalog_payload(payload: Mapping[str, object]) -> Path:
     raw_items = list(dict(payload or {}).get("strategies", []) or [])
     if not raw_items:
         raise ValueError("战法配置不能为空，至少保留一套战法。")
-    normalized_items = [normalize_strategy_definition_payload(item) for item in raw_items if isinstance(item, dict)]
+    normalized_items = [_persistable_strategy_payload(item) for item in raw_items if isinstance(item, dict)]
     if not normalized_items:
         raise ValueError("战法配置解析失败，未发现有效战法。")
     if not any(bool(item.get("enabled", True)) for item in normalized_items):
@@ -932,7 +1338,7 @@ def replace_strategy_in_catalog(
 ) -> dict[str, object]:
     catalog = load_strategy_catalog_payload()
     strategies = [item for item in list(catalog.get("strategies", []) or []) if isinstance(item, dict)]
-    normalized = normalize_strategy_definition_payload(strategy_payload)
+    normalized = _persistable_strategy_payload(strategy_payload)
     previous = str(previous_name or "").strip()
     name = str(normalized.get("name", "") or "").strip()
     updated: list[dict[str, object]] = []
@@ -984,17 +1390,224 @@ def import_strategy_payloads(import_payload: Mapping[str, object] | list[object]
     strategies = [item for item in list(catalog.get("strategies", []) or []) if isinstance(item, dict)]
     strategy_map = {str(item.get("name", "") or "").strip(): item for item in strategies}
     for item in imported_items:
-        normalized = normalize_strategy_definition_payload(item)
+        normalized = _persistable_strategy_payload(item)
         strategy_map[str(normalized.get("name", "") or "").strip()] = normalized
     payload = {"strategies": list(strategy_map.values())}
     save_strategy_catalog_payload(payload)
     return payload
 
 
+def strategy_plugin_directory() -> Path:
+    return _strategy_plugin_directory()
+
+
+def _load_strategy_plugin_specs() -> tuple[list[dict[str, object]], list[dict[str, str]]]:
+    plugin_dir = strategy_plugin_directory()
+    diagnostics: list[dict[str, str]] = []
+    plugin_specs: list[dict[str, object]] = []
+    if not plugin_dir.exists():
+        return plugin_specs, diagnostics
+
+    for path in sorted(plugin_dir.glob("*.py")):
+        if path.name.startswith("_"):
+            continue
+        ast_diagnostics = _validate_strategy_plugin_ast(path)
+        diagnostics.extend(ast_diagnostics)
+        if any(str(item.get("level", "") or "").strip().lower() == "error" for item in ast_diagnostics):
+            continue
+        module_name = f"quant_hunter.strategy_plugins.{path.stem}"
+        try:
+            spec = importlib.util.spec_from_file_location(module_name, path)
+            if spec is None or spec.loader is None:
+                raise ImportError("无法构建模块加载器")
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        except Exception as exc:
+            diagnostics.append(
+                {
+                    "level": "error",
+                    "path": str(path),
+                    "name": path.stem,
+                    "message": f"脚本加载失败：{exc}",
+                }
+            )
+            continue
+
+        payload = getattr(module, "STRATEGY_DEFINITION", None)
+        if not isinstance(payload, Mapping):
+            diagnostics.append(
+                {
+                    "level": "error",
+                    "path": str(path),
+                    "name": path.stem,
+                    "message": "缺少 STRATEGY_DEFINITION 映射。",
+                }
+            )
+            continue
+
+        try:
+            normalized = normalize_strategy_definition_payload(
+                {
+                    **dict(payload),
+                    "script_capabilities": getattr(module, "STRATEGY_CAPABILITIES", dict(payload).get("script_capabilities", {})),
+                    "source_type": "script",
+                    "source_path": str(path),
+                    "readonly": True,
+                }
+            )
+        except Exception as exc:
+            diagnostics.append(
+                {
+                    "level": "error",
+                    "path": str(path),
+                    "name": path.stem,
+                    "message": f"脚本元数据无效：{exc}",
+                }
+            )
+            continue
+
+        runtime_compute = getattr(module, "compute_score", None)
+        if runtime_compute is not None and not callable(runtime_compute):
+            diagnostics.append(
+                {
+                    "level": "error",
+                    "path": str(path),
+                    "name": str(normalized.get("name", "") or path.stem),
+                    "message": "compute_score 必须是可调用对象。",
+                }
+            )
+            continue
+
+        plugin_specs.append(
+            {
+                "payload": normalized,
+                "runtime_compute": runtime_compute if callable(runtime_compute) else None,
+                "path": str(path),
+            }
+        )
+    return plugin_specs, diagnostics
+
+
+def _validate_script_strategy_capabilities(
+    registry: StrategyRegistry,
+    definition: StrategyDefinition,
+) -> list[dict[str, str]]:
+    capabilities = dict(definition.script_capabilities or {})
+    diagnostics: list[dict[str, str]] = []
+    required_context_keys = [
+        str(item).strip()
+        for item in list(capabilities.get("required_context_keys", []) or [])
+        if str(item).strip()
+    ]
+    dependency_strategy_names = [
+        str(item).strip()
+        for item in list(capabilities.get("dependency_strategy_names", []) or [])
+        if str(item).strip()
+    ]
+    allow_dependency_scores = bool(capabilities.get("allow_dependency_scores", bool(dependency_strategy_names)))
+
+    unknown_context_keys = [
+        key for key in required_context_keys if _normalize_token(key) not in _KNOWN_SCRIPT_CONTEXT_TOKENS
+    ]
+    if unknown_context_keys:
+        diagnostics.append(
+            {
+                "level": "error",
+                "path": definition.source_path,
+                "name": definition.name,
+                "message": f"脚本能力声明里存在未知上下文键：{', '.join(unknown_context_keys)}",
+            }
+        )
+
+    resolved_dependencies: list[str] = []
+    for dependency_name in dependency_strategy_names:
+        canonical = registry.canonical_strategy_name(dependency_name)
+        dependency_definition = registry.definition(canonical)
+        if dependency_definition is None:
+            diagnostics.append(
+                {
+                    "level": "error",
+                    "path": definition.source_path,
+                    "name": definition.name,
+                    "message": f"脚本能力声明里引用了不存在的依赖战法：{dependency_name}",
+                }
+            )
+            continue
+        if definition.formula_stage == "base" and dependency_definition.formula_stage == "aggregate":
+            diagnostics.append(
+                {
+                    "level": "error",
+                    "path": definition.source_path,
+                    "name": definition.name,
+                    "message": f"基础脚本战法不能声明聚合依赖：{dependency_definition.name}",
+                }
+            )
+            continue
+        resolved_dependencies.append(dependency_definition.name)
+
+    if dependency_strategy_names and not allow_dependency_scores:
+        diagnostics.append(
+            {
+                "level": "warning",
+                "path": definition.source_path,
+                "name": definition.name,
+                "message": "已声明 dependency_strategy_names，但 allow_dependency_scores 为关闭，运行时不会按声明使用依赖得分。",
+            }
+        )
+
+    if definition.runtime_compute is not None and not required_context_keys and not dependency_strategy_names:
+        diagnostics.append(
+            {
+                "level": "info",
+                "path": definition.source_path,
+                "name": definition.name,
+                "message": "脚本未声明 required_context_keys 或 dependency_strategy_names，建议补充脚本能力声明以便后续校验和维护。",
+            }
+        )
+
+    return diagnostics
+
+
+def script_capabilities_summary_text(payload: Mapping[str, object] | None) -> str:
+    capabilities = normalize_script_capabilities(dict(payload or {}))
+    required_context_keys = list(capabilities.get("required_context_keys", []) or [])
+    dependency_strategy_names = list(capabilities.get("dependency_strategy_names", []) or [])
+    allow_dependency_scores = bool(capabilities.get("allow_dependency_scores", False))
+    notes = str(capabilities.get("notes", "") or "").strip()
+    parts = [
+        f"上下文 {', '.join(required_context_keys) if required_context_keys else '未声明'}",
+        f"依赖 {', '.join(dependency_strategy_names) if dependency_strategy_names else '未声明'}",
+        f"依赖得分 {'开启' if allow_dependency_scores else '关闭'}",
+    ]
+    if notes:
+        parts.append(f"备注 {notes}")
+    return " | ".join(parts)
+
+
+def load_strategy_workspace_payload() -> dict[str, object]:
+    catalog = load_strategy_catalog_payload()
+    catalog_items = [
+        normalize_strategy_definition_payload({**dict(item), "source_type": "catalog", "readonly": False})
+        for item in list(catalog.get("strategies", []) or [])
+        if isinstance(item, dict)
+    ]
+    plugin_specs, _diagnostics = _load_strategy_plugin_specs()
+    plugin_items = [dict(item.get("payload", {}) or {}) for item in plugin_specs]
+    return {
+        "strategies": [*catalog_items, *plugin_items],
+        "catalog_path": str(strategy_catalog_path()),
+        "plugin_dir": str(strategy_plugin_directory()),
+        "diagnostics": strategy_registry_diagnostics(),
+    }
+
+
 def _build_registry() -> StrategyRegistry:
     payload = _load_catalog_payload()
     raw_items = payload.get("strategies", []) if isinstance(payload, dict) else []
     definitions: list[StrategyDefinition] = []
+    diagnostics: list[dict[str, str]] = []
+    known_names: set[str] = set()
+    known_score_fields: set[str] = set()
     for index, item in enumerate(raw_items):
         if not isinstance(item, dict):
             continue
@@ -1019,9 +1632,77 @@ def _build_registry() -> StrategyRegistry:
             plan_defaults=_parse_plan_defaults(dict(item.get("plan_defaults", {}) or {})),
             ui_metadata=dict(item.get("ui_metadata", {}) or {}),
             order_index=index,
+            source_type="catalog",
+            source_path="",
+            readonly=False,
+            script_capabilities=normalize_script_capabilities(dict(item.get("script_capabilities", {}) or {})),
         )
         definitions.append(definition)
-    return StrategyRegistry(definitions)
+        known_names.add(definition.name)
+        known_score_fields.add(_normalize_token(definition.score_field))
+
+    plugin_specs, plugin_diagnostics = _load_strategy_plugin_specs()
+    diagnostics.extend(plugin_diagnostics)
+    plugin_offset = len(definitions)
+    for plugin_index, item in enumerate(plugin_specs):
+        payload = dict(item.get("payload", {}) or {})
+        name = str(payload.get("name", "") or "").strip()
+        score_field = str(payload.get("score_field", "") or "").strip()
+        if not name or not score_field:
+            continue
+        if name in known_names:
+            diagnostics.append(
+                {
+                    "level": "error",
+                    "path": str(item.get("path", "") or ""),
+                    "name": name,
+                    "message": f"脚本战法 {name} 与现有战法重名，已跳过。",
+                }
+            )
+            continue
+        normalized_score_field = _normalize_token(score_field)
+        if normalized_score_field in known_score_fields:
+            diagnostics.append(
+                {
+                    "level": "error",
+                    "path": str(item.get("path", "") or ""),
+                    "name": name,
+                    "message": f"脚本战法 {name} 的 score_field 与现有战法冲突，已跳过。",
+                }
+            )
+            continue
+        definitions.append(
+            StrategyDefinition(
+                name=name,
+                score_field=score_field,
+                description=str(payload.get("description", "") or ""),
+                aliases=tuple(str(value).strip() for value in list(payload.get("aliases", []) or []) if str(value).strip()),
+                enabled=bool(payload.get("enabled", True)),
+                formula_stage=str(payload.get("formula_stage", "") or "base"),
+                formula_weights={
+                    str(key).strip(): _safe_float(value)
+                    for key, value in dict(payload.get("formula_weights", {}) or {}).items()
+                    if str(key).strip()
+                },
+                plan_defaults=_parse_plan_defaults(dict(payload.get("plan_defaults", {}) or {})),
+                ui_metadata=dict(payload.get("ui_metadata", {}) or {}),
+                order_index=plugin_offset + plugin_index,
+                source_type="script",
+                source_path=str(payload.get("source_path", "") or item.get("path", "") or ""),
+                readonly=True,
+                runtime_compute=item.get("runtime_compute") if callable(item.get("runtime_compute")) else None,
+                script_capabilities=normalize_script_capabilities(dict(payload.get("script_capabilities", {}) or {})),
+            )
+        )
+        known_names.add(name)
+        known_score_fields.add(normalized_score_field)
+
+    provisional_registry = StrategyRegistry(definitions, diagnostics=diagnostics)
+    for definition in provisional_registry.definitions:
+        if str(definition.source_type or "").strip().lower() != "script":
+            continue
+        diagnostics.extend(_validate_script_strategy_capabilities(provisional_registry, definition))
+    return StrategyRegistry(definitions, diagnostics=diagnostics)
 
 
 @lru_cache(maxsize=1)
@@ -1044,6 +1725,14 @@ def get_strategy_score_fields() -> dict[str, str]:
 
 def get_strategy_workbench_specs() -> list[tuple[str, str]]:
     return get_strategy_registry().workbench_specs()
+
+
+def strategy_source_meta(strategy_name: str) -> dict[str, object]:
+    return get_strategy_registry().source_meta(strategy_name)
+
+
+def strategy_registry_diagnostics() -> list[dict[str, str]]:
+    return [dict(item) for item in get_strategy_registry().diagnostics]
 
 
 def strategy_score_map(item: object | None) -> dict[str, float]:
@@ -1121,12 +1810,27 @@ def strategy_badge_palette_meta(strategy_name: str) -> tuple[str, str]:
 
 def strategy_empty_hint_meta(strategy_name: str) -> str:
     payload = _strategy_ui_meta(strategy_name)
-    return str(payload.get("empty_hint", "等待推荐池生成后更新。") or "等待推荐池生成后更新。")
+    return str(payload.get("empty_hint", "等待机会池生成后更新。") or "等待机会池生成后更新。")
 
 
 def strategy_position_hint_meta(strategy_name: str) -> str:
     payload = _strategy_ui_meta(strategy_name)
     return str(payload.get("position_hint", "先小仓验证，再决定是否继续。") or "先小仓验证，再决定是否继续。")
+
+
+def strategy_buy_position_meta(strategy_name: str) -> str:
+    payload = _strategy_ui_meta(strategy_name)
+    return str(payload.get("buy_position", strategy_position_hint_meta(strategy_name)) or strategy_position_hint_meta(strategy_name))
+
+
+def strategy_sell_position_meta(strategy_name: str) -> str:
+    payload = _strategy_ui_meta(strategy_name)
+    return str(payload.get("sell_position", "失去优势后按计划分批退出。") or "失去优势后按计划分批退出。")
+
+
+def strategy_execution_discipline_meta(strategy_name: str) -> str:
+    payload = _strategy_ui_meta(strategy_name)
+    return str(payload.get("execution_discipline", "严格按买入仓位、卖出仓位和失效条件执行，不临盘扩大风险。") or "严格按买入仓位、卖出仓位和失效条件执行，不临盘扩大风险。")
 
 
 def strategy_no_go_meta(strategy_name: str) -> str:

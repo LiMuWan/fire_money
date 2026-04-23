@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
+    QProgressBar,
     QPushButton,
     QSizePolicy,
     QScrollArea,
@@ -25,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 from quant_hunter.ui_config import (
     DAILY_POOL_TABLE_HEADERS,
+    OVERVIEW_DEFAULT_STATUS_TEXT,
     ORDERS_DEFAULT_FOCUS_TEXT,
     RECOMMEND_DEFAULT_EMPTY_HINT,
     RECOMMEND_DEFAULT_EMPTY_META,
@@ -33,7 +36,21 @@ from quant_hunter.ui_config import (
     RECOMMEND_DEFAULT_STATUS_TEXT,
     RECOMMEND_EMPTY_REFRESH_BUTTON_TEXT,
     RECOMMEND_EMPTY_SAMPLE_BUTTON_TEXT,
+    TRADE_PLAN_DEFAULT_FOCUS_TEXT,
     STRATEGY_FILTER_LABELS,
+    BOARD_CONTROLS_POLICY,
+    broker_terminal_focus_button_copy,
+    broker_terminal_primary_cta_labels,
+    broker_terminal_primary_cta_tooltips,
+    BROKER_SETUP_POLICY,
+    OVERVIEW_CONTROLS_POLICY,
+    recommend_focus_action_tooltip,
+    RECOMMEND_AUX_STAGE_POLICY,
+    RECOMMEND_CONTROLS_POLICY,
+    recommend_terminal_cta_labels,
+    WORKSPACE_STAGE_SUMMARY_SPECS,
+    WORKSPACE_UI_SPECS,
+    workspace_hero_payload,
 )
 from quant_hunter.risk import (
     RISK_PROFILE_AGGRESSIVE,
@@ -44,7 +61,14 @@ from quant_hunter.risk import (
     risk_profile_snapshot_card_state,
     risk_profile_snapshot_text,
 )
-from quant_hunter.ui_helpers import AdaptivePanelGrid
+from quant_hunter.strategy_registry import list_strategy_context_inputs
+from quant_hunter.message_center import (
+    build_message_center_snapshot,
+    message_center_action_bar_text,
+    message_center_button_label,
+    message_center_metric_accent,
+)
+from quant_hunter.ui_helpers import AdaptivePanelGrid, build_workspace_badge
 
 
 def _configure_chart_view(view: QChartView, *, min_height: int) -> None:
@@ -52,8 +76,155 @@ def _configure_chart_view(view: QChartView, *, min_height: int) -> None:
     view.setObjectName("marketChartPanel")
     view.setFrameShape(QFrame.NoFrame)
     view.setRenderHint(QPainter.Antialiasing, True)
-    view.setRenderHint(QPainter.TextAntialiasing, True)
-    view.setRenderHint(QPainter.SmoothPixmapTransform, True)
+
+
+def _configure_terminal_stage_tabs(tab_widget: QTabWidget, *, page_tone: str, tooltips: list[str] | None = None) -> None:
+    tab_widget.setObjectName("compactInfoTabs")
+    tab_widget.setProperty("pageTone", page_tone)
+    bar = tab_widget.tabBar()
+    bar.setProperty("pageTone", page_tone)
+    bar.setDocumentMode(True)
+    bar.setExpanding(True)
+    bar.setUsesScrollButtons(False)
+    if tooltips:
+        for index, tooltip in enumerate(tooltips):
+            if index < tab_widget.count():
+                bar.setTabToolTip(index, tooltip)
+
+
+def _build_workspace_stage_summary(window, *, workspace_key: str, attr_prefix: str, tab_widget: QTabWidget) -> QFrame:
+    stage_specs = list(WORKSPACE_STAGE_SUMMARY_SPECS.get(workspace_key, ()))
+    workspace_label = str(WORKSPACE_UI_SPECS.get(workspace_key, {}).get("tab", "工作区"))
+
+    frame = QFrame()
+    frame.setObjectName("workspaceStageHero")
+    frame.setProperty("pageTone", workspace_key)
+    layout = QHBoxLayout(frame)
+    layout.setContentsMargins(14, 12, 14, 12)
+    layout.setSpacing(12)
+
+    accent_strip = QFrame()
+    accent_strip.setObjectName("workspaceStageAccent")
+    accent_strip.setProperty("pageTone", workspace_key)
+    accent_strip.setFixedWidth(3)
+    layout.addWidget(accent_strip)
+
+    text_layout = QVBoxLayout()
+    text_layout.setContentsMargins(0, 0, 0, 0)
+    text_layout.setSpacing(4)
+
+    eyebrow_label = QLabel()
+    eyebrow_label.setObjectName("workspaceStageEyebrow")
+    title_label = QLabel()
+    title_label.setObjectName("workspaceStageTitle")
+    subtitle_label = QLabel()
+    subtitle_label.setObjectName("workspaceStageSubtitle")
+    subtitle_label.setWordWrap(True)
+
+    text_layout.addWidget(eyebrow_label)
+    text_layout.addWidget(title_label)
+    text_layout.addWidget(subtitle_label)
+    layout.addLayout(text_layout, stretch=3)
+
+    badge_rail = AdaptivePanelGrid(min_item_width=132, compact_item_width=110, max_columns=3)
+    badge_rail.setObjectName("workspaceBadgeRail")
+    badge_rail.set_grid_spacing(6, 6)
+    badge_rail.setMaximumWidth(420)
+    badge_refs: list[tuple[QFrame, QLabel | None, QLabel | None]] = []
+    for _ in range(3):
+        badge = build_workspace_badge("--", "摘要", workspace_key)
+        badge.setProperty("pageTone", workspace_key)
+        badge_refs.append(
+            (
+                badge,
+                badge.findChild(QLabel, "workspaceBadgeValue"),
+                badge.findChild(QLabel, "workspaceBadgeCaption"),
+            )
+        )
+        badge_rail.add_panel(badge)
+    layout.addWidget(badge_rail, stretch=2)
+
+    def _apply_stage_summary(index: int) -> None:
+        safe_index = max(0, min(index, len(stage_specs) - 1)) if stage_specs else max(0, index)
+        fallback_title = tab_widget.tabText(safe_index) if 0 <= safe_index < tab_widget.count() else ""
+        stage_spec = stage_specs[safe_index] if stage_specs and safe_index < len(stage_specs) else {}
+        title = str(stage_spec.get("title") or fallback_title or workspace_label)
+        subtitle = str(stage_spec.get("subtitle") or "当前子视图用于承接这一阶段的核心判断与下一步动作。")
+        badges = list(stage_spec.get("badges") or [])
+        eyebrow_label.setText(f"{workspace_label} / 子视图 {safe_index + 1:02d}")
+        title_label.setText(title)
+        subtitle_label.setText(subtitle)
+        for slot, (badge_frame, value_label, caption_label) in enumerate(badge_refs):
+            if slot < len(badges):
+                caption, value = badges[slot]
+                if caption_label is not None:
+                    caption_label.setText(str(caption))
+                if value_label is not None:
+                    value_label.setText(str(value))
+                badge_frame.show()
+            else:
+                badge_frame.hide()
+
+    setattr(window, f"{attr_prefix}_stage_summary_frame", frame)
+    setattr(window, f"{attr_prefix}_stage_summary_title", title_label)
+    setattr(window, f"{attr_prefix}_stage_summary_subtitle", subtitle_label)
+    tab_widget.currentChanged.connect(_apply_stage_summary)
+    _apply_stage_summary(tab_widget.currentIndex() if tab_widget.count() else 0)
+    return frame
+
+
+def _build_workspace_focus_strip(
+    window,
+    *,
+    workspace_key: str,
+    attr_prefix: str,
+    eyebrow: str,
+    title: str,
+    subtitle: str,
+    badges: list[tuple[str, str]],
+) -> QFrame:
+    frame = QFrame()
+    frame.setObjectName("workspaceStageHero")
+    frame.setProperty("pageTone", workspace_key)
+    layout = QHBoxLayout(frame)
+    layout.setContentsMargins(14, 12, 14, 12)
+    layout.setSpacing(12)
+
+    accent_strip = QFrame()
+    accent_strip.setObjectName("workspaceStageAccent")
+    accent_strip.setProperty("pageTone", workspace_key)
+    accent_strip.setFixedWidth(3)
+    layout.addWidget(accent_strip)
+
+    text_layout = QVBoxLayout()
+    text_layout.setContentsMargins(0, 0, 0, 0)
+    text_layout.setSpacing(4)
+    eyebrow_label = QLabel(eyebrow)
+    eyebrow_label.setObjectName("workspaceStageEyebrow")
+    title_label = QLabel(title)
+    title_label.setObjectName("workspaceStageTitle")
+    subtitle_label = QLabel(subtitle)
+    subtitle_label.setObjectName("workspaceStageSubtitle")
+    subtitle_label.setWordWrap(True)
+    text_layout.addWidget(eyebrow_label)
+    text_layout.addWidget(title_label)
+    text_layout.addWidget(subtitle_label)
+    layout.addLayout(text_layout, stretch=3)
+
+    badge_rail = AdaptivePanelGrid(min_item_width=132, compact_item_width=110, max_columns=3)
+    badge_rail.setObjectName("workspaceBadgeRail")
+    badge_rail.set_grid_spacing(6, 6)
+    badge_rail.setMaximumWidth(420)
+    for value, caption in badges[:3]:
+        badge = build_workspace_badge(value, caption, workspace_key)
+        badge.setProperty("pageTone", workspace_key)
+        badge_rail.add_panel(badge)
+    layout.addWidget(badge_rail, stretch=2)
+
+    setattr(window, f"{attr_prefix}_summary_frame", frame)
+    setattr(window, f"{attr_prefix}_summary_title", title_label)
+    setattr(window, f"{attr_prefix}_summary_subtitle", subtitle_label)
+    return frame
 
 
 def _build_recommend_daily_pool_table(window, build_table):
@@ -105,16 +276,135 @@ def build_auth_workspace(window) -> None:
     layout.setContentsMargins(10, 10, 10, 10)
     layout.setSpacing(10)
     window.auth_tab.setObjectName("authRoot")
+    eyebrow, title, subtitle, badges = workspace_hero_payload("auth")
+    hero = window._build_workspace_hero(
+        eyebrow,
+        title,
+        subtitle,
+        badges,
+    )
+    hero.setProperty("heroCompact", True)
+    hero.setProperty("pageTone", "auth")
+    layout.addWidget(hero)
+
+    window.auth_status_banner = QLabel("接入状态：待校验 | 凭据与 Bridge 待确认 | 下一步：补齐后校验接入。")
+    window.auth_status_banner.setObjectName("statusBanner")
+    window.auth_status_banner.setProperty("pageTone", "auth")
+    window.auth_status_banner.setWordWrap(True)
+    layout.addWidget(window.auth_status_banner)
+
     layout.addWidget(
-        window._build_workspace_hero(
-            "统一登录",
-            "券商账户 / SDK 接入",
-            "集中管理券商账号、登录通道和 SDK 参数，真实交易仍以人工确认作为最终闸门。",
-            [("东方财富", "默认通道"), ("人工确认", "最终闸门")],
+        _build_workspace_focus_strip(
+            window,
+            workspace_key="auth",
+            attr_prefix="auth_desk",
+            eyebrow="接入中心 / 接入判断",
+            title="接入判断条",
+            subtitle="先确认通道、凭据与人工闸门，再决定是否进入机会池和交易链路。",
+            badges=[
+                ("看什么", "通道 / 凭据 / 闸门"),
+                ("本页动作", "保存 / 校验接入"),
+                ("下一步", "进入机会池 / 交易"),
+            ],
         )
     )
 
+    auth_summary_box = QGroupBox("接入摘要")
+    window.auth_summary_box = auth_summary_box
+    window._style_terminal_panel(auth_summary_box)
+    auth_summary_box.setProperty("pageTone", "auth")
+    auth_summary_box.setProperty("surfaceRole", "metric-band")
+    auth_summary_layout = QVBoxLayout(auth_summary_box)
+    auth_summary_layout.setContentsMargins(12, 12, 12, 12)
+    auth_summary_layout.setSpacing(0)
+    auth_summary_band = AdaptivePanelGrid(min_item_width=220, compact_item_width=188, max_columns=4)
+    auth_summary_band.setObjectName("authSummaryBand")
+    auth_summary_band.set_grid_spacing(10, 10)
+    window.auth_summary_metric_cards = {}
+    window.auth_summary_metric_labels = {}
+    window.auth_summary_metric_accents = {}
+    for key, title, accent in [
+        ("channel", "接入通道", "等待通道确认"),
+        ("credential", "凭据齐备", "等待凭据校验"),
+        ("bridge", "Bridge 环境", "等待环境确认"),
+        ("next", "下一步", "先补参数再校验"),
+    ]:
+        card, value_label, accent_label = window._create_metric_card(title, "--", accent)
+        window.auth_summary_metric_cards[key] = card
+        window.auth_summary_metric_labels[key] = value_label
+        window.auth_summary_metric_accents[key] = accent_label
+        auth_summary_band.add_panel(card)
+    auth_summary_layout.addWidget(auth_summary_band)
+    layout.addWidget(auth_summary_box)
+
+    capability_box = QGroupBox("接入能力总览")
+    capability_box.setObjectName("authCapabilityBox")
+    window.auth_capability_box = capability_box
+    window._style_terminal_panel(capability_box)
+    capability_box.setProperty("pageTone", "auth")
+    capability_box.setProperty("surfaceRole", "metric-band")
+    capability_box.setProperty("sectionRole", "capability")
+    capability_layout = QVBoxLayout(capability_box)
+    capability_layout.setContentsMargins(12, 12, 12, 12)
+    capability_layout.setSpacing(10)
+    capability_intro = QLabel("拆页后保留的接入通道、凭据校验、Bridge 环境和后续入口从这里回补，避免接入能力像被删掉。")
+    capability_intro.setObjectName("inlineHint")
+    capability_intro.setWordWrap(True)
+    capability_layout.addWidget(capability_intro)
+    capability_grid = QGridLayout()
+    capability_grid.setHorizontalSpacing(12)
+    capability_grid.setVerticalSpacing(12)
+    window.auth_capability_cards = {}
+    capability_specs = [
+        ("channel", "接入通道", "看通道、账号与策略 ID 表单。", "看通道"),
+        ("credential", "凭据校验", "看凭据完整度与校验状态。", "看校验"),
+        ("bridge", "Bridge 环境", "看 SDK 模块、Bridge Python 与运行环境。", "看桥接"),
+        ("next", "后续入口", "接入完成后继续进入机会池与交易链路。", "看机会"),
+    ]
+    for index, (capability_key, title_text, detail_text, button_text) in enumerate(capability_specs):
+        card = QFrame()
+        card.setObjectName("authCapabilityCard")
+        card.setProperty("actionRow", True)
+        card.setProperty("pageTone", "auth")
+        card.setProperty("capabilityCard", True)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(12, 12, 12, 12)
+        card_layout.setSpacing(6)
+        title = QLabel(title_text)
+        title.setObjectName("workspaceTitle")
+        headline = QLabel("--")
+        headline.setObjectName("workspaceSummaryHeadline")
+        headline.setWordWrap(True)
+        detail = QLabel(detail_text)
+        detail.setObjectName("inlineHint")
+        detail.setWordWrap(True)
+        meta = QLabel("--")
+        meta.setObjectName("inlineHint")
+        meta.setWordWrap(True)
+        button = QPushButton(button_text)
+        window._set_button_role(button, "accent" if capability_key == "next" else "tonal")
+        if hasattr(window, "_open_auth_capability_v1"):
+            button.clicked.connect(lambda checked=False, current=capability_key: window._open_auth_capability_v1(current))
+        card_layout.addWidget(title)
+        card_layout.addWidget(headline)
+        card_layout.addWidget(detail)
+        card_layout.addWidget(meta)
+        card_layout.addWidget(button)
+        card_layout.addStretch(1)
+        capability_grid.addWidget(card, index // 2, index % 2)
+        window.auth_capability_cards[capability_key] = {
+            "card": card,
+            "title": title,
+            "headline": headline,
+            "detail": detail,
+            "meta": meta,
+            "button": button,
+        }
+    capability_layout.addLayout(capability_grid)
+    layout.addWidget(capability_box)
+
     form_box = QGroupBox("账号连接")
+    window.auth_form_box = form_box
     form_box.setObjectName("workspaceToolPanel")
     form_box.setProperty("pageTone", "auth")
     form_grid = QGridLayout(form_box)
@@ -166,10 +456,14 @@ def build_auth_workspace(window) -> None:
 
     action_row = QHBoxLayout()
     action_row.setSpacing(8)
-    save_button = QPushButton("保存登录信息")
+    save_button = QPushButton("保存接入")
     validate_button = QPushButton("校验接入")
-    broker_button = QPushButton("前往交易执行")
-    recommend_button = QPushButton("前往推荐池")
+    broker_button = QPushButton("去交易")
+    recommend_button = QPushButton("看机会")
+    window.auth_save_button = save_button
+    window.auth_validate_button = validate_button
+    window.auth_to_broker_button = broker_button
+    window.auth_to_recommend_button = recommend_button
     window._set_button_role(save_button, "accent")
     window._set_button_role(validate_button, "tonal")
     window._set_button_role(broker_button, "ghost")
@@ -190,7 +484,8 @@ def build_auth_workspace(window) -> None:
     form_grid.addLayout(action_row, len(login_fields) + 2, 0, 1, 2)
     layout.addWidget(form_box)
 
-    status_box = QGroupBox("连接状态")
+    status_box = QGroupBox("接入状态")
+    window.auth_status_box = status_box
     window._style_terminal_panel(status_box)
     status_box.setProperty("pageTone", "auth")
     status_layout = QVBoxLayout(status_box)
@@ -202,22 +497,322 @@ def build_auth_workspace(window) -> None:
     layout.addWidget(status_box, stretch=1)
 
     window._refresh_login_status()
+    if hasattr(window, "_refresh_auth_capability_overview_v1"):
+        window._refresh_auth_capability_overview_v1()
+
+
+def build_paper_workspace(window) -> None:
+    layout = QVBoxLayout(window.paper_tab)
+    layout.setContentsMargins(10, 10, 10, 10)
+    layout.setSpacing(10)
+    window.paper_tab.setObjectName("paperRoot")
+    eyebrow, title, subtitle, badges = workspace_hero_payload("paper")
+    hero = window._build_workspace_hero(eyebrow, title, subtitle, badges)
+    hero.setProperty("heroCompact", True)
+    hero.setProperty("pageTone", "paper")
+    layout.addWidget(hero)
+
+    window.paper_status_banner = QLabel("实验状态：待初始化 | 主测样本尚未建立 | 下一步：先启动首轮主测。")
+    window.paper_status_banner.setObjectName("statusBanner")
+    window.paper_status_banner.setProperty("pageTone", "paper")
+    window.paper_status_banner.setWordWrap(True)
+    layout.addWidget(window.paper_status_banner)
+
+    layout.addWidget(
+        _build_workspace_focus_strip(
+            window,
+            workspace_key="paper",
+            attr_prefix="paper_desk",
+            eyebrow="实验台 / 实验判断",
+            title="实验判断条",
+            subtitle="先确认主测状态、样本边界和下一步动作，再进入持仓交割与战法巡航。",
+            badges=[
+                ("看什么", "状态 / 样本 / 权益"),
+                ("本页动作", "初始化 / 主测"),
+                ("下一步", "进入持仓 / 巡航"),
+            ],
+        )
+    )
+
+    paper_summary_box = QGroupBox("实验摘要")
+    window.paper_summary_box = paper_summary_box
+    window._style_terminal_panel(paper_summary_box)
+    paper_summary_box.setProperty("pageTone", "paper")
+    paper_summary_box.setProperty("surfaceRole", "metric-band")
+    paper_summary_layout = QVBoxLayout(paper_summary_box)
+    paper_summary_layout.setContentsMargins(12, 12, 12, 12)
+    paper_summary_layout.setSpacing(0)
+    paper_summary_band = AdaptivePanelGrid(min_item_width=220, compact_item_width=188, max_columns=4)
+    paper_summary_band.setObjectName("paperSummaryBand")
+    paper_summary_band.set_grid_spacing(10, 10)
+    window.paper_summary_metric_cards = {}
+    window.paper_summary_metric_labels = {}
+    window.paper_summary_metric_accents = {}
+    for key, title, accent in [
+        ("stage", "实验阶段", "等待初始化"),
+        ("equity", "模拟权益", "等待首轮主测"),
+        ("sample", "闭环样本", "等待第一批闭环"),
+        ("next", "下一步", "先初始化模拟盘"),
+    ]:
+        card, value_label, accent_label = window._create_metric_card(title, "--", accent)
+        window.paper_summary_metric_cards[key] = card
+        window.paper_summary_metric_labels[key] = value_label
+        window.paper_summary_metric_accents[key] = accent_label
+        paper_summary_band.add_panel(card)
+    paper_summary_layout.addWidget(paper_summary_band)
+    layout.addWidget(paper_summary_box)
+
+    tool_panel = QGroupBox("实验导航")
+    window.paper_tool_panel = tool_panel
+    tool_panel.setObjectName("workspaceToolPanel")
+    tool_panel.setProperty("pageTone", "paper")
+    tool_panel.setProperty("surfaceRole", "control")
+    window._style_terminal_panel(tool_panel)
+    tool_layout = QGridLayout(tool_panel)
+    tool_layout.setContentsMargins(14, 12, 14, 12)
+    tool_layout.setHorizontalSpacing(16)
+    tool_layout.setVerticalSpacing(10)
+
+    hint = QLabel("实验台只处理模拟盘、主测/对照样本与实验结论，不再和执行中控混在同一主页面。")
+    hint.setObjectName("inlineHint")
+    hint.setWordWrap(True)
+    tool_layout.addWidget(hint, 0, 0, 1, 3)
+
+    window.paper_to_recommend_button = QPushButton("看机会")
+    window.paper_to_broker_button = QPushButton("去交易")
+    window.paper_to_detail_button = QPushButton("看复盘")
+    window._set_button_role(window.paper_to_recommend_button, "ghost")
+    window._set_button_role(window.paper_to_broker_button, "tonal")
+    window._set_button_role(window.paper_to_detail_button, "ghost")
+    for button in (window.paper_to_recommend_button, window.paper_to_broker_button, window.paper_to_detail_button):
+        button.setMinimumHeight(40)
+    window.paper_to_recommend_button.clicked.connect(lambda: window._navigate_to_workspace("recommend", "daily_pool_table"))
+    window.paper_to_broker_button.clicked.connect(lambda: window._navigate_to_workspace("broker", "orders_table"))
+    window.paper_to_detail_button.clicked.connect(lambda: window._navigate_to_workspace("detail", "detail_decision_text"))
+    tool_layout.addWidget(window.paper_to_recommend_button, 1, 0)
+    tool_layout.addWidget(window.paper_to_broker_button, 1, 1)
+    tool_layout.addWidget(window.paper_to_detail_button, 1, 2)
+    layout.addWidget(tool_panel)
+
+    window.paper_workspace_scroll_area = QScrollArea()
+    window.paper_workspace_scroll_area.setWidgetResizable(True)
+    window.paper_workspace_scroll_area.setFrameShape(QFrame.NoFrame)
+    window.paper_workspace_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    window.paper_workspace_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+    layout.addWidget(window.paper_workspace_scroll_area, stretch=1)
+
+    paper_content = QWidget()
+    paper_content.setObjectName("paperWorkspaceContent")
+    paper_content.setProperty("pageTone", "paper")
+    paper_layout = QVBoxLayout(paper_content)
+    paper_layout.setContentsMargins(0, 0, 0, 0)
+    paper_layout.setSpacing(12)
+    window.paper_workspace_scroll_area.setWidget(paper_content)
+    window.paper_workspace_content = paper_content
+    window.paper_workspace_layout = paper_layout
+
+    window.paper_stage_tabs = QTabWidget()
+    window.paper_stage_tabs.setObjectName("compactInfoTabs")
+
+    paper_overview_page = QWidget()
+    paper_overview_layout = QVBoxLayout(paper_overview_page)
+    paper_overview_layout.setContentsMargins(0, 0, 0, 0)
+    paper_overview_layout.setSpacing(12)
+    window.paper_stage_tabs.addTab(paper_overview_page, "实验总览")
+
+    paper_records_page = QWidget()
+    paper_records_layout = QVBoxLayout(paper_records_page)
+    paper_records_layout.setContentsMargins(0, 0, 0, 0)
+    paper_records_layout.setSpacing(12)
+    window.paper_stage_tabs.addTab(paper_records_page, "持仓与交割")
+
+    paper_analytics_page = QWidget()
+    paper_analytics_layout = QVBoxLayout(paper_analytics_page)
+    paper_analytics_layout.setContentsMargins(0, 0, 0, 0)
+    paper_analytics_layout.setSpacing(12)
+    window.paper_stage_tabs.addTab(paper_analytics_page, "战法与巡航")
+    _configure_terminal_stage_tabs(
+        window.paper_stage_tabs,
+        page_tone="paper",
+        tooltips=[
+            "看模拟盘状态、实验边界与本轮主测概况。",
+            "看模拟持仓、交割单与样本动作。",
+            "看战法收益拆解、巡航日志与实验洞察。",
+        ],
+    )
+    paper_layout.addWidget(
+        _build_workspace_stage_summary(
+            window,
+            workspace_key="paper",
+            attr_prefix="paper",
+            tab_widget=window.paper_stage_tabs,
+        )
+    )
+    paper_layout.addWidget(window.paper_stage_tabs, stretch=1)
+    window.paper_overview_stage_layout = paper_overview_layout
+    window.paper_records_stage_layout = paper_records_layout
+    window.paper_analytics_stage_layout = paper_analytics_layout
+
+    intro_box = QGroupBox("实验总览")
+    intro_box.setObjectName("paperOverviewBox")
+    window.paper_overview_box = intro_box
+    intro_box.setProperty("pageTone", "paper")
+    intro_box.setProperty("surfaceRole", "spotlight")
+    window._style_terminal_panel(intro_box)
+    intro_layout = QVBoxLayout(intro_box)
+    intro_layout.setContentsMargins(14, 14, 14, 14)
+    intro_layout.setSpacing(10)
+    intro_text = QTextEdit()
+    intro_text.setReadOnly(True)
+    window._style_terminal_console(intro_text)
+    intro_text.setProperty("pageTone", "paper")
+    intro_text.setMinimumHeight(144)
+    intro_text.setMaximumHeight(188)
+    intro_text.setPlainText(
+        "实验总览\n"
+        "结论：实验台独立承载模拟盘、主测/对照与实验复盘。\n"
+        "风险：不要再把执行中控与实验样本放在同一主页面里判断。\n"
+        "下一步：先初始化模拟盘，再形成主测、对照和观察三类样本。"
+    )
+    intro_layout.addWidget(intro_text)
+    paper_overview_layout.addWidget(intro_box)
+
+    capability_box = QGroupBox("实验能力总览")
+    capability_box.setObjectName("paperCapabilityBox")
+    window.paper_capability_box = capability_box
+    window._style_terminal_panel(capability_box)
+    capability_box.setProperty("pageTone", "paper")
+    capability_box.setProperty("surfaceRole", "metric-band")
+    capability_box.setProperty("sectionRole", "capability")
+    capability_layout = QVBoxLayout(capability_box)
+    capability_layout.setContentsMargins(12, 12, 12, 12)
+    capability_layout.setSpacing(10)
+    capability_intro = QLabel("拆页后保留的实验总览、持仓与交割、战法巡航从这里回补，避免实验能力像被删掉。")
+    capability_intro.setObjectName("inlineHint")
+    capability_intro.setWordWrap(True)
+    capability_layout.addWidget(capability_intro)
+    capability_grid = QGridLayout()
+    capability_grid.setHorizontalSpacing(12)
+    capability_grid.setVerticalSpacing(12)
+    window.paper_capability_cards = {}
+    capability_specs = [
+        ("overview", "实验总览", "看实验状态、权益曲线和本轮主测摘要。", "看总览"),
+        ("records", "持仓与交割", "看模拟持仓、交割单和调仓建议。", "看交割"),
+        ("analytics", "战法与巡航", "看战法表现、巡航日志和实验洞察。", "看巡航"),
+    ]
+    for index, (capability_key, title_text, detail_text, button_text) in enumerate(capability_specs):
+        card = QFrame()
+        card.setObjectName("paperCapabilityCard")
+        card.setProperty("actionRow", True)
+        card.setProperty("pageTone", "paper")
+        card.setProperty("capabilityCard", True)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(12, 12, 12, 12)
+        card_layout.setSpacing(6)
+        title = QLabel(title_text)
+        title.setObjectName("workspaceTitle")
+        headline = QLabel("--")
+        headline.setObjectName("workspaceSummaryHeadline")
+        headline.setWordWrap(True)
+        detail = QLabel(detail_text)
+        detail.setObjectName("inlineHint")
+        detail.setWordWrap(True)
+        meta = QLabel("--")
+        meta.setObjectName("inlineHint")
+        meta.setWordWrap(True)
+        button = QPushButton(button_text)
+        window._set_button_role(button, "accent" if capability_key == "analytics" else "tonal")
+        if hasattr(window, "_open_paper_capability_v1"):
+            button.clicked.connect(lambda checked=False, current=capability_key: window._open_paper_capability_v1(current))
+        card_layout.addWidget(title)
+        card_layout.addWidget(headline)
+        card_layout.addWidget(detail)
+        card_layout.addWidget(meta)
+        card_layout.addWidget(button)
+        card_layout.addStretch(1)
+        capability_grid.addWidget(card, 0, index)
+        window.paper_capability_cards[capability_key] = {
+            "card": card,
+            "title": title,
+            "headline": headline,
+            "detail": detail,
+            "meta": meta,
+            "button": button,
+        }
+    capability_layout.addLayout(capability_grid)
+    paper_overview_layout.addWidget(capability_box)
+    if hasattr(window, "_refresh_paper_capability_overview_v1"):
+        window._refresh_paper_capability_overview_v1()
 
 def build_detail_workspace(window, build_table) -> None:
     layout = QVBoxLayout(window.detail_tab)
     layout.setContentsMargins(10, 10, 10, 10)
     layout.setSpacing(10)
     window.detail_tab.setObjectName("detailRoot")
+    eyebrow, title, subtitle, badges = workspace_hero_payload("detail")
+    hero = window._build_workspace_hero(
+        eyebrow,
+        title,
+        subtitle,
+        badges,
+    )
+    hero.setProperty("heroCompact", True)
+    hero.setProperty("pageTone", "detail")
+    layout.addWidget(hero)
+
+    window.detail_status_banner = QLabel("复盘状态：待联动 | 焦点票尚未同步 | 下一步：从机会池、扫描或执行中控联动。")
+    window.detail_status_banner.setObjectName("statusBanner")
+    window.detail_status_banner.setProperty("pageTone", "detail")
+    window.detail_status_banner.setWordWrap(True)
+    layout.addWidget(window.detail_status_banner)
+
     layout.addWidget(
-        window._build_workspace_hero(
-            "明细复盘",
-            "单票信号复核与回测明细",
-            "从扫描页或首页选中个股后，这里会联动展示信号、指标摘要和交易记录，便于做单票复盘。",
-            [("单票", "深度复核"), ("回测", "联动面板")],
+        _build_workspace_focus_strip(
+            window,
+            workspace_key="detail",
+            attr_prefix="detail_desk",
+            eyebrow="单票复盘 / 复盘判断",
+            title="复盘判断条",
+            subtitle="先定单票结论、执行偏差和下一步观察，再进入信号与交易、历史战法与结论沉淀。",
+            badges=[
+                ("看什么", "结论 / 偏差 / 证据"),
+                ("本页动作", "核对 / 留结论"),
+                ("下一步", "进入信号 / 历史"),
+            ],
         )
     )
 
-    tool_panel = QGroupBox("复盘工具台")
+    detail_summary_box = QGroupBox("关键摘要")
+    detail_summary_box.setObjectName("detailSummaryBox")
+    window.detail_summary_box = detail_summary_box
+    window._style_terminal_panel(detail_summary_box)
+    detail_summary_box.setProperty("pageTone", "detail")
+    detail_summary_box.setProperty("surfaceRole", "metric-band")
+    detail_summary_layout = QVBoxLayout(detail_summary_box)
+    detail_summary_layout.setContentsMargins(12, 12, 12, 12)
+    detail_summary_layout.setSpacing(0)
+    detail_summary_band = AdaptivePanelGrid(min_item_width=220, compact_item_width=188, max_columns=4)
+    detail_summary_band.setObjectName("detailSummaryBand")
+    detail_summary_band.set_grid_spacing(10, 10)
+    window.detail_summary_metric_cards = {}
+    window.detail_summary_metric_labels = {}
+    window.detail_summary_metric_accents = {}
+    for key, title, accent in [
+        ("theme", "主线 / 动作", "等待焦点同步"),
+        ("execution", "执行链路", "等待委托和回执"),
+        ("risk", "风险 / 偏差", "等待风险与信号联动"),
+        ("next", "下一步", "等待下钻动作"),
+    ]:
+        card, value_label, accent_label = window._create_metric_card(title, "--", accent)
+        window.detail_summary_metric_cards[key] = card
+        window.detail_summary_metric_labels[key] = value_label
+        window.detail_summary_metric_accents[key] = accent_label
+        detail_summary_band.add_panel(card)
+    detail_summary_layout.addWidget(detail_summary_band)
+    layout.addWidget(detail_summary_box)
+
+    tool_panel = QGroupBox("单票工具台")
+    window.detail_tool_panel = tool_panel
     tool_panel.setObjectName("workspaceToolPanel")
     tool_layout = QGridLayout(tool_panel)
     tool_layout.setContentsMargins(14, 12, 14, 12)
@@ -231,6 +826,11 @@ def build_detail_workspace(window, build_table) -> None:
     history_button = QPushButton("历史战法统计")
     load_button = QPushButton("导入单票 CSV")
     backtest_button = QPushButton("回测当前标的")
+    window.detail_compare_history_button = compare_history_button
+    window.detail_export_history_button = export_history_button
+    window.detail_history_button = history_button
+    window.detail_load_csv_button = load_button
+    window.detail_backtest_button = backtest_button
     window._set_button_role(load_button)
     window._set_button_role(backtest_button, "accent")
     window._set_button_role(history_button, "tonal")
@@ -300,67 +900,63 @@ def build_detail_workspace(window, build_table) -> None:
     detail_hint_layout.setContentsMargins(12, 10, 12, 10)
     detail_hint_layout.setSpacing(6)
     detail_hint_title = QLabel("复盘提示：单票信号、回测摘要和交易记录会联动到同一焦点标的。")
+    window.detail_hint_title_label = detail_hint_title
     detail_hint_title.setObjectName("inlineHint")
     detail_hint_title.setWordWrap(True)
     detail_hint_layout.addWidget(detail_hint_title)
     tool_layout.addWidget(detail_hint_panel, 0, 1)
     tool_layout.setColumnStretch(0, 3)
     tool_layout.setColumnStretch(1, 2)
-    board_controls_toggle_row = QHBoxLayout()
-    board_controls_toggle_row.setContentsMargins(0, 0, 0, 0)
-    board_controls_toggle_row.setSpacing(10)
-    window.board_controls_toggle_button = QPushButton("展开打板控制台")
-    window._set_button_role(window.board_controls_toggle_button, "ghost")
-    window.board_controls_toggle_button.setMinimumHeight(40)
-    window.board_controls_toggle_button.clicked.connect(window.toggle_board_controls_panel)
-    window.board_controls_status_label = QLabel("首屏优先看候选、监控和回封风险；导出和专项设置默认收起。")
-    window.board_controls_status_label.setObjectName("inlineHint")
-    window.board_controls_status_label.setProperty("pageTone", "board")
-    window.board_controls_status_label.setWordWrap(True)
-    window.board_controls_status_label.setMinimumHeight(42)
-    board_controls_toggle_row.addWidget(window.board_controls_toggle_button)
-    board_controls_toggle_row.addWidget(window.board_controls_status_label, stretch=1)
-    layout.addLayout(board_controls_toggle_row)
-    board_controls_drawer = QFrame()
-    board_controls_drawer.setObjectName("boardControlsDrawer")
-    board_controls_drawer.setProperty("actionRow", True)
-    board_controls_drawer_layout = QVBoxLayout(board_controls_drawer)
-    board_controls_drawer_layout.setContentsMargins(14, 14, 14, 14)
-    board_controls_drawer_layout.setSpacing(8)
-    board_controls_drawer_layout.addWidget(tool_panel)
-    window.board_controls_drawer = board_controls_drawer
-    layout.addWidget(board_controls_drawer)
 
-    detail_summary_box = QGroupBox("单票速览")
-    detail_summary_box.setObjectName("detailSummaryBox")
-    window.detail_summary_box = detail_summary_box
-    window._style_terminal_panel(detail_summary_box)
-    detail_summary_box.setProperty("pageTone", "detail")
-    detail_summary_box.setProperty("surfaceRole", "metric-band")
-    detail_summary_layout = QVBoxLayout(detail_summary_box)
-    detail_summary_layout.setContentsMargins(12, 12, 12, 12)
-    detail_summary_layout.setSpacing(0)
-    detail_summary_band = AdaptivePanelGrid(min_item_width=220, compact_item_width=188, max_columns=4)
-    detail_summary_band.setObjectName("detailSummaryBand")
-    detail_summary_band.set_grid_spacing(10, 10)
-    window.detail_summary_metric_cards = {}
-    window.detail_summary_metric_labels = {}
-    window.detail_summary_metric_accents = {}
-    for key, title, accent in [
-        ("theme", "主线 / 动作", "等待焦点同步"),
-        ("execution", "执行链路", "等待委托和回执"),
-        ("risk", "风险 / 偏差", "等待风险与信号联动"),
-        ("next", "下一步", "等待下钻动作"),
-    ]:
-        card, value_label, accent_label = window._create_metric_card(title, "--", accent)
-        window.detail_summary_metric_cards[key] = card
-        window.detail_summary_metric_labels[key] = value_label
-        window.detail_summary_metric_accents[key] = accent_label
-        detail_summary_band.add_panel(card)
-    detail_summary_layout.addWidget(detail_summary_band)
-    layout.addWidget(detail_summary_box)
+    window.detail_stage_tabs = QTabWidget()
 
-    metrics_box = QGroupBox("策略摘要")
+    detail_overview_page = QWidget()
+    detail_overview_layout = QVBoxLayout(detail_overview_page)
+    detail_overview_layout.setContentsMargins(0, 0, 0, 0)
+    detail_overview_layout.setSpacing(12)
+    window.detail_stage_tabs.addTab(detail_overview_page, "单票总览")
+
+    detail_timeline_page = QWidget()
+    detail_timeline_layout = QVBoxLayout(detail_timeline_page)
+    detail_timeline_layout.setContentsMargins(0, 0, 0, 0)
+    detail_timeline_layout.setSpacing(12)
+    window.detail_stage_tabs.addTab(detail_timeline_page, "信号与交易")
+
+    detail_history_page = QWidget()
+    detail_history_layout = QVBoxLayout(detail_history_page)
+    detail_history_layout.setContentsMargins(0, 0, 0, 0)
+    detail_history_layout.setSpacing(12)
+    window.detail_stage_tabs.addTab(detail_history_page, "历史战法")
+    _configure_terminal_stage_tabs(
+        window.detail_stage_tabs,
+        page_tone="detail",
+        tooltips=[
+            "先看单票结论、执行轨迹和复盘结论。",
+            "看信号时间线与实际交易记录。",
+            "看历史战法统计、参数对比与逐笔表现。",
+        ],
+    )
+    layout.addWidget(
+        _build_workspace_stage_summary(
+            window,
+            workspace_key="detail",
+            attr_prefix="detail",
+            tab_widget=window.detail_stage_tabs,
+        )
+    )
+    layout.addWidget(window.detail_stage_tabs, stretch=1)
+    layout.addWidget(tool_panel)
+    _configure_terminal_stage_tabs(
+        window.detail_stage_tabs,
+        page_tone="detail",
+        tooltips=[
+            "先看单票结论、执行轨迹与复盘结论。",
+            "看信号时间线与实际交易记录。",
+            "看历史战法统计、参数对比与逐笔表现。",
+        ],
+    )
+
+    metrics_box = QGroupBox("交易依据")
     window.detail_metrics_box = metrics_box
     window._style_terminal_panel(metrics_box)
     metrics_layout = QVBoxLayout(metrics_box)
@@ -374,8 +970,8 @@ def build_detail_workspace(window, build_table) -> None:
     detail_recap_splitter = QSplitter(Qt.Horizontal)
     window.detail_recap_splitter = detail_recap_splitter
     detail_recap_splitter.setChildrenCollapsible(False)
-    decision_box = QGroupBox("交易决策画像")
-    execution_box = QGroupBox("执行状态回放")
+    decision_box = QGroupBox("决策依据")
+    execution_box = QGroupBox("执行轨迹")
     conclusion_box = QGroupBox("复盘结论")
     window._style_terminal_panel(decision_box, execution_box, conclusion_box)
     decision_box.setProperty("pageTone", "detail")
@@ -419,11 +1015,78 @@ def build_detail_workspace(window, build_table) -> None:
     detail_recap_splitter.addWidget(execution_box)
     detail_recap_splitter.addWidget(conclusion_box)
     window._configure_splitter(detail_recap_splitter, [420, 420, 420])
-    layout.addWidget(detail_recap_splitter)
-    layout.addWidget(metrics_box)
 
-    signal_box = QGroupBox("近期信号")
-    trade_box = QGroupBox("交易记录")
+    capability_box = QGroupBox("单票能力总览")
+    capability_box.setObjectName("detailCapabilityBox")
+    window.detail_capability_box = capability_box
+    window._style_terminal_panel(capability_box)
+    capability_box.setProperty("pageTone", "detail")
+    capability_box.setProperty("surfaceRole", "metric-band")
+    capability_box.setProperty("sectionRole", "capability")
+    capability_layout = QVBoxLayout(capability_box)
+    capability_layout.setContentsMargins(12, 12, 12, 12)
+    capability_layout.setSpacing(10)
+    capability_intro = QLabel("拆页后保留的单票结论、信号交易回放和历史战法从这里回补，避免历史能力像被删掉。")
+    capability_intro.setObjectName("inlineHint")
+    capability_intro.setWordWrap(True)
+    capability_layout.addWidget(capability_intro)
+    capability_grid = QGridLayout()
+    capability_grid.setHorizontalSpacing(12)
+    capability_grid.setVerticalSpacing(12)
+    window.detail_capability_cards = {}
+    capability_specs = [
+        ("overview", "单票结论", "看决策依据、执行偏差和复盘结论。", "看结论"),
+        ("timeline", "信号与交易", "看信号时间线和成交轨迹回放。", "看回放"),
+        ("history", "历史战法", "看历史战法统计、参数对比和逐笔表现。", "看历史"),
+    ]
+    for index, (capability_key, title_text, detail_text, button_text) in enumerate(capability_specs):
+        card = QFrame()
+        card.setObjectName("detailCapabilityCard")
+        card.setProperty("actionRow", True)
+        card.setProperty("pageTone", "detail")
+        card.setProperty("capabilityCard", True)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(12, 12, 12, 12)
+        card_layout.setSpacing(6)
+        title = QLabel(title_text)
+        title.setObjectName("workspaceTitle")
+        headline = QLabel("--")
+        headline.setObjectName("workspaceSummaryHeadline")
+        headline.setWordWrap(True)
+        detail = QLabel(detail_text)
+        detail.setObjectName("inlineHint")
+        detail.setWordWrap(True)
+        meta = QLabel("--")
+        meta.setObjectName("inlineHint")
+        meta.setWordWrap(True)
+        button = QPushButton(button_text)
+        window._set_button_role(button, "accent" if capability_key == "history" else "tonal")
+        if hasattr(window, "_open_detail_capability_v1"):
+            button.clicked.connect(lambda checked=False, current=capability_key: window._open_detail_capability_v1(current))
+        card_layout.addWidget(title)
+        card_layout.addWidget(headline)
+        card_layout.addWidget(detail)
+        card_layout.addWidget(meta)
+        card_layout.addWidget(button)
+        card_layout.addStretch(1)
+        capability_grid.addWidget(card, 0, index)
+        window.detail_capability_cards[capability_key] = {
+            "card": card,
+            "title": title,
+            "headline": headline,
+            "detail": detail,
+            "meta": meta,
+            "button": button,
+        }
+    capability_layout.addLayout(capability_grid)
+    detail_overview_layout.addWidget(capability_box)
+    if hasattr(window, "_refresh_detail_capability_overview_v1"):
+        window._refresh_detail_capability_overview_v1()
+    detail_overview_layout.addWidget(detail_recap_splitter)
+    detail_overview_layout.addWidget(metrics_box)
+
+    signal_box = QGroupBox("信号时间线")
+    trade_box = QGroupBox("成交轨迹")
     window._style_terminal_panel(signal_box, trade_box)
     signal_layout = QVBoxLayout(signal_box)
     window.signal_table = build_table(["日期", "信号", "评分", "收盘价", "原因"])
@@ -433,15 +1096,83 @@ def build_detail_workspace(window, build_table) -> None:
     trade_layout.addWidget(window.trades_table)
 
     bottom = QSplitter(Qt.Horizontal)
+    bottom.setObjectName("detailTimelineSplit")
+    window.detail_timeline_splitter = bottom
     bottom.setChildrenCollapsible(False)
     bottom.addWidget(signal_box)
     bottom.addWidget(trade_box)
     window._configure_splitter(bottom, [470, 690])
-    layout.addWidget(bottom, stretch=1)
+    detail_timeline_layout.addWidget(bottom, stretch=1)
 
     history_box = QGroupBox("历史战法统计")
     window._style_terminal_panel(history_box)
     history_layout = QVBoxLayout(history_box)
+
+    history_summary_box = QGroupBox("历史战法速览")
+    history_summary_box.setObjectName("detailHistorySummaryBox")
+    window.detail_history_summary_box = history_summary_box
+    window._style_terminal_panel(history_summary_box)
+    history_summary_box.setProperty("pageTone", "detail")
+    history_summary_box.setProperty("surfaceRole", "metric-band")
+    history_summary_box.setProperty("sectionRole", "summary")
+    history_summary_layout = QVBoxLayout(history_summary_box)
+    history_summary_layout.setContentsMargins(12, 12, 12, 12)
+    history_summary_layout.setSpacing(10)
+    history_summary_intro = QLabel("先看当前战法、参数对比和逐笔样本状态，再往下进入统计表、曲线和热力图。")
+    history_summary_intro.setObjectName("inlineHint")
+    history_summary_intro.setWordWrap(True)
+    history_summary_layout.addWidget(history_summary_intro)
+    history_summary_grid = QGridLayout()
+    history_summary_grid.setHorizontalSpacing(12)
+    history_summary_grid.setVerticalSpacing(12)
+    window.detail_history_summary_cards = {}
+    history_summary_specs = [
+        ("strategy", "当前战法", "先看当前锁定战法和收益结论。", "看统计"),
+        ("compare", "参数对比", "先看场景对比和收益差。", "看对比"),
+        ("trade", "逐笔样本", "先看当前逐笔样本和退出原因。", "看逐笔"),
+    ]
+    for index, (summary_key, title_text, detail_text, button_text) in enumerate(history_summary_specs):
+        card = QFrame()
+        card.setObjectName("detailHistorySummaryCard")
+        card.setProperty("actionRow", True)
+        card.setProperty("pageTone", "detail")
+        card.setProperty("capabilityCard", True)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(12, 12, 12, 12)
+        card_layout.setSpacing(6)
+        title = QLabel(title_text)
+        title.setObjectName("workspaceTitle")
+        headline = QLabel("--")
+        headline.setObjectName("workspaceSummaryHeadline")
+        headline.setWordWrap(True)
+        detail = QLabel(detail_text)
+        detail.setObjectName("inlineHint")
+        detail.setWordWrap(True)
+        meta = QLabel("--")
+        meta.setObjectName("inlineHint")
+        meta.setWordWrap(True)
+        button = QPushButton(button_text)
+        window._set_button_role(button, "accent" if summary_key == "strategy" else "tonal")
+        if hasattr(window, "_open_detail_history_summary_v1"):
+            button.clicked.connect(lambda checked=False, current=summary_key: window._open_detail_history_summary_v1(current))
+        card_layout.addWidget(title)
+        card_layout.addWidget(headline)
+        card_layout.addWidget(detail)
+        card_layout.addWidget(meta)
+        card_layout.addWidget(button)
+        card_layout.addStretch(1)
+        history_summary_grid.addWidget(card, 0, index)
+        window.detail_history_summary_cards[summary_key] = {
+            "card": card,
+            "title": title,
+            "headline": headline,
+            "detail": detail,
+            "meta": meta,
+            "button": button,
+        }
+    history_summary_layout.addLayout(history_summary_grid)
+    detail_history_layout.addWidget(history_summary_box)
+
     window.strategy_history_table = build_table(["战法", "信号数", "成交数", "成交率", "总收益", "胜率", "最大回撤", "平均持有"])
     history_layout.addWidget(window.strategy_history_table)
     window.strategy_history_rank_table = build_table(["排名", "战法", "总收益", "收益因子", "盈亏比", "最大回撤", "最大连亏"])
@@ -455,6 +1186,8 @@ def build_detail_workspace(window, build_table) -> None:
     window.strategy_history_curve_view.setProperty("pageTone", "detail")
     history_layout.addWidget(window.strategy_history_curve_view)
     period_splitter = QSplitter(Qt.Horizontal)
+    period_splitter.setObjectName("detailHistoryPeriodSplit")
+    window.detail_history_period_splitter = period_splitter
     period_splitter.setChildrenCollapsible(False)
     yearly_box = QGroupBox("年度统计")
     monthly_box = QGroupBox("月度统计")
@@ -473,7 +1206,9 @@ def build_detail_workspace(window, build_table) -> None:
     history_layout.addWidget(period_splitter)
     window.strategy_history_trade_table = build_table(["战法", "股票", "信号日期", "入场日期", "离场日期", "买入价", "卖出价", "收益率", "持有天数", "退出原因"])
     history_layout.addWidget(window.strategy_history_trade_table)
-    layout.addWidget(history_box)
+    detail_history_layout.addWidget(history_box)
+    if hasattr(window, "_refresh_detail_history_summary_v1"):
+        window._refresh_detail_history_summary_v1()
 
 def build_broker_workspace(window, build_table, adapter_factory, project_root: Path) -> None:
     window.broker_tab.setObjectName("brokerRoot")
@@ -494,12 +1229,9 @@ def build_broker_workspace(window, build_table, adapter_factory, project_root: P
     layout.setContentsMargins(12, 12, 12, 18)
     layout.setSpacing(14)
 
-    broker_hero = window._build_workspace_hero(
-        "EXECUTION DESK",
-        "交易执行台",
-        "闸门 / 委托 / 回执",
-        [("人工复核", "提交模式"), ("风险优先", "执行顺序")],
-    )
+    eyebrow, title, subtitle, badges = workspace_hero_payload("broker")
+    broker_hero = window._build_workspace_hero(eyebrow, title, subtitle, badges)
+    window.broker_workspace_hero = broker_hero
     broker_hero.setProperty("heroCompact", True)
     broker_hero.setProperty("pageTone", "broker")
     hero_layout = broker_hero.layout()
@@ -517,18 +1249,88 @@ def build_broker_workspace(window, build_table, adapter_factory, project_root: P
         badge_rail.set_grid_spacing(6, 6)
         badge_rail.setMaximumWidth(320)
     layout.addWidget(broker_hero)
-    window.broker_status_banner = QLabel("交易状态：先看执行阶段，再确认闸门和回执。")
+    window.broker_status_banner = QLabel("交易状态：待复核 | 执行阶段与闸门待确认 | 下一步：先核对委托。")
     window.broker_status_banner.setObjectName("statusBanner")
     window.broker_status_banner.setProperty("pageTone", "broker")
     layout.addWidget(window.broker_status_banner)
-    window.broker_stage_label = QLabel("执行阶段：待生成委托 | 先从推荐页或交易计划建立第一笔可执行委托。")
+    window.broker_stage_label = QLabel("执行阶段：待生成委托 | 先从机会池或交易计划建立第一笔可执行委托。")
     window.broker_stage_label.setObjectName("focusStateLabel")
     window.broker_stage_label.setProperty("pageTone", "broker")
     window.broker_stage_label.setWordWrap(True)
     window.broker_stage_label.hide()
     layout.addWidget(window.broker_stage_label)
+    layout.addWidget(
+        _build_workspace_focus_strip(
+            window,
+            workspace_key="broker",
+            attr_prefix="broker_desk",
+            eyebrow="执行中控 / 执行判断",
+            title="执行判断条",
+            subtitle="先确认执行阶段、主线闸门和提交条件，再进入委托提交与回执复盘。",
+            badges=[
+                ("看什么", "阶段 / 闸门 / 回执"),
+                ("本页动作", "判执行条件"),
+                ("下一步", "进入委托提交"),
+            ],
+        )
+    )
 
-    broker_summary_box = QGroupBox("执行摘要")
+    window.broker_stage_tabs = QTabWidget()
+
+    broker_overview_page = QWidget()
+    broker_overview_page_layout = QVBoxLayout(broker_overview_page)
+    broker_overview_page_layout.setContentsMargins(0, 0, 0, 0)
+    broker_overview_page_layout.setSpacing(12)
+    window.broker_stage_tabs.addTab(broker_overview_page, "执行总览")
+
+    broker_commit_page = QWidget()
+    broker_commit_page_layout = QVBoxLayout(broker_commit_page)
+    broker_commit_page_layout.setContentsMargins(0, 0, 0, 0)
+    broker_commit_page_layout.setSpacing(12)
+    window.broker_stage_tabs.addTab(broker_commit_page, "委托提交")
+
+    broker_posttrade_page = QWidget()
+    broker_posttrade_page_layout = QVBoxLayout(broker_posttrade_page)
+    broker_posttrade_page_layout.setContentsMargins(0, 0, 0, 0)
+    broker_posttrade_page_layout.setSpacing(12)
+    window.broker_stage_tabs.addTab(broker_posttrade_page, "回执复盘")
+
+    broker_setup_page = QWidget()
+    broker_setup_page_layout = QVBoxLayout(broker_setup_page)
+    broker_setup_page_layout.setContentsMargins(0, 0, 0, 0)
+    broker_setup_page_layout.setSpacing(12)
+    window.broker_stage_tabs.addTab(broker_setup_page, "接入维护")
+    _configure_terminal_stage_tabs(
+        window.broker_stage_tabs,
+        page_tone="broker",
+        tooltips=[
+            "看执行阶段、主线闸门和关键风险。",
+            "看持仓、委托队列和当前委托详情。",
+            "看回执、异常偏差与复盘动作。",
+            "看账户接入、运行维护与诊断。",
+        ],
+    )
+    layout.addWidget(
+        _build_workspace_stage_summary(
+            window,
+            workspace_key="broker",
+            attr_prefix="broker",
+            tab_widget=window.broker_stage_tabs,
+        )
+    )
+    layout.addWidget(window.broker_stage_tabs, stretch=1)
+    _configure_terminal_stage_tabs(
+        window.broker_stage_tabs,
+        page_tone="broker",
+        tooltips=[
+            "先看执行阶段、主线闸门与当前风险灯。",
+            "看持仓、委托队列与当前委托详情。",
+            "看执行回执、异常偏差与复盘动作。",
+            "看账户接入、运行维护与诊断。",
+        ],
+    )
+
+    broker_summary_box = QGroupBox("执行总览")
     broker_summary_box.setObjectName("brokerSummaryBox")
     window.broker_summary_box = broker_summary_box
     window._style_terminal_panel(broker_summary_box)
@@ -556,7 +1358,7 @@ def build_broker_workspace(window, build_table, adapter_factory, project_root: P
         broker_summary_band.add_panel(card)
     broker_summary_layout.addWidget(broker_summary_band)
 
-    profile_box = QGroupBox("账户配置")
+    profile_box = QGroupBox("账号与桥接")
     window._style_terminal_panel(profile_box)
     profile_box.setObjectName("workspaceToolPanel")
     profile_box.setProperty("sectionRole", "setup")
@@ -566,7 +1368,7 @@ def build_broker_workspace(window, build_table, adapter_factory, project_root: P
     profile_grid.setHorizontalSpacing(12)
     profile_grid.setVerticalSpacing(12)
     profile_grid.addWidget(
-        _build_section_hint("统一维护券商接入、桥接环境、导出目录和提交保护项。", page_tone="broker"),
+        _build_section_hint("维护券商接入、桥接环境、导出目录和提交保护项。", page_tone="broker"),
         0,
         0,
         1,
@@ -679,7 +1481,7 @@ def build_broker_workspace(window, build_table, adapter_factory, project_root: P
     profile_grid.setColumnStretch(3, 1)
     profile_grid.setColumnMinimumWidth(4, 176)
 
-    action_box = QGroupBox("快速执行")
+    action_box = QGroupBox("委托执行台")
     window._style_terminal_panel(action_box)
     action_box.setObjectName("workspaceToolPanel")
     action_box.setProperty("sectionRole", "command")
@@ -689,21 +1491,23 @@ def build_broker_workspace(window, build_table, adapter_factory, project_root: P
     action_grid.setHorizontalSpacing(10)
     action_grid.setVerticalSpacing(10)
     action_grid.addWidget(
-        _build_section_hint("盘中顺序：同步账户状态，生成委托计划，复核风险闸门，再进入确认提交。", page_tone="broker"),
+        _build_section_hint("盘中顺序：同步账户状态，生成委托链路，复核风险闸门，再进入确认弹窗提交。", page_tone="broker"),
         0,
         0,
         1,
         4,
     )
+    initial_broker_cta_labels = broker_terminal_primary_cta_labels(stage="", order_count=0, submit_count=0, has_focus_symbol=False)
+    initial_broker_cta_tooltips = broker_terminal_primary_cta_tooltips(stage="", order_count=0, submit_count=0, stock_name="当前焦点")
     action_specs = [
         ("import_holdings", "导入持仓", window.import_holdings_csv, "ghost"),
         ("import_cash", "导入资金", window.import_cash_csv, "ghost"),
-        ("generate", "生成盘中计划", window.generate_order_suggestions, "accent"),
+        ("generate", initial_broker_cta_labels["generate_text"], window.generate_order_suggestions, "accent"),
         ("export_plan", "导出计划快照", window.export_order_plan, "ghost"),
         ("export_replay", "导出提交回放", window.export_order_result_log, "ghost"),
         ("sync_sdk", "同步 SDK", window.sync_broker_via_sdk, "ghost"),
         ("generate_script", "生成 GM 脚本", window.generate_sdk_strategy_script, "ghost"),
-        ("submit", "确认提交", window.confirm_and_submit_orders, "accent"),
+        ("submit", initial_broker_cta_labels["confirm_text"], window.confirm_and_submit_orders, "accent"),
     ]
     action_button_names = {
         "import_holdings": "brokerImportHoldingsButton",
@@ -725,10 +1529,10 @@ def build_broker_workspace(window, build_table, adapter_factory, project_root: P
         action_buttons[key] = button
         if key == "generate":
             window.generate_order_suggestions_button = button
-            button.setToolTip("基于当前焦点票、预算和风控设置生成待提交委托。")
+            button.setToolTip(initial_broker_cta_tooltips["generate_tooltip"])
         elif key == "submit":
             window.confirm_submit_orders_button = button
-            button.setToolTip("打开提交确认弹窗，复核账户、价格、止损和仓位后再提交。")
+            button.setToolTip(initial_broker_cta_tooltips["confirm_tooltip"])
         elif key == "sync_sdk":
             button.setToolTip("拉取最新账户、资金和持仓状态，确保执行环境一致。")
         if handler == window.sync_broker_via_sdk:
@@ -756,7 +1560,7 @@ def build_broker_workspace(window, build_table, adapter_factory, project_root: P
         action_buttons["submit"],
     ]
 
-    broker_metrics_box = QGroupBox("执行指标")
+    broker_metrics_box = QGroupBox("关键指标")
     window.broker_metrics_box = broker_metrics_box
     window._style_terminal_panel(broker_metrics_box)
     broker_metrics_box.setProperty("pageTone", "broker")
@@ -784,7 +1588,7 @@ def build_broker_workspace(window, build_table, adapter_factory, project_root: P
         broker_metrics_band.add_panel(card)
     broker_metrics_layout.addWidget(broker_metrics_band)
 
-    broker_execution_box = QGroupBox("主线审查 / 执行中控")
+    broker_execution_box = QGroupBox("主线看板")
     window.broker_execution_box = broker_execution_box
     window._style_terminal_panel(broker_execution_box)
     broker_execution_box.setProperty("pageTone", "broker")
@@ -825,12 +1629,16 @@ def build_broker_workspace(window, build_table, adapter_factory, project_root: P
 
     broker_gate_action_row = QHBoxLayout()
     broker_gate_action_row.setSpacing(10)
-    window.broker_focus_blocker_button = QPushButton("定位阻塞")
-    window.broker_focus_priority_button = QPushButton("定位前排")
+    blocker_text, blocker_tooltip = broker_terminal_focus_button_copy("blocker")
+    priority_text, priority_tooltip = broker_terminal_focus_button_copy("priority")
+    window.broker_focus_blocker_button = QPushButton(blocker_text)
+    window.broker_focus_priority_button = QPushButton(priority_text)
     window._set_button_role(window.broker_focus_blocker_button, "ghost")
     window._set_button_role(window.broker_focus_priority_button, "accent")
     window.broker_focus_blocker_button.setMinimumHeight(38)
     window.broker_focus_priority_button.setMinimumHeight(38)
+    window.broker_focus_blocker_button.setToolTip(blocker_tooltip)
+    window.broker_focus_priority_button.setToolTip(priority_tooltip)
     window.broker_focus_blocker_button.clicked.connect(window.focus_first_broker_blocker)
     window.broker_focus_priority_button.clicked.connect(window.focus_priority_broker_order)
     broker_gate_action_row.addWidget(window.broker_focus_blocker_button)
@@ -855,14 +1663,14 @@ def build_broker_workspace(window, build_table, adapter_factory, project_root: P
     window.broker_execution_text.setMinimumHeight(118)
     window.broker_execution_text.setMaximumHeight(148)
     window._style_terminal_console(window.broker_execution_text)
-    window.broker_execution_text.setPlainText("生成盘中计划后，这里会汇总订单节奏、确认建议和提交记录。")
+    window.broker_execution_text.setPlainText("生成委托链路后，这里会汇总订单节奏、确认建议和提交记录。")
 
     broker_execution_detail_splitter.addWidget(window.broker_mainline_review_text)
     broker_execution_detail_splitter.addWidget(window.broker_execution_text)
     window._configure_splitter(broker_execution_detail_splitter, [1, 1])
     broker_execution_layout.addWidget(broker_execution_detail_splitter)
 
-    status_box = QGroupBox("账户状态 / 诊断")
+    status_box = QGroupBox("接入诊断")
     window.broker_status_box = status_box
     window._style_terminal_panel(status_box)
     status_box.setProperty("pageTone", "broker")
@@ -871,7 +1679,7 @@ def build_broker_workspace(window, build_table, adapter_factory, project_root: P
     status_layout.setContentsMargins(16, 16, 16, 16)
     status_layout.setSpacing(10)
     status_layout.addWidget(
-        _build_section_hint("统一查看接入状态、桥接环境、最近校验结果和提交保护项。", page_tone="broker")
+        _build_section_hint("看接入状态、桥接环境、最近校验结果和提交保护项。", page_tone="broker")
     )
     window.broker_status_text = QTextEdit()
     window.broker_status_text.setReadOnly(True)
@@ -880,7 +1688,7 @@ def build_broker_workspace(window, build_table, adapter_factory, project_root: P
     window._style_terminal_console(window.broker_status_text)
     status_layout.addWidget(window.broker_status_text)
 
-    runtime_box = QGroupBox("运行维护 / 日志")
+    runtime_box = QGroupBox("运行维护")
     window._style_terminal_panel(runtime_box)
     runtime_box.setObjectName("workspaceToolPanel")
     runtime_box.setProperty("sectionRole", "runtime")
@@ -944,7 +1752,7 @@ def build_broker_workspace(window, build_table, adapter_factory, project_root: P
     broker_control_splitter.addWidget(action_box)
     broker_control_splitter.addWidget(runtime_box)
     window._configure_splitter(broker_control_splitter, [620, 720, 340])
-    holdings_box = QGroupBox("当前持仓")
+    holdings_box = QGroupBox("组合持仓")
     orders_box = QGroupBox("委托执行台")
     window._style_terminal_panel(holdings_box, orders_box)
     holdings_box.setProperty("pageTone", "broker")
@@ -1159,7 +1967,7 @@ def build_broker_workspace(window, build_table, adapter_factory, project_root: P
     window.order_result_text.setPlainText("等待新的执行结果...\n")
     result_layout.addWidget(window.order_result_text)
 
-    recap_box = QGroupBox("偏差复盘")
+    recap_box = QGroupBox("执行复盘")
     window._style_terminal_panel(recap_box)
     window.broker_recap_box = recap_box
     recap_layout = QVBoxLayout(recap_box)
@@ -1200,10 +2008,78 @@ def build_broker_workspace(window, build_table, adapter_factory, project_root: P
     broker_cockpit_layout.setSpacing(12)
     broker_cockpit_layout.addWidget(broker_summary_box)
     broker_cockpit_layout.addWidget(broker_metrics_box)
+    broker_capability_box = QGroupBox("执行能力总览")
+    broker_capability_box.setObjectName("brokerCapabilityBox")
+    window.broker_capability_box = broker_capability_box
+    window._style_terminal_panel(broker_capability_box)
+    broker_capability_box.setProperty("pageTone", "broker")
+    broker_capability_box.setProperty("surfaceRole", "metric-band")
+    broker_capability_box.setProperty("sectionRole", "capability")
+    broker_capability_layout = QVBoxLayout(broker_capability_box)
+    broker_capability_layout.setContentsMargins(12, 12, 12, 12)
+    broker_capability_layout.setSpacing(10)
+    broker_capability_intro = QLabel("拆页后保留的执行总览、委托提交、回执复盘和接入维护从这里回补，避免执行能力像被删掉。")
+    broker_capability_intro.setObjectName("inlineHint")
+    broker_capability_intro.setWordWrap(True)
+    broker_capability_layout.addWidget(broker_capability_intro)
+    broker_capability_grid = QGridLayout()
+    broker_capability_grid.setHorizontalSpacing(12)
+    broker_capability_grid.setVerticalSpacing(12)
+    window.broker_capability_cards = {}
+    broker_capability_specs = [
+        ("overview", "执行总览", "看阶段判断、主线闸门和风险灯。", "看总览"),
+        ("commit", "委托提交", "看委托建议、当前委托和持仓。", "看委托"),
+        ("posttrade", "回执复盘", "看回执事件、成交表和复盘动作。", "看回执"),
+        ("setup", "接入维护", "看账户、执行参数和运行日志。", "看维护"),
+    ]
+    for index, (capability_key, title_text, detail_text, button_text) in enumerate(broker_capability_specs):
+        card = QFrame()
+        card.setObjectName("brokerCapabilityCard")
+        card.setProperty("actionRow", True)
+        card.setProperty("pageTone", "broker")
+        card.setProperty("capabilityCard", True)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(12, 12, 12, 12)
+        card_layout.setSpacing(6)
+        title = QLabel(title_text)
+        title.setObjectName("workspaceTitle")
+        headline = QLabel("--")
+        headline.setObjectName("workspaceSummaryHeadline")
+        headline.setWordWrap(True)
+        detail = QLabel(detail_text)
+        detail.setObjectName("inlineHint")
+        detail.setWordWrap(True)
+        meta = QLabel("--")
+        meta.setObjectName("inlineHint")
+        meta.setWordWrap(True)
+        button = QPushButton(button_text)
+        window._set_button_role(button, "accent" if capability_key in {"commit", "posttrade"} else "tonal")
+        if hasattr(window, "_open_broker_capability_v1"):
+            button.clicked.connect(lambda checked=False, current=capability_key: window._open_broker_capability_v1(current))
+        card_layout.addWidget(title)
+        card_layout.addWidget(headline)
+        card_layout.addWidget(detail)
+        card_layout.addWidget(meta)
+        card_layout.addWidget(button)
+        card_layout.addStretch(1)
+        broker_capability_grid.addWidget(card, index // 2, index % 2)
+        window.broker_capability_cards[capability_key] = {
+            "card": card,
+            "title": title,
+            "headline": headline,
+            "detail": detail,
+            "meta": meta,
+            "button": button,
+        }
+    broker_capability_layout.addLayout(broker_capability_grid)
+    broker_cockpit_layout.addWidget(broker_capability_box)
     window.broker_cockpit_section = broker_cockpit_section
-    layout.addWidget(broker_cockpit_section)
+    broker_overview_page_layout.addWidget(broker_cockpit_section)
+    if hasattr(window, "_refresh_broker_capability_overview_v1"):
+        window._refresh_broker_capability_overview_v1()
 
     broker_execution_column = QWidget()
+    window.broker_execution_column = broker_execution_column
     broker_execution_column.setObjectName("brokerExecutionColumn")
     broker_execution_column.setProperty("pageTone", "broker")
     broker_execution_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -1223,7 +2099,7 @@ def build_broker_workspace(window, build_table, adapter_factory, project_root: P
     broker_workbench_splitter.setStretchFactor(1, 8)
     window._configure_splitter(broker_workbench_splitter, [520, 900])
     window.broker_workbench_splitter = broker_workbench_splitter
-    layout.addWidget(broker_workbench_splitter, stretch=3)
+    broker_commit_page_layout.addWidget(broker_workbench_splitter, stretch=3)
 
     broker_posttrade_section = QFrame()
     broker_posttrade_section.setObjectName("brokerPosttradeSection")
@@ -1234,16 +2110,16 @@ def build_broker_workspace(window, build_table, adapter_factory, project_root: P
     broker_posttrade_layout.addWidget(result_box)
     broker_posttrade_layout.addWidget(recap_box)
     window.broker_posttrade_section = broker_posttrade_section
-    layout.addWidget(broker_posttrade_section, stretch=2)
+    broker_posttrade_page_layout.addWidget(broker_posttrade_section, stretch=2)
 
     broker_setup_toggle_row = QHBoxLayout()
     broker_setup_toggle_row.setContentsMargins(0, 0, 0, 0)
     broker_setup_toggle_row.setSpacing(10)
-    window.broker_setup_toggle_button = QPushButton("展开账户与通道设置")
+    window.broker_setup_toggle_button = QPushButton(BROKER_SETUP_POLICY["toggle_text"][False])
     window._set_button_role(window.broker_setup_toggle_button, "ghost")
     window.broker_setup_toggle_button.setMinimumHeight(40)
     window.broker_setup_toggle_button.clicked.connect(window.toggle_broker_setup_panel)
-    window.broker_setup_status_label = QLabel("账户接入、SDK、导出与运行维护默认收起；盘中先看委托、风险闸门和回执。")
+    window.broker_setup_status_label = QLabel(str(BROKER_SETUP_POLICY["status_text"][False]))
     window.broker_setup_status_label.setObjectName("inlineHint")
     window.broker_setup_status_label.setProperty("pageTone", "broker")
     window.broker_setup_status_label.setWordWrap(True)
@@ -1277,7 +2153,8 @@ def build_broker_workspace(window, build_table, adapter_factory, project_root: P
     broker_setup_drawer_layout.addWidget(status_box)
     broker_setup_drawer_layout.addWidget(broker_control_splitter)
     window.broker_setup_drawer = broker_setup_drawer
-    layout.addWidget(broker_setup_drawer)
+    broker_setup_page_layout.addLayout(broker_setup_toggle_row)
+    broker_setup_page_layout.addWidget(broker_setup_drawer)
 
 def build_overview_workspace(
     window,
@@ -1343,6 +2220,16 @@ def build_overview_workspace(
     window.market_search_input.setMinimumWidth(180)
     window.market_search_input.setMaximumWidth(280)
     window.market_search_input.textChanged.connect(window._apply_market_filters)
+    if hasattr(window, "search_market_symbol"):
+        window.market_search_input.returnPressed.connect(window.search_market_symbol)
+    if hasattr(window, "_refresh_market_search_completer_v1"):
+        window._refresh_market_search_completer_v1()
+    window.market_search_submit_button = QPushButton("搜股票")
+    window.market_search_submit_button.setMinimumHeight(42)
+    window.market_search_submit_button.setMinimumWidth(108)
+    window._set_button_role(window.market_search_submit_button, "tonal")
+    if hasattr(window, "search_market_symbol"):
+        window.market_search_submit_button.clicked.connect(window.search_market_symbol)
     window.market_theme_combo = QComboBox()
     window.market_theme_combo.addItem("全部")
     window.market_theme_combo.setMinimumHeight(42)
@@ -1363,18 +2250,29 @@ def build_overview_workspace(
     window.market_history_reset_button.setMinimumWidth(108)
     window._set_button_role(window.market_history_reset_button, "ghost")
     window.market_history_reset_button.clicked.connect(window.reset_market_history_view)
+    window.market_search_progress_bar = QProgressBar()
+    window.market_search_progress_bar.setObjectName("marketSearchProgressBar")
+    window.market_search_progress_bar.setTextVisible(False)
+    window.market_search_progress_bar.setMinimumHeight(12)
+    window.market_search_progress_bar.setMaximumHeight(12)
+    window.market_search_progress_bar.setMinimumWidth(88)
+    window.market_search_progress_bar.setMaximumWidth(128)
+    window.market_search_progress_bar.setVisible(False)
+    window.market_search_progress_bar.setRange(0, 100)
+    window.market_search_progress_bar.setValue(0)
     window.dashboard_auto_refresh_checkbox = QCheckBox("自动刷新")
     window.dashboard_auto_refresh_checkbox.setMinimumHeight(40)
     window.dashboard_auto_refresh_checkbox.toggled.connect(window.toggle_dashboard_auto_refresh)
     window.dashboard_auto_refresh_checkbox.blockSignals(True)
     window.dashboard_auto_refresh_checkbox.setChecked(True)
     window.dashboard_auto_refresh_checkbox.blockSignals(False)
-    window.market_status_label = QLabel("总览：同步市场与主线")
+    window.market_status_label = QLabel(OVERVIEW_DEFAULT_STATUS_TEXT)
     window.market_status_label.setObjectName("statusBanner")
     window.market_status_label.setWordWrap(True)
     window.market_status_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
     window.market_status_label.setMinimumHeight(40)
     search_input_row.addWidget(window.market_search_input, stretch=3)
+    search_input_row.addWidget(window.market_search_submit_button)
     search_input_row.addWidget(window.market_theme_combo, stretch=1)
     search_input_row.addWidget(window.market_history_date_combo, stretch=1)
     toolbar.addLayout(search_input_row)
@@ -1383,6 +2281,7 @@ def build_overview_workspace(
     search_action_row.setSpacing(8)
     search_action_row.addWidget(window.market_refresh_button)
     search_action_row.addWidget(window.market_history_reset_button)
+    search_action_row.addWidget(window.market_search_progress_bar)
     search_action_row.addWidget(window.dashboard_auto_refresh_checkbox)
     search_action_row.addWidget(window.market_status_label, stretch=1)
     toolbar.addLayout(search_action_row)
@@ -1412,11 +2311,11 @@ def build_overview_workspace(
     controls_layout.setContentsMargins(0, 0, 0, 0)
     controls_layout.setHorizontalSpacing(12)
     controls_layout.setVerticalSpacing(12)
-    overview_view_box = QGroupBox("视图")
+    overview_view_box = QGroupBox("视图模式")
     overview_view_box.setObjectName("overviewViewBox")
-    overview_search_box = QGroupBox("控制")
+    overview_search_box = QGroupBox("筛选与控制")
     overview_search_box.setObjectName("overviewSearchBox")
-    overview_tag_box = QGroupBox("快筛")
+    overview_tag_box = QGroupBox("快捷筛选")
     overview_tag_box.setObjectName("overviewTagBox")
     overview_view_box.setProperty("surfaceRole", "control")
     overview_search_box.setProperty("surfaceRole", "control")
@@ -1451,11 +2350,11 @@ def build_overview_workspace(
     overview_controls_toggle_row = QHBoxLayout()
     overview_controls_toggle_row.setContentsMargins(0, 0, 0, 0)
     overview_controls_toggle_row.setSpacing(10)
-    window.overview_controls_toggle_button = QPushButton("展开控制区")
+    window.overview_controls_toggle_button = QPushButton(str(OVERVIEW_CONTROLS_POLICY["toggle_text"][False]))
     window._set_button_role(window.overview_controls_toggle_button, "ghost")
     window.overview_controls_toggle_button.setMinimumHeight(40)
     window.overview_controls_toggle_button.clicked.connect(window.toggle_overview_controls_panel)
-    window.overview_controls_status_label = QLabel("首屏先看市场洞察，控制区默认收起。")
+    window.overview_controls_status_label = QLabel(str(OVERVIEW_CONTROLS_POLICY["status_text"][False]))
     window.overview_controls_status_label.setObjectName("inlineHint")
     window.overview_controls_status_label.setProperty("pageTone", "overview")
     window.overview_controls_status_label.setWordWrap(True)
@@ -1472,7 +2371,87 @@ def build_overview_workspace(
     overview_controls_drawer_layout.addWidget(controls_container)
     window.overview_controls_drawer = overview_controls_drawer
     layout.addWidget(overview_controls_drawer)
-    dashboard_metrics_box = QGroupBox("核心指标带")
+    layout.addWidget(
+        _build_workspace_focus_strip(
+            window,
+            workspace_key="overview",
+            attr_prefix="overview_desk",
+            eyebrow="全局态势 / 市场判断",
+            title="市场判断条",
+            subtitle="先定市场结构、主线焦点和下一步动作，再进入图表、候选和执行链路。",
+            badges=[
+                ("看什么", "结构 / 主线 / 资金"),
+                ("本页动作", "定市场判断"),
+                ("下一步", "进入机会池或执行中控"),
+            ],
+        )
+    )
+    capability_box = QGroupBox("总览能力总览")
+    capability_box.setObjectName("overviewCapabilityBox")
+    window.overview_capability_box = capability_box
+    window._style_terminal_panel(capability_box)
+    capability_box.setProperty("pageTone", "overview")
+    capability_box.setProperty("surfaceRole", "metric-band")
+    capability_box.setProperty("sectionRole", "capability")
+    capability_layout = QVBoxLayout(capability_box)
+    capability_layout.setContentsMargins(12, 12, 12, 12)
+    capability_layout.setSpacing(10)
+    capability_intro = QLabel("拆页后保留的市场判断、主线龙头、消息催化和买卖决策从这里回补，避免总览能力像被删掉。")
+    capability_intro.setObjectName("inlineHint")
+    capability_intro.setWordWrap(True)
+    capability_layout.addWidget(capability_intro)
+    capability_grid = QGridLayout()
+    capability_grid.setHorizontalSpacing(12)
+    capability_grid.setVerticalSpacing(12)
+    window.overview_capability_cards = {}
+    capability_specs = [
+        ("market", "市场判断", "看市场总览、主图和机会池。", "看总览"),
+        ("leaders", "主线龙头", "看主线龙头和机会池焦点。", "看龙头"),
+        ("news", "消息催化", "看消息催化和来源状态。", "看消息"),
+        ("decision", "买卖决策", "看计划、机会池和交易入口。", "看决策"),
+    ]
+    for index, (capability_key, title_text, detail_text, button_text) in enumerate(capability_specs):
+        card = QFrame()
+        card.setObjectName("overviewCapabilityCard")
+        card.setProperty("actionRow", True)
+        card.setProperty("pageTone", "overview")
+        card.setProperty("capabilityCard", True)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(12, 12, 12, 12)
+        card_layout.setSpacing(6)
+        title = QLabel(title_text)
+        title.setObjectName("workspaceTitle")
+        headline = QLabel("--")
+        headline.setObjectName("workspaceSummaryHeadline")
+        headline.setWordWrap(True)
+        detail = QLabel(detail_text)
+        detail.setObjectName("inlineHint")
+        detail.setWordWrap(True)
+        meta = QLabel("--")
+        meta.setObjectName("inlineHint")
+        meta.setWordWrap(True)
+        button = QPushButton(button_text)
+        window._set_button_role(button, "accent" if capability_key == "decision" else "tonal")
+        if hasattr(window, "_open_overview_capability_v1"):
+            button.clicked.connect(lambda checked=False, current=capability_key: window._open_overview_capability_v1(current))
+        card_layout.addWidget(title)
+        card_layout.addWidget(headline)
+        card_layout.addWidget(detail)
+        card_layout.addWidget(meta)
+        card_layout.addWidget(button)
+        card_layout.addStretch(1)
+        capability_grid.addWidget(card, index // 2, index % 2)
+        window.overview_capability_cards[capability_key] = {
+            "card": card,
+            "title": title,
+            "headline": headline,
+            "detail": detail,
+            "meta": meta,
+            "button": button,
+        }
+    capability_layout.addLayout(capability_grid)
+    layout.addWidget(capability_box)
+    dashboard_metrics_box = QGroupBox("关键指标")
     dashboard_metrics_box.setObjectName("dashboardMetricsBox")
     window.dashboard_metrics_box = dashboard_metrics_box
     window._style_terminal_panel(dashboard_metrics_box)
@@ -1498,7 +2477,7 @@ def build_overview_workspace(
         metrics_band.add_panel(card)
     metrics_row.addWidget(metrics_band)
     layout.addWidget(dashboard_metrics_box)
-    cockpit_box = QGroupBox("市场驾驶舱")
+    cockpit_box = QGroupBox("主线看板")
     cockpit_box.setObjectName("cockpitBox")
     window.overview_cockpit_box = cockpit_box
     window._style_terminal_panel(cockpit_box)
@@ -1528,9 +2507,9 @@ def build_overview_workspace(
     cockpit_action_row.setSpacing(10)
     window.overview_cockpit_action_buttons = []
     for label, workspace in [
-        ("前往推荐页", "recommend"),
-        ("前往交易页", "broker"),
-        ("前往配置页", "config"),
+        ("看机会", "recommend"),
+        ("去交易", "broker"),
+        ("去配置", "config"),
     ]:
         button = QPushButton(label)
         window._set_button_role(button, "ghost" if workspace != "broker" else "accent")
@@ -1548,7 +2527,7 @@ def build_overview_workspace(
     cockpit_layout.addWidget(cockpit_action_row_widget)
     layout.addWidget(cockpit_box)
 
-    playbook_box = QGroupBox("行动剧本")
+    playbook_box = QGroupBox("下一步动作")
     playbook_box.setObjectName("playbookBox")
     window.overview_playbook_box = playbook_box
     window._style_terminal_panel(playbook_box)
@@ -1561,7 +2540,7 @@ def build_overview_workspace(
     window.overview_playbook_text.setProperty("panelTone", "playbook")
     window.overview_playbook_text.setMinimumHeight(128)
     window.overview_playbook_text.setPlainText(
-        "先完成登录与交易通道配置，再刷新市场、查看主线和推荐池，最后进入交易执行页复核委托。"
+        "先完成接入与交易通道配置，再刷新市场、看主线和机会池，最后进入执行中控复核委托。"
     )
     playbook_layout.addWidget(window.overview_playbook_text)
     playbook_action_row_widget = QWidget()
@@ -1571,9 +2550,9 @@ def build_overview_workspace(
     playbook_action_row.setSpacing(10)
     window.overview_playbook_action_buttons = []
     for label, workspace, role in [
-        ("前往登录配置", "auth", "accent"),
-        ("前往推荐池", "recommend", "ghost"),
-        ("前往交易执行", "broker", "ghost"),
+        ("去登录", "auth", "accent"),
+        ("去推荐", "recommend", "ghost"),
+        ("去交易", "broker", "ghost"),
     ]:
         button = QPushButton(label)
         window._set_button_role(button, role)
@@ -1609,7 +2588,7 @@ def build_overview_workspace(
     window.overview_detail_stage_layout = detail_stage_layout
     detail_stage_layout.setContentsMargins(0, 8, 0, 0)
     detail_stage_layout.setSpacing(14)
-    overview_priority_box = QGroupBox("盘前优先级")
+    overview_priority_box = QGroupBox("优先级看板")
     overview_priority_box.setObjectName("overviewPriorityBox")
     window.overview_priority_box = overview_priority_box
     window._style_terminal_panel(overview_priority_box)
@@ -1642,56 +2621,164 @@ def build_overview_workspace(
     left_layout.setContentsMargins(0, 0, 0, 0)
     left_layout.setSpacing(10)
     left_title = QLabel("市场快照")
-    left_title.setObjectName("heroTitle")
+    left_title.setObjectName("workspaceTitle")
+    left_title.setProperty("pageTone", "overview")
     window.overview_left_title = left_title
     left_layout.addWidget(left_title)
     window.overview_intraday_container = QWidget()
     window.overview_intraday_container_layout = QVBoxLayout(window.overview_intraday_container)
     window.overview_intraday_container_layout.setContentsMargins(0, 0, 0, 0)
-    window.overview_intraday_container_layout.setSpacing(0)
+    window.overview_intraday_container_layout.setSpacing(10)
+    overview_intel_stack = QWidget()
+    overview_intel_stack.setObjectName("overviewIntelStack")
+    window.overview_intel_stack = overview_intel_stack
+    overview_intel_layout = QVBoxLayout(overview_intel_stack)
+    overview_intel_layout.setContentsMargins(0, 0, 0, 0)
+    overview_intel_layout.setSpacing(10)
+
+    news_quick_box = QGroupBox("消息来源")
+    news_quick_box.setObjectName("overviewNewsQuickBox")
+    news_quick_box.setProperty("pageTone", "overview")
+    window._style_terminal_panel(news_quick_box)
+    window.overview_news_quick_box = news_quick_box
+    news_quick_layout = QVBoxLayout(news_quick_box)
+    news_quick_layout.setContentsMargins(12, 12, 12, 12)
+    news_quick_layout.setSpacing(8)
+    window.overview_top_news_text = QTextEdit()
+    window.overview_top_news_text.setReadOnly(True)
+    window._style_terminal_console(window.overview_top_news_text)
+    window.overview_top_news_text.setMinimumHeight(94)
+    window.overview_top_news_text.setMaximumHeight(122)
+    window.overview_top_news_text.setPlainText("消息来源\n\n这里会优先展示当前焦点最近一条可靠消息、来源渠道和动作建议。")
+    news_quick_layout.addWidget(window.overview_top_news_text)
+    news_quick_action_row = QHBoxLayout()
+    news_quick_action_row.setContentsMargins(0, 0, 0, 0)
+    news_quick_action_row.setSpacing(8)
+    window.overview_top_news_source_button = QPushButton("看原文")
+    window.overview_top_news_detail_button = QPushButton("看详情")
+    window._set_button_role(window.overview_top_news_source_button, "ghost")
+    window._set_button_role(window.overview_top_news_detail_button, "ghost")
+    window.overview_top_news_source_button.setToolTip(window._news_source_button_base_tooltip())
+    window.overview_top_news_detail_button.setToolTip(window._news_detail_button_base_tooltip())
+    window.overview_top_news_source_button.clicked.connect(window.open_overview_focus_news_source)
+    window.overview_top_news_detail_button.clicked.connect(window.open_overview_focus_news_detail)
+    news_quick_action_row.addWidget(window.overview_top_news_source_button)
+    news_quick_action_row.addWidget(window.overview_top_news_detail_button)
+    news_quick_action_row.addStretch(1)
+    news_quick_layout.addLayout(news_quick_action_row)
+    overview_intel_layout.addWidget(news_quick_box)
+
+    ai_quick_box = QGroupBox("AI评测")
+    ai_quick_box.setObjectName("overviewAiQuickBox")
+    ai_quick_box.setProperty("pageTone", "overview")
+    window._style_terminal_panel(ai_quick_box)
+    window.overview_ai_quick_box = ai_quick_box
+    ai_quick_layout = QVBoxLayout(ai_quick_box)
+    ai_quick_layout.setContentsMargins(12, 12, 12, 12)
+    ai_quick_layout.setSpacing(8)
+    window.overview_top_ai_text = QTextEdit()
+    window.overview_top_ai_text.setReadOnly(True)
+    window._style_terminal_console(window.overview_top_ai_text)
+    window.overview_top_ai_text.setMinimumHeight(94)
+    window.overview_top_ai_text.setMaximumHeight(122)
+    window.overview_top_ai_text.setPlainText("AI评测\n\n这里会提示当前模型、评测状态和该不该马上复核当前焦点。")
+    ai_quick_layout.addWidget(window.overview_top_ai_text)
+    ai_quick_action_row = QHBoxLayout()
+    ai_quick_action_row.setContentsMargins(0, 0, 0, 0)
+    ai_quick_action_row.setSpacing(8)
+    window.overview_top_ai_run_button = QPushButton("评测当前焦点")
+    window.overview_top_ai_panel_button = QPushButton("AI设置")
+    window._set_button_role(window.overview_top_ai_run_button, "tonal")
+    window._set_button_role(window.overview_top_ai_panel_button, "ghost")
+    window.overview_top_ai_run_button.setToolTip("直接对当前焦点发起 AI 评测。")
+    window.overview_top_ai_panel_button.setToolTip("去 AI 评测设置区检查模型、Key 和自动触发。")
+    window.overview_top_ai_run_button.clicked.connect(window.run_ai_review_for_selected_recommendation)
+    window.overview_top_ai_panel_button.clicked.connect(lambda: window._open_config_capability_v1("ai") if hasattr(window, "_open_config_capability_v1") else None)
+    ai_quick_action_row.addWidget(window.overview_top_ai_run_button)
+    ai_quick_action_row.addWidget(window.overview_top_ai_panel_button)
+    ai_quick_action_row.addStretch(1)
+    ai_quick_layout.addLayout(ai_quick_action_row)
+    overview_intel_layout.addWidget(ai_quick_box)
+
+    window.overview_intraday_container_layout.addWidget(overview_intel_stack)
     window.intraday_chart_view = chart_view_cls()
     _configure_chart_view(window.intraday_chart_view, min_height=260)
     window.overview_intraday_container_layout.addWidget(window.intraday_chart_view)
     left_layout.addWidget(window.overview_intraday_container, stretch=5)
-    left_notes = QTabWidget()
-    left_notes.setObjectName("compactInfoTabs")
-    window.left_signal_tabs = left_notes
-    buy_box = QGroupBox("今天能不能买")
+    signal_summary_column = QWidget()
+    signal_summary_column.setObjectName("overviewSignalSummaryColumn")
+    signal_summary_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+    window.overview_signal_summary_column = signal_summary_column
+    window.left_signal_tabs = None
+    signal_summary_layout = QVBoxLayout(signal_summary_column)
+    signal_summary_layout.setContentsMargins(0, 0, 0, 0)
+    signal_summary_layout.setSpacing(10)
+    buy_box = QGroupBox("买入信号")
     buy_box.setObjectName("buySignalBox")
     buy_box.setProperty("pageTone", "overview")
+    buy_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+    window.market_buy_box = buy_box
     buy_layout = QVBoxLayout(buy_box)
+    buy_layout.setContentsMargins(12, 12, 12, 12)
+    buy_layout.setSpacing(8)
     window.market_buy_text = QTextEdit()
     window.market_buy_text.setReadOnly(True)
     window.market_buy_text.setObjectName("marketNotePanel")
     window.market_buy_text.setProperty("panelTone", "buy")
-    window.market_buy_text.setMinimumHeight(140)
+    window.market_buy_text.setProperty("signalSummaryRole", "buy")
+    window.market_buy_text.setMinimumHeight(112)
+    window.market_buy_text.setMaximumHeight(148)
+    window.market_buy_text.setLineWrapMode(QTextEdit.WidgetWidth)
+    window.market_buy_text.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    window.market_buy_text.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    window.market_buy_text.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
     buy_layout.addWidget(window.market_buy_text)
-    risk_box = QGroupBox("减仓和卖点")
+    risk_box = QGroupBox("风险与退出")
     risk_box.setObjectName("riskSignalBox")
     risk_box.setProperty("pageTone", "overview")
+    risk_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+    window.market_sell_box = risk_box
     risk_layout = QVBoxLayout(risk_box)
+    risk_layout.setContentsMargins(12, 12, 12, 12)
+    risk_layout.setSpacing(8)
     window.market_sell_text = QTextEdit()
     window.market_sell_text.setReadOnly(True)
     window.market_sell_text.setObjectName("marketNotePanel")
     window.market_sell_text.setProperty("panelTone", "risk")
-    window.market_sell_text.setMinimumHeight(140)
+    window.market_sell_text.setProperty("signalSummaryRole", "risk")
+    window.market_sell_text.setMinimumHeight(112)
+    window.market_sell_text.setMaximumHeight(148)
+    window.market_sell_text.setLineWrapMode(QTextEdit.WidgetWidth)
+    window.market_sell_text.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    window.market_sell_text.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    window.market_sell_text.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
     risk_layout.addWidget(window.market_sell_text)
-    breadth_box = QGroupBox("消息面")
+    breadth_box = QGroupBox("验证与逻辑")
     breadth_box.setObjectName("breadthSignalBox")
     breadth_box.setProperty("pageTone", "overview")
+    breadth_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+    window.market_breadth_box = breadth_box
     breadth_layout = QVBoxLayout(breadth_box)
+    breadth_layout.setContentsMargins(12, 12, 12, 12)
+    breadth_layout.setSpacing(8)
     window.market_news_group = breadth_box
     window.market_breadth_text = QTextEdit()
     window.market_breadth_text.setReadOnly(True)
     window.market_breadth_text.setObjectName("marketNotePanel")
     window.market_breadth_text.setProperty("panelTone", "watch")
-    window.market_breadth_text.setMinimumHeight(150)
+    window.market_breadth_text.setProperty("signalSummaryRole", "verify")
+    window.market_breadth_text.setMinimumHeight(124)
+    window.market_breadth_text.setMaximumHeight(172)
+    window.market_breadth_text.setLineWrapMode(QTextEdit.WidgetWidth)
+    window.market_breadth_text.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    window.market_breadth_text.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    window.market_breadth_text.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
     breadth_layout.addWidget(window.market_breadth_text)
     breadth_action_row = QHBoxLayout()
     breadth_action_row.setContentsMargins(0, 2, 0, 0)
     breadth_action_row.setSpacing(10)
-    window.market_open_news_button = QPushButton("查看原文")
-    window.market_news_detail_button = QPushButton("消息详情")
+    window.market_open_news_button = QPushButton("看原文")
+    window.market_news_detail_button = QPushButton("看详情")
     window._set_button_role(window.market_open_news_button, "ghost")
     window._set_button_role(window.market_news_detail_button, "ghost")
     window.market_open_news_button.setToolTip(window._news_source_button_base_tooltip())
@@ -1702,10 +2789,16 @@ def build_overview_workspace(
     breadth_action_row.addWidget(window.market_news_detail_button)
     breadth_action_row.addStretch(1)
     breadth_layout.addLayout(breadth_action_row)
-    left_notes.addTab(buy_box, "买点")
-    left_notes.addTab(risk_box, "卖点")
-    left_notes.addTab(breadth_box, "消息面")
-    left_layout.addWidget(left_notes, stretch=2)
+    signal_summary_layout.addWidget(buy_box)
+    signal_summary_layout.addWidget(risk_box)
+    signal_summary_layout.addWidget(breadth_box)
+    signal_summary_layout.addStretch(1)
+    window.overview_signal_summary_boxes = {
+        "buy": buy_box,
+        "risk": risk_box,
+        "verify": breadth_box,
+    }
+    left_layout.addWidget(signal_summary_column)
     main_splitter.addWidget(left_panel)
     center_panel = QWidget()
     center_panel.setObjectName("overviewCenterPanel")
@@ -1713,10 +2806,10 @@ def build_overview_workspace(
     center_layout = QVBoxLayout(center_panel)
     center_layout.setContentsMargins(0, 0, 0, 0)
     center_layout.setSpacing(10)
-    window.market_header_label = QLabel("市场机会工作台")
+    window.market_header_label = QLabel("市场总控台")
     window.market_header_label.setObjectName("heroTitle")
     center_layout.addWidget(window.market_header_label)
-    window.market_subheader_label = QLabel("主线、趋势、消息、决策一屏联动。")
+    window.market_subheader_label = QLabel("主线、资金、消息与交易温度在同一视图完成初判。")
     window.market_subheader_label.setObjectName("heroSubtitle")
     window.market_subheader_label.setWordWrap(True)
     center_layout.addWidget(window.market_subheader_label)
@@ -1727,7 +2820,7 @@ def build_overview_workspace(
     window.market_quote_label.setObjectName("inlineHint")
     window.market_quote_label.setWordWrap(True)
     center_layout.addWidget(window.market_quote_label)
-    market_focus_box = QGroupBox("焦点速览")
+    market_focus_box = QGroupBox("焦点摘要")
     market_focus_box.setObjectName("marketFocusSummaryBox")
     window.market_focus_summary_box = market_focus_box
     window._style_terminal_panel(market_focus_box)
@@ -1792,7 +2885,7 @@ def build_overview_workspace(
     chart_control_row.setSpacing(8)
     prev_chart_button = QPushButton("向左翻一屏")
     next_chart_button = QPushButton("向右翻一屏")
-    reset_chart_button = QPushButton("回到最新")
+    reset_chart_button = QPushButton("回最新")
     zoom_chart_button = QPushButton("放大主图")
     fullscreen_chart_button = QPushButton("全屏看图")
     window.market_chart_prev_button = prev_chart_button
@@ -1805,11 +2898,11 @@ def build_overview_workspace(
     window._set_button_role(reset_chart_button, "tonal")
     window._set_button_role(zoom_chart_button, "ghost")
     window._set_button_role(fullscreen_chart_button, "ghost")
-    prev_chart_button.setToolTip("向左翻一屏，查看更早的数据。按 PageUp 也可翻屏，Shift+左键 可细步进。")
-    next_chart_button.setToolTip("向右翻一屏，返回更近的数据。按 PageDown 也可翻屏，Shift+右键 可细步进。")
-    reset_chart_button.setToolTip("回到最新窗口。按 Home 可快速重置。")
+    prev_chart_button.setToolTip("向左翻一屏，看更早的数据。按 PageUp 也可翻屏，Shift+左键 可细步进。")
+    next_chart_button.setToolTip("向右翻一屏，看更近的数据。按 PageDown 也可翻屏，Shift+右键 可细步进。")
+    reset_chart_button.setToolTip("回最新窗口。按 Home 可快速重置。")
     zoom_chart_button.setToolTip("展开 K 线主图并收起副图，便于专注看主图走势。")
-    fullscreen_chart_button.setToolTip("把当前 K 线主图放到独立大窗口里查看，便于全屏盯图。")
+    fullscreen_chart_button.setToolTip("把当前 K 线主图放到独立大窗口里看，便于全屏盯图。")
     prev_chart_button.clicked.connect(lambda: window.shift_market_chart_window(1))
     next_chart_button.clicked.connect(lambda: window.shift_market_chart_window(-1))
     reset_chart_button.clicked.connect(window.reset_market_chart_window)
@@ -1823,7 +2916,7 @@ def build_overview_workspace(
     chart_control_row.addSpacing(12)
     window.market_chart_nav_label = QLabel("K 线导航：日线 | 近1年 | 第 1 屏 / 共 1 屏")
     window.market_chart_nav_label.setObjectName("inlineHint")
-    window.market_chart_nav_label.setToolTip("PageUp/PageDown 翻屏，Shift+左右细步进，滚轮缩放，双击主图复位，右键打开快捷菜单，F 全屏看图，1/2/3 切换战法标注，A 循环切换，Alt+Left/Right 回看提示，Alt+C 清除筛选。")
+    window.market_chart_nav_label.setToolTip("PageUp/PageDown 翻屏，Shift+左右细步进，Home 回最新，右键打开快捷菜单，F 全屏看图，1/2/3 切换战法标注，A 循环切换，Alt+Left/Right 回看提示，Alt+C 清除筛选。")
     chart_control_row.addWidget(window.market_chart_nav_label)
     chart_control_row.addSpacing(12)
     chart_control_row.addWidget(QLabel("主图叠加"))
@@ -1892,7 +2985,7 @@ def build_overview_workspace(
     chart_tools_tab_layout.setContentsMargins(8, 8, 8, 8)
     chart_tools_tab_layout.setSpacing(8)
     chart_tools_tab_layout.addLayout(chart_control_row)
-    window.market_chart_hover_label = QLabel("图表悬浮：移动鼠标到主图或副图，可联动查看同一时点；右键可直接切换图层和标注。")
+    window.market_chart_hover_label = QLabel("图表悬浮：移动鼠标到主图或副图，可联动看同一时点；右键可直接切换图层和标注。")
     window.market_chart_hover_label.setObjectName("inlineHint")
     window.market_chart_hover_label.setWordWrap(True)
     window.market_chart_hover_label.setMinimumHeight(48)
@@ -1900,6 +2993,14 @@ def build_overview_workspace(
 
     chart_controls_tabs.addTab(timeframe_tab, "周期窗口")
     chart_controls_tabs.addTab(chart_tools_tab, "图层导航")
+    _configure_terminal_stage_tabs(
+        chart_controls_tabs,
+        page_tone="overview",
+        tooltips=[
+            "切换周期、窗口和时间范围。",
+            "切换图层、标注和副图指标。",
+        ],
+    )
     center_layout.addWidget(chart_controls_tabs)
     window.overview_primary_chart_tabs = QTabWidget()
     window.overview_primary_chart_tabs.setObjectName("compactInfoTabs")
@@ -1916,6 +3017,14 @@ def build_overview_workspace(
     window.overview_intraday_chart_layout.setSpacing(0)
     window.overview_primary_chart_tabs.addTab(window.overview_daily_chart_page, "日线主图")
     window.overview_primary_chart_tabs.addTab(window.overview_intraday_chart_page, "分时快照")
+    _configure_terminal_stage_tabs(
+        window.overview_primary_chart_tabs,
+        page_tone="overview",
+        tooltips=[
+            "看主 K 线和中期结构。",
+            "看分时快照和盘中承接。",
+        ],
+    )
     center_layout.addWidget(window.overview_primary_chart_tabs, stretch=6)
     mini_chart_row = QTabWidget()
     mini_chart_row.setObjectName("compactInfoTabs")
@@ -1929,10 +3038,19 @@ def build_overview_workspace(
     window.indicator_chart_view = chart_view_cls()
     _configure_chart_view(window.indicator_chart_view, min_height=200)
     mini_chart_row.addTab(window.indicator_chart_view, "指标副图")
+    _configure_terminal_stage_tabs(
+        mini_chart_row,
+        page_tone="overview",
+        tooltips=[
+            "看资金强弱与增量方向。",
+            "看节奏、加速和回踩。",
+            "看副图指标与共振状态。",
+        ],
+    )
     center_layout.addWidget(mini_chart_row, stretch=2)
     window.price_chart_view = window.daily_chart_view
     window.volume_chart_view = window.fund_chart_view
-    pool_box = QGroupBox("机会股票池")
+    pool_box = QGroupBox("机会池")
     pool_box.setObjectName("opportunityPoolBox")
     pool_box.setProperty("pageTone", "overview")
     pool_layout = QVBoxLayout(pool_box)
@@ -1965,13 +3083,15 @@ def build_overview_workspace(
     right_layout = QVBoxLayout(right_panel)
     right_layout.setContentsMargins(0, 0, 0, 0)
     right_layout.setSpacing(10)
-    leaderboard_box = QGroupBox("掘龙榜")
+    leaderboard_box = QGroupBox("前排龙头")
     leaderboard_box.setObjectName("leaderboardBox")
+    window.overview_leaderboard_box = leaderboard_box
+    window._style_terminal_panel(leaderboard_box)
     leaderboard_box.setProperty("pageTone", "overview")
     leaderboard_box.setProperty("surfaceRole", "analysis")
     leaderboard_layout = QVBoxLayout(leaderboard_box)
-    leaderboard_layout.setContentsMargins(12, 14, 12, 14)
-    leaderboard_layout.setSpacing(14)
+    leaderboard_layout.setContentsMargins(12, 12, 12, 12)
+    leaderboard_layout.setSpacing(10)
     window.market_leaderboard_text = QTextEdit()
     window.market_leaderboard_text.setReadOnly(True)
     window.market_leaderboard_text.hide()
@@ -1980,7 +3100,7 @@ def build_overview_workspace(
     window.market_leaderboard_cards = [leaderboard_card_cls() for _ in range(3)]
     for card in window.market_leaderboard_cards:
         leaderboard_layout.addWidget(card)
-    overview_summary_box = QGroupBox("主控摘要")
+    overview_summary_box = QGroupBox("关键摘要")
     overview_summary_box.setObjectName("overviewSummaryBox")
     window.overview_summary_box = overview_summary_box
     window._style_terminal_panel(overview_summary_box)
@@ -2001,7 +3121,8 @@ def build_overview_workspace(
     for key in ["theme", "source", "capital", "decision"]:
         overview_summary_band.add_panel(window.overview_summary_cards[key])
     overview_summary_layout.addWidget(overview_summary_band)
-    right_layout.addWidget(leaderboard_box, stretch=5)
+    right_layout.addWidget(leaderboard_box, stretch=3)
+    right_layout.addWidget(overview_summary_box, stretch=0)
     window.right_intel_tabs = QTabWidget()
     window.right_intel_tabs.setObjectName("compactInfoTabs")
     right_tab_bar = window.right_intel_tabs.tabBar()
@@ -2010,8 +3131,9 @@ def build_overview_workspace(
     right_tab_bar.setElideMode(Qt.ElideRight)
     right_tab_bar.setDocumentMode(True)
     right_layout.addWidget(window.right_intel_tabs, stretch=4)
-    right_summary_box = QGroupBox("主题摘要")
+    right_summary_box = QGroupBox("主线摘要")
     right_summary_box.setObjectName("themeSummaryBox")
+    window.overview_theme_summary_box = right_summary_box
     right_summary_box.setProperty("pageTone", "overview")
     right_summary_box.setProperty("surfaceRole", "analysis")
     right_summary_layout = QVBoxLayout(right_summary_box)
@@ -2021,17 +3143,18 @@ def build_overview_workspace(
     window.market_theme_brief_text.setReadOnly(True)
     window.market_theme_brief_text.setObjectName("marketNotePanel")
     window.market_theme_brief_text.setProperty("panelTone", "theme")
-    window.market_theme_brief_text.setMinimumHeight(144)
-    window.market_theme_brief_text.setMaximumHeight(176)
+    window.market_theme_brief_text.setMinimumHeight(118)
+    window.market_theme_brief_text.setMaximumHeight(148)
     right_summary_layout.addWidget(window.market_theme_brief_text, stretch=1)
     window.market_source_status_text = QTextEdit()
     window.market_source_status_text.setReadOnly(True)
     window.market_source_status_text.setObjectName("marketNotePanel")
     window.market_source_status_text.setProperty("panelTone", "system")
-    window.market_source_status_text.setMinimumHeight(136)
-    window.market_source_status_text.setMaximumHeight(164)
+    window.market_source_status_text.setMinimumHeight(108)
+    window.market_source_status_text.setMaximumHeight(136)
     right_summary_layout.addWidget(window.market_source_status_text, stretch=1)
-    capital_box = QGroupBox("持仓与大盘")
+    capital_box = QGroupBox("资金与指数")
+    window.overview_capital_box = capital_box
     capital_box.setObjectName("capitalBox")
     capital_box.setProperty("pageTone", "overview")
     capital_box.setProperty("surfaceRole", "analysis")
@@ -2042,10 +3165,11 @@ def build_overview_workspace(
     window.market_capital_text.setReadOnly(True)
     window.market_capital_text.setObjectName("marketNotePanel")
     window.market_capital_text.setProperty("panelTone", "capital")
-    window.market_capital_text.setMinimumHeight(156)
-    window.market_capital_text.setMaximumHeight(192)
+    window.market_capital_text.setMinimumHeight(128)
+    window.market_capital_text.setMaximumHeight(164)
     capital_layout.addWidget(window.market_capital_text)
-    decision_box = QGroupBox("买卖点结论")
+    decision_box = QGroupBox("交易结论")
+    window.overview_decision_box = decision_box
     decision_box.setObjectName("decisionBox")
     decision_box.setProperty("pageTone", "overview")
     decision_box.setProperty("surfaceRole", "analysis")
@@ -2056,16 +3180,25 @@ def build_overview_workspace(
     window.market_decision_text.setReadOnly(True)
     window.market_decision_text.setObjectName("marketNotePanel")
     window.market_decision_text.setProperty("panelTone", "decision")
-    window.market_decision_text.setMinimumHeight(164)
-    window.market_decision_text.setMaximumHeight(204)
+    window.market_decision_text.setMinimumHeight(136)
+    window.market_decision_text.setMaximumHeight(176)
     decision_layout.addWidget(window.market_decision_text)
     window.right_intel_tabs.addTab(right_summary_box, "主题摘要")
     window.right_intel_tabs.addTab(capital_box, "资金画像")
     window.right_intel_tabs.addTab(decision_box, "交易决策")
+    _configure_terminal_stage_tabs(
+        window.right_intel_tabs,
+        page_tone="overview",
+        tooltips=[
+            "看主线、题材与来源摘要。",
+            "看资金、指数与仓位环境。",
+            "看交易结论与下一步动作。",
+        ],
+    )
     main_splitter.addWidget(right_panel)
     window._configure_splitter(main_splitter, [260, 1220, 360])
     command_stage_layout.addWidget(main_splitter, stretch=1)
-    params_box = QGroupBox("策略参数")
+    params_box = QGroupBox("风险参数")
     params_layout = QGridLayout(params_box)
     defaults = strategy_params_factory()
     param_fields = [
@@ -2126,15 +3259,17 @@ def build_recommend_workspace(
     layout = QVBoxLayout(recommend_content)
     layout.setContentsMargins(10, 10, 10, 18)
     layout.setSpacing(14)
+    eyebrow, title, subtitle, badges = workspace_hero_payload("recommend")
 
-    layout.addWidget(
-        window._build_workspace_hero(
-            "每日推荐",
-            "主线先行，盘中执行，盘后复盘",
-            "先看主线、位置、风险和送审状态，再决定是否进入今日交易计划。",
-            [("Top 5", "今日计划"), ("多因子", "主线筛选")],
-        )
+    hero = window._build_workspace_hero(
+        eyebrow,
+        title,
+        subtitle,
+        badges,
     )
+    hero.setProperty("heroCompact", True)
+    hero.setProperty("pageTone", "recommend")
+    layout.addWidget(hero)
     intro = QLabel("先看主线、位置、风险和催化，再看动作与送审。")
     intro.setWordWrap(True)
     intro.setObjectName("inlineHint")
@@ -2144,7 +3279,7 @@ def build_recommend_workspace(
     import_news_button = QPushButton("导入消息面 CSV")
     import_theme_button = QPushButton("导入题材词典 CSV")
     edit_theme_button = QPushButton("编辑题材词典")
-    refresh_button = QPushButton("刷新每日推荐池")
+    refresh_button = QPushButton("刷新机会池")
     load_sample_button = QPushButton("载入示例资料")
     window.news_source_combo = QComboBox()
     window.news_source_apply_button = QPushButton("载入当前消息源")
@@ -2183,8 +3318,23 @@ def build_recommend_workspace(
     window.recommend_message_toast_label.setWordWrap(True)
     window.recommend_message_toast_label.hide()
     layout.addWidget(window.recommend_message_toast_label)
+    layout.addWidget(
+        _build_workspace_focus_strip(
+            window,
+            workspace_key="recommend",
+            attr_prefix="recommend_desk",
+            eyebrow="机会池 / 今日判断",
+            title="今日机会判断",
+            subtitle="先确认焦点票、送审条件和下一步动作，再进入执行审查与深度洞察。",
+            badges=[
+                ("看什么", "焦点 / 风险 / 送审"),
+                ("本页动作", "定焦点 / 判送审"),
+                ("下一步", "进入执行审查"),
+            ],
+        )
+    )
 
-    recommend_empty_box = QGroupBox("快速进入")
+    recommend_empty_box = QGroupBox("执行入口")
     window._style_terminal_panel(recommend_empty_box)
     recommend_empty_box.setObjectName("emptyStatePanel")
     recommend_empty_box.setProperty("surfaceRole", "analysis")
@@ -2235,7 +3385,11 @@ def build_recommend_workspace(
     window.recommend_theme_combo.addItem("全部")
     window.recommend_theme_combo.currentTextChanged.connect(window._on_recommend_theme_filter_changed)
     window.recommend_strategy_combo = QComboBox()
-    window.recommend_strategy_combo.addItem("全部")
+    strategy_filter_labels = list(STRATEGY_FILTER_LABELS)
+    if "尾盘优选" not in strategy_filter_labels:
+        insert_index = strategy_filter_labels.index("尾盘买入法") + 1 if "尾盘买入法" in strategy_filter_labels else len(strategy_filter_labels)
+        strategy_filter_labels.insert(insert_index, "尾盘优选")
+    window.recommend_strategy_combo.addItems(strategy_filter_labels)
     window.recommend_strategy_combo.currentTextChanged.connect(window._on_recommend_strategy_filter_changed)
     window.recommend_action_combo = QComboBox()
     window.recommend_action_combo.addItems(["全部", "买入", "观察", "持有", "减仓", "离场"])
@@ -2281,16 +3435,16 @@ def build_recommend_workspace(
     window.recommend_action_more_button = QPushButton("更多")
     window._set_button_role(window.recommend_action_more_button, "ghost")
     window.recommend_action_more_button.setMinimumHeight(40)
-    window.recommend_action_more_button.setToolTip("打开更多送审相关动作。")
+    window.recommend_action_more_button.setToolTip("看更多送审动作。")
     window.recommend_action_more_button.hide()
 
     controls_deck = AdaptivePanelGrid(min_item_width=360, compact_item_width=300, max_columns=3)
     controls_deck.setObjectName("recommendControlDeck")
     controls_deck.setProperty("pageTone", "recommend")
     controls_deck.set_grid_spacing(12, 12)
-    data_box = QGroupBox("数据接入")
+    data_box = QGroupBox("数据与来源")
     filter_box = QGroupBox("主线筛选")
-    action_box = QGroupBox("送审动作")
+    action_box = QGroupBox("执行动作")
     window._style_terminal_panel(data_box, filter_box, action_box)
     data_box.setObjectName("workspaceToolPanel")
     filter_box.setObjectName("workspaceToolPanel")
@@ -2355,11 +3509,11 @@ def build_recommend_workspace(
     recommend_controls_toggle_row = QHBoxLayout()
     recommend_controls_toggle_row.setContentsMargins(0, 0, 0, 0)
     recommend_controls_toggle_row.setSpacing(10)
-    window.recommend_controls_toggle_button = QPushButton("展开推荐控制台")
+    window.recommend_controls_toggle_button = QPushButton(str(RECOMMEND_CONTROLS_POLICY["toggle_text"][False]))
     window._set_button_role(window.recommend_controls_toggle_button, "ghost")
     window.recommend_controls_toggle_button.setMinimumHeight(40)
     window.recommend_controls_toggle_button.clicked.connect(window.toggle_recommend_controls_panel)
-    window.recommend_controls_status_label = QLabel("首屏优先看焦点、送审和结论；数据接入与筛选默认收起。")
+    window.recommend_controls_status_label = QLabel(str(RECOMMEND_CONTROLS_POLICY["status_text"][False]))
     window.recommend_controls_status_label.setObjectName("inlineHint")
     window.recommend_controls_status_label.setProperty("pageTone", "recommend")
     window.recommend_controls_status_label.setWordWrap(True)
@@ -2384,7 +3538,7 @@ def build_recommend_workspace(
     recommend_controls_section_layout.addWidget(recommend_controls_drawer)
     window.recommend_controls_section = recommend_controls_section
 
-    recommend_focus_cards_box = QGroupBox("当前焦点")
+    recommend_focus_cards_box = QGroupBox("关键摘要")
     window.recommend_focus_cards_box = recommend_focus_cards_box
     window._style_terminal_panel(recommend_focus_cards_box)
     recommend_focus_cards_box.setProperty("surfaceRole", "metric-band")
@@ -2416,9 +3570,9 @@ def build_recommend_workspace(
     window.recommend_dispatch_splitter = dispatch_splitter
     dispatch_splitter.setProperty("pageTone", "recommend")
     dispatch_splitter.setChildrenCollapsible(False)
-    dispatch_box = QGroupBox("盘中分发")
-    focus_review_box = QGroupBox("单票审查")
-    queue_box = QGroupBox("执行队列")
+    dispatch_box = QGroupBox("执行分发")
+    focus_review_box = QGroupBox("单票复核")
+    queue_box = QGroupBox("送审队列")
     window._style_terminal_panel(dispatch_box, focus_review_box, queue_box)
     dispatch_box.setProperty("surfaceRole", "analysis")
     focus_review_box.setProperty("surfaceRole", "analysis")
@@ -2457,8 +3611,8 @@ def build_recommend_workspace(
     focus_review_action_row = QHBoxLayout()
     focus_review_action_row.setContentsMargins(0, 2, 0, 0)
     focus_review_action_row.setSpacing(10)
-    window.recommend_news_source_button = QPushButton("查看消息原文")
-    window.recommend_news_detail_button = QPushButton("查看消息详情")
+    window.recommend_news_source_button = QPushButton("看原文")
+    window.recommend_news_detail_button = QPushButton("看详情")
     window.recommend_ai_review_button = QPushButton("AI评测当前焦点")
     window._set_button_role(window.recommend_news_source_button, "ghost")
     window._set_button_role(window.recommend_news_detail_button, "ghost")
@@ -2498,14 +3652,15 @@ def build_recommend_workspace(
     window.recommend_summary_splitter = summary_splitter
     summary_splitter.setProperty("pageTone", "recommend")
     summary_splitter.setChildrenCollapsible(False)
-    theme_box = QGroupBox("题材热度")
-    leader_box = QGroupBox("龙头榜")
+    theme_box = QGroupBox("主线热度")
+    leader_box = QGroupBox("前排龙头")
     window._style_terminal_panel(theme_box, leader_box)
     theme_box.setProperty("surfaceRole", "analysis")
     leader_box.setProperty("surfaceRole", "analysis")
     theme_box.setProperty("pageTone", "recommend")
     leader_box.setProperty("pageTone", "recommend")
 
+    window.recommend_theme_box = theme_box
     theme_layout = QVBoxLayout(theme_box)
     theme_layout.setContentsMargins(12, 12, 12, 12)
     theme_layout.setSpacing(10)
@@ -2516,6 +3671,7 @@ def build_recommend_workspace(
     window.theme_heat_table.itemSelectionChanged.connect(window._on_theme_heat_selection_changed)
     theme_layout.addWidget(window.theme_heat_table)
 
+    window.recommend_leader_box = leader_box
     leader_layout = QVBoxLayout(leader_box)
     leader_layout.setContentsMargins(12, 12, 12, 12)
     leader_layout.setSpacing(10)
@@ -2550,7 +3706,7 @@ def build_recommend_workspace(
     section_hint.setObjectName("inlineHint")
     window.recommend_section_hint = section_hint
 
-    decision_summary_box = QGroupBox("单票成交卡")
+    decision_summary_box = QGroupBox("执行动作卡")
     window.recommend_decision_summary_box = decision_summary_box
     window._style_terminal_panel(decision_summary_box)
     decision_summary_box.setProperty("surfaceRole", "spotlight")
@@ -2580,28 +3736,29 @@ def build_recommend_workspace(
     decision_action_row = QHBoxLayout()
     decision_action_row.setContentsMargins(0, 2, 0, 0)
     decision_action_row.setSpacing(10)
-    window.recommend_push_focus_button = QPushButton("进入送审")
-    window.recommend_detail_focus_button = QPushButton("查看复盘证据")
-    window.recommend_broker_focus_button = QPushButton("打开交易执行")
+    initial_recommend_cta_labels = recommend_terminal_cta_labels(can_submit=True, can_open_broker=True, execution_state="")
+    window.recommend_push_focus_button = QPushButton(initial_recommend_cta_labels["push"])
+    window.recommend_detail_focus_button = QPushButton(initial_recommend_cta_labels["detail"])
+    window.recommend_broker_focus_button = QPushButton(initial_recommend_cta_labels["broker"])
     _configure_recommend_focus_action(
         window,
         window.recommend_push_focus_button,
         role="accent",
-        tooltip="送审当前焦点股票。系统会结合结论、价格计划和风险状态判断是否适合进入送审链路。",
+        tooltip=recommend_focus_action_tooltip("push", "送审当前焦点股票。系统会结合结论、价格计划和风险状态判断是否适合进入送审链路。"),
         handler=window.push_selected_recommendation_to_broker,
     )
     _configure_recommend_focus_action(
         window,
         window.recommend_detail_focus_button,
         role="ghost",
-        tooltip="跳到复盘页，继续查看信号、执行回放、失效条件和近期消息。",
+        tooltip=recommend_focus_action_tooltip("detail", "跳到复盘页，继续看信号、执行回放、失效条件和近期消息。"),
         handler=window.open_selected_recommend_in_detail,
     )
     _configure_recommend_focus_action(
         window,
         window.recommend_broker_focus_button,
         role="tonal",
-        tooltip="跳到交易页，查看这只股票对应的交易计划、委托建议和回执链路。",
+        tooltip=recommend_focus_action_tooltip("broker", "跳到执行中控，看这只股票对应的交易计划、委托建议和回执链路。"),
         handler=window.open_selected_recommend_in_broker,
     )
     decision_action_row.addWidget(window.recommend_push_focus_button)
@@ -2610,26 +3767,200 @@ def build_recommend_workspace(
     decision_action_row.addStretch(1)
     decision_summary_layout.addLayout(decision_action_row)
     layout.addWidget(decision_summary_box)
-    layout.addWidget(pool_box, stretch=3)
-    layout.addWidget(recommend_controls_section)
-    layout.addWidget(section_hint)
-    layout.addWidget(dispatch_splitter, stretch=2)
-    layout.addWidget(summary_splitter, stretch=2)
+
+    window.recommend_workflow_tabs = QTabWidget()
+    window.recommend_workflow_tabs.setObjectName("compactInfoTabs")
+
+    recommend_overview_page = QWidget()
+    recommend_overview_layout = QVBoxLayout(recommend_overview_page)
+    recommend_overview_layout.setContentsMargins(0, 0, 0, 0)
+    recommend_overview_layout.setSpacing(12)
+    window.recommend_workflow_tabs.addTab(recommend_overview_page, "机会总览")
+
+    recommend_review_page = QWidget()
+    recommend_review_layout = QVBoxLayout(recommend_review_page)
+    recommend_review_layout.setContentsMargins(0, 0, 0, 0)
+    recommend_review_layout.setSpacing(12)
+    window.recommend_workflow_tabs.addTab(recommend_review_page, "执行审查")
+
+    recommend_deep_page = QWidget()
+    recommend_deep_layout = QVBoxLayout(recommend_deep_page)
+    recommend_deep_layout.setContentsMargins(0, 0, 0, 0)
+    recommend_deep_layout.setSpacing(12)
+    window.recommend_workflow_tabs.addTab(recommend_deep_page, "深度洞察")
+    _configure_terminal_stage_tabs(
+        window.recommend_workflow_tabs,
+        page_tone="recommend",
+        tooltips=[
+            "看焦点票、机会池和基础控制台。",
+            "看分发、单票复核和送审队列。",
+            "看主线热度、战法、计划与消息中心。",
+        ],
+    )
+    layout.addWidget(
+        _build_workspace_stage_summary(
+            window,
+            workspace_key="recommend",
+            attr_prefix="recommend",
+            tab_widget=window.recommend_workflow_tabs,
+        )
+    )
+    layout.addWidget(window.recommend_workflow_tabs, stretch=4)
+
+    recommend_overview_layout.addWidget(window.recommend_empty_box)
+    recommend_overview_layout.addWidget(recommend_controls_section)
+
+    capability_box = QGroupBox("机会能力总览")
+    capability_box.setObjectName("recommendCapabilityBox")
+    window.recommend_capability_box = capability_box
+    window._style_terminal_panel(capability_box)
+    capability_box.setProperty("pageTone", "recommend")
+    capability_box.setProperty("surfaceRole", "metric-band")
+    capability_box.setProperty("sectionRole", "capability")
+    capability_layout = QVBoxLayout(capability_box)
+    capability_layout.setContentsMargins(12, 12, 12, 12)
+    capability_layout.setSpacing(10)
+    capability_intro = QLabel("拆页后保留的战法中控、策略细节、今日计划和复盘消息从这里回补，避免旧功能像被删掉。")
+    capability_intro.setObjectName("inlineHint")
+    capability_intro.setWordWrap(True)
+    capability_layout.addWidget(capability_intro)
+    capability_grid = QGridLayout()
+    capability_grid.setHorizontalSpacing(12)
+    capability_grid.setVerticalSpacing(12)
+    window.recommend_capability_cards = {}
+    capability_specs = [
+        ("strategy", "战法中控", "看战法卡组、动作流和优先级看板。", "看战法"),
+        ("detail", "策略细节", "看规则细节、失效条件和主线推演。", "看细节"),
+        ("plan", "今日计划", "看计划表、执行聚焦和持仓建议。", "看计划"),
+        ("ai", "AI评测", "看当前焦点评测、流式生成和最近缓存。", "看AI评测"),
+        ("recap", "复盘消息", "看统一消息中心和复盘消息流。", "看消息"),
+    ]
+    for index, (capability_key, title_text, detail_text, button_text) in enumerate(capability_specs):
+        card = QFrame()
+        card.setObjectName("recommendCapabilityCard")
+        card.setProperty("actionRow", True)
+        card.setProperty("pageTone", "recommend")
+        card.setProperty("capabilityCard", True)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(12, 12, 12, 12)
+        card_layout.setSpacing(6)
+        title = QLabel(title_text)
+        title.setObjectName("workspaceTitle")
+        headline = QLabel("--")
+        headline.setObjectName("workspaceSummaryHeadline")
+        headline.setWordWrap(True)
+        detail = QLabel(detail_text)
+        detail.setObjectName("inlineHint")
+        detail.setWordWrap(True)
+        meta = QLabel("--")
+        meta.setObjectName("inlineHint")
+        meta.setWordWrap(True)
+        button = QPushButton(button_text)
+        window._set_button_role(button, "accent" if capability_key in {"strategy", "ai", "recap"} else "tonal")
+        if hasattr(window, "_open_recommend_capability_v1"):
+            button.clicked.connect(lambda checked=False, current=capability_key: window._open_recommend_capability_v1(current))
+        card_layout.addWidget(title)
+        card_layout.addWidget(headline)
+        card_layout.addWidget(detail)
+        card_layout.addWidget(meta)
+        card_layout.addWidget(button)
+        card_layout.addStretch(1)
+        capability_grid.addWidget(card, index // 2, index % 2)
+        window.recommend_capability_cards[capability_key] = {
+            "card": card,
+            "title": title,
+            "headline": headline,
+            "detail": detail,
+            "meta": meta,
+            "button": button,
+        }
+    capability_layout.addLayout(capability_grid)
+    recommend_overview_layout.addWidget(capability_box)
+    recommend_overview_layout.addWidget(pool_box, stretch=3)
+    recommend_overview_layout.addWidget(section_hint)
+    recommend_review_layout.addWidget(dispatch_splitter, stretch=2)
+
+    deep_summary_box = QGroupBox("深度洞察速览")
+    deep_summary_box.setObjectName("recommendDeepSummaryBox")
+    window.recommend_deep_summary_box = deep_summary_box
+    window._style_terminal_panel(deep_summary_box)
+    deep_summary_box.setProperty("pageTone", "recommend")
+    deep_summary_box.setProperty("surfaceRole", "metric-band")
+    deep_summary_box.setProperty("sectionRole", "summary")
+    deep_summary_layout = QVBoxLayout(deep_summary_box)
+    deep_summary_layout.setContentsMargins(12, 12, 12, 12)
+    deep_summary_layout.setSpacing(10)
+    deep_summary_intro = QLabel("先看主线热度、战法中控、今日计划和消息中心，再往下进入多分栏深度研判。")
+    deep_summary_intro.setObjectName("inlineHint")
+    deep_summary_intro.setWordWrap(True)
+    deep_summary_layout.addWidget(deep_summary_intro)
+    deep_summary_grid = QGridLayout()
+    deep_summary_grid.setHorizontalSpacing(12)
+    deep_summary_grid.setVerticalSpacing(12)
+    window.recommend_deep_summary_cards = {}
+    deep_summary_specs = [
+        ("theme", "主线热度", "先看当前主线、龙头焦点和延续窗口。", "看主线"),
+        ("strategy", "战法中控", "先看战法卡组、明细和主线映射。", "看战法"),
+        ("plan", "今日计划", "先看计划决议、仓位建议和执行顺序。", "看计划"),
+        ("recap", "消息中心", "先看消息、AI 评测和复盘待办。", "看消息"),
+    ]
+    for index, (summary_key, title_text, detail_text, button_text) in enumerate(deep_summary_specs):
+        card = QFrame()
+        card.setObjectName("recommendDeepSummaryCard")
+        card.setProperty("actionRow", True)
+        card.setProperty("pageTone", "recommend")
+        card.setProperty("capabilityCard", True)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(12, 12, 12, 12)
+        card_layout.setSpacing(6)
+        title = QLabel(title_text)
+        title.setObjectName("workspaceTitle")
+        headline = QLabel("--")
+        headline.setObjectName("workspaceSummaryHeadline")
+        headline.setWordWrap(True)
+        detail = QLabel(detail_text)
+        detail.setObjectName("inlineHint")
+        detail.setWordWrap(True)
+        meta = QLabel("--")
+        meta.setObjectName("inlineHint")
+        meta.setWordWrap(True)
+        button = QPushButton(button_text)
+        window._set_button_role(button, "accent" if summary_key in {"theme", "strategy"} else "tonal")
+        if hasattr(window, "_open_recommend_deep_summary_v1"):
+            button.clicked.connect(lambda checked=False, current=summary_key: window._open_recommend_deep_summary_v1(current))
+        card_layout.addWidget(title)
+        card_layout.addWidget(headline)
+        card_layout.addWidget(detail)
+        card_layout.addWidget(meta)
+        card_layout.addWidget(button)
+        card_layout.addStretch(1)
+        deep_summary_grid.addWidget(card, index // 2, index % 2)
+        window.recommend_deep_summary_cards[summary_key] = {
+            "card": card,
+            "title": title,
+            "headline": headline,
+            "detail": detail,
+            "meta": meta,
+            "button": button,
+        }
+    deep_summary_layout.addLayout(deep_summary_grid)
+    recommend_deep_layout.addWidget(deep_summary_box)
+    recommend_deep_layout.addWidget(summary_splitter, stretch=1)
 
     stage_control_row = QHBoxLayout()
     stage_control_row.setContentsMargins(0, 2, 0, 0)
     stage_control_row.setSpacing(10)
-    window.recommend_stage_toggle_button = QPushButton("展开辅助洞察")
+    window.recommend_stage_toggle_button = QPushButton(str(RECOMMEND_AUX_STAGE_POLICY["toggle_text"][False]))
     window._set_button_role(window.recommend_stage_toggle_button, "ghost")
-    window.recommend_stage_toggle_button.setToolTip("展开后会看到战法、观察池、复盘与次日预案；折叠时只保留成交决策核心区块。")
+    window.recommend_stage_toggle_button.setToolTip(str(RECOMMEND_AUX_STAGE_POLICY["toggle_tooltip"][False]))
     window.recommend_stage_toggle_button.clicked.connect(window.toggle_recommend_auxiliary_stage)
-    window.recommend_stage_status_label = QLabel("辅助洞察已折叠，当前只保留成交决策所需核心区块。")
+    window.recommend_stage_status_label = QLabel(str(RECOMMEND_AUX_STAGE_POLICY["status_text"][False]))
     window.recommend_stage_status_label.setObjectName("inlineHint")
     window.recommend_stage_status_label.setWordWrap(True)
-    window.recommend_stage_status_label.setToolTip("这里会说明当前为什么建议展开或保持折叠，帮助你把注意力放在更接近成交的区块。")
+    window.recommend_stage_status_label.setToolTip(str(RECOMMEND_AUX_STAGE_POLICY["status_tooltip"][False]))
     stage_control_row.addWidget(window.recommend_stage_toggle_button)
     stage_control_row.addWidget(window.recommend_stage_status_label, stretch=1)
-    layout.addLayout(stage_control_row)
+    recommend_deep_layout.addLayout(stage_control_row)
 
     window.recommend_stage_container = QWidget()
     window.recommend_stage_container.setObjectName("workspaceStage")
@@ -2649,7 +3980,7 @@ def build_recommend_workspace(
     recommend_stage_layout.addWidget(execution_stage, stretch=3)
     recommend_stage_layout.addWidget(decision_stage, stretch=3)
     recommend_stage_layout.addWidget(recap_stage, stretch=4)
-    layout.addWidget(window.recommend_stage_container, stretch=4)
+    recommend_deep_layout.addWidget(window.recommend_stage_container, stretch=3)
     window.recommend_stage_container.hide()
 
     execution_layout = QVBoxLayout(execution_stage)
@@ -2692,7 +4023,7 @@ def build_recommend_workspace(
     bucket_splitter = QSplitter(Qt.Horizontal)
     bucket_splitter.setProperty("pageTone", "recommend")
     bucket_splitter.setChildrenCollapsible(False)
-    core_bucket_box = QGroupBox("高优先池")
+    core_bucket_box = QGroupBox("主线前排执行桶")
     watch_bucket_box = QGroupBox("观察池")
     risk_bucket_box = QGroupBox("风险池")
     window._style_terminal_panel(core_bucket_box, watch_bucket_box, risk_bucket_box)
@@ -2751,7 +4082,7 @@ def build_recommend_workspace(
     window._configure_splitter(bucket_splitter, [420, 420, 420])
     execution_layout.addWidget(bucket_splitter, stretch=2)
 
-    strategy_pack_box = QGroupBox("战法工作台")
+    strategy_pack_box = QGroupBox("战法中控")
     window.strategy_pack_box = strategy_pack_box
     window._style_terminal_panel(strategy_pack_box)
     strategy_pack_box.setProperty("surfaceRole", "metric-band")
@@ -2770,6 +4101,7 @@ def build_recommend_workspace(
     decision_layout.addWidget(strategy_pack_box, stretch=2)
 
     strategy_detail_box = QGroupBox("战法明细")
+    window.strategy_detail_box = strategy_detail_box
     window._style_terminal_panel(strategy_detail_box)
     strategy_detail_box.setProperty("surfaceRole", "analysis")
     strategy_detail_box.setProperty("pageTone", "recommend")
@@ -2795,12 +4127,13 @@ def build_recommend_workspace(
         tone="theme",
         min_height=96,
         max_height=120,
-        seed_text="等待推荐池。",
+        seed_text="等待机会池。",
     )
     strategy_detail_layout.addWidget(window.strategy_detail_text)
     decision_layout.addWidget(strategy_detail_box, stretch=1)
 
-    action_flow_box = QGroupBox("决策流程")
+    action_flow_box = QGroupBox("动作流程")
+    window.action_flow_box = action_flow_box
     window._style_terminal_panel(action_flow_box)
     action_flow_box.setProperty("surfaceRole", "metric-band")
     action_flow_box.setProperty("pageTone", "recommend")
@@ -2817,7 +4150,8 @@ def build_recommend_workspace(
         action_flow_layout.addWidget(window.action_flow_cards[key])
     decision_layout.addWidget(action_flow_box, stretch=1)
 
-    priority_box = QGroupBox("优先级")
+    priority_box = QGroupBox("优先级看板")
+    window.priority_box = priority_box
     window._style_terminal_panel(priority_box)
     priority_box.setProperty("surfaceRole", "metric-band")
     priority_box.setProperty("pageTone", "recommend")
@@ -2834,7 +4168,8 @@ def build_recommend_workspace(
         priority_layout.addWidget(window.priority_cards[key])
     decision_layout.addWidget(priority_box, stretch=1)
 
-    alert_box = QGroupBox("盘中提醒")
+    alert_box = QGroupBox("风险提醒")
+    window.alert_box = alert_box
     window._style_terminal_panel(alert_box)
     alert_box.setProperty("surfaceRole", "metric-band")
     alert_box.setProperty("pageTone", "recommend")
@@ -2852,6 +4187,7 @@ def build_recommend_workspace(
     decision_layout.addWidget(alert_box, stretch=1)
 
     strategy_path_box = QGroupBox("主线推演")
+    window.strategy_path_box = strategy_path_box
     window._style_terminal_panel(strategy_path_box)
     strategy_path_box.setProperty("surfaceRole", "analysis")
     strategy_path_box.setProperty("pageTone", "recommend")
@@ -2866,12 +4202,13 @@ def build_recommend_workspace(
         tone="theme",
         min_height=170,
         max_height=236,
-        seed_text="等待推荐池。",
+        seed_text="等待机会池。",
     )
     strategy_path_layout.addWidget(window.strategy_path_text)
     decision_layout.addWidget(strategy_path_box, stretch=1)
 
-    summary_cards_box = QGroupBox("决策摘要")
+    summary_cards_box = QGroupBox("关键摘要")
+    window.summary_cards_box = summary_cards_box
     window._style_terminal_panel(summary_cards_box)
     summary_cards_box.setProperty("surfaceRole", "metric-band")
     summary_cards_box.setProperty("pageTone", "recommend")
@@ -2889,6 +4226,7 @@ def build_recommend_workspace(
     recap_layout.addWidget(summary_cards_box, stretch=1)
 
     message_center_box = QGroupBox("统一消息中心")
+    window.recommend_message_center_box = message_center_box
     window._style_terminal_panel(message_center_box)
     message_center_box.setProperty("surfaceRole", "analysis")
     message_center_box.setProperty("pageTone", "recommend")
@@ -2939,15 +4277,15 @@ def build_recommend_workspace(
         window.recommend_message_center_sort_combo.currentIndexChanged.connect(window._on_recommend_message_center_sort_changed)
     if hasattr(window, "_on_recommend_message_center_unhandled_toggled"):
         window.recommend_message_center_unhandled_checkbox.toggled.connect(window._on_recommend_message_center_unhandled_toggled)
-    window.recommend_message_center_clear_button = QPushButton("清空")
+    window.recommend_message_center_clear_button = QPushButton(message_center_button_label("clear", "清空"))
     window._set_button_role(window.recommend_message_center_clear_button, "ghost")
     if hasattr(window, "clear_recommend_message_center"):
         window.recommend_message_center_clear_button.clicked.connect(window.clear_recommend_message_center)
-    window.recommend_message_center_mark_all_read_button = QPushButton("全标已读")
+    window.recommend_message_center_mark_all_read_button = QPushButton(message_center_button_label("mark_all_read", "全标已读"))
     window._set_button_role(window.recommend_message_center_mark_all_read_button, "ghost")
     if hasattr(window, "mark_all_recommend_messages_read"):
         window.recommend_message_center_mark_all_read_button.clicked.connect(window.mark_all_recommend_messages_read)
-    window.recommend_message_center_clear_handled_button = QPushButton("清已办")
+    window.recommend_message_center_clear_handled_button = QPushButton(message_center_button_label("clear_handled", "清已办"))
     window._set_button_role(window.recommend_message_center_clear_handled_button, "ghost")
     if hasattr(window, "clear_handled_recommend_message_events"):
         window.recommend_message_center_clear_handled_button.clicked.connect(window.clear_handled_recommend_message_events)
@@ -2967,13 +4305,13 @@ def build_recommend_workspace(
     window.recommend_message_center_metric_labels = {}
     window.recommend_message_center_metric_accents = {}
     for key, title, accent in [
-        ("unread", "未读", "等待查看"),
+        ("unread", "未读", "待看"),
         ("open", "待处理", "等待消化"),
         ("ai", "AI 事件", "研究辅助"),
         ("news", "消息事件", "消息驱动"),
         ("trade", "交易事件", "执行回执"),
     ]:
-        card, value_label, accent_label = window._create_metric_card(title, "--", accent)
+        card, value_label, accent_label = window._create_metric_card(title, "--", message_center_metric_accent(key, accent))
         window.recommend_message_center_metric_cards[key] = card
         window.recommend_message_center_metric_labels[key] = value_label
         window.recommend_message_center_metric_accents[key] = accent_label
@@ -2991,13 +4329,13 @@ def build_recommend_workspace(
     message_center_action_row = QHBoxLayout()
     message_center_action_row.setContentsMargins(0, 2, 0, 0)
     message_center_action_row.setSpacing(10)
-    window.recommend_message_center_action_label = QLabel("Desk Action：选中一条事件后给出处理路径。")
+    window.recommend_message_center_action_label = QLabel(message_center_action_bar_text(None))
     window.recommend_message_center_action_label.setObjectName("inlineHint")
     window.recommend_message_center_action_label.setWordWrap(True)
-    window.recommend_message_center_mark_read_button = QPushButton("标已读")
-    window.recommend_message_center_mark_handled_button = QPushButton("标已办")
-    window.recommend_message_center_symbol_button = QPushButton("定位股票")
-    window.recommend_message_center_open_button = QPushButton("打开关联页")
+    window.recommend_message_center_mark_read_button = QPushButton(message_center_button_label("mark_read", "标已读"))
+    window.recommend_message_center_mark_handled_button = QPushButton(message_center_button_label("mark_handled", "标已办"))
+    window.recommend_message_center_symbol_button = QPushButton(message_center_button_label("symbol", "定位股票"))
+    window.recommend_message_center_open_button = QPushButton(message_center_button_label("open", "看关联页"))
     window._set_button_role(window.recommend_message_center_mark_read_button, "ghost")
     window._set_button_role(window.recommend_message_center_mark_handled_button, "tonal")
     window._set_button_role(window.recommend_message_center_symbol_button, "tonal")
@@ -3023,17 +4361,23 @@ def build_recommend_workspace(
         tone="system",
         min_height=132,
         max_height=188,
-        seed_text="这里会汇总 AI 评测、消息源刷新、推荐池刷新和交易回执。",
+        seed_text=build_message_center_snapshot([], category_filter="all")["text"],
     )
     message_center_layout.addWidget(window.recommend_message_center_text)
     recap_layout.addWidget(message_center_box, stretch=1)
     if hasattr(window, "_refresh_recommend_message_center"):
         window._refresh_recommend_message_center()
+    if hasattr(window, "_refresh_recommend_capability_overview_v1"):
+        window._refresh_recommend_capability_overview_v1()
 
     detail_box = QGroupBox("主线说明")
-    plan_box = QGroupBox("今日交易计划")
+    plan_box = QGroupBox("今日计划")
     pulse_box = QGroupBox("市场温度")
-    holding_box = QGroupBox("持仓处理建议")
+    holding_box = QGroupBox("持仓建议")
+    window.recommend_detail_box = detail_box
+    window.recommend_plan_box = plan_box
+    window.recommend_pulse_box = pulse_box
+    window.recommend_holding_box = holding_box
     window._style_terminal_panel(detail_box, plan_box, pulse_box, holding_box)
     for box in (detail_box, plan_box, pulse_box, holding_box):
         box.setProperty("surfaceRole", "analysis")
@@ -3063,7 +4407,7 @@ def build_recommend_workspace(
     plan_layout = QVBoxLayout(plan_box)
     plan_layout.setContentsMargins(12, 12, 12, 12)
     plan_layout.setSpacing(10)
-    window.trade_plan_focus_label = QLabel("计划焦点：等待生成或选中")
+    window.trade_plan_focus_label = QLabel(TRADE_PLAN_DEFAULT_FOCUS_TEXT)
     window.trade_plan_focus_label.setObjectName("focusStateLabel")
     window.trade_plan_focus_label.setProperty("pageTone", "broker")
     window.trade_plan_focus_label.setWordWrap(True)
@@ -3077,11 +4421,6 @@ def build_recommend_workspace(
     window.trade_plan_table.setObjectName("tradePlanTable")
     window.trade_plan_table.itemSelectionChanged.connect(window._on_trade_plan_selection_changed)
     plan_layout.addWidget(window.trade_plan_table)
-    window.trade_plan_empty_hint = QLabel("当前还没有可执行的今日交易计划。")
-    window.trade_plan_empty_hint.setObjectName("emptyStateMeta")
-    window.trade_plan_empty_hint.setWordWrap(True)
-    window.trade_plan_empty_hint.hide()
-    plan_layout.addWidget(window.trade_plan_empty_hint)
 
     window.trade_plan_empty_actions = QFrame()
     window.trade_plan_empty_actions.setObjectName("emptyActionBar")
@@ -3090,8 +4429,8 @@ def build_recommend_workspace(
     empty_actions_layout.setContentsMargins(10, 8, 10, 8)
     empty_actions_layout.setSpacing(8)
     refresh_empty_button = QPushButton("重算计划")
-    watch_empty_button = QPushButton("看观察池")
-    broker_empty_button = QPushButton("去交易页")
+    watch_empty_button = QPushButton("看观察")
+    broker_empty_button = QPushButton("去交易")
     window._set_button_role(refresh_empty_button, "accent")
     window._set_button_role(watch_empty_button, "tonal")
     window._set_button_role(broker_empty_button, "ghost")
@@ -3126,7 +4465,7 @@ def build_recommend_workspace(
         tone="capital",
         min_height=176,
         max_height=236,
-        seed_text="等待推荐池生成后，再更新市场温度和仓位建议。",
+        seed_text="等待机会池生成后，再更新市场温度和仓位建议。",
     )
     pulse_layout.addWidget(window.market_pulse_text)
 
@@ -3170,13 +4509,26 @@ def build_recommend_workspace(
     window._configure_splitter(bottom, [340, 900])
     recap_layout.addWidget(bottom, stretch=2)
 
+    recommend_review_column = QWidget()
+    recommend_review_column.setObjectName("recommendReviewColumn")
+    recommend_review_column.setProperty("pageTone", "recommend")
+    recommend_review_column.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+    window.recommend_review_column = recommend_review_column
+    recommend_review_column_layout = QVBoxLayout(recommend_review_column)
+    recommend_review_column_layout.setContentsMargins(0, 0, 0, 0)
+    recommend_review_column_layout.setSpacing(10)
+
     recommend_review_splitter = QSplitter(Qt.Horizontal)
     window.recommend_review_splitter = recommend_review_splitter
     recommend_review_splitter.setProperty("pageTone", "recommend")
     recommend_review_splitter.setChildrenCollapsible(False)
-    recommend_review_box = QGroupBox("当日复盘")
-    recommend_next_day_box = QGroupBox("次日策略")
+    recommend_review_splitter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+    recommend_review_box = QGroupBox("执行复盘")
+    recommend_next_day_box = QGroupBox("次日计划")
     recommend_ai_review_box = QGroupBox("AI评测")
+    window.recommend_review_box = recommend_review_box
+    window.recommend_next_day_box = recommend_next_day_box
+    window.recommend_ai_review_box = recommend_ai_review_box
     window._style_terminal_panel(recommend_review_box, recommend_next_day_box, recommend_ai_review_box)
     recommend_review_box.setProperty("surfaceRole", "analysis")
     recommend_next_day_box.setProperty("surfaceRole", "analysis")
@@ -3184,6 +4536,10 @@ def build_recommend_workspace(
     recommend_review_box.setProperty("pageTone", "recommend")
     recommend_next_day_box.setProperty("pageTone", "recommend")
     recommend_ai_review_box.setProperty("pageTone", "recommend")
+    recommend_review_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+    recommend_next_day_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+    recommend_ai_review_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+    recommend_ai_review_box.setMinimumHeight(300)
 
     recommend_review_layout = QVBoxLayout(recommend_review_box)
     recommend_review_layout.setContentsMargins(12, 12, 12, 12)
@@ -3221,34 +4577,89 @@ def build_recommend_workspace(
         window,
         window.recommend_ai_review_text,
         tone="focus-review",
-        min_height=198,
-        max_height=260,
+        min_height=236,
+        max_height=340,
         seed_text="AI评测会结合推荐、消息和单票上下文，给出一份外部模型复核意见。",
     )
+    window.recommend_ai_review_text.setMinimumWidth(0)
     recommend_ai_review_layout.addWidget(window.recommend_ai_review_text)
 
     recommend_review_splitter.addWidget(recommend_review_box)
     recommend_review_splitter.addWidget(recommend_next_day_box)
-    recommend_review_splitter.addWidget(recommend_ai_review_box)
-    window._configure_splitter(recommend_review_splitter, [430, 430, 360])
-    recap_layout.addWidget(recommend_review_splitter, stretch=2)
+    window._configure_splitter(recommend_review_splitter, [520, 520])
+    recommend_review_column_layout.addWidget(recommend_review_splitter)
+    recommend_review_column_layout.addWidget(recommend_ai_review_box)
+    recap_layout.addWidget(recommend_review_column, stretch=2)
 
 def build_board_workspace(window, build_table, header_view_cls) -> None:
     layout = QVBoxLayout(window.board_tab)
     layout.setContentsMargins(10, 10, 10, 10)
     layout.setSpacing(10)
     window.board_tab.setObjectName("boardRoot")
+    eyebrow, title, subtitle, badges = workspace_hero_payload("board")
+
+    hero = window._build_workspace_hero(
+        eyebrow,
+        title,
+        subtitle,
+        badges,
+    )
+    hero.setProperty("heroCompact", True)
+    hero.setProperty("pageTone", "board")
+    layout.addWidget(hero)
+
+    window.board_status_banner = QLabel("专项状态：待同步 | 候选池与回封监控待建立 | 下一步：刷新专项候选。")
+    window.board_status_banner.setObjectName("statusBanner")
+    window.board_status_banner.setProperty("pageTone", "board")
+    window.board_status_banner.setWordWrap(True)
+    layout.addWidget(window.board_status_banner)
 
     layout.addWidget(
-        window._build_workspace_hero(
-            "打板专项",
-            "高弹性擒龙打板、回封确认与炸板风险联动",
-            "把擒龙打板候选、回封观察、炸板风险和收盘复盘统一到一个页面里，作为专项策略工具使用。",
-            [("Top 5", "打板候选"), ("15:05", "自动复盘")],
+        _build_workspace_focus_strip(
+            window,
+            workspace_key="board",
+            attr_prefix="board_desk",
+            eyebrow="涨停策略 / 专项判断",
+            title="专项判断条",
+            subtitle="先定强势候选、回封质量和执行准备，再进入候选总览与回封监控。",
+            badges=[
+                ("看什么", "候选 / 回封 / 风险"),
+                ("本页动作", "筛候选 / 看回封"),
+                ("下一步", "进入候选 / 监控"),
+            ],
         )
     )
 
-    tool_panel = QGroupBox("打板专项面板")
+    board_summary_box = QGroupBox("专项摘要")
+    window.board_summary_box = board_summary_box
+    window._style_terminal_panel(board_summary_box)
+    board_summary_box.setProperty("pageTone", "board")
+    board_summary_box.setProperty("surfaceRole", "metric-band")
+    board_summary_layout = QVBoxLayout(board_summary_box)
+    board_summary_layout.setContentsMargins(12, 12, 12, 12)
+    board_summary_layout.setSpacing(0)
+    board_summary_band = AdaptivePanelGrid(min_item_width=220, compact_item_width=188, max_columns=4)
+    board_summary_band.setObjectName("boardSummaryBand")
+    board_summary_band.set_grid_spacing(10, 10)
+    window.board_summary_metric_cards = {}
+    window.board_summary_metric_labels = {}
+    window.board_summary_metric_accents = {}
+    for key, title, accent in [
+        ("candidate", "专项候选", "等待候选池建立"),
+        ("monitor", "回封监控", "等待监控联动"),
+        ("focus", "当前焦点", "等待跨页同步"),
+        ("next", "下一步", "先刷新专项候选"),
+    ]:
+        card, value_label, accent_label = window._create_metric_card(title, "--", accent)
+        window.board_summary_metric_cards[key] = card
+        window.board_summary_metric_labels[key] = value_label
+        window.board_summary_metric_accents[key] = accent_label
+        board_summary_band.add_panel(card)
+    board_summary_layout.addWidget(board_summary_band)
+    layout.addWidget(board_summary_box)
+
+    tool_panel = QGroupBox("涨停执行台")
+    window.board_tool_panel = tool_panel
     tool_panel.setObjectName("workspaceToolPanel")
     tool_layout = QGridLayout(tool_panel)
     tool_layout.setContentsMargins(14, 12, 14, 12)
@@ -3258,10 +4669,10 @@ def build_board_workspace(window, build_table, header_view_cls) -> None:
     control_row = QHBoxLayout()
     window.board_tool_action_row = control_row
     control_row.setSpacing(8)
-    refresh_button = QPushButton("刷新打板池")
-    plan_export_button = QPushButton("导出盘前交易计划")
-    export_button = QPushButton("导出收盘复盘日报")
-    window.auto_review_export_checkbox = QCheckBox("15:05 后自动导出复盘日报")
+    refresh_button = QPushButton("刷新候选")
+    plan_export_button = QPushButton("导出计划", tool_panel)
+    export_button = QPushButton("导出复盘", tool_panel)
+    window.auto_review_export_checkbox = QCheckBox("15:05 后自动导出")
     window.auto_review_export_checkbox.setChecked(True)
     window._set_button_role(refresh_button, "accent")
     window._set_button_role(plan_export_button, "ghost")
@@ -3273,20 +4684,33 @@ def build_board_workspace(window, build_table, header_view_cls) -> None:
     window.board_tool_more_button = QPushButton("更多")
     window._set_button_role(window.board_tool_more_button, "ghost")
     window.board_tool_more_button.setMinimumHeight(40)
-    window.board_tool_more_button.setToolTip("打开更多打板专项动作。")
+    window.board_tool_more_button.setToolTip("看更多打板动作。")
     window.board_tool_more_button.hide()
     refresh_button.clicked.connect(window._refresh_board_mode)
     plan_export_button.clicked.connect(window.export_daily_trade_plan_from_ui)
     export_button.clicked.connect(window.export_end_of_day_review_from_ui)
     control_row.addWidget(refresh_button)
-    control_row.addWidget(plan_export_button)
-    control_row.addWidget(export_button)
     control_row.addWidget(window.board_tool_more_button)
-    control_row.addWidget(window.auto_review_export_checkbox)
     control_row.addStretch(1)
     tool_layout.addLayout(control_row, 0, 0)
 
-    board_hint = QLabel("围绕高辨识度强势股，统一查看专项候选、回封监控、导出计划和收盘复盘。")
+    board_controls_toggle_row = QHBoxLayout()
+    board_controls_toggle_row.setContentsMargins(0, 0, 0, 0)
+    board_controls_toggle_row.setSpacing(10)
+    window.board_controls_toggle_button = QPushButton(str(BOARD_CONTROLS_POLICY["toggle_text"][False]))
+    window._set_button_role(window.board_controls_toggle_button, "ghost")
+    window.board_controls_toggle_button.setMinimumHeight(40)
+    window.board_controls_toggle_button.clicked.connect(window.toggle_board_controls_panel)
+    window.board_controls_status_label = QLabel(str(BOARD_CONTROLS_POLICY["status_text"][False]))
+    window.board_controls_status_label.setObjectName("inlineHint")
+    window.board_controls_status_label.setProperty("pageTone", "board")
+    window.board_controls_status_label.setWordWrap(True)
+    window.board_controls_status_label.setMinimumHeight(42)
+    board_controls_toggle_row.addWidget(window.board_controls_toggle_button)
+    board_controls_toggle_row.addWidget(window.board_controls_status_label, stretch=1)
+    tool_layout.addLayout(board_controls_toggle_row, 0, 1)
+
+    board_hint = QLabel("围绕高辨识度强势股，统一看专项候选、回封监控、导出计划和收盘复盘。")
     board_hint.setObjectName("inlineHint")
     board_hint.setWordWrap(True)
     board_meta = QFrame()
@@ -3297,13 +4721,67 @@ def build_board_workspace(window, build_table, header_view_cls) -> None:
     board_meta_layout.setSpacing(6)
     board_meta_layout.addWidget(QLabel("联动说明：候选、监控和复盘会围绕同一只股票同步切换。"))
     board_meta_layout.addWidget(board_hint)
-    tool_layout.addWidget(board_meta, 0, 1)
+    board_controls_drawer = QFrame()
+    board_controls_drawer.setObjectName("boardControlsDrawer")
+    board_controls_drawer.setProperty("actionRow", True)
+    board_controls_layout = QVBoxLayout(board_controls_drawer)
+    board_controls_layout.setContentsMargins(14, 14, 14, 14)
+    board_controls_layout.setSpacing(10)
+    board_controls_actions = QHBoxLayout()
+    board_controls_actions.setContentsMargins(0, 0, 0, 0)
+    board_controls_actions.setSpacing(10)
+    window.board_controls_plan_button = QPushButton("导出计划")
+    window.board_controls_review_button = QPushButton("导出复盘")
+    window._set_button_role(window.board_controls_plan_button, "tonal")
+    window._set_button_role(window.board_controls_review_button, "ghost")
+    window.board_controls_plan_button.clicked.connect(window.export_daily_trade_plan_from_ui)
+    window.board_controls_review_button.clicked.connect(window.export_end_of_day_review_from_ui)
+    board_controls_actions.addWidget(window.board_controls_plan_button)
+    board_controls_actions.addWidget(window.board_controls_review_button)
+    board_controls_actions.addWidget(window.auto_review_export_checkbox)
+    board_controls_actions.addStretch(1)
+    board_controls_layout.addLayout(board_controls_actions)
+    board_controls_layout.addWidget(board_meta)
+    window.board_controls_drawer = board_controls_drawer
+    tool_layout.addWidget(board_controls_drawer, 1, 0, 1, 2)
     tool_layout.setColumnStretch(0, 3)
     tool_layout.setColumnStretch(1, 2)
     layout.addWidget(tool_panel)
 
-    candidate_box = QGroupBox("打板候选池")
-    monitor_box = QGroupBox("炸板 / 回封监控")
+    window.board_stage_tabs = QTabWidget()
+    window.board_stage_tabs.setObjectName("compactInfoTabs")
+
+    board_candidate_page = QWidget()
+    board_candidate_layout = QVBoxLayout(board_candidate_page)
+    board_candidate_layout.setContentsMargins(0, 0, 0, 0)
+    board_candidate_layout.setSpacing(12)
+    window.board_stage_tabs.addTab(board_candidate_page, "候选总览")
+
+    board_monitor_page = QWidget()
+    board_monitor_layout_wrapper = QVBoxLayout(board_monitor_page)
+    board_monitor_layout_wrapper.setContentsMargins(0, 0, 0, 0)
+    board_monitor_layout_wrapper.setSpacing(12)
+    window.board_stage_tabs.addTab(board_monitor_page, "回封监控")
+    _configure_terminal_stage_tabs(
+        window.board_stage_tabs,
+        page_tone="board",
+        tooltips=[
+            "看涨停候选、计划买点与专项判断。",
+            "看回封概率、炸板风险与动作建议。",
+        ],
+    )
+    layout.addWidget(
+        _build_workspace_stage_summary(
+            window,
+            workspace_key="board",
+            attr_prefix="board",
+            tab_widget=window.board_stage_tabs,
+        )
+    )
+    layout.addWidget(window.board_stage_tabs, stretch=1)
+
+    candidate_box = QGroupBox("涨停候选池")
+    monitor_box = QGroupBox("回封监控")
     window._style_terminal_panel(candidate_box, monitor_box)
     candidate_box.setProperty("pageTone", "board")
     monitor_box.setProperty("pageTone", "board")
@@ -3324,8 +4802,75 @@ def build_board_workspace(window, build_table, header_view_cls) -> None:
     window.board_text.setProperty("panelTone", "decision")
     window.board_text.setMinimumHeight(176)
     window.board_text.setMaximumHeight(228)
-    window.board_text.setPlainText("先生成每日推荐池，再生成打板候选。")
+    window.board_text.setPlainText("先生成机会池，再生成打板候选。")
     candidate_layout.addWidget(window.board_text)
+
+    capability_box = QGroupBox("打板能力总览")
+    capability_box.setObjectName("boardCapabilityBox")
+    window.board_capability_box = capability_box
+    window._style_terminal_panel(capability_box)
+    capability_box.setProperty("pageTone", "board")
+    capability_box.setProperty("surfaceRole", "metric-band")
+    capability_box.setProperty("sectionRole", "capability")
+    capability_layout = QVBoxLayout(capability_box)
+    capability_layout.setContentsMargins(12, 12, 12, 12)
+    capability_layout.setSpacing(10)
+    capability_intro = QLabel("拆页后保留的候选判断、回封监控和执行准备从这里回补，避免打板能力像被删掉。")
+    capability_intro.setObjectName("inlineHint")
+    capability_intro.setWordWrap(True)
+    capability_layout.addWidget(capability_intro)
+    capability_grid = QGridLayout()
+    capability_grid.setHorizontalSpacing(12)
+    capability_grid.setVerticalSpacing(12)
+    window.board_capability_cards = {}
+    capability_specs = [
+        ("candidate", "候选判断", "看打板候选池、计划买点和专项判断。", "看候选"),
+        ("monitor", "回封监控", "看回封观察、炸板风险和动作建议。", "看监控"),
+        ("execution", "执行准备", "把候选送进交易链路，继续看委托与执行。", "去交易"),
+    ]
+    for index, (capability_key, title_text, detail_text, button_text) in enumerate(capability_specs):
+        card = QFrame()
+        card.setObjectName("boardCapabilityCard")
+        card.setProperty("actionRow", True)
+        card.setProperty("pageTone", "board")
+        card.setProperty("capabilityCard", True)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(12, 12, 12, 12)
+        card_layout.setSpacing(6)
+        title = QLabel(title_text)
+        title.setObjectName("workspaceTitle")
+        headline = QLabel("--")
+        headline.setObjectName("workspaceSummaryHeadline")
+        headline.setWordWrap(True)
+        detail = QLabel(detail_text)
+        detail.setObjectName("inlineHint")
+        detail.setWordWrap(True)
+        meta = QLabel("--")
+        meta.setObjectName("inlineHint")
+        meta.setWordWrap(True)
+        button = QPushButton(button_text)
+        window._set_button_role(button, "accent" if capability_key == "execution" else "tonal")
+        if hasattr(window, "_open_board_capability_v1"):
+            button.clicked.connect(lambda checked=False, current=capability_key: window._open_board_capability_v1(current))
+        card_layout.addWidget(title)
+        card_layout.addWidget(headline)
+        card_layout.addWidget(detail)
+        card_layout.addWidget(meta)
+        card_layout.addWidget(button)
+        card_layout.addStretch(1)
+        capability_grid.addWidget(card, 0, index)
+        window.board_capability_cards[capability_key] = {
+            "card": card,
+            "title": title,
+            "headline": headline,
+            "detail": detail,
+            "meta": meta,
+            "button": button,
+        }
+    capability_layout.addLayout(capability_grid)
+    board_candidate_layout.addWidget(capability_box)
+    if hasattr(window, "_refresh_board_capability_overview_v1"):
+        window._refresh_board_capability_overview_v1()
 
     monitor_layout = QVBoxLayout(monitor_box)
     window.board_monitor_table = build_table(
@@ -3343,13 +4888,8 @@ def build_board_workspace(window, build_table, header_view_cls) -> None:
     window.board_monitor_text.setMaximumHeight(228)
     window.board_monitor_text.setPlainText("专项监控会显示回封观察、炸板风险和强势连板候选。")
     monitor_layout.addWidget(window.board_monitor_text)
-    board_workspace_splitter = QSplitter(Qt.Horizontal)
-    board_workspace_splitter.setChildrenCollapsible(False)
-    board_workspace_splitter.addWidget(candidate_box)
-    board_workspace_splitter.addWidget(monitor_box)
-    window._configure_splitter(board_workspace_splitter, [640, 620])
-    window.board_workspace_splitter = board_workspace_splitter
-    layout.addWidget(board_workspace_splitter, stretch=1)
+    board_candidate_layout.addWidget(candidate_box, stretch=1)
+    board_monitor_layout_wrapper.addWidget(monitor_box, stretch=1)
 
 def _build_config_workspace_core(window) -> None:
     window.config_tab.setObjectName("configRoot")
@@ -3370,15 +4910,88 @@ def _build_config_workspace_core(window) -> None:
     layout.setContentsMargins(16, 16, 16, 16)
     layout.setSpacing(12)
     window.config_workspace_scroll_area.setWidget(config_content)
+    eyebrow, title, subtitle, badges = workspace_hero_payload("config")
+
+    hero = window._build_workspace_hero(
+        eyebrow,
+        title,
+        subtitle,
+        [
+            badges[0] if len(badges) > 0 else ("风险", "当前档位"),
+            ("授权", window.state.license_plan or "TRIAL"),
+        ],
+    )
+    hero.setProperty("heroCompact", True)
+    hero.setProperty("pageTone", "config")
+    layout.addWidget(hero)
+
+    window.config_status_banner = QLabel("配置状态：待确认 | 风险档位与模板待复核 | 下一步：保存后刷新机会池。")
+    window.config_status_banner.setObjectName("statusBanner")
+    window.config_status_banner.setProperty("pageTone", "config")
+    window.config_status_banner.setWordWrap(True)
+    layout.addWidget(window.config_status_banner)
 
     layout.addWidget(
-        window._build_workspace_hero(
-            "\u7b56\u7565\u914d\u7f6e / \u5546\u4e1a\u5316",
-            "\u7b56\u7565\u53c2\u6570\u4e0e\u6388\u6743\u72b6\u6001",
-            "\u96c6\u4e2d\u7ba1\u7406\u4e3b\u7ebf\u9608\u503c\u3001\u9898\u6750\u6743\u91cd\u3001\u76d8\u524d\u6a21\u677f\u548c\u7248\u672c\u80fd\u529b\u8fb9\u754c\u3002",
-            [("\u7b56\u7565", "\u4e3b\u7ebf\u4f18\u5148"), ("\u6388\u6743", window.state.license_plan or "TRIAL")],
+        _build_workspace_focus_strip(
+            window,
+            workspace_key="config",
+            attr_prefix="config_desk",
+            eyebrow="策略配置 / 配置判断",
+            title="配置判断条",
+            subtitle="先确认风险档位、模板、消息源与 AI 边界，再决定是否刷新机会池与交易。",
+            badges=[
+                ("看什么", "风险 / 模板 / 消息源"),
+                ("本页动作", "调参数 / 保存"),
+                ("下一步", "刷新机会池 / 交易"),
+            ],
         )
     )
+
+    window.config_stage_tabs = QTabWidget()
+    window.config_stage_tabs.setObjectName("compactInfoTabs")
+
+    config_overview_page = QWidget()
+    config_overview_layout = QVBoxLayout(config_overview_page)
+    config_overview_layout.setContentsMargins(0, 0, 0, 0)
+    config_overview_layout.setSpacing(12)
+    window.config_stage_tabs.addTab(config_overview_page, "参数与风险")
+
+    config_strategy_page = QWidget()
+    config_strategy_layout = QVBoxLayout(config_strategy_page)
+    config_strategy_layout.setContentsMargins(0, 0, 0, 0)
+    config_strategy_layout.setSpacing(12)
+    window.config_stage_tabs.addTab(config_strategy_page, "战法配置")
+
+    config_intel_page = QWidget()
+    config_intel_layout = QVBoxLayout(config_intel_page)
+    config_intel_layout.setContentsMargins(0, 0, 0, 0)
+    config_intel_layout.setSpacing(12)
+    window.config_stage_tabs.addTab(config_intel_page, "消息与AI")
+
+    config_notes_page = QWidget()
+    config_notes_layout = QVBoxLayout(config_notes_page)
+    config_notes_layout.setContentsMargins(0, 0, 0, 0)
+    config_notes_layout.setSpacing(12)
+    window.config_stage_tabs.addTab(config_notes_page, "说明")
+    _configure_terminal_stage_tabs(
+        window.config_stage_tabs,
+        page_tone="config",
+        tooltips=[
+            "看参数、授权和风险档位。",
+            "看战法列表、表单和配置脚本。",
+            "看消息源与 AI 评测能力。",
+            "看说明和影响范围。",
+        ],
+    )
+    layout.addWidget(
+        _build_workspace_stage_summary(
+            window,
+            workspace_key="config",
+            attr_prefix="config",
+            tab_widget=window.config_stage_tabs,
+        )
+    )
+    layout.addWidget(window.config_stage_tabs, stretch=1)
 
     top = QSplitter(Qt.Horizontal)
     top.setChildrenCollapsible(False)
@@ -3465,10 +5078,11 @@ def _build_config_workspace_core(window) -> None:
     top.addWidget(license_box)
 
     window._configure_splitter(top, [620, 620])
-    layout.addWidget(top, stretch=2)
+    config_overview_layout.addWidget(top, stretch=2)
 
     snapshot_box = QGroupBox("\u98ce\u9669\u6863\u4f4d\u5feb\u7167")
     snapshot_box.setObjectName("configRiskSnapshotBox")
+    window.config_risk_snapshot_box = snapshot_box
     window._style_terminal_panel(snapshot_box)
     snapshot_layout = QGridLayout(snapshot_box)
     snapshot_layout.setHorizontalSpacing(12)
@@ -3518,7 +5132,139 @@ def _build_config_workspace_core(window) -> None:
             "flag": flag,
             "button": action_button,
         }
-    layout.addWidget(snapshot_box, stretch=1)
+    config_overview_layout.addWidget(snapshot_box, stretch=1)
+
+    capability_box = QGroupBox("配置能力总览")
+    capability_box.setObjectName("configCapabilityBox")
+    window.config_capability_box = capability_box
+    window._style_terminal_panel(capability_box)
+    capability_box.setProperty("pageTone", "config")
+    capability_box.setProperty("surfaceRole", "metric-band")
+    capability_box.setProperty("sectionRole", "capability")
+    capability_layout = QVBoxLayout(capability_box)
+    capability_layout.setContentsMargins(12, 12, 12, 12)
+    capability_layout.setSpacing(10)
+    capability_intro = QLabel("拆页后保留的旧能力统一从这里回补：参数与风险、战法配置、消息源管理、AI 评测都必须能直接抵达。")
+    capability_intro.setObjectName("inlineHint")
+    capability_intro.setWordWrap(True)
+    capability_layout.addWidget(capability_intro)
+    capability_grid = QGridLayout()
+    capability_grid.setHorizontalSpacing(12)
+    capability_grid.setVerticalSpacing(12)
+    window.config_capability_cards = {}
+    capability_specs = [
+        ("risk", "参数与风险", "先确认风险档位、模板与题材边界。", "看参数"),
+        ("strategy", "战法配置", "看战法目录、表单与 JSON 编辑器。", "看战法"),
+        ("news", "消息源管理", "检查 Provider、载入记录与联动状态。", "看消息源"),
+        ("ai", "AI 评测", "检查模型、自动触发与缓存状态。", "AI评测"),
+    ]
+    for index, (capability_key, title_text, detail_text, button_text) in enumerate(capability_specs):
+        card = QFrame()
+        card.setObjectName("configCapabilityCard")
+        card.setProperty("actionRow", True)
+        card.setProperty("pageTone", "config")
+        card.setProperty("capabilityCard", True)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(12, 12, 12, 12)
+        card_layout.setSpacing(6)
+        title = QLabel(title_text)
+        title.setObjectName("workspaceTitle")
+        headline = QLabel("--")
+        headline.setObjectName("workspaceSummaryHeadline")
+        headline.setWordWrap(True)
+        detail = QLabel(detail_text)
+        detail.setObjectName("inlineHint")
+        detail.setWordWrap(True)
+        meta = QLabel("--")
+        meta.setObjectName("inlineHint")
+        meta.setWordWrap(True)
+        button = QPushButton(button_text)
+        window._set_button_role(button, "accent" if capability_key in {"strategy", "news"} else "tonal")
+        if hasattr(window, "_open_config_capability_v1"):
+            button.clicked.connect(lambda checked=False, current=capability_key: window._open_config_capability_v1(current))
+        card_layout.addWidget(title)
+        card_layout.addWidget(headline)
+        card_layout.addWidget(detail)
+        card_layout.addWidget(meta)
+        card_layout.addWidget(button)
+        card_layout.addStretch(1)
+        capability_grid.addWidget(card, index // 2, index % 2)
+        window.config_capability_cards[capability_key] = {
+            "card": card,
+            "title": title,
+            "headline": headline,
+            "detail": detail,
+            "meta": meta,
+            "button": button,
+        }
+    capability_layout.addLayout(capability_grid)
+    config_overview_layout.addWidget(capability_box, stretch=1)
+
+    strategy_summary_box = QGroupBox("战法速览")
+    strategy_summary_box.setObjectName("configStrategySummaryBox")
+    window.config_strategy_summary_box = strategy_summary_box
+    window._style_terminal_panel(strategy_summary_box)
+    strategy_summary_box.setProperty("pageTone", "config")
+    strategy_summary_box.setProperty("surfaceRole", "metric-band")
+    strategy_summary_box.setProperty("sectionRole", "summary")
+    strategy_summary_layout = QVBoxLayout(strategy_summary_box)
+    strategy_summary_layout.setContentsMargins(12, 12, 12, 12)
+    strategy_summary_layout.setSpacing(10)
+    strategy_summary_intro = QLabel("先看当前目录、草稿状态和 JSON 编辑进度，再决定是改表单、改脚本还是直接保存。")
+    strategy_summary_intro.setObjectName("inlineHint")
+    strategy_summary_intro.setWordWrap(True)
+    strategy_summary_layout.addWidget(strategy_summary_intro)
+    strategy_summary_grid = QGridLayout()
+    strategy_summary_grid.setHorizontalSpacing(12)
+    strategy_summary_grid.setVerticalSpacing(12)
+    window.config_strategy_summary_cards = {}
+    strategy_summary_specs = [
+        ("catalog", "目录速览", "先看目录总量、启用数量和当前筛选。", "看列表"),
+        ("form", "草稿速览", "先看当前草稿、阶段和校验状态。", "看表单"),
+        ("editor", "JSON速览", "先看脚本行数、公式项和同步状态。", "看JSON"),
+        ("script", "脚本能力", "先看能力声明、依赖和脚本诊断。", "看脚本"),
+    ]
+    for column, (summary_key, title_text, detail_text, button_text) in enumerate(strategy_summary_specs):
+        card = QFrame()
+        card.setObjectName("configStrategySummaryCard")
+        card.setProperty("actionRow", True)
+        card.setProperty("pageTone", "config")
+        card.setProperty("capabilityCard", True)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(12, 12, 12, 12)
+        card_layout.setSpacing(6)
+        title = QLabel(title_text)
+        title.setObjectName("workspaceTitle")
+        headline = QLabel("--")
+        headline.setObjectName("workspaceSummaryHeadline")
+        headline.setWordWrap(True)
+        detail = QLabel(detail_text)
+        detail.setObjectName("inlineHint")
+        detail.setWordWrap(True)
+        meta = QLabel("--")
+        meta.setObjectName("inlineHint")
+        meta.setWordWrap(True)
+        button = QPushButton(button_text)
+        window._set_button_role(button, "tonal")
+        if hasattr(window, "_open_config_strategy_summary_v1"):
+            button.clicked.connect(lambda checked=False, current=summary_key: window._open_config_strategy_summary_v1(current))
+        card_layout.addWidget(title)
+        card_layout.addWidget(headline)
+        card_layout.addWidget(detail)
+        card_layout.addWidget(meta)
+        card_layout.addWidget(button)
+        card_layout.addStretch(1)
+        strategy_summary_grid.addWidget(card, 0, column)
+        window.config_strategy_summary_cards[summary_key] = {
+            "card": card,
+            "title": title,
+            "headline": headline,
+            "detail": detail,
+            "meta": meta,
+            "button": button,
+        }
+    strategy_summary_layout.addLayout(strategy_summary_grid)
+    config_strategy_layout.addWidget(strategy_summary_box, stretch=0)
 
     strategy_center_box = QGroupBox("战法配置中心")
     strategy_center_box.setObjectName("configStrategyCatalogBox")
@@ -3533,6 +5279,8 @@ def _build_config_workspace_core(window) -> None:
     window.strategy_config_name_input = QLineEdit()
     window.strategy_config_name_input.setPlaceholderText("新战法名称，例如：量价共振")
     window.strategy_config_add_button = QPushButton("新增战法")
+    window.strategy_config_script_button = QPushButton("脚本模板")
+    window.strategy_config_script_from_current_button = QPushButton("转脚本")
     window.strategy_config_template_button = QPushButton("空白模板")
     window.strategy_config_duplicate_button = QPushButton("复制当前")
     window.strategy_config_save_button = QPushButton("保存战法")
@@ -3541,9 +5289,12 @@ def _build_config_workspace_core(window) -> None:
     window.strategy_config_export_button = QPushButton("导出当前")
     window.strategy_config_export_all_button = QPushButton("导出全部")
     window.strategy_config_import_button = QPushButton("导入配置")
-    window.strategy_config_open_dir_button = QPushButton("打开目录")
-    window.strategy_config_reload_button = QPushButton("重新载入")
+    window.strategy_config_open_source_button = QPushButton("看源文件")
+    window.strategy_config_open_dir_button = QPushButton("看目录")
+    window.strategy_config_reload_button = QPushButton("重载")
     window._set_button_role(window.strategy_config_add_button, "tonal")
+    window._set_button_role(window.strategy_config_script_button, "tonal")
+    window._set_button_role(window.strategy_config_script_from_current_button, "tonal")
     window._set_button_role(window.strategy_config_template_button, "ghost")
     window._set_button_role(window.strategy_config_duplicate_button, "ghost")
     window._set_button_role(window.strategy_config_save_button, "accent")
@@ -3552,9 +5303,12 @@ def _build_config_workspace_core(window) -> None:
     window._set_button_role(window.strategy_config_export_button, "ghost")
     window._set_button_role(window.strategy_config_export_all_button, "ghost")
     window._set_button_role(window.strategy_config_import_button, "tonal")
+    window._set_button_role(window.strategy_config_open_source_button, "ghost")
     window._set_button_role(window.strategy_config_open_dir_button, "ghost")
     window._set_button_role(window.strategy_config_reload_button, "ghost")
     window.strategy_config_add_button.clicked.connect(window.new_strategy_config_wizard)
+    window.strategy_config_script_button.clicked.connect(window.new_strategy_script_template)
+    window.strategy_config_script_from_current_button.clicked.connect(window.generate_script_from_current_strategy_config)
     window.strategy_config_template_button.clicked.connect(window.new_strategy_config_template)
     window.strategy_config_duplicate_button.clicked.connect(window.duplicate_current_strategy_config)
     window.strategy_config_save_button.clicked.connect(window.save_strategy_config_from_editor)
@@ -3563,11 +5317,14 @@ def _build_config_workspace_core(window) -> None:
     window.strategy_config_export_button.clicked.connect(window.export_current_strategy_config)
     window.strategy_config_export_all_button.clicked.connect(window.export_all_strategy_configs)
     window.strategy_config_import_button.clicked.connect(window.import_strategy_config_file)
+    window.strategy_config_open_source_button.clicked.connect(window.open_selected_strategy_source)
     window.strategy_config_open_dir_button.clicked.connect(window.open_strategy_config_directory)
     window.strategy_config_reload_button.clicked.connect(window.reload_strategy_config_workspace)
     strategy_action_row.addWidget(QLabel("战法名称"))
     strategy_action_row.addWidget(window.strategy_config_name_input, stretch=2)
     strategy_action_row.addWidget(window.strategy_config_add_button)
+    strategy_action_row.addWidget(window.strategy_config_script_button)
+    strategy_action_row.addWidget(window.strategy_config_script_from_current_button)
     strategy_action_row.addWidget(window.strategy_config_template_button)
     strategy_action_row.addWidget(window.strategy_config_duplicate_button)
     strategy_action_row.addWidget(window.strategy_config_save_button)
@@ -3576,6 +5333,7 @@ def _build_config_workspace_core(window) -> None:
     strategy_action_row.addWidget(window.strategy_config_export_button)
     strategy_action_row.addWidget(window.strategy_config_export_all_button)
     strategy_action_row.addWidget(window.strategy_config_import_button)
+    strategy_action_row.addWidget(window.strategy_config_open_source_button)
     strategy_action_row.addWidget(window.strategy_config_open_dir_button)
     strategy_action_row.addWidget(window.strategy_config_reload_button)
     strategy_center_layout.addLayout(strategy_action_row)
@@ -3597,6 +5355,12 @@ def _build_config_workspace_core(window) -> None:
     window.strategy_config_search_input.setPlaceholderText("搜索战法名称，如：龙头、低吸、趋势")
     window.strategy_config_search_input.textChanged.connect(window._on_strategy_config_search_changed)
     strategy_list_header.addWidget(window.strategy_config_search_input, stretch=1)
+    window.strategy_config_source_filter_combo = QComboBox()
+    window.strategy_config_source_filter_combo.addItem("全部来源", "all")
+    window.strategy_config_source_filter_combo.addItem("仅 JSON", "catalog")
+    window.strategy_config_source_filter_combo.addItem("仅脚本", "script")
+    window.strategy_config_source_filter_combo.currentIndexChanged.connect(window._on_strategy_config_source_filter_changed)
+    strategy_list_header.addWidget(window.strategy_config_source_filter_combo)
     strategy_list_layout.addLayout(strategy_list_header)
     window.strategy_config_list_status_label = QLabel("等待载入战法列表")
     window.strategy_config_list_status_label.setObjectName("inlineHint")
@@ -3605,6 +5369,38 @@ def _build_config_workspace_core(window) -> None:
     window.strategy_config_list = QListWidget()
     window.strategy_config_list.currentTextChanged.connect(window._on_strategy_config_selected)
     strategy_list_layout.addWidget(window.strategy_config_list)
+    window.strategy_plugin_diagnostics_label = QLabel("脚本诊断：等待重载")
+    window.strategy_plugin_diagnostics_label.setObjectName("inlineHint")
+    window.strategy_plugin_diagnostics_label.setWordWrap(True)
+    strategy_diag_header = QHBoxLayout()
+    strategy_diag_header.setContentsMargins(0, 0, 0, 0)
+    strategy_diag_header.setSpacing(8)
+    strategy_diag_header.addWidget(window.strategy_plugin_diagnostics_label, stretch=1)
+    window.strategy_plugin_diagnostics_filter_combo = QComboBox()
+    window.strategy_plugin_diagnostics_filter_combo.addItem("全部级别", "all")
+    window.strategy_plugin_diagnostics_filter_combo.addItem("仅错误", "error")
+    window.strategy_plugin_diagnostics_filter_combo.addItem("仅警告", "warning")
+    window.strategy_plugin_diagnostics_filter_combo.addItem("仅信息", "info")
+    window.strategy_plugin_diagnostics_filter_combo.currentIndexChanged.connect(window._on_strategy_plugin_diagnostic_filter_changed)
+    strategy_diag_header.addWidget(window.strategy_plugin_diagnostics_filter_combo)
+    window.strategy_plugin_diagnostics_open_button = QPushButton("看报错源")
+    window.strategy_plugin_diagnostics_copy_button = QPushButton("复制诊断")
+    window._set_button_role(window.strategy_plugin_diagnostics_open_button, "ghost")
+    window._set_button_role(window.strategy_plugin_diagnostics_copy_button, "ghost")
+    window.strategy_plugin_diagnostics_open_button.clicked.connect(window.open_strategy_plugin_diagnostic_source)
+    window.strategy_plugin_diagnostics_copy_button.clicked.connect(window.copy_strategy_plugin_diagnostic_detail)
+    strategy_diag_header.addWidget(window.strategy_plugin_diagnostics_copy_button)
+    strategy_diag_header.addWidget(window.strategy_plugin_diagnostics_open_button)
+    strategy_list_layout.addLayout(strategy_diag_header)
+    window.strategy_plugin_diagnostics_list = QListWidget()
+    window.strategy_plugin_diagnostics_list.currentRowChanged.connect(window._on_strategy_plugin_diagnostic_selected)
+    window.strategy_plugin_diagnostics_list.itemDoubleClicked.connect(lambda *_args: window.open_strategy_plugin_diagnostic_source())
+    strategy_list_layout.addWidget(window.strategy_plugin_diagnostics_list)
+    window.strategy_plugin_diagnostics_text = QTextEdit()
+    window.strategy_plugin_diagnostics_text.setReadOnly(True)
+    window._style_terminal_console(window.strategy_plugin_diagnostics_text)
+    window.strategy_plugin_diagnostics_text.setMaximumHeight(132)
+    strategy_list_layout.addWidget(window.strategy_plugin_diagnostics_text)
     strategy_splitter.addWidget(strategy_list_box)
 
     strategy_editor_box = QGroupBox("配置脚本")
@@ -3640,6 +5436,39 @@ def _build_config_workspace_core(window) -> None:
     window.strategy_config_formula_weights_text = QTextEdit()
     window._style_terminal_console(window.strategy_config_formula_weights_text)
     window.strategy_config_formula_weights_text.setMaximumHeight(92)
+    window.strategy_config_script_allow_dependency_scores_checkbox = QCheckBox("脚本允许读取依赖得分")
+    window.strategy_config_script_notes_input = QTextEdit()
+    window._style_terminal_console(window.strategy_config_script_notes_input)
+    window.strategy_config_script_notes_input.setMaximumHeight(72)
+    window.strategy_config_script_required_context_list = QListWidget()
+    window.strategy_config_script_required_context_list.setMaximumHeight(132)
+    for item in list_strategy_context_inputs():
+        option = QListWidgetItem(f"{item['key']} | {item['label']}")
+        option.setData(Qt.UserRole, str(item["key"]))
+        option.setToolTip(str(item["description"]))
+        option.setFlags(option.flags() | Qt.ItemIsUserCheckable)
+        option.setCheckState(Qt.Unchecked)
+        window.strategy_config_script_required_context_list.addItem(option)
+    context_widget = QWidget()
+    context_layout = QVBoxLayout(context_widget)
+    context_layout.setContentsMargins(0, 0, 0, 0)
+    context_layout.setSpacing(6)
+    context_layout.addWidget(window.strategy_config_script_required_context_list)
+    window.strategy_config_script_required_context_hint_label = QLabel("脚本上下文：可勾选当前脚本允许读取的基础因子。")
+    window.strategy_config_script_required_context_hint_label.setObjectName("inlineHint")
+    window.strategy_config_script_required_context_hint_label.setWordWrap(True)
+    context_layout.addWidget(window.strategy_config_script_required_context_hint_label)
+    window.strategy_config_script_dependency_list = QListWidget()
+    window.strategy_config_script_dependency_list.setMaximumHeight(132)
+    dependency_widget = QWidget()
+    dependency_layout = QVBoxLayout(dependency_widget)
+    dependency_layout.setContentsMargins(0, 0, 0, 0)
+    dependency_layout.setSpacing(6)
+    dependency_layout.addWidget(window.strategy_config_script_dependency_list)
+    window.strategy_config_script_dependency_hint_label = QLabel("脚本依赖：勾选当前脚本会读取的其他战法得分。")
+    window.strategy_config_script_dependency_hint_label.setObjectName("inlineHint")
+    window.strategy_config_script_dependency_hint_label.setWordWrap(True)
+    dependency_layout.addWidget(window.strategy_config_script_dependency_hint_label)
     window.strategy_config_scene_input = QTextEdit()
     window._style_terminal_console(window.strategy_config_scene_input)
     window.strategy_config_scene_input.setMaximumHeight(72)
@@ -3686,6 +5515,10 @@ def _build_config_workspace_core(window) -> None:
     strategy_form_layout.addRow("常规预算", window.strategy_config_budget_normal_input)
     strategy_form_layout.addRow("强势阈值", window.strategy_config_budget_threshold_input)
     strategy_form_layout.addRow("公式权重(JSON)", window.strategy_config_formula_weights_text)
+    strategy_form_layout.addRow("脚本上下文", context_widget)
+    strategy_form_layout.addRow("脚本依赖", dependency_widget)
+    strategy_form_layout.addRow("", window.strategy_config_script_allow_dependency_scores_checkbox)
+    strategy_form_layout.addRow("脚本备注", window.strategy_config_script_notes_input)
     strategy_form_layout.addRow("适用场景", window.strategy_config_scene_input)
     strategy_form_layout.addRow("产品定位", window.strategy_config_positioning_input)
     strategy_form_layout.addRow("空态提示", window.strategy_config_empty_hint_input)
@@ -3702,15 +5535,20 @@ def _build_config_workspace_core(window) -> None:
     window.strategy_config_form_to_editor_button = QPushButton("表单生成JSON")
     window.strategy_config_editor_to_form_button = QPushButton("JSON回填表单")
     window.strategy_config_formula_example_button = QPushButton("填充公式示例")
+    window.strategy_config_script_capability_derive_button = QPushButton("推导脚本能力")
     window._set_button_role(window.strategy_config_form_to_editor_button, "tonal")
     window._set_button_role(window.strategy_config_editor_to_form_button, "ghost")
     window._set_button_role(window.strategy_config_formula_example_button, "ghost")
+    window._set_button_role(window.strategy_config_script_capability_derive_button, "ghost")
     window.strategy_config_form_to_editor_button.clicked.connect(window.sync_strategy_config_form_to_editor)
     window.strategy_config_editor_to_form_button.clicked.connect(window.sync_strategy_config_editor_to_form)
     window.strategy_config_formula_example_button.clicked.connect(window.fill_strategy_config_formula_example)
+    window.strategy_config_script_capability_derive_button.clicked.connect(window.derive_strategy_script_capabilities_from_formula)
+    window.strategy_config_script_capability_derive_button.setToolTip("按当前公式权重自动推导脚本上下文和依赖战法。")
     strategy_form_button_row.addWidget(window.strategy_config_form_to_editor_button)
     strategy_form_button_row.addWidget(window.strategy_config_editor_to_form_button)
     strategy_form_button_row.addWidget(window.strategy_config_formula_example_button)
+    strategy_form_button_row.addWidget(window.strategy_config_script_capability_derive_button)
     strategy_form_button_row.addStretch(1)
     form_text_widgets = [
         getattr(window, "strategy_config_name_input", None),
@@ -3733,6 +5571,7 @@ def _build_config_workspace_core(window) -> None:
             widget.textChanged.connect(window._on_strategy_config_form_changed)
     for widget in [
         getattr(window, "strategy_config_formula_weights_text", None),
+        getattr(window, "strategy_config_script_notes_input", None),
         getattr(window, "strategy_config_scene_input", None),
         getattr(window, "strategy_config_positioning_input", None),
         getattr(window, "strategy_config_empty_hint_input", None),
@@ -3750,6 +5589,12 @@ def _build_config_workspace_core(window) -> None:
         window.strategy_config_formula_stage_combo.currentIndexChanged.connect(lambda _index: window._on_strategy_config_form_changed())
     if hasattr(window, "strategy_config_enabled_checkbox") and hasattr(window.strategy_config_enabled_checkbox, "stateChanged"):
         window.strategy_config_enabled_checkbox.stateChanged.connect(lambda _state: window._on_strategy_config_form_changed())
+    if hasattr(window, "strategy_config_script_allow_dependency_scores_checkbox") and hasattr(window.strategy_config_script_allow_dependency_scores_checkbox, "stateChanged"):
+        window.strategy_config_script_allow_dependency_scores_checkbox.stateChanged.connect(lambda _state: window._on_strategy_config_form_changed())
+    if hasattr(window, "strategy_config_script_required_context_list") and hasattr(window.strategy_config_script_required_context_list, "itemChanged"):
+        window.strategy_config_script_required_context_list.itemChanged.connect(lambda *_args: window._on_strategy_config_form_changed())
+    if hasattr(window, "strategy_config_script_dependency_list") and hasattr(window.strategy_config_script_dependency_list, "itemChanged"):
+        window.strategy_config_script_dependency_list.itemChanged.connect(lambda *_args: window._on_strategy_config_form_changed())
     strategy_editor_layout.addWidget(strategy_form_box)
     strategy_editor_layout.addLayout(strategy_form_button_row)
     window.strategy_config_formula_help_text = QTextEdit()
@@ -3770,7 +5615,71 @@ def _build_config_workspace_core(window) -> None:
     strategy_splitter.addWidget(strategy_editor_box)
     window._configure_splitter(strategy_splitter, [280, 760])
     strategy_center_layout.addWidget(strategy_splitter)
-    layout.addWidget(strategy_center_box, stretch=2)
+    config_strategy_layout.addWidget(strategy_center_box, stretch=2)
+
+    intel_summary_box = QGroupBox("消息与AI速览")
+    intel_summary_box.setObjectName("configIntelSummaryBox")
+    window.config_intel_summary_box = intel_summary_box
+    window._style_terminal_panel(intel_summary_box)
+    intel_summary_box.setProperty("pageTone", "config")
+    intel_summary_box.setProperty("surfaceRole", "metric-band")
+    intel_summary_box.setProperty("sectionRole", "summary")
+    intel_summary_layout = QVBoxLayout(intel_summary_box)
+    intel_summary_layout.setContentsMargins(12, 12, 12, 12)
+    intel_summary_layout.setSpacing(10)
+    intel_summary_intro = QLabel("先看消息源与 AI 评测当前状态，再决定载入来源、保存配置还是回机会池继续复核。")
+    intel_summary_intro.setObjectName("inlineHint")
+    intel_summary_intro.setWordWrap(True)
+    intel_summary_layout.addWidget(intel_summary_intro)
+    intel_summary_grid = QGridLayout()
+    intel_summary_grid.setHorizontalSpacing(12)
+    intel_summary_grid.setVerticalSpacing(12)
+    window.config_intel_summary_cards = {}
+    intel_summary_specs = [
+        ("news", "消息源速览", "先看 Provider、载入状态和联动覆盖。", "看消息源"),
+        ("ai", "AI评测速览", "先看模型、自动触发和最近评测状态。", "看AI"),
+    ]
+    for column, (summary_key, title_text, detail_text, button_text) in enumerate(intel_summary_specs):
+        card = QFrame()
+        card.setObjectName("configIntelSummaryCard")
+        card.setProperty("actionRow", True)
+        card.setProperty("pageTone", "config")
+        card.setProperty("capabilityCard", True)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(12, 12, 12, 12)
+        card_layout.setSpacing(6)
+        title = QLabel(title_text)
+        title.setObjectName("workspaceTitle")
+        headline = QLabel("--")
+        headline.setObjectName("workspaceSummaryHeadline")
+        headline.setWordWrap(True)
+        detail = QLabel(detail_text)
+        detail.setObjectName("inlineHint")
+        detail.setWordWrap(True)
+        meta = QLabel("--")
+        meta.setObjectName("inlineHint")
+        meta.setWordWrap(True)
+        button = QPushButton(button_text)
+        window._set_button_role(button, "tonal")
+        if hasattr(window, "_open_config_capability_v1"):
+            button.clicked.connect(lambda checked=False, current=summary_key: window._open_config_capability_v1(current))
+        card_layout.addWidget(title)
+        card_layout.addWidget(headline)
+        card_layout.addWidget(detail)
+        card_layout.addWidget(meta)
+        card_layout.addWidget(button)
+        card_layout.addStretch(1)
+        intel_summary_grid.addWidget(card, 0, column)
+        window.config_intel_summary_cards[summary_key] = {
+            "card": card,
+            "title": title,
+            "headline": headline,
+            "detail": detail,
+            "meta": meta,
+            "button": button,
+        }
+    intel_summary_layout.addLayout(intel_summary_grid)
+    config_intel_layout.addWidget(intel_summary_box, stretch=0)
 
     news_box = QGroupBox("消息源管理")
     news_box.setObjectName("configNewsSourceBox")
@@ -3786,7 +5695,7 @@ def _build_config_workspace_core(window) -> None:
     news_mixed_button = QPushButton("切到混合消息源")
     news_cninfo_button = QPushButton("切到巨潮公告源")
     news_sample_button = QPushButton("切到示例消息源")
-    news_recommend_button = QPushButton("前往推荐页")
+    news_recommend_button = QPushButton("看机会")
     window._set_button_role(news_apply_button, "accent")
     window._set_button_role(news_mixed_button, "tonal")
     window._set_button_role(news_cninfo_button, "tonal")
@@ -3804,7 +5713,7 @@ def _build_config_workspace_core(window) -> None:
     news_action_row.addWidget(news_recommend_button)
     news_action_row.addStretch(1)
     news_layout.addLayout(news_action_row)
-    layout.addWidget(news_box, stretch=1)
+    config_intel_layout.addWidget(news_box, stretch=1)
 
     ai_box = QGroupBox("AI评测")
     ai_box.setObjectName("configAiReviewBox")
@@ -3832,7 +5741,7 @@ def _build_config_workspace_core(window) -> None:
     window.ai_review_max_tokens_input = QLineEdit(str(window.state.ai_review_max_output_tokens or 900))
     window.ai_review_auto_run_checkbox = QCheckBox("推荐链路变化后自动重评当前焦点")
     window.ai_review_auto_on_news_checkbox = QCheckBox("消息源载入后自动触发")
-    window.ai_review_auto_on_pool_checkbox = QCheckBox("推荐池刷新后自动触发")
+    window.ai_review_auto_on_pool_checkbox = QCheckBox("机会池刷新后自动触发")
     window.ai_review_auto_run_checkbox.setChecked(bool(getattr(window.state, "ai_review_auto_run_enabled", False)))
     window.ai_review_auto_on_news_checkbox.setChecked(bool(getattr(window.state, "ai_review_auto_run_on_news_refresh", True)))
     window.ai_review_auto_on_pool_checkbox.setChecked(bool(getattr(window.state, "ai_review_auto_run_on_pool_refresh", True)))
@@ -3860,7 +5769,7 @@ def _build_config_workspace_core(window) -> None:
     ai_action_row.setSpacing(10)
     ai_save_button = QPushButton("保存AI配置")
     ai_review_button = QPushButton("评测当前焦点")
-    ai_recommend_button = QPushButton("前往推荐页")
+    ai_recommend_button = QPushButton("看机会")
     window._set_button_role(ai_save_button, "accent")
     window._set_button_role(ai_review_button, "tonal")
     window._set_button_role(ai_recommend_button, "ghost")
@@ -3872,7 +5781,7 @@ def _build_config_workspace_core(window) -> None:
     ai_action_row.addWidget(ai_recommend_button)
     ai_action_row.addStretch(1)
     ai_layout.addLayout(ai_action_row)
-    layout.addWidget(ai_box, stretch=1)
+    config_intel_layout.addWidget(ai_box, stretch=1)
 
     notes_box = QGroupBox("\u8bf4\u660e")
     notes_box.setObjectName("configNotesBox")
@@ -3889,13 +5798,15 @@ def _build_config_workspace_core(window) -> None:
         "- \u81ea\u52a8\u76d8\u524d\u62a5\u544a\u4f1a\u5728\u5237\u65b0\u540e\u540c\u6b65\u751f\u6210\u3002"
     )
     notes_layout.addWidget(window.config_notes_text)
-    layout.addWidget(notes_box, stretch=1)
+    config_notes_layout.addWidget(notes_box, stretch=1)
 
     window._refresh_license_status_view()
     if hasattr(window, "_refresh_news_source_status_panel"):
         window._refresh_news_source_status_panel()
     if hasattr(window, "_refresh_ai_review_status_panel"):
         window._refresh_ai_review_status_panel()
+    if hasattr(window, "_refresh_config_intel_summary_v1"):
+        window._refresh_config_intel_summary_v1()
 
 
 
@@ -3954,6 +5865,10 @@ def build_config_workspace(window) -> None:
 
     if hasattr(window, "_refresh_risk_snapshot_cards"):
         window._refresh_risk_snapshot_cards()
+        if hasattr(window, "_refresh_config_capability_overview_v1"):
+            window._refresh_config_capability_overview_v1()
         return
 
     _refresh_config_risk_snapshot_fallback(window)
+    if hasattr(window, "_refresh_config_capability_overview_v1"):
+        window._refresh_config_capability_overview_v1()

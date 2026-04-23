@@ -47,6 +47,7 @@ except ModuleNotFoundError:  # pragma: no cover - enables pure-logic imports wit
 
 from quant_hunter.models import PaperTradingState
 from quant_hunter.paper_trading import summarize_paper_trading_performance
+from quant_hunter.ui_config import RECOMMEND_AUX_STAGE_POLICY
 
 
 def paper_lab_stage_v39(
@@ -84,25 +85,12 @@ def apply_workspace_visibility_patches(
             container.setVisible(bool(visible))
         toggle_button = getattr(self, "recommend_stage_toggle_button", None)
         if isinstance(toggle_button, QPushButton):
-            toggle_button.setText("收起辅助洞察" if visible else "展开辅助洞察")
-            toggle_button.setToolTip(
-                "收起后只保留成交决策核心区块，适合快速过门槛与进交易。"
-                if visible
-                else "展开后会补充战法、观察池、复盘与次日预案，适合需要更深判断时查看。"
-            )
+            toggle_button.setText(str(RECOMMEND_AUX_STAGE_POLICY["toggle_text"][bool(visible)]))
+            toggle_button.setToolTip(str(RECOMMEND_AUX_STAGE_POLICY["toggle_tooltip"][bool(visible)]))
         status_label = getattr(self, "recommend_stage_status_label", None)
         if isinstance(status_label, QLabel):
-            text = (
-                "辅助洞察已展开：这里会补充战法、观察池、复盘与次日预案。"
-                if visible
-                else "辅助洞察已折叠，当前只保留成交决策所需核心区块。"
-            )
-            self._set_label_text_if_changed(status_label, text)
-            status_label.setToolTip(
-                "当前已展开辅助区，适合补看战法、复盘证据和次日预案。"
-                if visible
-                else "当前保持折叠，系统建议先看焦点票结论、价格计划和交易门槛。"
-            )
+            self._set_label_text_if_changed(status_label, str(RECOMMEND_AUX_STAGE_POLICY["status_text"][bool(visible)]))
+            status_label.setToolTip(str(RECOMMEND_AUX_STAGE_POLICY["status_tooltip"][bool(visible)]))
 
     def _toggle_recommend_auxiliary_stage_v38(self) -> None:
         current = bool(getattr(self, "_qh_recommend_aux_stage_visible_v38", False))
@@ -116,27 +104,27 @@ def apply_workspace_visibility_patches(
             return
         if current is None:
             if not getattr(self, "_qh_recommend_aux_stage_visible_v38", False):
-                self._set_label_text_if_changed(status_label, "辅助洞察已折叠，先建立焦点票，再决定要不要展开更深分析。")
-                status_label.setToolTip("先从机会池选中焦点股票，核心决策区就会同步显示结论、价格计划与下一步。")
+                self._set_label_text_if_changed(status_label, str(RECOMMEND_AUX_STAGE_POLICY["no_focus_collapsed_text"]))
+                status_label.setToolTip(str(RECOMMEND_AUX_STAGE_POLICY["no_focus_collapsed_tooltip"]))
             return
         if getattr(self, "_qh_recommend_aux_stage_visible_v38", False):
-            status_label.setToolTip(
-                f"当前焦点为 {getattr(current, 'stock_name', '') or getattr(current, 'symbol', '')}，辅助区已展开，可继续查看战法、复盘与次日预案。"
-            )
+            focus_name = getattr(current, "stock_name", "") or getattr(current, "symbol", "")
+            status_label.setToolTip(str(RECOMMEND_AUX_STAGE_POLICY["focus_expanded_tooltip_template"]).format(name=focus_name))
             return
         verdict, execution_summary, can_submit, can_open_broker = recommend_execution_summary_fn(self, current)
         if can_submit or can_open_broker or "失败" in execution_summary:
-            text = "辅助洞察可按需展开：当前已接近成交或复核阶段，若要看战法和复盘可展开下半区。"
-            tooltip = "当前已接近送审、复核或交易执行节点；若要确认战法背景和复盘证据，可以展开辅助区。"
+            text = str(RECOMMEND_AUX_STAGE_POLICY["ready_collapsed_text"])
+            tooltip = str(RECOMMEND_AUX_STAGE_POLICY["ready_collapsed_tooltip"])
         else:
-            text = f"辅助洞察保持折叠：当前先聚焦成交门槛，结论“{verdict}”仍以核心区块判断为主。"
-            tooltip = f"当前焦点为 {getattr(current, 'stock_name', '') or getattr(current, 'symbol', '')}；建议先看核心区块里的结论、价格计划和执行门槛。"
+            focus_name = getattr(current, "stock_name", "") or getattr(current, "symbol", "")
+            text = str(RECOMMEND_AUX_STAGE_POLICY["focus_collapsed_text_template"]).format(verdict=verdict)
+            tooltip = str(RECOMMEND_AUX_STAGE_POLICY["focus_collapsed_tooltip_template"]).format(name=focus_name)
         self._set_label_text_if_changed(status_label, text)
         status_label.setToolTip(tooltip)
 
     def _post_build_ui_tweaks_v38(self) -> None:
         original_post_build_ui_tweaks_v38(self)
-        self._set_aux_stage_visibility_v38(False)
+        self._set_aux_stage_visibility_v38(bool(RECOMMEND_AUX_STAGE_POLICY["default_visible"]))
 
     window_cls._set_aux_stage_visibility_v38 = _set_aux_stage_visibility_v38
     window_cls.toggle_recommend_auxiliary_stage = _toggle_recommend_auxiliary_stage_v38

@@ -37,6 +37,8 @@ except ModuleNotFoundError:  # pragma: no cover - enables pure-logic imports wit
 from quant_hunter.strategy_registry import resolved_primary_strategy
 
 from quant_hunter.models import PaperTradingState
+from quant_hunter.ui_config import BROKER_SETUP_POLICY
+from quant_hunter.ui_workspace_runtime import refresh_broker_auxiliary_panels_status
 from quant_hunter.ui_window_paper_experiment_patches import paper_strategy_experiment_bridge_v45
 
 
@@ -50,8 +52,8 @@ def broker_workspace_stage_v40(
     if submit_count > 0:
         return ("执行回执", "已经进入执行跟踪阶段，当前重点是回执、成交和偏差。")
     if order_count > 0:
-        return ("待确认提交", "委托已经生成，下一步打开确认弹窗核对后提交。")
-    return ("待生成委托", "先从推荐页或交易计划生成第一批可执行委托。")
+        return ("待确认提交", "委托已经生成，下一步进确认弹窗核对后提交。")
+    return ("待生成委托", "先从机会池或交易计划生成第一批可执行委托。")
 
 
 def shell_pipeline_story_v41(
@@ -148,20 +150,15 @@ def apply_broker_workspace_patches(window_cls: type) -> None:
         control_splitter = getattr(self, "broker_control_splitter", None)
         if isinstance(setup_drawer, QWidget):
             setup_drawer.setVisible(bool(visible))
-            setup_drawer.setMinimumHeight(430 if visible else 0)
+            setup_drawer.setMinimumHeight(int(BROKER_SETUP_POLICY["drawer_min_height"][bool(visible)]))
         if isinstance(control_splitter, QWidget):
             control_splitter.setVisible(bool(visible))
         toggle_button = getattr(self, "broker_setup_toggle_button", None)
         if isinstance(toggle_button, QPushButton):
-            toggle_button.setText("收起账户与通道设置" if visible else "展开账户与通道设置")
+            toggle_button.setText(str(BROKER_SETUP_POLICY["toggle_text"][bool(visible)]))
         status_label = getattr(self, "broker_setup_status_label", None)
         if isinstance(status_label, QLabel):
-            text = (
-                "账户与通道设置已展开：可以继续校验连接、调整 SDK、导出目录和运行维护。"
-                if visible
-                else "账户接入、SDK、导出与运行维护默认收起；盘中先看委托、风险闸门和回执。"
-            )
-            self._set_label_text_if_changed(status_label, text)
+            self._set_label_text_if_changed(status_label, str(BROKER_SETUP_POLICY["status_text"][bool(visible)]))
         for attr_name, role in (
             ("broker_setup_profile_button", "ghost"),
             ("broker_setup_action_button", "ghost"),
@@ -189,28 +186,12 @@ def apply_broker_workspace_patches(window_cls: type) -> None:
                 if isinstance(button, QPushButton):
                     self._set_button_role(button, "accent" if key == target else "ghost")
         if hasattr(splitter, "count") and splitter.count() == 3 and hasattr(splitter, "setSizes"):
-            size_map = {
-                "profile": [760, 520, 320],
-                "action": [420, 820, 320],
-                "runtime": [320, 520, 780],
-            }
-            splitter.setSizes(size_map.get(target, size_map["profile"]))
+            size_map = dict(BROKER_SETUP_POLICY["section_sizes"])
+            splitter.setSizes(list(size_map.get(target, size_map["profile"])))
         status_label = getattr(self, "broker_setup_status_label", None)
         if isinstance(status_label, QLabel):
-            text_map = {
-                "profile": "账户与通道设置已展开：当前聚焦账户接入、桥接环境和导出目录。",
-                "action": "账户与通道设置已展开：当前聚焦执行参数、模板与联调入口。",
-                "runtime": "账户与通道设置已展开：当前聚焦运行维护、日志与缓存处理。",
-            }
-            self._set_label_text_if_changed(status_label, text_map.get(target, text_map["profile"]))
-            self._set_label_text_if_changed(
-                status_label,
-                {
-                    "profile": "账户与通道设置已展开：当前聚焦账户接入、桥接环境和导出目录。",
-                    "action": "账户与通道设置已展开：当前聚焦执行参数、模板与联调入口。",
-                    "runtime": "账户与通道设置已展开：当前聚焦运行维护、日志与缓存处理。",
-                }.get(target, "账户与通道设置已展开：当前聚焦账户接入、桥接环境和导出目录。"),
-            )
+            text_map = dict(BROKER_SETUP_POLICY["section_status"])
+            self._set_label_text_if_changed(status_label, str(text_map.get(target, text_map["profile"])))
 
     def _refresh_broker_auxiliary_panels_v40(self) -> None:
         original_refresh_broker_auxiliary_panels_v40(self)
@@ -223,42 +204,20 @@ def apply_broker_workspace_patches(window_cls: type) -> None:
             except Exception:
                 blockers = []
         stage_title, stage_detail = broker_workspace_stage_v40(order_count, submit_count, len(blockers))
-        stage_label = getattr(self, "broker_stage_label", None)
-        if isinstance(stage_label, QLabel):
-            self._set_label_text_if_changed(stage_label, f"执行阶段：{stage_title} | {stage_detail}")
-        banner = getattr(self, "broker_workbench_banner", None)
-        if isinstance(banner, QLabel):
-            self._set_label_text_if_changed(banner, f"交易执行台：当前处于“{stage_title}”阶段，{stage_detail}")
-        status_label = getattr(self, "broker_detail_status_label", None)
-        if isinstance(status_label, QLabel) and not getattr(self, "_qh_broker_detail_visible_v40", False):
-            if stage_title in {"待确认提交", "执行回执"}:
-                self._set_label_text_if_changed(status_label, "执行明细已折叠；当前已经进入提交或回执阶段，需要时可展开查看明细和偏差复盘。")
-            else:
-                self._set_label_text_if_changed(status_label, "执行明细已折叠，先看焦点委托、阶段判断和风险闸门。")
-        setup_status_label = getattr(self, "broker_setup_status_label", None)
-        if isinstance(setup_status_label, QLabel) and not getattr(self, "_qh_broker_setup_visible_v41", False):
-            if stage_title == "执行回执":
-                self._set_label_text_if_changed(setup_status_label, "账户与通道设置已收起；当前重点是回执、成交和偏差复盘，需要时再展开导出与校验。")
-            elif stage_title == "待确认提交":
-                self._set_label_text_if_changed(setup_status_label, "账户与通道设置已收起；当前重点是焦点委托、主线闸门和确认提交。")
-            else:
-                self._set_label_text_if_changed(setup_status_label, "账户接入、SDK、导出与运行维护默认收起；盘中先看委托、风险闸门和回执。")
-        focus_button = getattr(self, "broker_focus_priority_button", None)
-        if isinstance(focus_button, QPushButton):
-            focus_button.setText("定位待提委托" if order_count > 0 else "定位前排")
-
-        if isinstance(setup_status_label, QLabel) and not getattr(self, "_qh_broker_setup_visible_v41", False):
-            if stage_title == "鎵ц鍥炴墽":
-                self._set_label_text_if_changed(setup_status_label, "账户与通道设置已收起；当前重点是回执、成交和偏差复盘。")
-            elif stage_title == "寰呯‘璁ゆ彁浜?":
-                self._set_label_text_if_changed(setup_status_label, "账户与通道设置已收起；当前重点是焦点委托、闸门和确认提交。")
-            else:
-                self._set_label_text_if_changed(setup_status_label, "账户接入、SDK、导出与运行维护默认收起；盘中先看委托、闸门和回执。")
+        refresh_broker_auxiliary_panels_status(
+            self,
+            stage_title=stage_title,
+            stage_detail=stage_detail,
+            order_count=order_count,
+            submit_count=submit_count,
+            blockers=blockers,
+            broker_setup_policy=BROKER_SETUP_POLICY,
+        )
 
     def _post_build_ui_tweaks_v40(self) -> None:
         original_post_build_ui_tweaks_v40(self)
         self._set_broker_execution_detail_visibility_v40(False)
-        self._set_broker_setup_visibility_v41(True)
+        self._set_broker_setup_visibility_v41(bool(BROKER_SETUP_POLICY["default_visible"]))
 
     def _refresh_submission_focus_v47(self) -> None:
         original_refresh_submission_focus_v47(self)

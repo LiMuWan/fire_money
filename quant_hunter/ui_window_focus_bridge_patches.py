@@ -7,6 +7,7 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QTableWidget, QTextEdit, QVBoxLayout
 
 from quant_hunter.strategy_registry import resolved_primary_strategy
+from quant_hunter.ui_config import recommend_focus_action_tooltip
 
 
 def apply_focus_bridge_patches(
@@ -116,12 +117,12 @@ def apply_focus_bridge_patches(
             return
         symbol = self._selected_paper_symbol()
         if not symbol:
-            label.setText("模拟盘联动：点击持仓或交割单后，可直接跳到推荐页、复盘页或交易页继续处理。")
+            label.setText("模拟盘联动：点击持仓或交割单后，可直接跳到机会池、复盘页或执行中控继续处理。")
         else:
             stock_name = self._stock_name_for_symbol(symbol)
             stock_id = self._stock_id_for_symbol(symbol)
             label.setText(
-                f"模拟盘联动：当前焦点 {stock_name} ({stock_id} / {symbol})，可继续查看推荐、复盘或交易执行。"
+            f"模拟盘联动：当前焦点 {stock_name} ({stock_id} / {symbol})，可继续查看机会池、复盘或执行中控。"
             )
         has_symbol = bool(symbol)
         for attr_name in ["paper_to_recommend_button", "paper_to_detail_button", "paper_to_broker_button"]:
@@ -143,7 +144,7 @@ def apply_focus_bridge_patches(
         self.paper_trading_step_label = helper_label
         paper_layout.insertWidget(1, helper_label)
 
-        focus_label = QLabel("模拟盘联动：点击持仓或交割单后，可直接跳到推荐页、复盘页或交易页继续处理。")
+        focus_label = QLabel("模拟盘联动：点击持仓或交割单后，可直接跳到机会池、复盘页或执行中控继续处理。")
         focus_label.setObjectName("focusStateLabel")
         focus_label.setWordWrap(True)
         self.paper_trading_focus_label = focus_label
@@ -151,7 +152,7 @@ def apply_focus_bridge_patches(
 
         action_row = QHBoxLayout()
         action_row.setSpacing(8)
-        self.paper_to_recommend_button = QPushButton("查看推荐页")
+        self.paper_to_recommend_button = QPushButton("查看机会池")
         self.paper_to_detail_button = QPushButton("查看复盘页")
         self.paper_to_broker_button = QPushButton("看交易计划")
         self.paper_report_dir_button = QPushButton("打开报告目录")
@@ -235,17 +236,17 @@ def apply_focus_bridge_patches(
             if isinstance(push_button, QPushButton):
                 push_button.setText(button_labels["push"])
                 push_button.setEnabled(False)
-                push_button.setToolTip("暂不送审：先从机会池选中焦点股票，再判断是否进入送审链路。")
+                push_button.setToolTip(f"{button_labels['push']}：先从机会池选中焦点股票，再判断是否进入送审链路。")
             detail_button = getattr(self, "recommend_detail_focus_button", None)
             if isinstance(detail_button, QPushButton):
                 detail_button.setText(button_labels["detail"])
                 detail_button.setEnabled(False)
-                detail_button.setToolTip("查看复盘证据：先选中焦点股票，再查看信号、执行回放和近期消息。")
+                detail_button.setToolTip(f"{button_labels['detail']}：先选中焦点股票，再查看信号、执行回放和近期消息。")
             broker_button = getattr(self, "recommend_broker_focus_button", None)
             if isinstance(broker_button, QPushButton):
                 broker_button.setText(button_labels["broker"])
                 broker_button.setEnabled(False)
-                broker_button.setToolTip("暂不进交易：先建立焦点票，再去交易页查看计划、委托和回执链路。")
+                broker_button.setToolTip(f"{button_labels['broker']}：先建立焦点票，再去交易查看计划、委托和回执链路。")
             return
 
         self.active_symbol = getattr(current, "symbol", "") or getattr(self, "active_symbol", "")
@@ -362,7 +363,7 @@ def apply_focus_bridge_patches(
             detail_button.setEnabled(True)
             detail_button.setToolTip(
                 f"{button_labels['detail']}：{stock_name}\n"
-                f"重点：信号、执行回放、失效条件与近期消息。\n"
+                f"重点：{recommend_focus_action_tooltip('detail')}\n"
                 f"当前结论：{verdict}"
             )
         broker_button = getattr(self, "recommend_broker_focus_button", None)
@@ -370,7 +371,7 @@ def apply_focus_bridge_patches(
             broker_button.setText(button_labels["broker"])
             broker_button.setEnabled(can_open_broker)
             broker_tooltip = (
-                f"{button_labels['broker']}：{stock_name}\n价格计划：{price_brief}\n模拟盘：{experiment_bridge['title']}\n预算与执行链路会在交易页展开。"
+                f"{button_labels['broker']}：{stock_name}\n价格计划：{price_brief}\n模拟盘：{experiment_bridge['title']}\n预算与执行链路会在执行中控展开。"
                 if can_open_broker
                 else f"{button_labels['broker']}：{stock_name}\n原因：{execution_summary}\n模拟盘：{experiment_bridge['title']}\n建议：先回看复盘和确认信号。"
             )

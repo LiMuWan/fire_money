@@ -268,7 +268,7 @@ class QuantHunterApp(tk.Tk):
         top_frame = ttk.Frame(self.plan_tab)
         top_frame.pack(fill="both", expand=True, pady=(0, 12))
 
-        recommendation_frame = ttk.LabelFrame(top_frame, text="今日推荐池")
+        recommendation_frame = ttk.LabelFrame(top_frame, text="今日机会池")
         recommendation_frame.pack(side="left", fill="both", expand=True, padx=(0, 8))
         recommendation_columns = ("stock", "theme", "tier", "ready", "entry", "stop", "target", "focus")
         self.recommend_tree = ttk.Treeview(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import importlib
 import json
+import re
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
@@ -85,6 +86,63 @@ def _extract_pass_count(output: str) -> int:
     return 0
 
 
+def _extract_first_failure(output: str) -> dict[str, str] | None:
+    text = str(output or "")
+    for section in text.split("======================================================================"):
+        lines = [line.rstrip() for line in section.splitlines()]
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        if not lines:
+            continue
+        header = lines[0].strip()
+        match = re.match(r"^(FAIL|ERROR):\s+(.+)$", header)
+        if not match:
+            continue
+        kind = match.group(1)
+        name = match.group(2).strip()
+        summary = ""
+        for raw_line in reversed(lines[1:]):
+            stripped = raw_line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith("FAILED"):
+                continue
+            if stripped.startswith("OK"):
+                continue
+            if stripped.startswith("Ran "):
+                continue
+            if stripped.startswith("-" * 6):
+                continue
+            if stripped.startswith("Traceback"):
+                continue
+            if stripped.startswith("File "):
+                continue
+            if stripped.startswith("^"):
+                continue
+            if stripped.startswith("During handling of the above exception"):
+                continue
+            summary = stripped
+            break
+        return {
+            "kind": kind,
+            "name": name,
+            "summary": summary or "See command output for traceback details.",
+        }
+    return None
+
+
+def _build_test_summary(result: CommandResult) -> dict[str, Any]:
+    output = result.stdout + "\n" + result.stderr
+    summary: dict[str, Any] = {
+        "status": "OK" if result.returncode == 0 else "FAIL",
+        "count": _extract_pass_count(output),
+    }
+    first_failure = _extract_first_failure(output)
+    if first_failure is not None:
+        summary["first_failure"] = first_failure
+    return summary
+
+
 def _load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -98,6 +156,26 @@ def _render_summary(payload: dict[str, Any]) -> str:
             f"- 3.13 full tests: {payload['full_tests']['count']} ({payload['full_tests']['status']})",
             f"- 3.12 compatibility subset: {payload['compat_tests']['count']} ({payload['compat_tests']['status']})",
             f"- Perf regressions: {len(payload['perf'].get('perf_regressions', []))}",
+            "",
+            "## First Failures",
+            "",
+        ]
+    )
+    full_failure = payload["full_tests"].get("first_failure")
+    compat_failure = payload["compat_tests"].get("first_failure")
+    if full_failure or compat_failure:
+        if full_failure:
+            lines.append(
+                f"- 3.13: {full_failure['kind']} `{full_failure['name']}` -> {full_failure['summary']}"
+            )
+        if compat_failure:
+            lines.append(
+                f"- 3.12: {compat_failure['kind']} `{compat_failure['name']}` -> {compat_failure['summary']}"
+            )
+    else:
+        lines.append("- None")
+    lines.extend(
+        [
             "",
             "## Outputs",
             "",
@@ -153,14 +231,8 @@ def main() -> None:
     )
 
     payload = {
-        "full_tests": {
-            "status": "OK" if full.returncode == 0 else "FAIL",
-            "count": _extract_pass_count(full.stdout + "\n" + full.stderr),
-        },
-        "compat_tests": {
-            "status": "OK" if compat.returncode == 0 else "FAIL",
-            "count": _extract_pass_count(compat.stdout + "\n" + compat.stderr),
-        },
+        "full_tests": _build_test_summary(full),
+        "compat_tests": _build_test_summary(compat),
         "perf": _load_json(PERF_CURRENT) if PERF_CURRENT.exists() else {},
         "commands": {
             "full_tests": asdict(full),

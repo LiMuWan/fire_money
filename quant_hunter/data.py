@@ -39,16 +39,41 @@ def normalize_symbol(raw: str) -> str:
         return ""
     if "." in value:
         left, right = value.split(".", 1)
-        if left in {"SHSE", "SZSE"}:
+        if left in {"SHSE", "SZSE", "HKSE", "NASDAQ", "NYSE", "AMEX", "US"}:
             return f"{left}.{right}"
+        if left in {"0", "1", "105", "106", "107", "116"}:
+            exchange = {
+                "0": "SZSE",
+                "1": "SHSE",
+                "105": "NASDAQ",
+                "106": "NYSE",
+                "107": "AMEX",
+                "116": "HKSE",
+            }.get(left, "")
+            if exchange:
+                return f"{exchange}.{right}"
         if right in {"SH", "SS"}:
-            return f"SHSE.{left}"
+            return f"SHSE.{left.zfill(6) if left.isdigit() else left}"
         if right == "SZ":
-            return f"SZSE.{left}"
+            return f"SZSE.{left.zfill(6) if left.isdigit() else left}"
+        if right in {"HK", "HKG"} and left.isdigit():
+            return f"HKSE.{left.zfill(5)}"
+        if right in {"NASDAQ", "OQ"}:
+            return f"NASDAQ.{left}"
+        if right in {"NYSE", "N"}:
+            return f"NYSE.{left}"
+        if right == "AMEX":
+            return f"AMEX.{left}"
+        if right == "US":
+            return f"US.{left}"
     digits = "".join(ch for ch in value if ch.isdigit())
+    if len(digits) == 5:
+        return f"HKSE.{digits.zfill(5)}"
     if len(digits) == 6:
         exchange = "SHSE" if digits.startswith(("5", "6", "9")) else "SZSE"
         return f"{exchange}.{digits}"
+    if value.isalpha():
+        return value
     return value
 
 

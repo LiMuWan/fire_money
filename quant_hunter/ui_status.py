@@ -10,6 +10,117 @@ except ModuleNotFoundError:  # pragma: no cover - enables non-Qt test environmen
 from .strategy_registry import get_strategy_registry, strategy_badge_palette_meta, strategy_empty_hint_meta
 from .ui_config import DISPLAY_TEXT
 
+TERMINAL_SEMANTIC_HEX = {
+    "state_info": "#4D8DFF",
+    "state_success": "#2FB36C",
+    "state_warning": "#F0A53A",
+    "state_risk": "#E45B5B",
+    "market_up": "#E25555",
+    "market_down": "#27A36A",
+    "market_flat": "#8795A5",
+    "chart_entry": "#69C3FF",
+    "chart_stop": "#E45B5B",
+    "chart_target": "#D8A94A",
+    "surface_info": "#163552",
+    "surface_success": "#143624",
+    "surface_warning": "#4B3613",
+    "surface_risk": "#5A1623",
+    "surface_flat": "#27303A",
+    "surface_market_up": "#34171B",
+    "surface_market_down": "#123425",
+}
+
+TERMINAL_SEMANTIC_SURFACES = {
+    "info": ("surface_info", "state_info"),
+    "success": ("surface_success", "state_success"),
+    "warning": ("surface_warning", "state_warning"),
+    "risk": ("surface_risk", "state_risk"),
+    "flat": ("surface_flat", "market_flat"),
+    "market_up": ("surface_market_up", "market_up"),
+    "market_down": ("surface_market_down", "market_down"),
+}
+
+CHART_SEMANTIC_ROLES = {
+    "candle_up": "market_up",
+    "candle_down": "market_down",
+    "breakout_up": "market_up",
+    "breakout_down": "market_down",
+    "swing_high": "chart_target",
+    "swing_low": "market_down",
+    "watch_band": "chart_entry",
+    "attack": "chart_entry",
+    "defense": "chart_stop",
+    "candle_tag_up": "market_up",
+    "candle_tag_down": "state_warning",
+    "strategy_entry": "chart_entry",
+    "strategy_risk": "chart_stop",
+    "trade_entry": "chart_entry",
+    "trade_exit_profit": "state_success",
+    "trade_exit_risk": "state_risk",
+    "trade_exit_neutral": "market_flat",
+    "selected_signal": "chart_target",
+    "plan_entry": "chart_entry",
+    "plan_stop": "chart_stop",
+    "plan_target": "chart_target",
+}
+
+CHART_BORDER_HEX = {
+    "chart_entry": "#EAF7FF",
+    "chart_stop": "#FFF0F0",
+    "chart_target": "#FFF4DB",
+    "state_success": "#E9FFE8",
+    "state_risk": "#FFF0F0",
+    "state_warning": "#FFF1D6",
+    "market_up": "#FFE3E0",
+    "market_down": "#DDF8E9",
+    "market_flat": "#E7EDF3",
+}
+
+CHART_ANNOTATION_HEX = {
+    "badge": "#D9E8FF",
+    "profit_soft": "#8FDBB0",
+    "profit": "#2FB36C",
+    "profit_strong": "#6EE7A4",
+    "risk_soft": "#F1B184",
+    "risk": "#E45B5B",
+    "risk_hard": "#FF8E8E",
+    "neutral_up": "#69C3FF",
+    "neutral": "#D8A94A",
+    "neutral_down": "#8795A5",
+    "plan_entry": "#69C3FF",
+    "plan_stop": "#E45B5B",
+    "plan_target": "#D8A94A",
+    "buy": "#69C3FF",
+    "focus": "#D8A94A",
+}
+
+
+def terminal_semantic_hex(key: str, fallback: str = "#D9E2EE") -> str:
+    return TERMINAL_SEMANTIC_HEX.get(str(key or "").strip(), fallback)
+
+
+def terminal_semantic_color(key: str, fallback: str = "#D9E2EE") -> QColor:
+    return QColor(terminal_semantic_hex(key, fallback))
+
+
+def semantic_surface_pair(role: str) -> tuple[QColor, QColor]:
+    background_key, foreground_key = TERMINAL_SEMANTIC_SURFACES.get(str(role or "").strip(), TERMINAL_SEMANTIC_SURFACES["flat"])
+    return terminal_semantic_color(background_key), terminal_semantic_color(foreground_key)
+
+
+def chart_semantic_color(role: str) -> QColor:
+    semantic_key = CHART_SEMANTIC_ROLES.get(str(role or "").strip(), "market_flat")
+    return terminal_semantic_color(semantic_key)
+
+
+def chart_semantic_border_color(role: str) -> QColor:
+    semantic_key = CHART_SEMANTIC_ROLES.get(str(role or "").strip(), "market_flat")
+    return QColor(CHART_BORDER_HEX.get(semantic_key, "#E7EDF3"))
+
+
+def chart_annotation_tone_color(tone: str) -> QColor:
+    return QColor(CHART_ANNOTATION_HEX.get(str(tone or "").strip(), "#EFF6FF"))
+
 
 def submission_stage_key(item: dict[str, str]) -> str:
     order_status = str(item.get("order_status", "") or "").upper()
@@ -92,15 +203,14 @@ def submission_risk_badge_text_v2(item: dict[str, str]) -> str:
 
 def submission_risk_badge_palette_v2(item: dict[str, str]) -> tuple[QColor, QColor]:
     palette = {
-        "exception": ("#5A1623", "#FFD7DD"),
-        "filled": ("#143624", "#A7F0C5"),
-        "partial": ("#123B33", "#A5F0DF"),
-        "pending": ("#4B3613", "#FFE08D"),
-        "submitted": ("#163552", "#B7DAFF"),
-        "idle": ("#27303A", "#D9E2EE"),
+        "exception": "risk",
+        "filled": "success",
+        "partial": "info",
+        "pending": "warning",
+        "submitted": "info",
+        "idle": "flat",
     }
-    background, foreground = palette.get(submission_stage_key(item), palette["idle"])
-    return QColor(background), QColor(foreground)
+    return semantic_surface_pair(palette.get(submission_stage_key(item), "flat"))
 
 
 def submission_feedback_text(item: dict[str, str]) -> str:
@@ -228,57 +338,61 @@ def submission_table_snapshot_v2(
 def signal_colors(action: str, label: str) -> tuple[QColor, QColor]:
     key = label or action
     if key == "RECLAIM_LONG" or action == "BUY":
-        return QColor("#E8F7EC"), QColor("#0F5132")
+        return semantic_surface_pair("info")
     if key == "TRAP_DETECTED" or action == "AVOID":
-        return QColor("#FBEAEA"), QColor("#842029")
+        return semantic_surface_pair("risk")
     if key == "WATCH":
-        return QColor("#FFF4DB"), QColor("#7C4A03")
+        return semantic_surface_pair("warning")
     if key == "NONE" or action == "HOLD":
-        return QColor("#F5F6F7"), QColor("#495057")
-    return QColor("#F8F9FA"), QColor("#212529")
+        return semantic_surface_pair("flat")
+    return semantic_surface_pair("flat")
 
 
 def submission_colors(item: dict[str, str]) -> tuple[QColor, QColor]:
     palette = {
-        "exception": ("#32151B", "#FFB4BC"),
-        "filled": ("#102B20", "#73E0A5"),
-        "partial": ("#12322A", "#7CE5C2"),
-        "pending": ("#34260F", "#FFD46B"),
-        "submitted": ("#12283E", "#8FCAFF"),
-        "idle": ("#1B222B", "#D9E2EE"),
+        "exception": "risk",
+        "filled": "success",
+        "partial": "info",
+        "pending": "warning",
+        "submitted": "info",
+        "idle": "flat",
     }
-    background, foreground = palette.get(submission_stage_key(item), palette["idle"])
-    return QColor(background), QColor(foreground)
+    return semantic_surface_pair(palette.get(submission_stage_key(item), "flat"))
 
 
 def market_pool_colors(row) -> tuple[QColor, QColor]:
-    if getattr(row, "pct_change", 0.0) >= 8:
-        return QColor("#2b0909"), QColor("#ff5e57")
+    pct_change = float(getattr(row, "pct_change", 0.0) or 0.0)
+    if pct_change >= 5.0:
+        return semantic_surface_pair("market_up")
+    if pct_change <= -3.0:
+        return semantic_surface_pair("market_down")
     if getattr(row, "main_inflow", 0.0) > 1.5e8:
-        return QColor("#08291d"), QColor("#25d07f")
+        return semantic_surface_pair("info")
     if getattr(row, "turnover", 0.0) >= 10:
-        return QColor("#2b2409"), QColor("#f7d354")
-    return QColor("#0f1116"), QColor("#d7dce5")
+        return semantic_surface_pair("warning")
+    return semantic_surface_pair("flat")
 
 
 def board_risk_colors(risk_level: str) -> tuple[QColor, QColor]:
+    if risk_level == "低":
+        return semantic_surface_pair("info")
     if risk_level == "中":
-        return QColor("#E9F7EF"), QColor("#146C43")
+        return semantic_surface_pair("warning")
     if risk_level == "中高":
-        return QColor("#FFF4DB"), QColor("#7C4A03")
+        return semantic_surface_pair("warning")
     if risk_level == "高":
-        return QColor("#FBEAEA"), QColor("#842029")
-    return QColor("#F8F9FA"), QColor("#212529")
+        return semantic_surface_pair("risk")
+    return semantic_surface_pair("flat")
 
 
 def board_monitor_colors(state: str) -> tuple[QColor, QColor]:
     if state == "强势连板候选":
-        return QColor("#E8F7EC"), QColor("#0F5132")
+        return semantic_surface_pair("market_up")
     if state == "回封观察":
-        return QColor("#FFF4DB"), QColor("#7C4A03")
+        return semantic_surface_pair("warning")
     if state == "风险警示":
-        return QColor("#FBEAEA"), QColor("#842029")
-    return QColor("#F8F9FA"), QColor("#212529")
+        return semantic_surface_pair("risk")
+    return semantic_surface_pair("flat")
 
 
 def market_mode_label(value: str) -> str:

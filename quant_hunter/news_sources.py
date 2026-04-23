@@ -25,6 +25,15 @@ CNINFO_HEADERS = {
     "Accept": "application/json,text/plain,*/*",
     "Connection": "close",
 }
+EASTMONEY_NOTICE_LIST_ENDPOINT = "https://np-anotice-stock.eastmoney.com/api/security/ann"
+EASTMONEY_NOTICE_CONTENT_ENDPOINT = "https://np-cnotice-stock.eastmoney.com/api/content/ann"
+EASTMONEY_FAST_SEARCH_ENDPOINT = "https://search-api-web.eastmoney.com/search/jsonp"
+EASTMONEY_HEADERS = {
+    "User-Agent": CNINFO_HEADERS["User-Agent"],
+    "Referer": "https://data.eastmoney.com/notices/",
+    "Accept": "application/json,text/plain,*/*",
+    "Connection": "close",
+}
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _CNINFO_TYPE_LABELS = {
     "010301": "年报",
@@ -65,6 +74,14 @@ _CNINFO_NEGATIVE_KEYWORDS = {
     "法律意见": -1.5,
     "会议资料": -2.0,
     "提示性公告": -1.0,
+    "保荐": -2.0,
+    "核查意见": -2.0,
+    "持续督导": -2.0,
+    "总结报告书": -1.8,
+    "专项说明": -1.8,
+    "内部控制审计": -1.5,
+    "内部控制评价": -1.2,
+    "审计报告": -1.0,
 }
 _CNINFO_HIGH_PRIORITY_KEYWORDS = (
     "分红",
@@ -146,6 +163,18 @@ _DESCRIPTORS: tuple[NewsSourceDescriptor, ...] = (
     NewsSourceDescriptor("csv", "本地 CSV", "适合手工整理、测试接入和离线回放。", requires_path=True),
     NewsSourceDescriptor("sample", "示例消息源", "加载项目自带示例消息，用于演示消息催化和逻辑链路。"),
     NewsSourceDescriptor("mixed_api", "公告+线索混排", "优先展示巨潮公告，再把本地或示例线索按统一排序混入同一条消息流。"),
+    NewsSourceDescriptor(
+        "eastmoney_fast_api",
+        "东方财富快讯适配器",
+        "按股票代码搜索东方财富快讯/资讯，优先补最近媒体消息、摘要和原文链接。",
+        available=True,
+    ),
+    NewsSourceDescriptor(
+        "eastmoney_api",
+        "东方财富公告适配器",
+        "抓取东方财富个股公告列表与正文，优先补最近公告标题、时间和 PDF 原文入口。",
+        available=True,
+    ),
     NewsSourceDescriptor("cls_api", "财联社适配器", "预留正式授权接口位，拿到授权后接入快讯/电报流。", available=False),
     NewsSourceDescriptor(
         "cninfo_api",
@@ -465,6 +494,26 @@ def _fetch_json(url: str, *, method: str = "GET", data: dict[str, object] | None
     return json.loads(payload)
 
 
+def _strip_jsonp_wrapper(payload: str) -> str:
+    text = str(payload or "").strip()
+    if not text:
+        return text
+    if text.startswith("{") or text.startswith("["):
+        return text
+    start = text.find("(")
+    end = text.rfind(")")
+    if start >= 0 and end > start:
+        return text[start + 1 : end].strip()
+    return text
+
+
+def _fetch_jsonp(url: str, *, timeout: float = 12.0, headers: dict[str, str] | None = None) -> object:
+    request = urllib.request.Request(url, headers=headers or EASTMONEY_HEADERS)
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        payload = response.read().decode("utf-8", errors="ignore")
+    return json.loads(_strip_jsonp_wrapper(payload))
+
+
 def _lookup_cninfo_org_id(symbol: str, symbol_names: dict[str, str], timeout: float) -> tuple[str, str]:
     code = extract_stock_id(symbol)
     candidates = [code]
@@ -544,6 +593,269 @@ def _load_cninfo_news(config: NewsSourceConfig, descriptor: NewsSourceDescriptor
     )
 
 
+def _eastmoney_notice_detail_url(stock_code: str, art_code: str) -> str:
+    code = _normalize_text(stock_code)
+    info_code = _normalize_text(art_code)
+    if not code or not info_code:
+        return ""
+    return f"https://data.eastmoney.com/notices/detail/{code}/{info_code}.html"
+
+
+def _eastmoney_notice_columns(item: dict[str, object]) -> str:
+    columns = item.get("columns", [])
+    if not isinstance(columns, list):
+        return ""
+    names: list[str] = []
+    for current in columns:
+        if not isinstance(current, dict):
+            continue
+        name = _normalize_text(current.get("column_name", ""))
+        if name and name not in names:
+            names.append(name)
+    return " / ".join(names[:3])
+
+
+def _eastmoney_notice_summary(title: str, columns_text: str, short_name: str) -> str:
+    label = _cninfo_primary_label(title, columns_text)
+    hint = _cninfo_trading_hint(title, columns_text)
+    if columns_text and columns_text != label:
+        return f"{label} | {columns_text} | {hint}"
+    return f"{label} | {hint}"
+
+
+def _eastmoney_notice_published_at(item: dict[str, object]) -> str:
+    display_time = _normalize_text(item.get("display_time", ""))
+    if display_time:
+        return display_time[:19]
+    notice_date = _normalize_text(item.get("notice_date", ""))
+    return notice_date[:19] if len(notice_date) >= 19 else notice_date
+
+
+def _load_eastmoney_notice_content(art_code: str, stock_code: str, timeout: float) -> dict[str, object]:
+    detail_url = (
+        EASTMONEY_NOTICE_CONTENT_ENDPOINT
+        + "?"
+        + urllib.parse.urlencode(
+            {
+                "cb": "jQuery1123",
+                "art_code": art_code,
+                "client_source": "web",
+                "page_index": 1,
+            }
+        )
+    )
+    headers = dict(EASTMONEY_HEADERS)
+    headers["Referer"] = _eastmoney_notice_detail_url(stock_code, art_code) or headers["Referer"]
+    response = _fetch_jsonp(detail_url, timeout=timeout, headers=headers)
+    if not isinstance(response, dict):
+        return {}
+    payload = response.get("data", {})
+    return payload if isinstance(payload, dict) else {}
+
+
+def _eastmoney_relation_stock_tag(symbol: str) -> str:
+    normalized = normalize_symbol(symbol)
+    code = extract_stock_id(normalized)
+    if normalized.startswith("SHSE."):
+        return f"1.{code}"
+    if normalized.startswith("SZSE."):
+        return f"0.{code}"
+    return code
+
+
+def _eastmoney_fast_item_summary(item: dict[str, object]) -> str:
+    summary = _strip_html_tags(_normalize_text(item.get("docuReader", "")))
+    if summary:
+        return summary
+    title = _strip_html_tags(_normalize_text(item.get("title", "")))
+    return title
+
+
+def _eastmoney_fast_humanize_text(text: str, stock_code: str, stock_name: str) -> str:
+    normalized = _strip_html_tags(_normalize_text(text))
+    if not normalized or not stock_code or not stock_name:
+        return normalized
+    code_pattern = re.compile(rf"(?<!\d){re.escape(stock_code)}(?!\d)")
+    if stock_name in normalized:
+        return normalized
+    replaced = code_pattern.sub(f"{stock_name}({stock_code})", normalized, count=1)
+    if replaced != normalized:
+        return replaced
+    if normalized.startswith("【") and "】" in normalized:
+        prefix, suffix = normalized.split("】", 1)
+        if stock_code in prefix:
+            return normalized.replace(prefix, prefix.replace(stock_code, f"{stock_name}({stock_code})"), 1)
+    return normalized
+
+
+def _load_eastmoney_fast_news(config: NewsSourceConfig, descriptor: NewsSourceDescriptor) -> NewsLoadResult:
+    symbols = [normalize_symbol(symbol) for symbol in config.symbols if normalize_symbol(symbol)]
+    if not symbols:
+        raise ValueError("东方财富快讯适配器需要至少 1 只股票代码。")
+    news_map: dict[str, list[NewsCatalyst]] = {}
+    page_size = max(5, min(max(int(config.limit_per_symbol or 3), 3) * 4, 20))
+    for symbol in symbols:
+        stock_code = extract_stock_id(symbol)
+        relation_tag = _eastmoney_relation_stock_tag(symbol)
+        stock_name = _normalize_text(config.symbol_names.get(symbol, "")) or stock_code
+        payload = {
+            "uid": "",
+            "keyword": stock_code,
+            "type": ["cmsArticleWebFast"],
+            "client": "web",
+            "clientVersion": "1.0",
+            "clientType": "kuaixun",
+            "param": {
+                "cmsArticleWebFast": {
+                    "column": "",
+                    "cmsColumnList": "405,406,407,408,409,410,411,412,413,414,415,416,417,418,420,421,422,423,424,425,426,427,428,429,430,431,344,349,354",
+                    "pageIndex": 1,
+                    "pageSize": page_size,
+                }
+            },
+        }
+        url = EASTMONEY_FAST_SEARCH_ENDPOINT + "?" + urllib.parse.urlencode(
+            {
+                "param": json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                "cb": "jQuery1123",
+            }
+        )
+        headers = dict(EASTMONEY_HEADERS)
+        headers["Referer"] = "https://kuaixun.eastmoney.com/"
+        response = _fetch_jsonp(url, timeout=config.timeout, headers=headers)
+        if not isinstance(response, dict):
+            continue
+        result = response.get("result", {})
+        rows = result.get("cmsArticleWebFast", []) if isinstance(result, dict) else []
+        if not isinstance(rows, list):
+            continue
+        items: list[NewsCatalyst] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            relation_tags = row.get("relationStockTags", [])
+            if isinstance(relation_tags, list) and relation_tag not in {str(tag or "") for tag in relation_tags}:
+                continue
+            raw_title = _normalize_text(row.get("title", ""))
+            title = _eastmoney_fast_humanize_text(raw_title, stock_code, stock_name)
+            if not title:
+                continue
+            published_at = _normalize_text(row.get("date", ""))
+            summary = _eastmoney_fast_humanize_text(_eastmoney_fast_item_summary(row), stock_code, stock_name)
+            if not published_at:
+                continue
+            published_dt = _parse_published_at(published_at)
+            if published_dt is not None and published_dt.date() < date.today() - timedelta(days=max(int(config.recent_days or 20) - 1, 1)):
+                continue
+            url_value = _normalize_text(row.get("uniqueUrl", ""))
+            if url_value.startswith("//"):
+                url_value = "https:" + url_value
+            items.append(
+                NewsCatalyst(
+                    symbol=symbol,
+                    title=title,
+                    summary=summary,
+                    published_at=published_at[:19],
+                    source="东方财富快讯",
+                    url=url_value,
+                    sentiment_score=0.0,
+                    heat=max(1.0, min(float(row.get("commentNum", 0) or 0) / 20.0 + 2.0, 9.0)),
+                )
+            )
+        if items:
+            items.sort(key=lambda item: (_news_rank_score(item), item.published_at or "", item.title), reverse=True)
+            news_map[symbol] = items[: max(1, min(int(config.limit_per_symbol or 3), 10))]
+    total = sum(len(items) for items in news_map.values())
+    return NewsLoadResult(
+        provider=descriptor.key,
+        label=descriptor.label,
+        news_map=news_map,
+        source_path=EASTMONEY_FAST_SEARCH_ENDPOINT,
+        summary=f"{descriptor.label} 已载入 {total} 条消息",
+    )
+
+
+def _load_eastmoney_news(config: NewsSourceConfig, descriptor: NewsSourceDescriptor) -> NewsLoadResult:
+    symbols = [normalize_symbol(symbol) for symbol in config.symbols if normalize_symbol(symbol)]
+    if not symbols:
+        raise ValueError("东方财富公告适配器需要至少 1 只股票代码。")
+    news_map: dict[str, list[NewsCatalyst]] = {}
+    page_size = max(3, min(max(int(config.limit_per_symbol or 3), 3) * 3, 15))
+    for symbol in symbols:
+        stock_code = extract_stock_id(symbol)
+        list_url = (
+            EASTMONEY_NOTICE_LIST_ENDPOINT
+            + "?"
+            + urllib.parse.urlencode(
+                {
+                    "cb": "jQuery1123",
+                    "sr": -1,
+                    "page_size": page_size,
+                    "page_index": 1,
+                    "ann_type": "A",
+                    "client_source": "web",
+                    "stock_list": stock_code,
+                }
+            )
+        )
+        headers = dict(EASTMONEY_HEADERS)
+        headers["Referer"] = f"https://data.eastmoney.com/notices/stock/{stock_code}.html"
+        response = _fetch_jsonp(list_url, timeout=config.timeout, headers=headers)
+        if not isinstance(response, dict):
+            continue
+        data = response.get("data", {})
+        rows = data.get("list", []) if isinstance(data, dict) else []
+        if not isinstance(rows, list):
+            continue
+        items: list[NewsCatalyst] = []
+        short_name = _normalize_text(config.symbol_names.get(symbol, "")) or stock_code
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            art_code = _normalize_text(row.get("art_code", ""))
+            raw_title = _strip_html_tags(_normalize_text(row.get("title", "")) or _normalize_text(row.get("title_ch", "")))
+            if not art_code or not raw_title:
+                continue
+            columns_text = _eastmoney_notice_columns(row)
+            published_at = _eastmoney_notice_published_at(row)
+            if not _cninfo_keep_item(raw_title, columns_text, published_at, config.recent_days):
+                continue
+            content_payload = _load_eastmoney_notice_content(art_code, stock_code, config.timeout)
+            notice_title = _normalize_text(content_payload.get("notice_title", "")) or raw_title
+            attach_url = _normalize_text(content_payload.get("attach_url_web", "") or content_payload.get("attach_url", ""))
+            notice_content = _normalize_text(content_payload.get("notice_content", ""))
+            title = _cninfo_short_title(notice_title, short_name)
+            signal_text = columns_text or notice_content[:80]
+            summary = _eastmoney_notice_summary(notice_title, columns_text or "公司公告", short_name)
+            if notice_content:
+                excerpt = notice_content[:80].strip()
+                if excerpt and excerpt not in summary:
+                    summary = f"{summary} | {excerpt}"
+            items.append(
+                NewsCatalyst(
+                    symbol=symbol,
+                    title=title,
+                    summary=summary,
+                    published_at=published_at or _normalize_text(content_payload.get("notice_date", "")),
+                    source="东方财富公告",
+                    url=attach_url or _eastmoney_notice_detail_url(stock_code, art_code),
+                    sentiment_score=0.0,
+                    heat=max(0.8, 2.2 + _cninfo_relevance_score(notice_title, signal_text)),
+                )
+            )
+        if items:
+            items.sort(key=lambda item: (_news_rank_score(item), item.published_at or "", item.title), reverse=True)
+            news_map[symbol] = items[: max(1, min(int(config.limit_per_symbol or 3), 10))]
+    total = sum(len(items) for items in news_map.values())
+    return NewsLoadResult(
+        provider=descriptor.key,
+        label=descriptor.label,
+        news_map=news_map,
+        source_path=EASTMONEY_NOTICE_LIST_ENDPOINT,
+        summary=f"{descriptor.label} 已载入 {total} 条公告",
+    )
+
+
 def _load_mixed_news(config: NewsSourceConfig, descriptor: NewsSourceDescriptor) -> NewsLoadResult:
     cninfo_descriptor = get_news_source_descriptor("cninfo_api")
     primary = _load_cninfo_news(config, cninfo_descriptor)
@@ -610,6 +922,10 @@ def load_news_from_source(config: NewsSourceConfig) -> NewsLoadResult:
             source_path=str(_SAMPLE_NEWS_PATH),
             summary=f"{descriptor.label} 已载入 {total} 条消息",
         )
+    if descriptor.key == "eastmoney_fast_api":
+        return _load_eastmoney_fast_news(config, descriptor)
+    if descriptor.key == "eastmoney_api":
+        return _load_eastmoney_news(config, descriptor)
     if descriptor.key == "mixed_api":
         return _load_mixed_news(config, descriptor)
     if descriptor.key == "cninfo_api":

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from quant_hunter.backtest import BacktestParams, PortfolioBacktester
 from quant_hunter.broker import (
+    build_execution_review_snapshot,
     build_execution_quality_profile,
     build_submission_intents,
     merge_submission_records_with_execution_records,
@@ -223,7 +224,7 @@ def validate_broker_connection_controller(window, *, adapter_cls, info_dialog_fn
 def generate_order_suggestions_controller(window, *, adapter_cls, info_dialog_fn, error_dialog_fn) -> None:
     plan = getattr(window, "current_trade_plan", None)
     if not getattr(plan, "decisions", []):
-        info_dialog_fn(window, "提示", "当前没有通过主线闸门的交易计划，请先生成推荐池和交易计划。")
+        info_dialog_fn(window, "提示", "当前没有通过主线闸门的交易计划，请先生成机会池和交易计划。")
         return
     try:
         per_trade_budget = float(window.per_trade_budget_input.text().strip())
@@ -383,7 +384,20 @@ def prepare_order_submission_controller(window, *, adapter_cls, confirmation_dia
     window.last_broker_execution_summary = summary
     blockers = list(summary.get("blockers", []))
     if blockers:
-        window._refresh_broker_status(extra="提交前硬拦截：\n" + "\n".join(f"- {item}" for item in blockers[:4]))
+        review_snapshot = build_execution_review_snapshot(summary)
+        window._refresh_broker_status(
+            extra=(
+                "提交前硬拦截：\n"
+                + str(review_snapshot.get("headline", "") or "")
+                + "\n"
+                + "\n".join(f"- {item}" for item in blockers[:4])
+                + (
+                    f"\n下一步：{review_snapshot.get('next_step', '')}"
+                    if review_snapshot.get("next_step")
+                    else ""
+                )
+            ).strip()
+        )
         return None
     experiment_context = build_order_submission_experiment_context(window)
     confirmed = confirmation_dialog_cls.confirm(
@@ -523,7 +537,20 @@ def prepare_order_submission_controller(window, *, adapter_cls, confirmation_dia
     window.last_broker_execution_summary = summary
     blockers = list(summary.get("blockers", []))
     if blockers:
-        window._refresh_broker_status(extra="提交前硬拦截：\n" + "\n".join(f"- {item}" for item in blockers[:4]))
+        review_snapshot = build_execution_review_snapshot(summary)
+        window._refresh_broker_status(
+            extra=(
+                "提交前硬拦截：\n"
+                + str(review_snapshot.get("headline", "") or "")
+                + "\n"
+                + "\n".join(f"- {item}" for item in blockers[:4])
+                + (
+                    f"\n下一步：{review_snapshot.get('next_step', '')}"
+                    if review_snapshot.get("next_step")
+                    else ""
+                )
+            ).strip()
+        )
         return None
 
     submission_intents, guard_notes, guard_blockers = build_submission_intents(window.order_intents, profile)
@@ -846,7 +873,7 @@ def refresh_daily_pool_controller(window, async_mode: bool, *, daily_pool_builde
 
     if async_mode:
         if hasattr(window, "recommend_status_label"):
-            window.recommend_status_label.setText("正在生成每日推荐池...")
+            window.recommend_status_label.setText("正在生成机会池...")
         started = window._run_background_job(
             "daily_pool",
             build_pool,
@@ -854,7 +881,7 @@ def refresh_daily_pool_controller(window, async_mode: bool, *, daily_pool_builde
             window._handle_daily_pool_error,
         )
         if not started and hasattr(window, "recommend_status_label"):
-            window.recommend_status_label.setText("推荐池仍在生成中，请稍候。")
+            window.recommend_status_label.setText("机会池仍在生成中，请稍候。")
         return
 
     window._apply_daily_pool_rows(build_pool())

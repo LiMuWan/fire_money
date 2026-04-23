@@ -12,7 +12,7 @@ def shell_stage_for_workspace_v42(workspace_key: str) -> str:
         return "market"
     if workspace_key == "recommend":
         return "recommend"
-    if workspace_key == "detail":
+    if workspace_key == "paper":
         return "experiment"
     if workspace_key in {"broker", "auth", "config"}:
         return "trade"
@@ -61,14 +61,14 @@ def shell_workflow_stage_specs_v42(
             "status": trade_status,
             "workspace": "broker",
             "widget": "execution_table" if submitted_orders else "orders_table",
-            "hint": "进入交易执行台，复核委托、风控和成交回执。",
-            "note": "复核闸门后确认提交",
+            "hint": "进入执行中控，复核委托、风控和成交回执。",
+            "note": "复核闸门后进确认弹窗",
         },
         {
             "key": "experiment",
             "title": "实验",
             "status": experiment_status,
-            "workspace": "broker",
+            "workspace": "paper",
             "widget": experiment_widget,
             "hint": "进入 AI 策略实验室，跟踪模拟盘样本与复盘结论。",
             "note": "回看样本与执行偏差",
